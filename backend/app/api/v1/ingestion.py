@@ -3,7 +3,8 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -281,3 +282,54 @@ async def list_manuals(
         "page": page,
         "page_size": page_size,
     }
+
+
+@router.post(
+    "/{vessel_id}/ingestion/upload",
+    status_code=status.HTTP_201_CREATED,
+    summary="Directly upload PDF manuals for a vessel",
+)
+async def upload_manuals(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    files: list[UploadFile] = File(...),
+) -> dict[str, Any]:
+    """Upload one or more PDF/document files directly without SharePoint."""
+    await _get_vessel_or_404(vessel_id, db)
+
+    ALLOWED_EXTENSIONS = {"pdf", "docx", "doc", "xlsx", "xls"}
+    MAX_SIZE = 50 * 1024 * 1024  # 50 MB per file
+
+    created_manuals = []
+    for upload in files:
+        filename = upload.filename or "unknown"
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "pdf"
+        if ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File '{filename}' has unsupported extension '.{ext}'. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
+            )
+        content = await upload.read()
+        if len(content) > MAX_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File '{filename}' exceeds the 50 MB limit.",
+            )
+
+        manual = Manual(
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            original_filename=filename,
+            file_extension=ext,
+            file_size_bytes=len(content),
+            sharepoint_path="",
+            status=ManualStatus.classified,
+            uploaded_by=current_user.id,
+        )
+        db.add(manual)
+        await db.flush()
+        created_manuals.append(ManualOut.model_validate(manual))
+
+    await db.commit()
+    return {"uploaded": len(created_manuals), "manuals": [m.model_dump() for m in created_manuals]}

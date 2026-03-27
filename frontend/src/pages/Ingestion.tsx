@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -9,6 +9,9 @@ import {
   Square,
   AlertCircle,
   FileText,
+  Upload,
+  X,
+  CheckCircle2,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 
@@ -62,10 +65,17 @@ const Ingestion: React.FC = () => {
   const { vesselId } = useParams<{ vesselId: string }>()
   const queryClient = useQueryClient()
 
+  const [tab, setTab] = useState<'upload' | 'sharepoint'>('upload')
   const [step, setStep] = useState<1 | 2 | 3>(1)
   const [folderUrl, setFolderUrl] = useState('')
   const [files, setFiles] = useState<SPFile[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+
+  // Direct upload state
+  const [uploadFiles, setUploadFiles] = useState<File[]>([])
+  const [uploadDone, setUploadDone] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // List sessions
   const { data: sessionsData } = useQuery({
@@ -128,15 +138,143 @@ const Ingestion: React.FC = () => {
   const activeSession: Session | null = sessionDetail ?? null
   const manuals: ManualStatus[] = activeSession?.manuals ?? []
 
+  const uploadMutation = useMutation({
+    mutationFn: async (selectedFiles: File[]) => {
+      const formData = new FormData()
+      selectedFiles.forEach(f => formData.append('files', f))
+      const res = await apiClient.post(`/vessels/${vesselId}/ingestion/upload`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      return res.data
+    },
+    onSuccess: () => {
+      setUploadDone(true)
+      setUploadError('')
+      queryClient.invalidateQueries({ queryKey: ['ingestion-sessions', vesselId] })
+    },
+    onError: (err: any) => {
+      setUploadError(err?.message ?? 'Upload failed')
+    },
+  })
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(e.target.files ?? [])
+    setUploadFiles(prev => {
+      const names = new Set(prev.map(f => f.name))
+      return [...prev, ...selected.filter(f => !names.has(f.name))]
+    })
+    setUploadDone(false)
+  }
+
+  const removeUploadFile = (name: string) => {
+    setUploadFiles(prev => prev.filter(f => f.name !== name))
+    setUploadDone(false)
+  }
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-white">Ingestion</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Connect to SharePoint, select files, and track ingestion progress.
+          Upload manuals directly or connect to SharePoint to begin extraction.
         </p>
       </div>
 
+      {/* Tab switcher */}
+      <div className="flex gap-1 rounded-lg border border-slate-800 bg-slate-900 p-1 w-fit">
+        <button
+          onClick={() => setTab('upload')}
+          className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${tab === 'upload' ? 'bg-sky-600 text-white' : 'text-slate-400 hover:text-white'}`}
+        >
+          <Upload className="mr-2 inline h-4 w-4" />
+          Direct Upload
+        </button>
+        <button
+          onClick={() => setTab('sharepoint')}
+          className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${tab === 'sharepoint' ? 'bg-sky-600 text-white' : 'text-slate-400 hover:text-white'}`}
+        >
+          <FolderOpen className="mr-2 inline h-4 w-4" />
+          SharePoint
+        </button>
+      </div>
+
+      {/* Direct Upload Tab */}
+      {tab === 'upload' && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900 p-6 space-y-5">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Upload PDF Manuals</h2>
+            <p className="mt-1 text-sm text-slate-400">
+              Upload one or more PDF/Word/Excel files directly. Supported: .pdf, .docx, .doc, .xlsx, .xls (max 50 MB each)
+            </p>
+          </div>
+
+          {/* Drop zone */}
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-700 py-12 transition-colors hover:border-sky-600 hover:bg-slate-800/50"
+          >
+            <Upload className="mb-3 h-10 w-10 text-slate-500" />
+            <p className="text-sm font-medium text-slate-300">Click to select files</p>
+            <p className="mt-1 text-xs text-slate-500">PDF, DOCX, DOC, XLSX, XLS</p>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".pdf,.docx,.doc,.xlsx,.xls"
+            className="hidden"
+            onChange={handleFileSelect}
+          />
+
+          {/* Selected files list */}
+          {uploadFiles.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+                {uploadFiles.length} file{uploadFiles.length > 1 ? 's' : ''} selected
+              </p>
+              {uploadFiles.map(f => (
+                <div key={f.name} className="flex items-center gap-3 rounded-lg bg-slate-800 px-4 py-2.5">
+                  <FileText className="h-4 w-4 shrink-0 text-sky-400" />
+                  <span className="flex-1 truncate text-sm text-slate-200">{f.name}</span>
+                  <span className="text-xs text-slate-500">{formatBytes(f.size)}</span>
+                  <button onClick={() => removeUploadFile(f.name)} className="text-slate-500 hover:text-red-400">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+
+              {uploadError && (
+                <p className="rounded-lg bg-red-900/30 px-3 py-2 text-sm text-red-400">
+                  <AlertCircle className="mr-1 inline h-4 w-4" />{uploadError}
+                </p>
+              )}
+
+              {uploadDone ? (
+                <div className="flex items-center gap-2 rounded-lg bg-green-900/30 px-4 py-3 text-sm text-green-400">
+                  <CheckCircle2 className="h-5 w-5" />
+                  Files uploaded successfully! Go to <strong className="mx-1">Manuals</strong> to review them.
+                </div>
+              ) : (
+                <button
+                  onClick={() => uploadMutation.mutate(uploadFiles)}
+                  disabled={uploadMutation.isPending}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-sky-600 py-2.5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-60"
+                >
+                  {uploadMutation.isPending ? (
+                    <><RefreshCw className="h-4 w-4 animate-spin" /> Uploading...</>
+                  ) : (
+                    <><Upload className="h-4 w-4" /> Upload {uploadFiles.length} File{uploadFiles.length > 1 ? 's' : ''}</>
+                  )}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* SharePoint Tab */}
+      {tab === 'sharepoint' && (
+        <>
       {/* Step indicator */}
       <div className="flex items-center gap-2">
         {[
@@ -401,6 +539,8 @@ const Ingestion: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   )
