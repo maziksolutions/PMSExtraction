@@ -39,31 +39,17 @@ anthropic==0.18.1
 openpyxl==3.1.2
 python-docx==1.1.0
 pdfplumber==0.10.3
-camelot-py[cv]==0.11.0
 
 # Azure AI services
 azure-ai-formrecognizer==3.3.2
-azure-cognitiveservices-language-textanalytics==0.2.0
 
 # Microsoft Graph / SharePoint
 msal==1.26.0
 msgraph-sdk==1.0.0
 
-# NLP / ML
-spacy==3.7.2
-torch==2.2.0
-transformers==4.37.2
-
-# Vector DB client
-qdrant-client==1.7.3
-
-# MLflow
-mlflow==2.10.2
-
 # Testing
 pytest==7.4.4
 pytest-asyncio==0.23.3
-httpx==0.26.0
 
 # WSGI / ASGI
 websockets==12.0
