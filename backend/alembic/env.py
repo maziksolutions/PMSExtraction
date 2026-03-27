@@ -28,7 +28,7 @@ config = context.config
 
 # Override the sqlalchemy.url with the value from our Settings object so
 # we never hard-code credentials in alembic.ini.
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", settings.async_database_url)
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:
