@@ -14,7 +14,8 @@ RUN npm run build
 FROM nginx:alpine
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /app/dist /usr/share/nginx/html
-RUN printf 'server {\n\
+RUN printf 'client_max_body_size 100m;\n\
+server {\n\
   listen 80;\n\
   root /usr/share/nginx/html;\n\
   index index.html;\n\
