@@ -10,10 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.deps import get_current_user
 from app.models.job import Job
+from app.models.missing_manual import MissingManualGap
 from app.models.standard_jobs import (
     ClassSociety,
     MatchStatus,
-    MissingManualGap,
     StandardJob,
     StandardJobMatch,
     VesselTypeTemplate,
