@@ -137,20 +137,24 @@ app.add_middleware(AuditLogMiddleware)
     tags=["Health"],
     summary="Health check endpoint",
     response_description="Service health status",
+    response_class=Response,
 )
-async def health_check() -> dict[str, str]:
+async def health_check() -> Response:
     """
     Returns a simple JSON payload confirming the service is running.
     Suitable for container health checks and load balancer probes.
     Uses deep health check when available.
     """
+    import json
+
     try:
         from app.core.health import deep_health_check
 
-        return await deep_health_check()
+        data = await deep_health_check()
     except Exception:
-        return {
+        data = {
             "status": "healthy",
             "service": settings.PROJECT_NAME,
             "version": settings.VERSION,
         }
+    return Response(content=json.dumps(data), media_type="application/json", status_code=200)

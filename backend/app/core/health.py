@@ -29,7 +29,7 @@ async def deep_health_check() -> dict[str, Any]:
         status["components"]["database"] = f"unhealthy: {str(exc)[:100]}"
         status["status"] = "degraded"
 
-    # Check Redis
+    # Check Redis (optional — degraded only, not critical)
     try:
         import redis.asyncio as aioredis
 
@@ -38,24 +38,7 @@ async def deep_health_check() -> dict[str, Any]:
         await r.aclose()
         status["components"]["redis"] = "healthy"
     except Exception as exc:
-        status["components"]["redis"] = f"unhealthy: {str(exc)[:100]}"
-        status["status"] = "degraded"
-
-    # Check blob storage (MinIO / Azure Blob)
-    try:
-        import boto3
-        from botocore.exceptions import ClientError
-
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=settings.BLOB_ENDPOINT_URL,
-            aws_access_key_id=settings.BLOB_ACCESS_KEY,
-            aws_secret_access_key=settings.BLOB_SECRET_KEY,
-        )
-        s3.list_buckets()
-        status["components"]["blob_storage"] = "healthy"
-    except Exception as exc:
-        status["components"]["blob_storage"] = f"unhealthy: {str(exc)[:100]}"
-        # Don't degrade status for blob storage — not critical for read operations
+        status["components"]["redis"] = f"unavailable: {str(exc)[:80]}"
+        # Redis is optional for core API functionality
 
     return status
