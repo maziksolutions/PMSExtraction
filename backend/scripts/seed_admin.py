@@ -46,7 +46,7 @@ async def seed() -> None:
 
     tenant_id = uuid.UUID(tenant_id_str)
 
-    engine = create_async_engine(settings.DATABASE_URL, echo=False)
+    engine = create_async_engine(settings.async_database_url, echo=False)
     session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
         bind=engine, expire_on_commit=False
     )

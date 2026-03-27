@@ -2,7 +2,7 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "cd backend && (alembic upgrade head || true) && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+startCommand = "cd backend && (alembic upgrade head || true) && (python scripts/seed_admin.py || true) && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "always"
