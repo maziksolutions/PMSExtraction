@@ -3,6 +3,13 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install
 COPY . .
+
+# Declare build args so Railway can pass VITE_ vars into the Docker build
+ARG VITE_API_BASE_URL
+ARG VITE_WS_URL
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+ENV VITE_WS_URL=$VITE_WS_URL
+
 RUN npm run build
 
 FROM nginx:alpine
