@@ -4,6 +4,7 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from 'axios'
 import type { AuthTokens, ApiError } from '@/types'
+import { useAuthStore } from '@/store/authStore'
 
 // ---------------------------------------------------------------------------
 // Axios instance
@@ -23,8 +24,6 @@ const apiClient: AxiosInstance = axios.create({
 
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    // Import lazily to avoid circular-dependency issues with Zustand
-    const { useAuthStore } = require('@/store/authStore')
     const token: string | null = useAuthStore.getState().accessToken
     if (token) {
       config.headers['Authorization'] = `Bearer ${token}`
