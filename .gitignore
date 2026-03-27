@@ -1,0 +1,108 @@
+# =============================================================
+# Maritime PMS Tool — .gitignore
+# =============================================================
+
+# ----- Python / Backend -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# Alembic generated files (keep versions directory but ignore compiled)
+backend/alembic/versions/*.pyc
+
+# ----- Node / Frontend -----
+node_modules/
+dist/
+dist-ssr/
+*.local
+.npm
+.eslintcache
+.node_repl_history
+.yarn-integrity
+.parcel-cache
+.next/
+.nuxt/
+.cache/
+
+# ----- Environment files -----
+.env
+.env.*
+!.env.example
+*.env
+
+# ----- Docker -----
+.dockerignore
+
+# ----- Terraform -----
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ----- IDE / OS -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ----- Logs -----
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ----- Certificates / secrets -----
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials.json
+service_account.json

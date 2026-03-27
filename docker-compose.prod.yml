@@ -1,0 +1,45 @@
+version: "3.9"
+
+# Production overrides — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up
+#
+# Secrets are injected at runtime via environment variables or a secrets manager.
+# No source-code volume mounts are used in production.
+
+services:
+  db:
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # Do NOT expose the port publicly in production
+    ports: []
+
+  redis:
+    restart: always
+    ports: []
+
+  backend:
+    restart: always
+    # Remove dev volume mount
+    volumes: []
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      SECRET_KEY: ${SECRET_KEY}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_HOURS: ${REFRESH_TOKEN_EXPIRE_HOURS:-8}
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-100}
+    # In prod, backend is accessed through the frontend nginx proxy only
+    ports: []
+
+  frontend:
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    # TLS termination should be handled by a load balancer / cert manager upstream
