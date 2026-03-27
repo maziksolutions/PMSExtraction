@@ -233,6 +233,7 @@ The GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on every push to `
 |---|---|
 | Sprint 1 (current) | Foundation: auth, user management, vessel CRUD, infrastructure |
 | Sprint 2 | Document ingestion from SharePoint, file upload pipeline |
+
 | Sprint 3 | AI-powered classification engine |
 | Sprint 4 | QC review workflow |
 | Sprint 5 | Export to target PMS formats |
