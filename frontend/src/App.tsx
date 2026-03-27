@@ -13,6 +13,7 @@ import { UserRole } from '@/types'
 const Login = lazy(() => import('@/pages/Login'))
 const Dashboard = lazy(() => import('@/pages/Dashboard'))
 const Users = lazy(() => import('@/pages/Users'))
+const Vessels = lazy(() => import('@/pages/Vessels'))
 
 // Sprint 2
 const Ingestion = lazy(() => import('@/pages/Ingestion'))
@@ -99,6 +100,9 @@ const App: React.FC = () => {
                   </ProtectedRoute>
                 }
               />
+
+              {/* Vessels list */}
+              <Route path="vessels" element={<ProtectedRoute><Vessels /></ProtectedRoute>} />
 
               {/* Sprint 2: Ingestion */}
               <Route

@@ -44,6 +44,7 @@ const roleBadgeColors: Record<UserRole, string> = {
 
 const topNavItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, exact: true },
+  { to: '/vessels', label: 'Vessels', icon: Ship },
   { to: '/users', label: 'Users', icon: Users, requiredRole: UserRole.SuperAdmin },
   { to: '/feedback', label: 'Feedback', icon: BarChart2, requiredRole: UserRole.SuperAdmin },
   { to: '/admin', label: 'Admin', icon: Shield, requiredRole: UserRole.SuperAdmin },
