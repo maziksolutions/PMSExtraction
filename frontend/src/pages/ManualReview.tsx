@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -7,6 +7,8 @@ import {
   RefreshCw,
   Save,
   Filter,
+  ScanSearch,
+  CheckCircle2,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 
@@ -63,6 +65,12 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+interface ScreeningStatus {
+  total: number
+  done: number
+  status: 'idle' | 'running' | 'completed' | 'failed'
+}
+
 const ManualReview: React.FC = () => {
   const { vesselId } = useParams<{ vesselId: string }>()
   const queryClient = useQueryClient()
@@ -70,6 +78,7 @@ const ManualReview: React.FC = () => {
   const [filterCategory, setFilterCategory] = useState('')
   const [filterConfidence, setFilterConfidence] = useState('')
   const [edits, setEdits] = useState<Record<string, Partial<Manual>>>({})
+  const [screeningPolling, setScreeningPolling] = useState(false)
 
   const { data, isLoading } = useQuery({
     queryKey: ['manuals', vesselId, filterCategory, filterConfidence],
@@ -107,6 +116,41 @@ const ManualReview: React.FC = () => {
         .then((r) => r.data),
   })
 
+  // Screening status poll
+  const { data: screeningData } = useQuery<ScreeningStatus>({
+    queryKey: ['screening-status', vesselId],
+    queryFn: () =>
+      apiClient.get(`/vessels/${vesselId}/manuals/screening-status`).then((r) => r.data),
+    enabled: !!vesselId && screeningPolling,
+    refetchInterval: screeningPolling ? 1500 : false,
+  })
+
+  // Stop polling when done
+  useEffect(() => {
+    if (screeningData?.status === 'completed' || screeningData?.status === 'failed') {
+      setScreeningPolling(false)
+      queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
+    }
+  }, [screeningData?.status, vesselId, queryClient])
+
+  const screenAllMutation = useMutation({
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/manuals/screen-all`).then((r) => r.data),
+    onSuccess: (data) => {
+      if (data.started) {
+        setScreeningPolling(true)
+      } else {
+        queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
+      }
+    },
+  })
+
+  const isScreening = screeningPolling || screenAllMutation.isPending
+  const screeningProgress =
+    screeningData && screeningData.total > 0
+      ? Math.round((screeningData.done / screeningData.total) * 100)
+      : 0
+
   const handleEdit = useCallback(
     (manualId: string, field: keyof Manual, value: string) => {
       setEdits((prev) => ({
@@ -135,17 +179,57 @@ const ManualReview: React.FC = () => {
             Review and correct AI classification of vessel manuals.
           </p>
         </div>
-        {Object.keys(edits).length > 0 && (
+        <div className="flex items-center gap-3">
+          {Object.keys(edits).length > 0 && (
+            <button
+              onClick={handleSaveAll}
+              disabled={saveMutation.isPending}
+              className="flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+            >
+              <Save className="h-4 w-4" />
+              Save {Object.keys(edits).length} correction(s)
+            </button>
+          )}
           <button
-            onClick={handleSaveAll}
-            disabled={saveMutation.isPending}
-            className="flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+            onClick={() => screenAllMutation.mutate()}
+            disabled={isScreening}
+            className="flex items-center gap-2 rounded-lg bg-violet-600 px-5 py-2 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-60"
           >
-            <Save className="h-4 w-4" />
-            Save {Object.keys(edits).length} correction(s)
+            {isScreening ? (
+              <RefreshCw className="h-4 w-4 animate-spin" />
+            ) : (
+              <ScanSearch className="h-4 w-4" />
+            )}
+            {isScreening ? 'Screening...' : 'Start Screening'}
           </button>
-        )}
+        </div>
       </div>
+
+      {/* Screening progress banner */}
+      {isScreening && screeningData && screeningData.total > 0 && (
+        <div className="rounded-xl border border-violet-700 bg-violet-900/20 p-4 space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium text-violet-300">
+              Screening manuals... {screeningData.done} / {screeningData.total} done
+            </span>
+            <span className="text-violet-400">{screeningProgress}%</span>
+          </div>
+          <div className="h-2 w-full rounded-full bg-slate-800 overflow-hidden">
+            <div
+              className="h-2 rounded-full bg-violet-500 transition-all duration-500"
+              style={{ width: `${screeningProgress}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Screening complete banner */}
+      {!isScreening && screeningData?.status === 'completed' && (
+        <div className="flex items-center gap-2 rounded-xl border border-green-700 bg-green-900/20 px-4 py-3 text-sm text-green-400">
+          <CheckCircle2 className="h-5 w-5 shrink-0" />
+          Screening complete — {screeningData.total} manual{screeningData.total !== 1 ? 's' : ''} classified.
+        </div>
+      )}
 
       {/* Missing Manual Alert */}
       {gaps.length > 0 && (

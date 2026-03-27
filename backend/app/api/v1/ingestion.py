@@ -3,9 +3,9 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -25,6 +25,10 @@ from app.schemas.ingestion import (
 from app.services.sharepoint import SharePointService
 
 router = APIRouter()
+
+# In-memory screening progress tracker (per vessel_id string)
+# Structure: { vessel_id: { "total": int, "done": int, "status": "idle"|"running"|"completed" } }
+_screening_state: dict[str, dict] = {}
 
 
 async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselProject:
@@ -343,3 +347,112 @@ async def upload_manuals(
 
     await db.commit()
     return {"uploaded": len(created_manuals), "manuals": [m.model_dump() for m in created_manuals]}
+
+
+# ---------------------------------------------------------------------------
+# Screening: classify unclassified manuals for a vessel
+# ---------------------------------------------------------------------------
+
+async def _run_screening_task(vessel_id_str: str, tenant_id_str: str) -> None:
+    """Background task: classifies all unclassified manuals for a vessel."""
+    from app.core.database import AsyncSessionLocal
+    from app.services.classifier import classify_pdf, _keyword_classify
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Manual).where(
+                    Manual.vessel_id == uuid.UUID(vessel_id_str),
+                    Manual.tenant_id == uuid.UUID(tenant_id_str),
+                    Manual.is_deleted == False,
+                    Manual.category == None,
+                )
+            )
+            manuals = result.scalars().all()
+            _screening_state[vessel_id_str]["total"] = len(manuals)
+            _screening_state[vessel_id_str]["done"] = 0
+
+            for manual in manuals:
+                try:
+                    # Filename-based classification (no stored PDF content for SharePoint files)
+                    cr = _keyword_classify([], manual.original_filename, 0)
+                    await db.execute(
+                        update(Manual)
+                        .where(Manual.id == manual.id)
+                        .values(
+                            category=cr.category,
+                            classification_confidence=cr.confidence,
+                            useful_for_extraction=cr.useful_for_extraction,
+                            pages_with_components=cr.pages_with_components,
+                            pages_with_jobs=cr.pages_with_jobs,
+                            pages_with_spares=cr.pages_with_spares,
+                            status=ManualStatus.classified,
+                        )
+                    )
+                    await db.commit()
+                except Exception:
+                    pass
+                _screening_state[vessel_id_str]["done"] += 1
+
+        _screening_state[vessel_id_str]["status"] = "completed"
+    except Exception:
+        _screening_state[vessel_id_str]["status"] = "failed"
+
+
+@router.post(
+    "/{vessel_id}/manuals/screen-all",
+    summary="Start screening (classify) all unclassified manuals for a vessel",
+)
+async def screen_all_manuals(
+    vessel_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Triggers background classification for all manuals that have no category yet."""
+    await _get_vessel_or_404(vessel_id, db)
+
+    vessel_id_str = str(vessel_id)
+
+    # Count pending
+    result = await db.execute(
+        select(Manual).where(
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+            Manual.category == None,
+        )
+    )
+    pending = result.scalars().all()
+    total = len(pending)
+
+    if total == 0:
+        return {"started": False, "message": "All manuals are already classified.", "total": 0}
+
+    _screening_state[vessel_id_str] = {
+        "total": total,
+        "done": 0,
+        "status": "running",
+    }
+    background_tasks.add_task(
+        _run_screening_task, vessel_id_str, str(current_user.tenant_id)
+    )
+    return {"started": True, "total": total, "message": f"Screening {total} manuals in background."}
+
+
+@router.get(
+    "/{vessel_id}/manuals/screening-status",
+    summary="Get screening progress for a vessel",
+)
+async def screening_status(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Returns current screening progress for the vessel."""
+    await _get_vessel_or_404(vessel_id, db)
+    state = _screening_state.get(
+        str(vessel_id),
+        {"total": 0, "done": 0, "status": "idle"},
+    )
+    return state

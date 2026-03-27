@@ -12,6 +12,7 @@ import {
   Upload,
   X,
   CheckCircle2,
+  ScanSearch,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 
@@ -76,6 +77,30 @@ const Ingestion: React.FC = () => {
   const [uploadDone, setUploadDone] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Screening state for SharePoint flow
+  const [screeningState, setScreeningState] = useState<{total: number; done: number; status: string} | null>(null)
+  const screeningIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const startScreening = async () => {
+    try {
+      const res = await apiClient.post(`/vessels/${vesselId}/manuals/screen-all`)
+      if (res.data.started) {
+        setScreeningState({ total: res.data.total, done: 0, status: 'running' })
+        screeningIntervalRef.current = setInterval(async () => {
+          try {
+            const status = await apiClient.get(`/vessels/${vesselId}/manuals/screening-status`)
+            setScreeningState(status.data)
+            if (status.data.status === 'completed' || status.data.status === 'failed') {
+              if (screeningIntervalRef.current) clearInterval(screeningIntervalRef.current)
+            }
+          } catch {}
+        }, 1500)
+      } else {
+        setScreeningState({ total: 0, done: 0, status: 'completed' })
+      }
+    } catch {}
+  }
 
   // List sessions
   const { data: sessionsData } = useQuery({
@@ -506,6 +531,52 @@ const Ingestion: React.FC = () => {
                 )}
               </tbody>
             </table>
+          </div>
+
+          {/* Start Screening section */}
+          <div className="mt-4 rounded-xl border border-violet-800 bg-violet-900/20 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-violet-300">Auto-Screen Manuals</p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Classify all queued manuals using AI / keyword analysis
+                </p>
+              </div>
+              <button
+                onClick={startScreening}
+                disabled={screeningState?.status === 'running'}
+                className="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-60"
+              >
+                {screeningState?.status === 'running' ? (
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                ) : (
+                  <ScanSearch className="h-4 w-4" />
+                )}
+                {screeningState?.status === 'running' ? 'Screening...' : 'Start Screening'}
+              </button>
+            </div>
+
+            {screeningState && screeningState.total > 0 && screeningState.status === 'running' && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs text-violet-300">
+                  <span>{screeningState.done} / {screeningState.total} manuals screened</span>
+                  <span>{Math.round((screeningState.done / screeningState.total) * 100)}%</span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-slate-800 overflow-hidden">
+                  <div
+                    className="h-2 rounded-full bg-violet-500 transition-all duration-500"
+                    style={{ width: `${Math.round((screeningState.done / screeningState.total) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {screeningState?.status === 'completed' && (
+              <div className="flex items-center gap-2 text-sm text-green-400">
+                <CheckCircle2 className="h-4 w-4" />
+                Screening complete! Go to <strong className="mx-1">Manuals</strong> tab to review results.
+              </div>
+            )}
           </div>
 
           <div className="mt-4 border-t border-slate-800 pt-4">
