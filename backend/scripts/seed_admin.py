@@ -25,7 +25,7 @@ from dotenv import load_dotenv  # type: ignore[import]
 
 load_dotenv()
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
@@ -58,8 +58,11 @@ async def seed() -> None:
         existing = result.scalar_one_or_none()
 
         if existing:
-            existing.hashed_password = get_password_hash(password)
-            existing.is_active = True
+            await session.execute(
+                update(User)
+                .where(User.id == existing.id)
+                .values(hashed_password=get_password_hash(password), is_active=True)
+            )
             await session.commit()
             print(f"Super admin '{email}' already exists — password updated.")
             return
