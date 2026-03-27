@@ -41,10 +41,11 @@ class Settings(BaseSettings):
     AZURE_CLIENT_ID: str = ""
     AZURE_CLIENT_SECRET: str = ""
 
-    # CORS — add your frontend URL via ALLOWED_ORIGINS env var in Railway
+    # CORS
     ALLOWED_ORIGINS: list[str] = [
         "http://localhost:3000",
         "http://localhost:5173",
+        "https://maritime-pms-tool-production.up.railway.app",
     ]
     ALLOWED_ORIGINS_REGEX: str = r"https://.*\.up\.railway\.app"
 
