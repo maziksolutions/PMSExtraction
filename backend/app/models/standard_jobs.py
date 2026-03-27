@@ -115,28 +115,3 @@ class StandardJobMatch(TenantBase):
         return f"<StandardJobMatch id={self.id} status={self.match_status}>"
 
 
-class MissingManualGap(TenantBase):
-    __tablename__ = "missing_manual_gaps"
-
-    vessel_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("vessel_projects.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    machinery_group: Mapped[str] = mapped_column(String(200), nullable=False)
-    machinery_name: Mapped[str] = mapped_column(String(300), nullable=False)
-    is_mandatory: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-
-    gap_status: Mapped[str] = mapped_column(
-        String(50),
-        nullable=False,
-        default="identified",
-        comment="identified / accepted / pending_upload / override",
-    )
-
-    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-
-    def __repr__(self) -> str:
-        return f"<MissingManualGap vessel={self.vessel_id} machinery={self.machinery_name}>"
