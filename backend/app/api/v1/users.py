@@ -171,6 +171,7 @@ async def update_user(
     "/{user_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
+    response_model=None,
     summary="Soft-delete a user (super_admin only)",
 )
 async def delete_user(

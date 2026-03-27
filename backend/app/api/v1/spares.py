@@ -134,7 +134,7 @@ async def update_spare(
     return SpareOut.model_validate(spare)
 
 
-@router.delete("/{vessel_id}/spares/{spare_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+@router.delete("/{vessel_id}/spares/{spare_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response, response_model=None)
 async def delete_spare(
     vessel_id: uuid.UUID,
     spare_id: uuid.UUID,

@@ -154,6 +154,7 @@ async def update_vessel(
     "/{vessel_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
+    response_model=None,
     summary="Soft-delete a vessel project (vessel_admin+)",
 )
 async def delete_vessel(

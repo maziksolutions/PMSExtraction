@@ -138,7 +138,7 @@ async def update_job(
     return JobOut.model_validate(job)
 
 
-@router.delete("/{vessel_id}/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+@router.delete("/{vessel_id}/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response, response_model=None)
 async def delete_job(
     vessel_id: uuid.UUID,
     job_id: uuid.UUID,

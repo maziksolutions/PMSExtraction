@@ -150,7 +150,7 @@ async def update_component(
     return ComponentOut.model_validate(comp)
 
 
-@router.delete("/{vessel_id}/components/{component_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+@router.delete("/{vessel_id}/components/{component_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response, response_model=None)
 async def delete_component(
     vessel_id: uuid.UUID,
     component_id: uuid.UUID,

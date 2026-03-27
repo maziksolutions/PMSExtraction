@@ -153,6 +153,7 @@ async def refresh_token(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
+    response_model=None,
     summary="Logout (client-side token invalidation)",
 )
 async def logout() -> Response:
