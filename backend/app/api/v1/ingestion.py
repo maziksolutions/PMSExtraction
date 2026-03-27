@@ -317,6 +317,10 @@ async def upload_manuals(
                 detail=f"File '{filename}' exceeds the 50 MB limit.",
             )
 
+        # Auto-classify the document
+        from app.services.classifier import classify_pdf
+        result = classify_pdf(content, filename)
+
         manual = Manual(
             tenant_id=current_user.tenant_id,
             vessel_id=vessel_id,
@@ -326,6 +330,12 @@ async def upload_manuals(
             sharepoint_path="",
             status=ManualStatus.classified,
             uploaded_by=current_user.id,
+            category=result.category,
+            classification_confidence=result.confidence,
+            useful_for_extraction=result.useful_for_extraction,
+            pages_with_components=result.pages_with_components,
+            pages_with_jobs=result.pages_with_jobs,
+            pages_with_spares=result.pages_with_spares,
         )
         db.add(manual)
         await db.flush()
