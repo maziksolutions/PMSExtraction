@@ -58,7 +58,10 @@ async def seed() -> None:
         existing = result.scalar_one_or_none()
 
         if existing:
-            print(f"Super admin '{email}' already exists — skipping.")
+            existing.hashed_password = get_password_hash(password)
+            existing.is_active = True
+            await session.commit()
+            print(f"Super admin '{email}' already exists — password updated.")
             return
 
         admin = User(
