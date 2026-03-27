@@ -4,7 +4,7 @@ import io
 import uuid
 from typing import Annotated, Any, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -138,7 +138,7 @@ async def update_job(
     return JobOut.model_validate(job)
 
 
-@router.delete("/{vessel_id}/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{vessel_id}/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 async def delete_job(
     vessel_id: uuid.UUID,
     job_id: uuid.UUID,

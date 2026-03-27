@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from jose import JWTError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -152,9 +152,10 @@ async def refresh_token(
 @router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
     summary="Logout (client-side token invalidation)",
 )
-async def logout() -> None:
+async def logout() -> Response:
     """
     Logout endpoint.
 
@@ -162,4 +163,4 @@ async def logout() -> None:
     discard its tokens. For full server-side invalidation, implement a
     Redis token blocklist keyed on the JWT `jti` claim.
     """
-    return None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

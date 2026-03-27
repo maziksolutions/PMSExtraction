@@ -4,7 +4,7 @@ import math
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -170,6 +170,7 @@ async def update_user(
 @router.delete(
     "/{user_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
     summary="Soft-delete a user (super_admin only)",
 )
 async def delete_user(

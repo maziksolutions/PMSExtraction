@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -134,7 +134,7 @@ async def update_spare(
     return SpareOut.model_validate(spare)
 
 
-@router.delete("/{vessel_id}/spares/{spare_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{vessel_id}/spares/{spare_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 async def delete_spare(
     vessel_id: uuid.UUID,
     spare_id: uuid.UUID,

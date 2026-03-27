@@ -268,7 +268,7 @@ async def download_export(
     )
 
 
-@router.delete("/vessels/{vessel_id}/exports/{export_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/vessels/{vessel_id}/exports/{export_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 async def delete_export(
     vessel_id: uuid.UUID,
     export_id: uuid.UUID,

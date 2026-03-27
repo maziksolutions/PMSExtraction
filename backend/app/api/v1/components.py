@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -150,7 +150,7 @@ async def update_component(
     return ComponentOut.model_validate(comp)
 
 
-@router.delete("/{vessel_id}/components/{component_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{vessel_id}/components/{component_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 async def delete_component(
     vessel_id: uuid.UUID,
     component_id: uuid.UUID,

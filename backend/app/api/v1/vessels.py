@@ -4,7 +4,7 @@ import math
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -153,6 +153,7 @@ async def update_vessel(
 @router.delete(
     "/{vessel_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
     summary="Soft-delete a vessel project (vessel_admin+)",
 )
 async def delete_vessel(
