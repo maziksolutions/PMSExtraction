@@ -41,8 +41,12 @@ class Settings(BaseSettings):
     AZURE_CLIENT_ID: str = ""
     AZURE_CLIENT_SECRET: str = ""
 
-    # CORS
-    ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
+    # CORS — add your frontend URL via ALLOWED_ORIGINS env var in Railway
+    ALLOWED_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+    ]
+    ALLOWED_ORIGINS_REGEX: str = r"https://.*\.up\.railway\.app"
 
     # Rate limiting
     RATE_LIMIT_PER_MINUTE: int = 100
