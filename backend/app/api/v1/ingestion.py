@@ -370,8 +370,8 @@ async def upload_manuals(
 # Screening: classify unclassified manuals for a vessel
 # ---------------------------------------------------------------------------
 
-async def _run_screening_task(vessel_id_str: str, tenant_id_str: str) -> None:
-    """Background task: classifies all unclassified manuals for a vessel."""
+async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids: list[str]) -> None:
+    """Background task: re-classifies the given manuals using Claude (if PDF on disk) or keywords."""
     from app.core.database import AsyncSessionLocal
     from app.services.classifier import classify_pdf, _keyword_classify
 
@@ -379,10 +379,8 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str) -> None:
         async with AsyncSessionLocal() as db:
             result = await db.execute(
                 select(Manual).where(
-                    Manual.vessel_id == uuid.UUID(vessel_id_str),
-                    Manual.tenant_id == uuid.UUID(tenant_id_str),
+                    Manual.id.in_([uuid.UUID(mid) for mid in manual_ids]),
                     Manual.is_deleted == False,
-                    Manual.category == None,
                 )
             )
             manuals = result.scalars().all()
@@ -391,8 +389,15 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str) -> None:
 
             for manual in manuals:
                 try:
-                    # Filename-based classification (no stored PDF content for SharePoint files)
-                    cr = _keyword_classify([], manual.original_filename, 0)
+                    # Use Claude classification when the file is on disk; otherwise keyword fallback
+                    file_path = manual.blob_storage_key
+                    if file_path and os.path.exists(file_path):
+                        with open(file_path, "rb") as f:
+                            content = f.read()
+                        cr = await asyncio.to_thread(classify_pdf, content, manual.original_filename)
+                    else:
+                        cr = _keyword_classify([], manual.original_filename, 0)
+
                     await db.execute(
                         update(Manual)
                         .where(Manual.id == manual.id)
@@ -418,7 +423,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str) -> None:
 
 @router.post(
     "/{vessel_id}/manuals/screen-all",
-    summary="Start screening (classify) all unclassified manuals for a vessel",
+    summary="Screen (classify) all manuals for a vessel using Claude AI",
 )
 async def screen_all_manuals(
     vessel_id: uuid.UUID,
@@ -426,35 +431,34 @@ async def screen_all_manuals(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
-    """Triggers background classification for all manuals that have no category yet."""
+    """Re-classifies ALL manuals for the vessel using Claude AI (or keyword fallback)."""
     await _get_vessel_or_404(vessel_id, db)
 
     vessel_id_str = str(vessel_id)
 
-    # Count pending
     result = await db.execute(
         select(Manual).where(
             Manual.vessel_id == vessel_id,
             Manual.tenant_id == current_user.tenant_id,
             Manual.is_deleted == False,
-            Manual.category == None,
         )
     )
-    pending = result.scalars().all()
-    total = len(pending)
+    all_manuals = result.scalars().all()
+    total = len(all_manuals)
 
     if total == 0:
-        return {"started": False, "message": "All manuals are already classified.", "total": 0}
+        return {"started": False, "message": "No manuals found for this vessel.", "total": 0}
 
+    manual_ids = [str(m.id) for m in all_manuals]
     _screening_state[vessel_id_str] = {
         "total": total,
         "done": 0,
         "status": "running",
     }
     background_tasks.add_task(
-        _run_screening_task, vessel_id_str, str(current_user.tenant_id)
+        _run_screening_task, vessel_id_str, str(current_user.tenant_id), manual_ids
     )
-    return {"started": True, "total": total, "message": f"Screening {total} manuals in background."}
+    return {"started": True, "total": total, "message": f"Screening {total} manuals with Claude AI."}
 
 
 @router.get(

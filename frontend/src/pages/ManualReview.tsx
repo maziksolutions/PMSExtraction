@@ -340,13 +340,21 @@ const ManualReview: React.FC = () => {
     }
   }, [screeningData?.status, vesselId, queryClient])
 
+  const [screenMessage, setScreenMessage] = useState<string | null>(null)
+
   const screenAllMutation = useMutation({
     mutationFn: () =>
       apiClient.post(`/vessels/${vesselId}/manuals/screen-all`).then((r) => r.data),
     onSuccess: (data) => {
-      if (data.started) setScreeningPolling(true)
-      else queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
+      if (data.started) {
+        setScreenMessage(null)
+        setScreeningPolling(true)
+      } else {
+        setScreenMessage(data.message ?? 'No manuals to screen.')
+        queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
+      }
     },
+    onError: () => setScreenMessage('Screen All failed — check server logs.'),
   })
 
   // ── Extraction ────────────────────────────────────────────────────────────
@@ -504,6 +512,14 @@ const ManualReview: React.FC = () => {
 
       {/* Pre-Check panel — inline */}
       <PreCheckPanel vesselId={vesselId!} />
+
+      {/* Screen All message banner */}
+      {screenMessage && (
+        <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-slate-300">
+          <span>{screenMessage}</span>
+          <button onClick={() => setScreenMessage(null)} className="text-slate-500 hover:text-slate-300 text-xs">✕</button>
+        </div>
+      )}
 
       {/* Extraction complete banner */}
       {!isExtracting && extractionData?.status === 'completed' && (
@@ -675,9 +691,9 @@ const ManualReview: React.FC = () => {
                         className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                       >
                         <option value="">—</option>
-                        <option value="Yes">Yes</option>
-                        <option value="Reference">Ref</option>
-                        <option value="No">No</option>
+                        <option value="yes">Yes</option>
+                        <option value="partial">Partial</option>
+                        <option value="no">No</option>
                       </select>
                     </td>
                     <td className="px-3 py-3">
