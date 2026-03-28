@@ -302,9 +302,9 @@ async def upload_manuals(
                 Manual.tenant_id == current_user.tenant_id,
                 Manual.sha256_hash == sha256,
                 Manual.is_deleted == False,
-            )
+            ).limit(1)
         )
-        original_manual = existing_hash.scalar_one_or_none()
+        original_manual = existing_hash.scalars().first()
         is_dup = original_manual is not None
 
         # Auto-classify the document — run sync PDF+Claude work in a thread
