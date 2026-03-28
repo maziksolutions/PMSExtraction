@@ -120,7 +120,7 @@ const PreCheckPanel: React.FC<{ vesselId: string }> = ({ vesselId }) => {
   const { data: result, isLoading } = useQuery<PreCheckResult>({
     queryKey: ['precheck', vesselId],
     queryFn: async () => {
-      const res = await apiClient.get(`/api/v1/vessels/${vesselId}/precheck`)
+      const res = await apiClient.get(`/vessels/${vesselId}/precheck`)
       return res.data
     },
     enabled: !!vesselId,
@@ -128,7 +128,7 @@ const PreCheckPanel: React.FC<{ vesselId: string }> = ({ vesselId }) => {
 
   const runMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiClient.post(`/api/v1/vessels/${vesselId}/precheck/run`)
+      const res = await apiClient.post(`/vessels/${vesselId}/precheck/run`)
       return res.data as PreCheckResult
     },
     onSuccess: () => {
@@ -142,7 +142,7 @@ const PreCheckPanel: React.FC<{ vesselId: string }> = ({ vesselId }) => {
     mutationFn: async ({ itemId, user_acknowledgement, absence_reason }: {
       itemId: string; user_acknowledgement: string; absence_reason?: string
     }) => {
-      await apiClient.patch(`/api/v1/vessels/${vesselId}/precheck/${itemId}`, {
+      await apiClient.patch(`/vessels/${vesselId}/precheck/${itemId}`, {
         user_acknowledgement,
         ...(absence_reason !== undefined && { absence_reason }),
       })
@@ -310,7 +310,7 @@ const ManualReview: React.FC = () => {
       if (filterCategory) params.category = filterCategory
       if (filterConfidence) params.min_confidence = filterConfidence
       return apiClient
-        .get(`/api/v1/vessels/${vesselId}/manuals`, { params })
+        .get(`/vessels/${vesselId}/manuals`, { params })
         .then((r) => r.data)
     },
     enabled: !!vesselId,
@@ -319,7 +319,7 @@ const ManualReview: React.FC = () => {
   const { data: missingReport } = useQuery({
     queryKey: ['missing-report', vesselId],
     queryFn: () =>
-      apiClient.get(`/api/v1/vessels/${vesselId}/manuals/missing-report`).then((r) => r.data),
+      apiClient.get(`/vessels/${vesselId}/manuals/missing-report`).then((r) => r.data),
     enabled: !!vesselId,
   })
 
@@ -328,7 +328,7 @@ const ManualReview: React.FC = () => {
   const { data: screeningData } = useQuery<ScreeningStatus>({
     queryKey: ['screening-status', vesselId],
     queryFn: () =>
-      apiClient.get(`/api/v1/vessels/${vesselId}/manuals/screening-status`).then((r) => r.data),
+      apiClient.get(`/vessels/${vesselId}/manuals/screening-status`).then((r) => r.data),
     enabled: !!vesselId && screeningPolling,
     refetchInterval: screeningPolling ? 1500 : false,
   })
@@ -342,7 +342,7 @@ const ManualReview: React.FC = () => {
 
   const screenAllMutation = useMutation({
     mutationFn: () =>
-      apiClient.post(`/api/v1/vessels/${vesselId}/manuals/screen-all`).then((r) => r.data),
+      apiClient.post(`/vessels/${vesselId}/manuals/screen-all`).then((r) => r.data),
     onSuccess: (data) => {
       if (data.started) setScreeningPolling(true)
       else queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
@@ -354,7 +354,7 @@ const ManualReview: React.FC = () => {
   const { data: extractionData } = useQuery<ExtractionStatus>({
     queryKey: ['extraction-status', vesselId],
     queryFn: () =>
-      apiClient.get(`/api/v1/vessels/${vesselId}/extraction-status`).then((r) => r.data),
+      apiClient.get(`/vessels/${vesselId}/extraction-status`).then((r) => r.data),
     enabled: !!vesselId && extractionPolling,
     refetchInterval: extractionPolling ? 2000 : false,
   })
@@ -368,7 +368,7 @@ const ManualReview: React.FC = () => {
 
   const extractAllMutation = useMutation({
     mutationFn: () =>
-      apiClient.post(`/api/v1/vessels/${vesselId}/extract-all`).then((r) => r.data),
+      apiClient.post(`/vessels/${vesselId}/extract-all`).then((r) => r.data),
     onSuccess: (data) => {
       if (data.started) setExtractionPolling(true)
     },
@@ -378,7 +378,7 @@ const ManualReview: React.FC = () => {
 
   const saveMutation = useMutation({
     mutationFn: ({ manualId, data }: { manualId: string; data: Partial<Manual> }) =>
-      apiClient.patch(`/api/v1/vessels/${vesselId}/manuals/${manualId}`, data).then((r) => r.data),
+      apiClient.patch(`/vessels/${vesselId}/manuals/${manualId}`, data).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
       setEdits({})
@@ -387,14 +387,14 @@ const ManualReview: React.FC = () => {
 
   const triggerClassificationMutation = useMutation({
     mutationFn: (manualId: string) =>
-      apiClient.post(`/api/v1/vessels/${vesselId}/manuals/${manualId}/trigger-classification`).then((r) => r.data),
+      apiClient.post(`/vessels/${vesselId}/manuals/${manualId}/trigger-classification`).then((r) => r.data),
   })
 
   // ── Delete ────────────────────────────────────────────────────────────────
 
   const deleteMutation = useMutation({
     mutationFn: (manualId: string) =>
-      apiClient.delete(`/api/v1/vessels/${vesselId}/manuals/${manualId}`),
+      apiClient.delete(`/vessels/${vesselId}/manuals/${manualId}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
       setSelectedIds(new Set())
@@ -623,7 +623,8 @@ const ManualReview: React.FC = () => {
                 const edit = edits[m.id] ?? {}
                 const changed = Object.keys(edit).length > 0
                 const isSelected = selectedIds.has(m.id)
-                const viewUrl = `/api/v1/vessels/${vesselId}/manuals/${m.id}/view`
+                const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1'
+                const viewUrl = `${apiBase}/vessels/${vesselId}/manuals/${m.id}/view`
 
                 return (
                   <tr

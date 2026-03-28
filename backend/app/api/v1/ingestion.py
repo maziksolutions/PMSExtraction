@@ -258,38 +258,6 @@ async def get_session(
     }
 
 
-@router.get(
-    "/{vessel_id}/manuals",
-    summary="List all manuals for a vessel",
-)
-async def list_manuals(
-    vessel_id: uuid.UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-) -> dict[str, Any]:
-    await _get_vessel_or_404(vessel_id, db)
-
-    result = await db.execute(
-        select(Manual)
-        .where(
-            Manual.vessel_id == vessel_id,
-            Manual.tenant_id == current_user.tenant_id,
-            Manual.is_deleted == False,
-        )
-        .order_by(Manual.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    )
-    manuals = result.scalars().all()
-    return {
-        "items": [ManualOut.model_validate(m) for m in manuals],
-        "page": page,
-        "page_size": page_size,
-    }
-
-
 @router.post(
     "/{vessel_id}/ingestion/upload",
     status_code=status.HTTP_201_CREATED,
