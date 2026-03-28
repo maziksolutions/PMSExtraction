@@ -52,3 +52,10 @@ api_router.include_router(feedback.router, tags=["Feedback"])
 # Sprint 12
 from app.api.v1 import admin  # noqa: E402
 api_router.include_router(admin.router, tags=["Admin"])
+
+# Addendum A
+from app.api.v1 import extraction, library, precheck  # noqa: E402
+api_router.include_router(extraction.router, prefix="/vessels", tags=["Extraction"])
+api_router.include_router(extraction.router, tags=["ExtractionPrompts"])
+api_router.include_router(library.router, tags=["Library"])
+api_router.include_router(precheck.router, prefix="/vessels", tags=["PreCheck"])

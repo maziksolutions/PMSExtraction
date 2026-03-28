@@ -1,0 +1,356 @@
+import React, { useState } from 'react'
+import { useQuery, useMutation } from '@tanstack/react-query'
+import {
+  RefreshCw,
+  Plus,
+  ChevronDown,
+  ChevronRight,
+  BookOpen,
+  CheckCircle,
+  XCircle,
+} from 'lucide-react'
+import apiClient from '@/api/client'
+
+// ─── Interfaces ───────────────────────────────────────────────────────────────
+
+type EntityType = 'component' | 'job' | 'spare'
+
+interface GlobalLibraryEntry {
+  id: string
+  canonical_data: Record<string, unknown>
+  occurrence_count: number
+  source_vessels: string[]
+  first_seen_at: string
+}
+
+interface PopulateResult {
+  added: number
+  duplicates: number
+}
+
+const ENTITY_OPTIONS: { value: EntityType; label: string }[] = [
+  { value: 'component', label: 'Components' },
+  { value: 'job', label: 'Jobs' },
+  { value: 'spare', label: 'Spares' },
+]
+
+const ENTITY_DESCRIPTION: Record<EntityType, string> = {
+  component: 'Canonical component definitions aggregated across all vessels',
+  job: 'Standardised maintenance job definitions from all vessel data',
+  spare: 'Global spare parts catalogue built from vessel-level extractions',
+}
+
+// ─── Populate Panel ───────────────────────────────────────────────────────────
+
+interface PopulatePanelProps {
+  activeEntity: EntityType
+  onEntityChange: (e: EntityType) => void
+}
+
+const PopulatePanel: React.FC<PopulatePanelProps> = ({ activeEntity, onEntityChange }) => {
+  const [vesselId, setVesselId] = useState('')
+  const [selectedEntity, setSelectedEntity] = useState<EntityType>(activeEntity)
+  const [result, setResult] = useState<PopulateResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const populateMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiClient.post(`/api/v1/library/global/${selectedEntity}/populate`, {
+        vessel_id: vesselId,
+      })
+      return res.data as PopulateResult
+    },
+    onSuccess: (data) => {
+      setResult(data)
+      setError(null)
+      onEntityChange(selectedEntity)
+    },
+    onError: () => {
+      setError('Failed to populate library. Check the vessel ID and try again.')
+      setResult(null)
+    },
+  })
+
+  return (
+    <div className="bg-slate-800 border border-slate-700 rounded-xl p-5">
+      <h2 className="text-sm font-semibold text-slate-300 mb-4">Populate from Vessel</h2>
+      <div className="flex flex-wrap items-start gap-3">
+        {/* Vessel ID */}
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-slate-500">Vessel ID</label>
+          <input
+            type="text"
+            value={vesselId}
+            onChange={(e) => { setVesselId(e.target.value); setResult(null); setError(null) }}
+            placeholder="e.g. VES-001"
+            className="px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 text-sm w-52"
+          />
+        </div>
+
+        {/* Entity type */}
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-slate-500">Entity Type</label>
+          <select
+            value={selectedEntity}
+            onChange={(e) => setSelectedEntity(e.target.value as EntityType)}
+            className="px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-sky-500 text-sm"
+          >
+            {ENTITY_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Button */}
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-transparent select-none">Action</label>
+          <button
+            onClick={() => populateMutation.mutate()}
+            disabled={!vesselId.trim() || populateMutation.isPending}
+            className="flex items-center gap-2 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg transition-colors disabled:opacity-50 text-sm font-medium h-[38px]"
+          >
+            {populateMutation.isPending ? (
+              <RefreshCw className="w-4 h-4 animate-spin" />
+            ) : (
+              <Plus className="w-4 h-4" />
+            )}
+            Populate
+          </button>
+        </div>
+
+        {/* Result */}
+        {result && (
+          <div className="flex items-center gap-4 self-end pb-0.5">
+            <span className="inline-flex items-center gap-1.5 text-emerald-400 text-sm">
+              <CheckCircle className="w-4 h-4" />
+              <strong>{result.added}</strong> added
+            </span>
+            <span className="text-slate-400 text-sm">
+              <strong>{result.duplicates}</strong> duplicates skipped
+            </span>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div className="flex items-center gap-2 self-end pb-0.5 text-red-400 text-sm">
+            <XCircle className="w-4 h-4 flex-shrink-0" />
+            {error}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Library Table ────────────────────────────────────────────────────────────
+
+interface LibraryTableProps {
+  entityType: EntityType
+}
+
+const LibraryTable: React.FC<LibraryTableProps> = ({ entityType }) => {
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
+
+  const { data: entries = [], isLoading } = useQuery<GlobalLibraryEntry[]>({
+    queryKey: ['library', 'global', entityType],
+    queryFn: async () => {
+      const res = await apiClient.get(`/api/v1/library/global/${entityType}`)
+      return res.data
+    },
+  })
+
+  const toggleRow = (id: string) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <div className="text-center space-y-3">
+          <RefreshCw className="w-7 h-7 animate-spin text-sky-400 mx-auto" />
+          <p className="text-slate-400 text-sm">Loading {entityType}s...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div className="bg-slate-800 border border-slate-700 rounded-xl p-12 text-center">
+        <BookOpen className="w-12 h-12 text-slate-600 mx-auto mb-4" />
+        <p className="text-slate-400 font-medium">No {entityType}s in global library</p>
+        <p className="text-slate-500 text-sm mt-1">
+          Use the "Populate from Vessel" panel above to import data.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+        <span className="text-sm font-semibold text-slate-300 capitalize">{entityType} Library</span>
+        <span className="text-xs text-slate-500">{entries.length} entries</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-700 bg-slate-900/50">
+              <th className="text-left px-4 py-3 text-slate-400 font-medium w-8" />
+              <th className="text-left px-4 py-3 text-slate-400 font-medium">Canonical Data</th>
+              <th className="text-left px-4 py-3 text-slate-400 font-medium">Occurrences</th>
+              <th className="text-left px-4 py-3 text-slate-400 font-medium">Source Vessels</th>
+              <th className="text-left px-4 py-3 text-slate-400 font-medium">First Seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry) => {
+              const isExpanded = expandedRows.has(entry.id)
+              const dataKeys = Object.keys(entry.canonical_data)
+              const previewKey = dataKeys[0]
+              const previewValue = previewKey ? String(entry.canonical_data[previewKey]) : ''
+
+              return (
+                <tr
+                  key={entry.id}
+                  className="border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors align-top"
+                >
+                  <td className="px-4 py-3 pt-3.5">
+                    <button
+                      onClick={() => toggleRow(entry.id)}
+                      className="text-slate-500 hover:text-slate-300 transition-colors"
+                    >
+                      {isExpanded ? (
+                        <ChevronDown className="w-4 h-4" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4" />
+                      )}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3 max-w-lg">
+                    {isExpanded ? (
+                      <div className="space-y-1.5 py-1">
+                        {dataKeys.map((key) => (
+                          <div key={key} className="flex gap-3 text-xs">
+                            <span className="text-slate-500 font-semibold w-36 flex-shrink-0 capitalize">
+                              {key.replace(/_/g, ' ')}:
+                            </span>
+                            <span className="text-slate-300 break-all">
+                              {String(entry.canonical_data[key])}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-sm">
+                        {previewKey && (
+                          <span>
+                            <span className="text-slate-500 text-xs capitalize">
+                              {previewKey.replace(/_/g, ' ')}:{' '}
+                            </span>
+                            <span className="text-slate-200">
+                              {previewValue.slice(0, 90)}
+                              {previewValue.length > 90 ? '…' : ''}
+                            </span>
+                          </span>
+                        )}
+                        {dataKeys.length > 1 && (
+                          <span className="text-slate-600 text-xs ml-2">
+                            +{dataKeys.length - 1} more field{dataKeys.length - 1 > 1 ? 's' : ''}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="inline-flex items-center px-2.5 py-1 bg-sky-900/40 text-sky-400 text-xs rounded-full border border-sky-600/40 font-medium">
+                      {entry.occurrence_count}&times;
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-slate-400 text-xs">
+                    <div className="flex flex-col gap-1">
+                      <span>
+                        {entry.source_vessels.length} vessel
+                        {entry.source_vessels.length !== 1 ? 's' : ''}
+                      </span>
+                      {isExpanded && entry.source_vessels.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {entry.source_vessels.map((v) => (
+                            <span
+                              key={v}
+                              className="px-1.5 py-0.5 bg-slate-700 text-slate-300 text-xs rounded"
+                            >
+                              {v}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">
+                    {new Date(entry.first_seen_at).toLocaleDateString(undefined, {
+                      year: 'numeric',
+                      month: 'short',
+                      day: 'numeric',
+                    })}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
+const GlobalLibrary: React.FC = () => {
+  const [activeEntity, setActiveEntity] = useState<EntityType>('component')
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div>
+        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+          <BookOpen className="w-7 h-7 text-sky-400" />
+          Global Library
+        </h1>
+        <p className="text-slate-400 mt-1">{ENTITY_DESCRIPTION[activeEntity]}</p>
+      </div>
+
+      {/* Populate Panel */}
+      <PopulatePanel activeEntity={activeEntity} onEntityChange={setActiveEntity} />
+
+      {/* Tab Bar */}
+      <div className="flex gap-1 border-b border-slate-700">
+        {ENTITY_OPTIONS.map(({ value, label }) => (
+          <button
+            key={value}
+            onClick={() => setActiveEntity(value)}
+            className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors -mb-px ${
+              activeEntity === value
+                ? 'border-sky-500 text-sky-400'
+                : 'border-transparent text-slate-400 hover:text-white hover:border-slate-500'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Library Table */}
+      <LibraryTable entityType={activeEntity} />
+    </div>
+  )
+}
+
+export default GlobalLibrary

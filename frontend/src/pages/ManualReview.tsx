@@ -9,6 +9,8 @@ import {
   Filter,
   ScanSearch,
   CheckCircle2,
+  Copy,
+  ExternalLink,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 
@@ -24,6 +26,8 @@ interface Manual {
   pages_with_jobs: string | null
   pages_with_spares: string | null
   reviewer_comments: string | null
+  is_duplicate: boolean
+  duplicate_of_id: string | null
 }
 
 interface Gap {
@@ -191,6 +195,26 @@ const ManualReview: React.FC = () => {
             </button>
           )}
           <button
+            onClick={async () => {
+              try {
+                await apiClient.post(`/vessels/${vesselId}/manuals/find-matches`)
+              } catch {}
+            }}
+            className="flex items-center gap-2 rounded-lg border border-slate-600 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800"
+            title="Search for matching manuals across other vessel projects"
+          >
+            <ExternalLink className="h-4 w-4" />
+            Find Matches
+          </button>
+          <button
+            onClick={() => apiClient.post(`/vessels/${vesselId}/extract-all`)}
+            className="flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600"
+            title="Auto-extract components, jobs and spares from classified manuals using Claude AI"
+          >
+            <CheckCircle className="h-4 w-4" />
+            Extract All
+          </button>
+          <button
             onClick={() => screenAllMutation.mutate()}
             disabled={isScreening}
             className="flex items-center gap-2 rounded-lg bg-violet-600 px-5 py-2 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-60"
@@ -323,8 +347,14 @@ const ManualReview: React.FC = () => {
                       changed ? 'bg-sky-900/10' : ''
                     }`}
                   >
-                    <td className="px-4 py-3 text-slate-200 font-medium max-w-xs truncate">
-                      {m.original_filename}
+                    <td className="px-4 py-3 max-w-xs">
+                      <p className="font-medium text-slate-200 truncate">{m.original_filename}</p>
+                      {m.is_duplicate && (
+                        <span className="inline-flex items-center gap-1 mt-0.5 rounded-full bg-amber-800/50 px-2 py-0.5 text-xs text-amber-300">
+                          <Copy className="h-3 w-3" />
+                          Duplicate — already ingested
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-slate-400 whitespace-nowrap">
                       {formatBytes(m.file_size_bytes)}

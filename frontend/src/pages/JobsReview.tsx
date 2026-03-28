@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, CheckCircle, XCircle, Upload, Filter, AlertCircle } from 'lucide-react'
+import { Play, CheckCircle, XCircle, Upload, Filter, AlertCircle, ExternalLink } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface Job {
@@ -19,6 +19,9 @@ interface Job {
   qc_status: string
   is_unmapped: boolean
   source_manual_id: string | null
+  page_reference: number | null
+  source_page_number: number | null
+  pdf_reference: string | null
 }
 
 const QC_COLORS: Record<string, string> = {
@@ -232,6 +235,7 @@ const JobsReview: React.FC = () => {
                 <th className="px-4 py-3">CMS ID</th>
                 <th className="px-4 py-3">Critical</th>
                 <th className="px-4 py-3">Confidence</th>
+                <th className="px-4 py-3">Source</th>
                 <th className="px-4 py-3">QC Status</th>
               </tr>
             </thead>
@@ -291,6 +295,19 @@ const JobsReview: React.FC = () => {
                       </span>
                     ) : (
                       '—'
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {(job.source_page_number ?? job.page_reference) != null ? (
+                      <span
+                        title={`${job.pdf_reference ?? 'Manual'} — page ${job.source_page_number ?? job.page_reference}`}
+                        className="inline-flex items-center gap-1 text-xs text-sky-400"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        p.{job.source_page_number ?? job.page_reference}
+                      </span>
+                    ) : (
+                      <span className="text-slate-600">—</span>
                     )}
                   </td>
                   <td className="px-4 py-2.5">

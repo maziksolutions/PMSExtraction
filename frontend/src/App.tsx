@@ -43,6 +43,12 @@ const FeedbackDashboard = lazy(() => import('@/pages/FeedbackDashboard'))
 // Sprint 12
 const Admin = lazy(() => import('@/pages/Admin'))
 
+// Addendum A
+const Library = lazy(() => import('@/pages/Library'))
+const PreCheck = lazy(() => import('@/pages/PreCheck'))
+const ExtractionPrompts = lazy(() => import('@/pages/ExtractionPrompts'))
+const GlobalLibrary = lazy(() => import('@/pages/GlobalLibrary'))
+
 // ---------------------------------------------------------------------------
 // TanStack Query client
 // ---------------------------------------------------------------------------
@@ -200,6 +206,26 @@ const App: React.FC = () => {
                 element={
                   <ProtectedRoute roles={[UserRole.SuperAdmin]}>
                     <Admin />
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* Addendum A */}
+              <Route path="library" element={<ProtectedRoute><Library /></ProtectedRoute>} />
+              <Route path="library/global" element={<ProtectedRoute><GlobalLibrary /></ProtectedRoute>} />
+              <Route
+                path="admin/extraction-prompts"
+                element={
+                  <ProtectedRoute roles={[UserRole.SuperAdmin]}>
+                    <ExtractionPrompts />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="vessels/:vesselId/precheck"
+                element={
+                  <ProtectedRoute>
+                    <PreCheck />
                   </ProtectedRoute>
                 }
               />

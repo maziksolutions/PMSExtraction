@@ -17,6 +17,9 @@ import {
   Package,
   BookOpen,
   Download,
+  Library,
+  ClipboardCheck,
+  Zap,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useAuth } from '@/hooks/useAuth'
@@ -45,13 +48,16 @@ const roleBadgeColors: Record<UserRole, string> = {
 const topNavItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, exact: true },
   { to: '/vessels', label: 'Vessels', icon: Ship },
+  { to: '/library', label: 'Library', icon: Library },
   { to: '/users', label: 'Users', icon: Users, requiredRole: UserRole.SuperAdmin },
   { to: '/feedback', label: 'Feedback', icon: BarChart2, requiredRole: UserRole.SuperAdmin },
+  { to: '/admin/extraction-prompts', label: 'Extraction Prompts', icon: Zap, requiredRole: UserRole.SuperAdmin },
   { to: '/admin', label: 'Admin', icon: Shield, requiredRole: UserRole.SuperAdmin },
 ]
 
 // Vessel-level nav items — shown when vesselId is in route params
 const vesselNavItems = (vesselId: string) => [
+  { to: `/vessels/${vesselId}/precheck`, label: 'Pre-Check', icon: ClipboardCheck },
   { to: `/vessels/${vesselId}/ingestion`, label: 'Ingestion', icon: FolderOpen },
   { to: `/vessels/${vesselId}/manuals`, label: 'Manuals', icon: ClipboardList },
   { to: `/vessels/${vesselId}/components`, label: 'Components', icon: Wrench },

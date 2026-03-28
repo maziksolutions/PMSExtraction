@@ -152,6 +152,13 @@ class Manual(TenantBase):
         nullable=True,
     )
 
+    # F-09: duplicate detection
+    sha256_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    is_duplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    duplicate_of_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+
     # Relationships
     vessel: Mapped["VesselProject"] = relationship(
         "VesselProject",

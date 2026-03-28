@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, CheckCircle, XCircle, Image, Filter } from 'lucide-react'
+import { Play, CheckCircle, XCircle, Image, Filter, ExternalLink } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface Spare {
@@ -205,7 +205,7 @@ const SparesReview: React.FC = () => {
                   <th className="px-4 py-3">Drawing #</th>
                   <th className="px-4 py-3">Pos</th>
                   <th className="px-4 py-3">Maker</th>
-                  <th className="px-4 py-3">Page</th>
+                  <th className="px-4 py-3">Source</th>
                   <th className="px-4 py-3">Method</th>
                   <th className="px-4 py-3">Critical</th>
                   <th className="px-4 py-3">Conf</th>
@@ -238,7 +238,14 @@ const SparesReview: React.FC = () => {
                     </td>
                     <td className="px-4 py-2.5 text-slate-400">{spare.drawing_position ?? '—'}</td>
                     <td className="px-4 py-2.5 text-slate-300">{spare.spare_maker ?? '—'}</td>
-                    <td className="px-4 py-2.5 text-slate-400">{spare.page_reference ?? '—'}</td>
+                    <td className="px-4 py-2.5">
+                      {spare.page_reference != null ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-sky-400" title={`Manual page ${spare.page_reference}`}>
+                          <ExternalLink className="h-3 w-3" />
+                          p.{spare.page_reference}
+                        </span>
+                      ) : <span className="text-slate-600">—</span>}
+                    </td>
                     <td className="px-4 py-2.5">
                       <span
                         className={`rounded-full px-2 py-0.5 text-xs font-medium ${

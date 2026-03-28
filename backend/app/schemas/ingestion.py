@@ -162,6 +162,10 @@ class ManualOut(BaseModel):
     pages_with_jobs: Optional[str] = None
     pages_with_spares: Optional[str] = None
     reviewer_comments: Optional[str] = None
+    # F-09 duplicate detection
+    sha256_hash: Optional[str] = None
+    is_duplicate: bool = False
+    duplicate_of_id: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: datetime
 

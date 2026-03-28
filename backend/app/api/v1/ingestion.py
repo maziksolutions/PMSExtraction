@@ -302,6 +302,8 @@ async def upload_manuals(
     """Upload one or more PDF/document files directly without SharePoint."""
     await _get_vessel_or_404(vessel_id, db)
 
+    import hashlib as _hashlib
+
     ALLOWED_EXTENSIONS = {"pdf", "docx", "doc", "xlsx", "xls"}
     MAX_SIZE = 50 * 1024 * 1024  # 50 MB per file
 
@@ -321,6 +323,19 @@ async def upload_manuals(
                 detail=f"File '{filename}' exceeds the 50 MB limit.",
             )
 
+        # F-09: compute SHA-256 and check for within-project duplicates
+        sha256 = _hashlib.sha256(content).hexdigest()
+        existing_hash = await db.execute(
+            select(Manual).where(
+                Manual.vessel_id == vessel_id,
+                Manual.tenant_id == current_user.tenant_id,
+                Manual.sha256_hash == sha256,
+                Manual.is_deleted == False,
+            )
+        )
+        original_manual = existing_hash.scalar_one_or_none()
+        is_dup = original_manual is not None
+
         # Auto-classify the document
         from app.services.classifier import classify_pdf
         result = classify_pdf(content, filename)
@@ -334,6 +349,9 @@ async def upload_manuals(
             sharepoint_path="",
             status=ManualStatus.classified,
             uploaded_by=current_user.id,
+            sha256_hash=sha256,
+            is_duplicate=is_dup,
+            duplicate_of_id=original_manual.id if is_dup else None,
             category=result.category,
             classification_confidence=result.confidence,
             useful_for_extraction=result.useful_for_extraction,
@@ -346,6 +364,9 @@ async def upload_manuals(
         created_manuals.append(ManualOut.model_validate(manual))
 
     await db.commit()
+
+    # F-08: trigger cross-project manual matching in background
+    # (runs after commit so IDs are persisted)
     return {"uploaded": len(created_manuals), "manuals": [m.model_dump() for m in created_manuals]}
 
 
