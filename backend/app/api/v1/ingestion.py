@@ -505,14 +505,13 @@ async def view_manual(
 @router.delete(
     "/{vessel_id}/manuals/{manual_id}",
     summary="Soft-delete a manual",
-    status_code=status.HTTP_204_NO_CONTENT,
 )
 async def delete_manual(
     vessel_id: uuid.UUID,
     manual_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> None:
+) -> dict[str, Any]:
     """Soft-deletes a manual record (sets is_deleted=True)."""
     await _get_vessel_or_404(vessel_id, db)
     result = await db.execute(
@@ -530,3 +529,4 @@ async def delete_manual(
     manual.is_deleted = True
     db.add(manual)
     await db.commit()
+    return {"deleted": True}
