@@ -27,6 +27,9 @@ class ComponentOut(BaseModel):
     qc_status: QCStatus
     is_unmapped: bool
     extraction_notes: Optional[str] = None
+    job_pages: Optional[str] = None
+    spare_pages: Optional[str] = None
+    pdf_reference: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -43,6 +46,9 @@ class ComponentCreate(BaseModel):
     specification: Optional[str] = None
     serial_number: Optional[str] = None
     is_critical: bool = False
+    job_pages: Optional[str] = None
+    spare_pages: Optional[str] = None
+    pdf_reference: Optional[str] = None
 
 
 class ComponentUpdate(BaseModel):
@@ -57,3 +63,6 @@ class ComponentUpdate(BaseModel):
     is_critical: Optional[bool] = None
     qc_status: Optional[QCStatus] = None
     extraction_notes: Optional[str] = None
+    job_pages: Optional[str] = None
+    spare_pages: Optional[str] = None
+    pdf_reference: Optional[str] = None

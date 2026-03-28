@@ -38,11 +38,12 @@ async def list_components(
     db: Annotated[AsyncSession, Depends(get_db)],
     group1: Optional[str] = Query(None),
     group2: Optional[str] = Query(None),
+    main_machinery: Optional[str] = Query(None),
     qc_status: Optional[str] = Query(None),
     min_confidence: Optional[int] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(50, ge=1, le=500),
 ) -> dict[str, Any]:
     await _get_vessel_or_404(vessel_id, db)
     query = select(Component).where(
@@ -54,6 +55,8 @@ async def list_components(
         query = query.where(Component.group1 == group1)
     if group2:
         query = query.where(Component.group2 == group2)
+    if main_machinery:
+        query = query.where(Component.main_machinery == main_machinery)
     if qc_status:
         try:
             query = query.where(Component.qc_status == QCStatus(qc_status))
@@ -243,24 +246,206 @@ async def remap_component(
     return ComponentOut.model_validate(comp)
 
 
-@router.post("/{vessel_id}/components/upload-template", summary="Upload component template")
-async def upload_component_template(
+@router.post("/{vessel_id}/components/import-excel", summary="Import component hierarchy from Excel/CSV")
+async def import_components_excel(
     vessel_id: uuid.UUID,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    """
+    Parse an Excel (.xlsx) or CSV file and bulk-create components.
+
+    Expected columns (case-insensitive, order flexible):
+    Group | Sub-Group | Main Machinery | Component Name | Maker | Model |
+    Serial Number | Specification | Critical | Job Pages | Spare Pages | PDF Reference
+    """
     await _get_vessel_or_404(vessel_id, db)
     content = await file.read()
-    template = ComponentTemplate(
-        tenant_id=current_user.tenant_id,
-        vessel_id=vessel_id,
-        name=file.filename or "template",
-        template_data={"raw": content.decode("utf-8", errors="replace")[:5000]},
-    )
-    db.add(template)
+    filename = (file.filename or "").lower()
+
+    rows: list[dict] = []
+
+    try:
+        if filename.endswith(".csv"):
+            import csv, io as _io
+            reader = csv.DictReader(_io.StringIO(content.decode("utf-8", errors="replace")))
+            rows = [dict(r) for r in reader]
+        else:
+            import openpyxl, io as _io
+            wb = openpyxl.load_workbook(_io.BytesIO(content), read_only=True, data_only=True)
+            ws = wb.active
+            headers = [str(c.value or "").strip().lower() for c in next(ws.iter_rows(min_row=1, max_row=1))]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                rows.append({headers[i]: (str(v).strip() if v is not None else "") for i, v in enumerate(row)})
+            wb.close()
+    except Exception as exc:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    # Normalise header aliases
+    ALIASES = {
+        "group": "group1",
+        "group 1": "group1",
+        "group1": "group1",
+        "sub-group": "group2",
+        "sub group": "group2",
+        "subgroup": "group2",
+        "group 2": "group2",
+        "group2": "group2",
+        "main machinery": "main_machinery",
+        "machinery": "main_machinery",
+        "component name": "component_name",
+        "component": "component_name",
+        "name": "component_name",
+        "serial number": "serial_number",
+        "serial no": "serial_number",
+        "serialnumber": "serial_number",
+        "critical": "is_critical",
+        "job pages": "job_pages",
+        "jobpages": "job_pages",
+        "spare pages": "spare_pages",
+        "sparepages": "spare_pages",
+        "pdf reference": "pdf_reference",
+        "pdf ref": "pdf_reference",
+        "pdfreference": "pdf_reference",
+        "specification": "specification",
+        "spec": "specification",
+        "maker": "maker",
+        "manufacturer": "maker",
+        "model": "model",
+    }
+
+    def _normalise(row: dict) -> dict:
+        return {ALIASES.get(k.lower().strip(), k.lower().strip()): v for k, v in row.items()}
+
+    created = 0
+    skipped = 0
+    for raw_row in rows:
+        r = _normalise(raw_row)
+        g1 = r.get("group1") or ""
+        g2 = r.get("group2") or ""
+        mm = r.get("main_machinery") or ""
+        name = r.get("component_name") or ""
+        if not name:
+            skipped += 1
+            continue
+
+        critical_raw = str(r.get("is_critical") or "").lower()
+        is_critical = critical_raw in {"yes", "true", "1", "y"}
+
+        comp = Component(
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            group1=g1 or "Uncategorised",
+            group2=g2 or "Uncategorised",
+            main_machinery=mm or "Unknown",
+            component_name=name,
+            maker=r.get("maker") or None,
+            model=r.get("model") or None,
+            specification=r.get("specification") or None,
+            serial_number=r.get("serial_number") or None,
+            is_critical=is_critical,
+            job_pages=r.get("job_pages") or None,
+            spare_pages=r.get("spare_pages") or None,
+            pdf_reference=r.get("pdf_reference") or None,
+            confidence_score=100,
+        )
+        db.add(comp)
+        created += 1
+
     await db.commit()
-    return {"status": "uploaded", "template_id": str(template.id)}
+    return {"imported": created, "skipped": skipped}
+
+
+@router.post(
+    "/{vessel_id}/components/auto-link-pages",
+    summary="Auto-populate job/spare pages on components from matched manuals",
+)
+async def auto_link_pages(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """
+    For each component that has no job_pages/spare_pages, find classified manuals for
+    the same vessel and copy the page ranges from the manual's classification data.
+    Matches by component name keywords against manual filenames.
+    """
+    await _get_vessel_or_404(vessel_id, db)
+
+    # Get classified manuals
+    manuals_res = await db.execute(
+        select(Manual).where(
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+            Manual.category != None,
+        )
+    )
+    manuals = manuals_res.scalars().all()
+
+    # Build a lookup: manual filename -> (job_pages, spare_pages, pdf_reference)
+    manual_map = [
+        {
+            "name": m.original_filename,
+            "job_pages": m.pages_with_jobs or "",
+            "spare_pages": m.pages_with_spares or "",
+            "pdf_ref": m.original_filename,
+            "id": m.id,
+        }
+        for m in manuals
+        if m.pages_with_jobs or m.pages_with_spares
+    ]
+
+    if not manual_map:
+        return {"updated": 0, "message": "No classified manuals with page data found."}
+
+    # Get components missing page data
+    comps_res = await db.execute(
+        select(Component).where(
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == current_user.tenant_id,
+            Component.is_deleted == False,
+        )
+    )
+    components = comps_res.scalars().all()
+
+    # Simple keyword match: component main_machinery vs manual filename
+    updated = 0
+    for comp in components:
+        if comp.job_pages and comp.spare_pages:
+            continue  # already filled
+
+        search_text = (comp.main_machinery + " " + comp.component_name).lower()
+        best_manual = None
+        best_score = 0
+        for m in manual_map:
+            manual_words = set(m["name"].lower().replace("_", " ").replace("-", " ").split())
+            comp_words = set(search_text.split())
+            score = len(manual_words & comp_words)
+            if score > best_score:
+                best_score = score
+                best_manual = m
+
+        if best_manual is None and manual_map:
+            # Fall back to first manual
+            best_manual = manual_map[0]
+
+        if best_manual:
+            if not comp.job_pages:
+                comp.job_pages = best_manual["job_pages"]
+            if not comp.spare_pages:
+                comp.spare_pages = best_manual["spare_pages"]
+            if not comp.pdf_reference:
+                comp.pdf_reference = best_manual["pdf_ref"]
+            if not comp.source_manual_id:
+                comp.source_manual_id = best_manual["id"]
+            db.add(comp)
+            updated += 1
+
+    await db.commit()
+    return {"updated": updated}
 
 
 @router.post("/{vessel_id}/components/trigger-extraction", summary="Trigger component extraction")

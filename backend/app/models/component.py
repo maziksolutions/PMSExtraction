@@ -61,6 +61,11 @@ class Component(TenantBase):
     is_unmapped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     extraction_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Page reference fields — auto-populated from manual classification or manual entry
+    job_pages: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    spare_pages: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pdf_reference: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+
     # Relationships
     vessel: Mapped["VesselProject"] = relationship(
         "VesselProject",
