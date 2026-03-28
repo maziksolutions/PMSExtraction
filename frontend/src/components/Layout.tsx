@@ -4,7 +4,6 @@ import {
   LayoutDashboard,
   Ship,
   Users,
-  Settings,
   LogOut,
   Menu,
   ChevronRight,
@@ -18,6 +17,7 @@ import {
   BookOpen,
   Download,
   Library,
+  Layers,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useAuth } from '@/hooks/useAuth'
@@ -47,6 +47,7 @@ const topNavItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, exact: true },
   { to: '/vessels', label: 'Vessels', icon: Ship },
   { to: '/library', label: 'Library', icon: Library },
+  { to: '/standard-jobs-library', label: 'Standard Jobs', icon: Layers },
   { to: '/users', label: 'Users', icon: Users, requiredRole: UserRole.SuperAdmin },
   { to: '/feedback', label: 'Feedback', icon: BarChart2, requiredRole: UserRole.SuperAdmin },
   { to: '/admin', label: 'Admin', icon: Shield, requiredRole: UserRole.SuperAdmin },

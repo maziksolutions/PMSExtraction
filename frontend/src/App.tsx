@@ -48,6 +48,7 @@ const Library = lazy(() => import('@/pages/Library'))
 const PreCheck = lazy(() => import('@/pages/PreCheck'))
 const ExtractionPrompts = lazy(() => import('@/pages/ExtractionPrompts'))
 const GlobalLibrary = lazy(() => import('@/pages/GlobalLibrary'))
+const StandardJobsLibrary = lazy(() => import('@/pages/StandardJobsLibrary'))
 
 // ---------------------------------------------------------------------------
 // TanStack Query client
@@ -213,6 +214,7 @@ const App: React.FC = () => {
               {/* Addendum A */}
               <Route path="library" element={<ProtectedRoute><Library /></ProtectedRoute>} />
               <Route path="library/global" element={<ProtectedRoute><GlobalLibrary /></ProtectedRoute>} />
+              <Route path="standard-jobs-library" element={<ProtectedRoute><StandardJobsLibrary /></ProtectedRoute>} />
             </Route>
 
             {/* Catch-all */}

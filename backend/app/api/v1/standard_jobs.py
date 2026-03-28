@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -73,6 +73,112 @@ async def list_standard_jobs(
         ],
         "page": page,
     }
+
+
+@router.post("/standard-jobs/bulk-import", summary="Bulk import standard or class jobs from Excel/CSV")
+async def bulk_import_standard_jobs(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    file: UploadFile = File(...),
+    job_type: str = Query("standard", description="'standard' or 'class'"),
+) -> dict[str, Any]:
+    """
+    Import Standard Jobs or Class Society Jobs from an Excel (.xlsx) or CSV file.
+
+    Expected columns (Excel header row):
+      job_name, machinery_type, job_description (opt), class_society (opt),
+      frequency (opt), frequency_type (opt), is_critical (opt), library_reference (opt)
+
+    For job_type='standard', class_society defaults to 'General'.
+    For job_type='class', class_society column is required.
+    """
+    import io
+
+    content = await file.read()
+    rows: list[dict] = []
+
+    filename = (file.filename or "").lower()
+    if filename.endswith(".csv"):
+        import csv
+        text = content.decode("utf-8-sig", errors="replace")
+        reader = csv.DictReader(io.StringIO(text))
+        rows = [dict(r) for r in reader]
+    else:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+        ws = wb.active
+        headers = [str(c.value or "").strip().lower() for c in next(ws.iter_rows(min_row=1, max_row=1))]
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            rows.append({headers[i]: (row[i] if i < len(row) else None) for i in range(len(headers))})
+
+    FREQ_MAP = {v.value.lower(): v for v in __import__("app.models.job", fromlist=["FrequencyType"]).FrequencyType}
+    CS_MAP = {v.value.lower(): v for v in ClassSociety}
+    default_cs = ClassSociety.general if job_type == "standard" else None
+
+    imported = skipped = 0
+    for row in rows:
+        jn = str(row.get("job_name") or "").strip()
+        mt = str(row.get("machinery_type") or "").strip()
+        if not jn or not mt:
+            skipped += 1
+            continue
+
+        # Class society
+        cs_raw = str(row.get("class_society") or "").strip().lower()
+        cs = CS_MAP.get(cs_raw, default_cs)
+        if cs is None:
+            skipped += 1
+            continue
+
+        # Frequency
+        freq_raw = row.get("frequency")
+        freq: Optional[int] = None
+        try:
+            freq = int(freq_raw) if freq_raw is not None and str(freq_raw).strip() != "" else None
+        except (TypeError, ValueError):
+            pass
+
+        freq_type_raw = str(row.get("frequency_type") or "").strip().lower()
+        freq_type = FREQ_MAP.get(freq_type_raw)
+
+        is_crit_raw = str(row.get("is_critical") or "").strip().lower()
+        is_crit = is_crit_raw in ("yes", "true", "1", "y")
+
+        std_job = StandardJob(
+            tenant_id=current_user.tenant_id,
+            class_society=cs,
+            machinery_type=mt,
+            job_name=jn,
+            job_description=str(row.get("job_description") or "").strip() or None,
+            frequency=freq,
+            frequency_type=freq_type,
+            is_critical=is_crit,
+            library_reference=str(row.get("library_reference") or "").strip() or None,
+            is_system=False,
+        )
+        db.add(std_job)
+        imported += 1
+
+    await db.commit()
+    return {"imported": imported, "skipped": skipped, "job_type": job_type}
+
+
+@router.delete("/standard-jobs/{standard_job_id}", summary="Delete a standard job")
+async def delete_standard_job(
+    standard_job_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    result = await db.execute(
+        select(StandardJob).where(StandardJob.id == standard_job_id, StandardJob.is_deleted == False)
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Standard job not found")
+    job.is_deleted = True
+    db.add(job)
+    await db.commit()
+    return {"deleted": True}
 
 
 @router.get("/standard-jobs/vessel-types", summary="List vessel type templates")

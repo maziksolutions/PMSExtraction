@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 
 class ClassSociety(str, enum.Enum):
+    general = "General"
     dnv_gl = "DNV GL"
     lr = "Lloyd's Register"
     bv = "Bureau Veritas"

@@ -1,0 +1,345 @@
+import React, { useRef, useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  BookOpen,
+  Upload,
+  RefreshCw,
+  CheckCircle,
+  XCircle,
+  Trash2,
+  ChevronDown,
+  ChevronRight,
+} from 'lucide-react'
+import apiClient from '@/api/client'
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface StandardJob {
+  id: string
+  class_society: string
+  machinery_type: string
+  job_name: string
+  job_description: string | null
+  frequency: number | null
+  frequency_type: string | null
+  is_critical: boolean
+  library_reference: string | null
+}
+
+type TabType = 'standard' | 'class'
+
+const CLASS_SOCIETIES = ['DNV GL', "Lloyd's Register", 'Bureau Veritas', 'ABS', 'ClassNK']
+
+// ─── Import Panel ─────────────────────────────────────────────────────────────
+
+const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ jobType, onImported }) => {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [selectedSociety, setSelectedSociety] = useState(CLASS_SOCIETIES[0])
+  const [result, setResult] = useState<{ imported: number; skipped: number } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const importMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await apiClient.post(
+        `/standard-jobs/bulk-import?job_type=${jobType}`,
+        fd,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      )
+      return res.data as { imported: number; skipped: number }
+    },
+    onSuccess: (data) => {
+      setResult(data)
+      setError(null)
+      onImported()
+      if (fileRef.current) fileRef.current.value = ''
+    },
+    onError: () => {
+      setError('Import failed. Check the file format and try again.')
+      setResult(null)
+    },
+  })
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setResult(null)
+    setError(null)
+    importMutation.mutate(file)
+  }
+
+  return (
+    <div className="bg-slate-800 border border-slate-700 rounded-xl p-5">
+      <h3 className="text-sm font-semibold text-slate-300 mb-3">
+        Import {jobType === 'standard' ? 'Standard Jobs' : 'Class Society Jobs'} from Excel / CSV
+      </h3>
+
+      <div className="text-xs text-slate-500 mb-4 space-y-1">
+        <p>Required columns: <span className="text-slate-400">job_name, machinery_type</span></p>
+        <p>Optional columns: <span className="text-slate-400">job_description, {jobType === 'class' ? 'class_society,' : ''} frequency, frequency_type, is_critical, library_reference</span></p>
+        {jobType === 'class' && (
+          <p>class_society values: <span className="text-slate-400">DNV GL, Lloyd's Register, Bureau Veritas, ABS, ClassNK</span></p>
+        )}
+        <p>frequency_type values: <span className="text-slate-400">daily, weekly, monthly, quarterly, half_yearly, yearly, running_hours</span></p>
+      </div>
+
+      <div className="flex items-center gap-3 flex-wrap">
+        <button
+          onClick={() => fileRef.current?.click()}
+          disabled={importMutation.isPending}
+          className="flex items-center gap-2 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors"
+        >
+          {importMutation.isPending ? (
+            <RefreshCw className="w-4 h-4 animate-spin" />
+          ) : (
+            <Upload className="w-4 h-4" />
+          )}
+          {importMutation.isPending ? 'Importing...' : 'Choose File to Import'}
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          onChange={handleFile}
+          className="hidden"
+        />
+
+        {result && (
+          <div className="flex items-center gap-3 text-sm">
+            <span className="flex items-center gap-1.5 text-emerald-400">
+              <CheckCircle className="w-4 h-4" />
+              <strong>{result.imported}</strong> imported
+            </span>
+            {result.skipped > 0 && (
+              <span className="text-slate-400">
+                <strong>{result.skipped}</strong> skipped
+              </span>
+            )}
+          </div>
+        )}
+        {error && (
+          <span className="flex items-center gap-1.5 text-red-400 text-sm">
+            <XCircle className="w-4 h-4" />
+            {error}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Jobs Table ───────────────────────────────────────────────────────────────
+
+const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
+  const queryClient = useQueryClient()
+  const [filterSociety, setFilterSociety] = useState('')
+  const [filterMachinery, setFilterMachinery] = useState('')
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['standard-jobs-library', jobType, filterSociety, filterMachinery],
+    queryFn: async () => {
+      const params: Record<string, string> = {}
+      if (jobType === 'standard') params.class_society = 'General'
+      else if (filterSociety) params.class_society = filterSociety
+      if (filterMachinery) params.machinery_type = filterMachinery
+      const res = await apiClient.get('/standard-jobs', { params })
+      return res.data as { items: StandardJob[] }
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiClient.delete(`/standard-jobs/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['standard-jobs-library'] }),
+  })
+
+  const jobs: StandardJob[] = data?.items ?? []
+
+  return (
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        {jobType === 'class' && (
+          <select
+            value={filterSociety}
+            onChange={(e) => setFilterSociety(e.target.value)}
+            className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-sky-500"
+          >
+            <option value="">All Class Societies</option>
+            {CLASS_SOCIETIES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
+        <input
+          type="text"
+          value={filterMachinery}
+          onChange={(e) => setFilterMachinery(e.target.value)}
+          placeholder="Filter by machinery type..."
+          className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-sky-500 w-56"
+        />
+        {(filterSociety || filterMachinery) && (
+          <button
+            onClick={() => { setFilterSociety(''); setFilterMachinery('') }}
+            className="text-xs text-slate-400 underline hover:text-slate-200"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      {/* Table */}
+      {isLoading ? (
+        <div className="py-12 text-center text-slate-500">
+          <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" />
+          Loading...
+        </div>
+      ) : jobs.length === 0 ? (
+        <div className="bg-slate-800 border border-slate-700 rounded-xl p-12 text-center">
+          <BookOpen className="w-12 h-12 text-slate-600 mx-auto mb-4" />
+          <p className="text-slate-400 font-medium">No {jobType === 'standard' ? 'standard' : 'class society'} jobs imported yet</p>
+          <p className="text-slate-500 text-sm mt-1">Use the import panel above to load jobs from Excel or CSV.</p>
+        </div>
+      ) : (
+        <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+            <span className="text-sm font-semibold text-slate-300">
+              {jobType === 'standard' ? 'Standard Jobs' : 'Class Society Jobs'} Library
+            </span>
+            <span className="text-xs text-slate-500">{jobs.length} jobs</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-700 bg-slate-900/50 text-xs text-slate-400 uppercase">
+                  <th className="w-8 px-4 py-3" />
+                  <th className="text-left px-4 py-3 font-medium">Job Name</th>
+                  <th className="text-left px-4 py-3 font-medium">Machinery</th>
+                  {jobType === 'class' && <th className="text-left px-4 py-3 font-medium">Class Society</th>}
+                  <th className="text-left px-4 py-3 font-medium">Frequency</th>
+                  <th className="text-left px-4 py-3 font-medium">Critical</th>
+                  <th className="text-left px-4 py-3 font-medium">Reference</th>
+                  <th className="px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-700/50">
+                {jobs.map((job) => (
+                  <React.Fragment key={job.id}>
+                    <tr className="hover:bg-slate-700/20 transition-colors">
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => setExpandedId(expandedId === job.id ? null : job.id)}
+                          className="text-slate-500 hover:text-slate-300"
+                        >
+                          {expandedId === job.id
+                            ? <ChevronDown className="w-4 h-4" />
+                            : <ChevronRight className="w-4 h-4" />
+                          }
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-slate-200 font-medium max-w-xs">
+                        <span className={`mr-2 inline-block w-1.5 h-1.5 rounded-full ${job.is_critical ? 'bg-red-400' : 'bg-slate-600'}`} />
+                        {job.job_name}
+                      </td>
+                      <td className="px-4 py-3 text-slate-400">{job.machinery_type}</td>
+                      {jobType === 'class' && (
+                        <td className="px-4 py-3">
+                          <span className="px-2 py-0.5 rounded-full text-xs bg-sky-900/50 text-sky-400 border border-sky-700/40">
+                            {job.class_society}
+                          </span>
+                        </td>
+                      )}
+                      <td className="px-4 py-3 text-slate-400 text-xs">
+                        {job.frequency ? `${job.frequency} ${job.frequency_type ?? ''}`.trim() : '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        {job.is_critical
+                          ? <span className="text-red-400 text-xs font-medium">Critical</span>
+                          : <span className="text-slate-600 text-xs">—</span>
+                        }
+                      </td>
+                      <td className="px-4 py-3 text-slate-500 text-xs">{job.library_reference ?? '—'}</td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Delete "${job.job_name}"?`)) deleteMutation.mutate(job.id)
+                          }}
+                          className="text-slate-600 hover:text-red-400 transition-colors"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                    {expandedId === job.id && job.job_description && (
+                      <tr className="bg-slate-900/40">
+                        <td colSpan={jobType === 'class' ? 8 : 7} className="px-8 py-3 text-xs text-slate-400">
+                          {job.job_description}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
+const StandardJobsLibrary: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<TabType>('standard')
+  const queryClient = useQueryClient()
+
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['standard-jobs-library'] })
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div>
+        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+          <BookOpen className="w-7 h-7 text-sky-400" />
+          Standard Jobs Library
+        </h1>
+        <p className="text-slate-400 mt-1">
+          {activeTab === 'standard'
+            ? 'Global maintenance job standards — imported once, applied to all vessels'
+            : 'Classification society job requirements — DNV GL, Lloyd\'s Register, Bureau Veritas, ABS, ClassNK'}
+        </p>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-slate-700">
+        {([
+          { value: 'standard', label: 'Standard Jobs' },
+          { value: 'class', label: 'Class Society Jobs' },
+        ] as { value: TabType; label: string }[]).map(({ value, label }) => (
+          <button
+            key={value}
+            onClick={() => setActiveTab(value)}
+            className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors -mb-px ${
+              activeTab === value
+                ? 'border-sky-500 text-sky-400'
+                : 'border-transparent text-slate-400 hover:text-white hover:border-slate-500'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Import Panel */}
+      <ImportPanel key={activeTab} jobType={activeTab} onImported={refresh} />
+
+      {/* Jobs Table */}
+      <JobsTable key={`table-${activeTab}`} jobType={activeTab} />
+    </div>
+  )
+}
+
+export default StandardJobsLibrary
