@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # OpenAI / AI
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
+    CLAUDE_MODEL_ID: str = "claude-sonnet-4-6"
+    EXTRACTION_MAX_TOKENS: int = 8192
+
+    # File storage (local disk — ephemeral on Railway; mount a Volume for persistence)
+    UPLOAD_DIR: str = "/tmp/pms_uploads"
 
     # Azure Document Intelligence
     AZURE_DOC_INTELLIGENCE_KEY: str = ""

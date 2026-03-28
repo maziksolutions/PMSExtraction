@@ -213,22 +213,6 @@ const App: React.FC = () => {
               {/* Addendum A */}
               <Route path="library" element={<ProtectedRoute><Library /></ProtectedRoute>} />
               <Route path="library/global" element={<ProtectedRoute><GlobalLibrary /></ProtectedRoute>} />
-              <Route
-                path="admin/extraction-prompts"
-                element={
-                  <ProtectedRoute roles={[UserRole.SuperAdmin]}>
-                    <ExtractionPrompts />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="vessels/:vesselId/precheck"
-                element={
-                  <ProtectedRoute>
-                    <PreCheck />
-                  </ProtectedRoute>
-                }
-              />
             </Route>
 
             {/* Catch-all */}

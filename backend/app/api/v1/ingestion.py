@@ -3,8 +3,10 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
+import os
+
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -361,12 +363,20 @@ async def upload_manuals(
         )
         db.add(manual)
         await db.flush()
+
+        # Save file to local disk so extraction and view endpoints can access it
+        upload_dir = os.path.join(settings.UPLOAD_DIR, str(vessel_id))
+        os.makedirs(upload_dir, exist_ok=True)
+        file_path = os.path.join(upload_dir, f"{manual.id}.{ext}")
+        with open(file_path, "wb") as f:
+            f.write(content)
+        manual.blob_storage_key = file_path
+        db.add(manual)
+
         created_manuals.append(ManualOut.model_validate(manual))
 
     await db.commit()
 
-    # F-08: trigger cross-project manual matching in background
-    # (runs after commit so IDs are persisted)
     return {"uploaded": len(created_manuals), "manuals": [m.model_dump() for m in created_manuals]}
 
 
@@ -477,3 +487,78 @@ async def screening_status(
         {"total": 0, "done": 0, "status": "idle"},
     )
     return state
+
+
+@router.get(
+    "/{vessel_id}/manuals/{manual_id}/view",
+    summary="View / download a manual file",
+)
+async def view_manual(
+    vessel_id: uuid.UUID,
+    manual_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> FileResponse:
+    """Serve the uploaded manual file for inline viewing in the browser."""
+    await _get_vessel_or_404(vessel_id, db)
+    result = await db.execute(
+        select(Manual).where(
+            Manual.id == manual_id,
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manual: Manual | None = result.scalar_one_or_none()
+    if manual is None:
+        raise HTTPException(status_code=404, detail="Manual not found")
+
+    file_path = manual.blob_storage_key
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not available on disk. Please re-upload.")
+
+    mime_map = {
+        "pdf": "application/pdf",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc": "application/msword",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls": "application/vnd.ms-excel",
+    }
+    media_type = mime_map.get(manual.file_extension, "application/octet-stream")
+
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        filename=manual.original_filename,
+        headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
+    )
+
+
+@router.delete(
+    "/{vessel_id}/manuals/{manual_id}",
+    summary="Soft-delete a manual",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_manual(
+    vessel_id: uuid.UUID,
+    manual_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """Soft-deletes a manual record (sets is_deleted=True)."""
+    await _get_vessel_or_404(vessel_id, db)
+    result = await db.execute(
+        select(Manual).where(
+            Manual.id == manual_id,
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manual: Manual | None = result.scalar_one_or_none()
+    if manual is None:
+        raise HTTPException(status_code=404, detail="Manual not found")
+
+    manual.is_deleted = True
+    db.add(manual)
+    await db.commit()

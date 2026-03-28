@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from typing import Any, Optional
 
@@ -114,9 +115,10 @@ async def extract_entities(
 
     try:
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        max_tokens = getattr(settings, "EXTRACTION_MAX_TOKENS", 8192)
         message = client.messages.create(
             model=model_id,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
         )
@@ -220,17 +222,42 @@ async def auto_extract_from_manual(
         await db.commit()
 
         # ------------------------------------------------------------------
-        # Simulated text (no actual file storage in this sprint)
+        # Extract text from the actual file using pdfplumber
         # ------------------------------------------------------------------
         filename = manual.original_filename
-        simulated_text = (
-            f"Simulated content for {filename}.\n"
-            "Main Engine: MAN B&W 6S50MC-C. "
-            "Maker: MAN Diesel & Turbo. "
-            "Overhaul interval: 16000 running hours. "
-            "Spare parts: piston ring set P/N 50-123, cylinder liner P/N 50-456. "
-            "Safety: isolate fuel before maintenance."
-        )
+        file_path = manual.blob_storage_key
+        full_text = ""
+
+        if file_path and os.path.exists(file_path):
+            ext = (manual.file_extension or "").lower()
+            if ext == "pdf":
+                try:
+                    import pdfplumber
+                    with pdfplumber.open(file_path) as pdf:
+                        pages_text = []
+                        for page in pdf.pages:
+                            t = page.extract_text()
+                            if t:
+                                pages_text.append(t)
+                        full_text = "\n".join(pages_text)
+                except Exception as pdf_err:
+                    logger.warning("pdfplumber failed for %s: %s", filename, pdf_err)
+            elif ext in ("docx",):
+                try:
+                    import docx
+                    doc = docx.Document(file_path)
+                    full_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+                except Exception as docx_err:
+                    logger.warning("docx extraction failed for %s: %s", filename, docx_err)
+
+        if not full_text.strip():
+            logger.warning("auto_extract_from_manual: no text extracted from %s, skipping", filename)
+            return
+
+        # Limit to first 80,000 characters to stay within Claude's context window
+        MAX_CHARS = 80_000
+        if len(full_text) > MAX_CHARS:
+            full_text = full_text[:MAX_CHARS]
 
         # ------------------------------------------------------------------
         # Determine which entity types to extract based on category
@@ -250,7 +277,7 @@ async def auto_extract_from_manual(
         spares_to_add: list[Spare] = []
 
         for etype in extraction_types:
-            records = await extract_entities(simulated_text, etype, filename)
+            records = await extract_entities(full_text, etype, filename)
 
             for record in records:
                 confidence = int(record.get("confidence_score", 70))
