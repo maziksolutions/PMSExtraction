@@ -114,9 +114,9 @@ async def extract_entities(
     user_message = prompt_config["user_template"].format(text=text_chunk)
 
     try:
-        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         max_tokens = getattr(settings, "EXTRACTION_MAX_TOKENS", 8192)
-        message = client.messages.create(
+        message = await client.messages.create(
             model=model_id,
             max_tokens=max_tokens,
             system=system_prompt,
@@ -232,21 +232,27 @@ async def auto_extract_from_manual(
             ext = (manual.file_extension or "").lower()
             if ext == "pdf":
                 try:
+                    import asyncio as _asyncio
                     import pdfplumber
-                    with pdfplumber.open(file_path) as pdf:
-                        pages_text = []
-                        for page in pdf.pages:
-                            t = page.extract_text()
-                            if t:
-                                pages_text.append(t)
-                        full_text = "\n".join(pages_text)
+
+                    def _read_pdf(path: str) -> str:
+                        with pdfplumber.open(path) as pdf:
+                            parts = [page.extract_text() for page in pdf.pages]
+                            return "\n".join(p for p in parts if p)
+
+                    full_text = await _asyncio.to_thread(_read_pdf, file_path)
                 except Exception as pdf_err:
                     logger.warning("pdfplumber failed for %s: %s", filename, pdf_err)
             elif ext in ("docx",):
                 try:
+                    import asyncio as _asyncio
                     import docx
-                    doc = docx.Document(file_path)
-                    full_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+                    def _read_docx(path: str) -> str:
+                        doc = docx.Document(path)
+                        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+                    full_text = await _asyncio.to_thread(_read_docx, file_path)
                 except Exception as docx_err:
                     logger.warning("docx extraction failed for %s: %s", filename, docx_err)
 
