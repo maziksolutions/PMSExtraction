@@ -103,7 +103,7 @@ const ComponentStructureTab: React.FC = () => {
   const { data: nodes = [], isLoading } = useQuery<ComponentStructureNode[]>({
     queryKey: ['library', 'component-structure'],
     queryFn: async () => {
-      const res = await apiClient.get('/api/v1/library/component-structure')
+      const res = await apiClient.get('/library/component-structure')
       return res.data
     },
   })
@@ -113,7 +113,7 @@ const ComponentStructureTab: React.FC = () => {
   const { data: approvalRequests = [] } = useQuery<ApprovalRequest[]>({
     queryKey: ['library', 'component-structure', 'approval-requests'],
     queryFn: async () => {
-      const res = await apiClient.get('/api/v1/library/component-structure/approval-requests')
+      const res = await apiClient.get('/library/component-structure/approval-requests')
       return res.data
     },
     enabled: pendingNodes.length > 0,
@@ -123,7 +123,7 @@ const ComponentStructureTab: React.FC = () => {
     mutationFn: async (file: File) => {
       const form = new FormData()
       form.append('file', file)
-      const res = await apiClient.post('/api/v1/library/component-structure/import', form, {
+      const res = await apiClient.post('/library/component-structure/import', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       return res.data as ImportResult
@@ -140,7 +140,7 @@ const ComponentStructureTab: React.FC = () => {
 
   const addNodeMutation = useMutation({
     mutationFn: async (payload: AddNodeForm) => {
-      const res = await apiClient.post('/api/v1/library/component-structure/nodes', payload)
+      const res = await apiClient.post('/library/component-structure/nodes', payload)
       return res.data
     },
     onSuccess: () => {
@@ -156,7 +156,7 @@ const ComponentStructureTab: React.FC = () => {
 
   const approveMutation = useMutation({
     mutationFn: async (requestId: string) => {
-      await apiClient.post(`/api/v1/library/component-structure/approval-requests/${requestId}/approve`)
+      await apiClient.post(`/library/component-structure/approval-requests/${requestId}/approve`)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] })
@@ -166,7 +166,7 @@ const ComponentStructureTab: React.FC = () => {
 
   const rejectMutation = useMutation({
     mutationFn: async ({ requestId, reason }: { requestId: string; reason: string }) => {
-      await apiClient.post(`/api/v1/library/component-structure/approval-requests/${requestId}/reject`, { reason })
+      await apiClient.post(`/library/component-structure/approval-requests/${requestId}/reject`, { reason })
     },
     onSuccess: () => {
       setRejectingId(null)
@@ -204,18 +204,23 @@ const ComponentStructureTab: React.FC = () => {
             className="hidden"
             onChange={handleFileChange}
           />
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={importMutation.isPending}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors disabled:opacity-50"
-          >
-            {importMutation.isPending ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <Upload className="w-4 h-4" />
-            )}
-            Import Excel
-          </button>
+          <div className="flex flex-col items-end gap-1">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={importMutation.isPending}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              {importMutation.isPending ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Upload className="w-4 h-4" />
+              )}
+              Import Excel
+            </button>
+            <p className="text-xs text-slate-500">
+              Columns: <span className="text-slate-400">ShipComponentName | HierarchyComponentCode | ShipComponentCode | ComponentType | Priority | Status | Quantity | Category</span>
+            </p>
+          </div>
           <button
             onClick={() => { setShowAddModal(true); setAddSuccess(false) }}
             className="flex items-center gap-2 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg transition-colors"
@@ -254,10 +259,10 @@ const ComponentStructureTab: React.FC = () => {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-700 bg-slate-900/50">
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Group1 Code</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Group1 Name</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Group2 Name</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Machinery Name</th>
+                <th className="text-left px-4 py-3 text-slate-400 font-medium">Hierarchy Code</th>
+                <th className="text-left px-4 py-3 text-slate-400 font-medium">Category</th>
+                <th className="text-left px-4 py-3 text-slate-400 font-medium">Component Type</th>
+                <th className="text-left px-4 py-3 text-slate-400 font-medium">Component Code</th>
                 <th className="text-left px-4 py-3 text-slate-400 font-medium">Component Name</th>
                 <th className="text-left px-4 py-3 text-slate-400 font-medium">Type</th>
                 <th className="text-left px-4 py-3 text-slate-400 font-medium">Critical</th>
@@ -281,10 +286,10 @@ const ComponentStructureTab: React.FC = () => {
               ) : (
                 nodes.map((node) => (
                   <tr key={node.id} className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors">
-                    <td className="px-4 py-3 text-slate-300 font-mono text-xs">{node.group1_code}</td>
+                    <td className="px-4 py-3 text-slate-300 font-mono text-xs">{node.machinery_code || node.group1_code}</td>
                     <td className="px-4 py-3 text-slate-200">{node.group1_name}</td>
                     <td className="px-4 py-3 text-slate-300">{node.group2_name}</td>
-                    <td className="px-4 py-3 text-slate-300">{node.machinery_name}</td>
+                    <td className="px-4 py-3 text-slate-300 font-mono text-xs">{node.component_code || '—'}</td>
                     <td className="px-4 py-3 text-slate-400">{node.component_name || '—'}</td>
                     <td className="px-4 py-3 text-slate-400 text-xs">{node.component_type || '—'}</td>
                     <td className="px-4 py-3">
@@ -493,14 +498,14 @@ const GlobalLibrariesTab: React.FC = () => {
   const { data: entries = [], isLoading } = useQuery<GlobalLibraryEntry[]>({
     queryKey: ['library', 'global', activeEntity],
     queryFn: async () => {
-      const res = await apiClient.get(`/api/v1/library/global/${activeEntity}`)
+      const res = await apiClient.get(`/library/global/${activeEntity}`)
       return res.data
     },
   })
 
   const populateMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiClient.post(`/api/v1/library/global/${activeEntity}/populate`, {
+      const res = await apiClient.post(`/library/global/${activeEntity}/populate`, {
         vessel_id: populateVesselId,
       })
       return res.data as PopulateResult

@@ -102,14 +102,68 @@ async def import_component_structure(
 
     imported = 0
     for raw in rows:
-        # Normalise keys
+        # Normalise keys: lowercase, strip, collapse spaces to underscore
         r = {k.lower().strip().replace(" ", "_"): v for k, v in raw.items()}
-        comp_name = r.get("component_name", "").strip()
-        if not comp_name:
-            continue
 
-        critical_raw = str(r.get("is_critical", "")).lower()
-        is_critical = critical_raw in ("yes", "true", "1", "y")
+        # ── Detect column format ──────────────────────────────────────────
+        # Format A (user's format): ShipComponentName, HierarchyComponentCode,
+        #   ShipComponentCode, ComponentType, Priority, Status, Quantity, Category
+        # Format B (legacy): group1_code, group1_name, group2_code, …
+        is_user_format = "shipcomponentname" in r
+
+        if is_user_format:
+            comp_name = r.get("shipcomponentname", "").strip()
+            if not comp_name:
+                continue
+
+            hierarchy_code = r.get("hierarchycomponentcode", "").strip()
+            ship_code = r.get("shipcomponentcode", "").strip()
+            comp_type = r.get("componenttype", "").strip()
+            category = r.get("category", "").strip()
+            priority = r.get("priority", "").strip().lower()
+
+            # Derive group codes by splitting the dot-notation hierarchy code
+            # e.g. "1.001.001.002" → group1="1", group2="1.001", machinery="1.001.001"
+            parts = hierarchy_code.split(".")
+            group1_code = parts[0] if parts else ""
+            group2_code = ".".join(parts[:2]) if len(parts) >= 2 else group1_code
+            # If 4-level code, last level is the component; parent 3 = machinery
+            if len(parts) >= 4:
+                machinery_code = ".".join(parts[:3])
+            else:
+                machinery_code = hierarchy_code
+
+            is_critical = priority in ("high", "critical")
+
+            mapped = {
+                "group1_code": group1_code or None,
+                "group1_name": category or "Uncategorised",
+                "group2_code": group2_code or None,
+                "group2_name": comp_type or category or "Uncategorised",
+                "machinery_code": machinery_code or None,
+                "machinery_name": comp_type or None,
+                "component_code": ship_code or None,
+                "component_name": comp_name,
+                "component_type": comp_type or None,
+                "is_critical": is_critical,
+            }
+        else:
+            comp_name = r.get("component_name", "").strip()
+            if not comp_name:
+                continue
+            critical_raw = str(r.get("is_critical", "")).lower()
+            mapped = {
+                "group1_code": r.get("group1_code", "") or None,
+                "group1_name": r.get("group1_name", "") or None,
+                "group2_code": r.get("group2_code", "") or None,
+                "group2_name": r.get("group2_name", "") or None,
+                "machinery_code": r.get("machinery_code", "") or None,
+                "machinery_name": r.get("machinery_name", "") or None,
+                "component_code": r.get("component_code", "") or None,
+                "component_name": comp_name,
+                "component_type": r.get("component_type", "") or None,
+                "is_critical": critical_raw in ("yes", "true", "1", "y"),
+            }
 
         await db.execute(
             text(
@@ -123,16 +177,16 @@ async def import_component_structure(
             {
                 "id": str(uuid.uuid4()),
                 "tid": str(current_user.tenant_id),
-                "g1c": r.get("group1_code", "") or None,
-                "g1n": r.get("group1_name", "") or None,
-                "g2c": r.get("group2_code", "") or None,
-                "g2n": r.get("group2_name", "") or None,
-                "mc": r.get("machinery_code", "") or None,
-                "mn": r.get("machinery_name", "") or None,
-                "cc": r.get("component_code", "") or None,
-                "cn": comp_name,
-                "ct": r.get("component_type", "") or None,
-                "ic": is_critical,
+                "g1c": mapped["group1_code"],
+                "g1n": mapped["group1_name"],
+                "g2c": mapped["group2_code"],
+                "g2n": mapped["group2_name"],
+                "mc": mapped["machinery_code"],
+                "mn": mapped["machinery_name"],
+                "cc": mapped["component_code"],
+                "cn": mapped["component_name"],
+                "ct": mapped["component_type"],
+                "ic": mapped["is_critical"],
                 "ver": new_version,
             },
         )
