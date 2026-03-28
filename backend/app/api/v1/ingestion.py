@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
+import asyncio
 import os
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
@@ -306,9 +307,26 @@ async def upload_manuals(
         original_manual = existing_hash.scalar_one_or_none()
         is_dup = original_manual is not None
 
-        # Auto-classify the document
-        from app.services.classifier import classify_pdf
-        result = classify_pdf(content, filename)
+        # Auto-classify the document — run sync PDF+Claude work in a thread
+        # to avoid blocking the async event loop on large files.
+        from app.services.classifier import classify_pdf, _keyword_classify
+        try:
+            result = await asyncio.to_thread(classify_pdf, content, filename)
+        except Exception:
+            # Fallback: keyword-only classification so upload never fails
+            try:
+                result = await asyncio.to_thread(_keyword_classify, [], filename, 0)
+            except Exception:
+                from app.services.classifier import ClassificationResult
+                result = ClassificationResult(
+                    category="Unknown/Unclassifiable",
+                    confidence=40,
+                    useful_for_extraction="no",
+                    pages_with_components="",
+                    pages_with_jobs="",
+                    pages_with_spares="",
+                    page_count=0,
+                )
 
         manual = Manual(
             tenant_id=current_user.tenant_id,

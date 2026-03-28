@@ -170,8 +170,9 @@ Rules:
 - Page ranges should be based on where relevant content appears in the document
 - confidence should reflect how certain you are about the category (80-95 for clear matches, 40-65 for uncertain)"""
 
+        model_id = getattr(settings, "CLAUDE_MODEL_ID", "claude-sonnet-4-6")
         message = client.messages.create(
-            model="claude-opus-4-6",
+            model=model_id,
             max_tokens=512,
             messages=[{"role": "user", "content": prompt}],
         )
