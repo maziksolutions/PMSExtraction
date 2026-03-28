@@ -152,6 +152,10 @@ class Manual(TenantBase):
         nullable=True,
     )
 
+    # Extracted text — stored at upload time so it survives ephemeral filesystem redeploys
+    extracted_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     # F-09: duplicate detection
     sha256_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     is_duplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

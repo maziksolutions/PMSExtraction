@@ -328,6 +328,48 @@ async def upload_manuals(
                     page_count=0,
                 )
 
+        # Extract text at upload time so it persists in DB across ephemeral filesystem redeploys
+        extracted_text = ""
+        page_count_val = result.page_count or 0
+        if ext == "pdf":
+            try:
+                def _extract_text_and_tables(data: bytes) -> tuple[str, int]:
+                    import io as _io
+                    import pdfplumber as _pdfplumber
+                    parts: list[str] = []
+                    with _pdfplumber.open(_io.BytesIO(data)) as pdf:
+                        total = len(pdf.pages)
+                        for page_num, page in enumerate(pdf.pages, start=1):
+                            text = page.extract_text()
+                            if text and text.strip():
+                                parts.append(text)
+                            try:
+                                tables = page.extract_tables()
+                                for table in (tables or []):
+                                    if not table:
+                                        continue
+                                    rows = []
+                                    for row in table:
+                                        if row and any(cell for cell in row if cell):
+                                            rows.append(" | ".join(
+                                                str(cell).strip() if cell else ""
+                                                for cell in row
+                                            ))
+                                    if rows:
+                                        parts.append(f"[TABLE page {page_num}]\n" + "\n".join(rows))
+                            except Exception:
+                                pass
+                    return "\n\n".join(parts), total
+
+                extracted_text, page_count_val = await asyncio.to_thread(
+                    _extract_text_and_tables, content
+                )
+                # Cap at 200k chars — enough for a very large manual
+                if len(extracted_text) > 200_000:
+                    extracted_text = extracted_text[:200_000]
+            except Exception:
+                pass
+
         manual = Manual(
             tenant_id=current_user.tenant_id,
             vessel_id=vessel_id,
@@ -346,18 +388,23 @@ async def upload_manuals(
             pages_with_components=result.pages_with_components,
             pages_with_jobs=result.pages_with_jobs,
             pages_with_spares=result.pages_with_spares,
+            extracted_text=extracted_text or None,
+            page_count=page_count_val or None,
         )
         db.add(manual)
         await db.flush()
 
-        # Save file to local disk so extraction and view endpoints can access it
+        # Save file to local disk so the view endpoint can serve it (best-effort)
         upload_dir = os.path.join(settings.UPLOAD_DIR, str(vessel_id))
-        os.makedirs(upload_dir, exist_ok=True)
-        file_path = os.path.join(upload_dir, f"{manual.id}.{ext}")
-        with open(file_path, "wb") as f:
-            f.write(content)
-        manual.blob_storage_key = file_path
-        db.add(manual)
+        try:
+            os.makedirs(upload_dir, exist_ok=True)
+            file_path = os.path.join(upload_dir, f"{manual.id}.{ext}")
+            with open(file_path, "wb") as f:
+                f.write(content)
+            manual.blob_storage_key = file_path
+            db.add(manual)
+        except Exception:
+            pass  # Disk save is best-effort; extracted_text in DB is the primary source
 
         created_manuals.append(ManualOut.model_validate(manual))
 

@@ -233,13 +233,18 @@ async def auto_extract_from_manual(
         await db.commit()
 
         # ------------------------------------------------------------------
-        # Extract text from the actual file using pdfplumber
+        # Get text: use stored DB text first, fall back to reading file
         # ------------------------------------------------------------------
         filename = manual.original_filename
         file_path = manual.blob_storage_key
         full_text = ""
 
-        if file_path and os.path.exists(file_path):
+        # Primary source: text extracted at upload time and persisted in DB
+        if getattr(manual, "extracted_text", None):
+            full_text = manual.extracted_text  # type: ignore[assignment]
+
+        # Fallback: re-read from disk if DB text is missing (e.g. older records)
+        if not full_text and file_path and os.path.exists(file_path):
             ext = (manual.file_extension or "").lower()
             if ext == "pdf":
                 try:
