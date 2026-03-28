@@ -19,28 +19,39 @@ logger = logging.getLogger(__name__)
 DEFAULT_PROMPTS: dict[str, dict] = {
     "component": {
         "system": (
-            "You are a maritime PMS (Planned Maintenance System) data extraction specialist. "
-            "Your task is to extract component information from ship technical manuals. "
-            "Return ONLY a valid JSON array of component records. Each record must follow this schema:\n"
+            "You are a maritime PMS (Planned Maintenance System) data extraction specialist.\n\n"
+            "The document may be a MACHINERY LIST/REGISTER (tabular, one row per equipment item) "
+            "or a TECHNICAL MANUAL (prose with descriptions). Extract ALL equipment entries regardless of format.\n\n"
+            "For machinery lists: each row in the table is ONE component record. "
+            "Column headers typically include: No., Equipment/Description, Maker/Manufacturer, "
+            "Type/Model, Serial No., Capacity/Rating, Location, Remarks.\n\n"
+            "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
-            '  "group1": "string (top-level machinery group, e.g. Deck Machinery)",\n'
-            '  "group2": "string (sub-group, e.g. Mooring Winches)",\n'
-            '  "main_machinery": "string (e.g. Main Engine, Aux Engine, Cargo Pump)",\n'
-            '  "component_name": "string (specific component name)",\n'
-            '  "maker": "string or null",\n'
-            '  "model": "string or null",\n'
-            '  "serial_number": "string or null",\n'
-            '  "specification": "string or null",\n'
-            '  "is_critical": true/false,\n'
-            '  "job_pages": "string page range or null",\n'
-            '  "spare_pages": "string page range or null",\n'
-            '  "source_page_number": integer or null,\n'
-            '  "confidence_score": integer 0-100\n'
-            "}\n"
-            "Extract ALL components mentioned. If no components found, return []. "
-            "Return ONLY the JSON array with no explanation or markdown."
+            '  "group1": "top-level group (e.g. Propulsion, Deck Machinery, Hull Equipment, Auxiliary Machinery)",\n'
+            '  "group2": "sub-group (e.g. Main Engine, Cargo Pump, Mooring Winch)",\n'
+            '  "main_machinery": "machinery system name (e.g. Main Engine, Ballast Pump)",\n'
+            '  "component_name": "exact equipment/component name from the document",\n'
+            '  "maker": "manufacturer name or null",\n'
+            '  "model": "model/type designation or null",\n'
+            '  "serial_number": "serial number or null",\n'
+            '  "specification": "capacity, power, rating, or key specs or null",\n'
+            '  "is_critical": true if propulsion/steering/safety equipment, false otherwise,\n'
+            '  "job_pages": null,\n'
+            '  "spare_pages": null,\n'
+            '  "source_page_number": page number integer or null,\n'
+            '  "confidence_score": integer 70-95\n'
+            "}\n\n"
+            "RULES:\n"
+            "- Extract EVERY equipment row — do not skip any\n"
+            "- If maker/model columns are present, always fill them in\n"
+            "- Infer group1/group2 from context if not explicitly stated\n"
+            "- If no components found, return []\n"
+            "- Return ONLY the JSON array, no explanation, no markdown"
         ),
-        "user_template": "Extract all components from the following manual text:\n\n{text}",
+        "user_template": (
+            "Extract all machinery and equipment components from this maritime document. "
+            "This may be a machinery list, equipment register, or technical manual.\n\n{text}"
+        ),
     },
     "job": {
         "system": (
@@ -236,9 +247,33 @@ async def auto_extract_from_manual(
                     import pdfplumber
 
                     def _read_pdf(path: str) -> str:
+                        parts: list[str] = []
                         with pdfplumber.open(path) as pdf:
-                            parts = [page.extract_text() for page in pdf.pages]
-                            return "\n".join(p for p in parts if p)
+                            for page_num, page in enumerate(pdf.pages, start=1):
+                                # Extract prose text
+                                text = page.extract_text()
+                                if text and text.strip():
+                                    parts.append(text)
+                                # Also extract tables (machinery lists are mostly tables)
+                                try:
+                                    tables = page.extract_tables()
+                                    for table in (tables or []):
+                                        if not table:
+                                            continue
+                                        rows = []
+                                        for row in table:
+                                            if row and any(cell for cell in row if cell):
+                                                rows.append(" | ".join(
+                                                    str(cell).strip() if cell else ""
+                                                    for cell in row
+                                                ))
+                                        if rows:
+                                            parts.append(
+                                                f"[TABLE page {page_num}]\n" + "\n".join(rows)
+                                            )
+                                except Exception:
+                                    pass
+                        return "\n\n".join(parts)
 
                     full_text = await _asyncio.to_thread(_read_pdf, file_path)
                 except Exception as pdf_err:
