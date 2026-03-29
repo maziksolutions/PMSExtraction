@@ -89,29 +89,26 @@ async def _bootstrap_schema(db: AsyncSession) -> None:
 
 
 async def _ensure_vessel_types(tenant_id: str, db: AsyncSession) -> None:
-    """Seed the default vessel types for a tenant if none exist yet."""
+    """Seed any missing default vessel types for a tenant (checks each one individually)."""
     try:
-        count_result = await db.execute(
-            text("SELECT COUNT(*) FROM vessel_types WHERE tenant_id = :tid AND is_deleted = false"),
-            {"tid": tenant_id},
-        )
-        count = count_result.scalar_one()
-        if count == 0:
-            for name, sort_order in _DEFAULT_VESSEL_TYPES:
-                try:
-                    await db.execute(
-                        text(
-                            "INSERT INTO vessel_types (id, tenant_id, name, is_system, sort_order, is_deleted, created_at, updated_at) "
-                            "SELECT :id, :tid, :name, true, :sort, false, NOW(), NOW() "
-                            "WHERE NOT EXISTS ("
-                            "  SELECT 1 FROM vessel_types WHERE tenant_id = :tid AND name = :name AND is_deleted = false"
-                            ")"
-                        ),
-                        {"id": str(uuid.uuid4()), "tid": tenant_id, "name": name, "sort": sort_order},
-                    )
-                except Exception as row_err:
-                    logger.warning("_ensure_vessel_types: skipping %r: %s", name, row_err)
-                    await db.rollback()
+        inserted = 0
+        for name, sort_order in _DEFAULT_VESSEL_TYPES:
+            try:
+                result = await db.execute(
+                    text(
+                        "INSERT INTO vessel_types (id, tenant_id, name, is_system, sort_order, is_deleted, created_at, updated_at) "
+                        "SELECT :id, :tid, :name, true, :sort, false, NOW(), NOW() "
+                        "WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM vessel_types WHERE tenant_id = :tid AND name = :name AND is_deleted = false"
+                        ")"
+                    ),
+                    {"id": str(uuid.uuid4()), "tid": tenant_id, "name": name, "sort": sort_order},
+                )
+                inserted += result.rowcount
+            except Exception as row_err:
+                logger.warning("_ensure_vessel_types: skipping %r: %s", name, row_err)
+                await db.rollback()
+        if inserted > 0:
             await db.commit()
     except Exception as err:
         logger.error("_ensure_vessel_types failed for tenant %s: %s", tenant_id, err)
