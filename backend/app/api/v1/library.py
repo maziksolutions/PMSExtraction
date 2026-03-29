@@ -37,6 +37,57 @@ _DEFAULT_VESSEL_TYPES = [
 ]
 
 
+async def _bootstrap_schema(db: AsyncSession) -> None:
+    """
+    Runtime DDL bootstrap — creates vessel_types table and related columns if
+    Alembic migrations 0008/0009 have not yet successfully run on this Railway
+    instance.  All statements use IF NOT EXISTS so they are fully idempotent.
+    """
+    try:
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS vessel_types (
+                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tenant_id   UUID NOT NULL,
+                name        VARCHAR(200) NOT NULL,
+                is_system   BOOLEAN NOT NULL DEFAULT false,
+                sort_order  INTEGER NOT NULL DEFAULT 0,
+                is_deleted  BOOLEAN NOT NULL DEFAULT false,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_vessel_types_tenant_name
+            ON vessel_types (tenant_id, name) WHERE is_deleted = false
+        """))
+        await db.execute(text("""
+            ALTER TABLE component_structure_library
+            ADD COLUMN IF NOT EXISTS vessel_type_id UUID
+        """))
+        await db.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_csl_vessel_type') THEN
+                    ALTER TABLE component_structure_library
+                    ADD CONSTRAINT fk_csl_vessel_type
+                    FOREIGN KEY (vessel_type_id) REFERENCES vessel_types(id) ON DELETE SET NULL;
+                END IF;
+            END $$
+        """))
+        await db.execute(text("""
+            ALTER TABLE components
+            ADD COLUMN IF NOT EXISTS criticality VARCHAR(20) NOT NULL DEFAULT 'non_critical'
+        """))
+        await db.execute(text("""
+            ALTER TABLE component_structure_library
+            ADD COLUMN IF NOT EXISTS criticality VARCHAR(20) NOT NULL DEFAULT 'non_critical'
+        """))
+        await db.commit()
+    except Exception as err:
+        logger.warning("_bootstrap_schema: %s", err)
+        await db.rollback()
+
+
 async def _ensure_vessel_types(tenant_id: str, db: AsyncSession) -> None:
     """Seed the default vessel types for a tenant if none exist yet."""
     try:
@@ -138,6 +189,7 @@ async def list_vessel_types(
 ) -> dict[str, Any]:
     """Return all vessel types, seeding defaults if first call."""
     tid = str(current_user.tenant_id)
+    await _bootstrap_schema(db)
     await _ensure_vessel_types(tid, db)
     try:
         result = await db.execute(
