@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import uuid
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+
+logger = logging.getLogger(__name__)
 from fastapi.responses import StreamingResponse
 from app.core.config import settings
 from sqlalchemy import select, text
@@ -36,22 +39,32 @@ _DEFAULT_VESSEL_TYPES = [
 
 async def _ensure_vessel_types(tenant_id: str, db: AsyncSession) -> None:
     """Seed the default vessel types for a tenant if none exist yet."""
-    count_result = await db.execute(
-        text("SELECT COUNT(*) FROM vessel_types WHERE tenant_id = :tid AND is_deleted = false"),
-        {"tid": tenant_id},
-    )
-    count = count_result.scalar_one()
-    if count == 0:
-        for name, sort_order in _DEFAULT_VESSEL_TYPES:
-            await db.execute(
-                text(
-                    "INSERT INTO vessel_types (id, tenant_id, name, is_system, sort_order, is_deleted, created_at, updated_at) "
-                    "VALUES (:id, :tid, :name, true, :sort, false, NOW(), NOW()) "
-                    "ON CONFLICT DO NOTHING"
-                ),
-                {"id": str(uuid.uuid4()), "tid": tenant_id, "name": name, "sort": sort_order},
-            )
-        await db.commit()
+    try:
+        count_result = await db.execute(
+            text("SELECT COUNT(*) FROM vessel_types WHERE tenant_id = :tid AND is_deleted = false"),
+            {"tid": tenant_id},
+        )
+        count = count_result.scalar_one()
+        if count == 0:
+            for name, sort_order in _DEFAULT_VESSEL_TYPES:
+                try:
+                    await db.execute(
+                        text(
+                            "INSERT INTO vessel_types (id, tenant_id, name, is_system, sort_order, is_deleted, created_at, updated_at) "
+                            "SELECT :id, :tid, :name, true, :sort, false, NOW(), NOW() "
+                            "WHERE NOT EXISTS ("
+                            "  SELECT 1 FROM vessel_types WHERE tenant_id = :tid AND name = :name AND is_deleted = false"
+                            ")"
+                        ),
+                        {"id": str(uuid.uuid4()), "tid": tenant_id, "name": name, "sort": sort_order},
+                    )
+                except Exception as row_err:
+                    logger.warning("_ensure_vessel_types: skipping %r: %s", name, row_err)
+                    await db.rollback()
+            await db.commit()
+    except Exception as err:
+        logger.error("_ensure_vessel_types failed for tenant %s: %s", tenant_id, err)
+        await db.rollback()
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +164,13 @@ async def create_vessel_type(
     if not name:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="name is required")
     new_id = uuid.uuid4()
+    # Check for duplicate first to give a proper error
+    dup = await db.execute(
+        text("SELECT id FROM vessel_types WHERE tenant_id = :tid AND name = :name AND is_deleted = false"),
+        {"tid": str(current_user.tenant_id), "name": name},
+    )
+    if dup.one_or_none() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Vessel type '{name}' already exists")
     try:
         await db.execute(
             text(
@@ -321,8 +341,18 @@ async def import_component_structure(
 
         comp_type = str(r.get("component_type") or "").strip() or None
         category = str(r.get("category") or "").strip() or None
+
+        # Determine criticality: explicit "criticality" column > priority mapping > default
+        raw_criticality = str(r.get("criticality") or "").strip().lower()
         priority = str(r.get("priority") or "").strip().lower()
-        is_critical = priority in ("high", "critical", "yes", "true", "1")
+        if raw_criticality in ("critical", "essential", "non_critical"):
+            criticality = raw_criticality
+        elif priority == "critical":
+            criticality = "critical"
+        elif priority == "essential":
+            criticality = "essential"
+        else:
+            criticality = "non_critical"
 
         mapped = {
             "group1_code": group1_code or None,
@@ -334,7 +364,7 @@ async def import_component_structure(
             "component_code": r.get("component_code") or None,
             "component_name": comp_name,
             "component_type": comp_type,
-            "is_critical": is_critical,
+            "criticality": criticality,
         }
 
         await db.execute(
@@ -342,9 +372,9 @@ async def import_component_structure(
                 f"INSERT INTO component_structure_library "
                 f"(id, tenant_id, group1_code, group1_name, group2_code, group2_name, "
                 f"machinery_code, machinery_name, component_code, component_name, "
-                f"component_type, is_critical, {ver_col}, status, is_deleted, vessel_type_id, created_at, updated_at) "
+                f"component_type, is_critical, criticality, {ver_col}, status, is_deleted, vessel_type_id, created_at, updated_at) "
                 f"VALUES (:id, :tid, :g1c, :g1n, :g2c, :g2n, :mc, :mn, :cc, :cn, "
-                f":ct, :ic, :ver, 'active', false, :vtid, NOW(), NOW())"
+                f":ct, false, :crit, :ver, 'active', false, :vtid, NOW(), NOW())"
             ),
             {
                 "id": str(uuid.uuid4()),
@@ -358,7 +388,7 @@ async def import_component_structure(
                 "cc": mapped["component_code"],
                 "cn": mapped["component_name"],
                 "ct": mapped["component_type"],
-                "ic": mapped["is_critical"],
+                "crit": mapped["criticality"],
                 "ver": new_version,
                 "vtid": vessel_type_id or None,
             },
@@ -404,7 +434,7 @@ async def list_component_structure(
         text(
             "SELECT id, group1_code, group1_name, group2_code, group2_name, "
             "machinery_code, machinery_name, component_code, component_name, "
-            "component_type, is_critical, status, version, vessel_type_id, created_at "
+            "component_type, is_critical, criticality, status, version, vessel_type_id, created_at "
             "FROM component_structure_library "
             f"WHERE {where_sql} "
             "ORDER BY group1_name, group2_name, machinery_name, component_name "
@@ -440,9 +470,9 @@ async def add_component_structure_node(
             "INSERT INTO component_structure_library "
             "(id, tenant_id, group1_code, group1_name, group2_code, group2_name, "
             "machinery_code, machinery_name, component_code, component_name, "
-            "component_type, is_critical, version, status, is_deleted, created_at, updated_at) "
+            "component_type, is_critical, criticality, version, status, is_deleted, created_at, updated_at) "
             "VALUES (:id, :tid, :g1c, :g1n, :g2c, :g2n, :mc, :mn, :cc, :cn, "
-            ":ct, :ic, 1, 'pending_approval', false, NOW(), NOW())"
+            ":ct, false, :crit, 1, 'pending_approval', false, NOW(), NOW())"
         ),
         {
             "id": str(new_id),
@@ -456,7 +486,7 @@ async def add_component_structure_node(
             "cc": body.get("component_code") or None,
             "cn": comp_name,
             "ct": body.get("component_type") or None,
-            "ic": bool(body.get("is_critical", False)),
+            "crit": str(body.get("criticality") or "non_critical"),
         },
     )
     await db.commit()
@@ -476,7 +506,7 @@ async def list_approval_requests(
         text(
             "SELECT id, group1_code, group1_name, group2_code, group2_name, "
             "machinery_code, machinery_name, component_code, component_name, "
-            "component_type, is_critical, status, created_at "
+            "component_type, is_critical, criticality, status, created_at "
             "FROM component_structure_library "
             "WHERE tenant_id = :tid AND status = 'pending_approval' AND is_deleted = false "
             "ORDER BY created_at DESC"
@@ -562,7 +592,7 @@ async def push_library_to_vessel(
     lib_result = await db.execute(
         text(
             "SELECT group1_name, group2_name, machinery_name, component_name, "
-            f"component_type, is_critical FROM component_structure_library "
+            f"component_type, criticality FROM component_structure_library "
             f"WHERE {lib_where} "
             "ORDER BY group1_name, group2_name, machinery_name, component_name"
         ),
@@ -608,14 +638,15 @@ async def push_library_to_vessel(
             skipped += 1
             continue
 
+        node_criticality = str(node.get("criticality") or "non_critical")
         await db.execute(
             text(
                 "INSERT INTO components "
                 "(id, tenant_id, vessel_id, group1, group2, main_machinery, component_name, "
-                "is_critical, qc_status, is_unmapped, confidence_score, is_deleted, "
+                "is_critical, criticality, qc_status, is_unmapped, confidence_score, is_deleted, "
                 "created_at, updated_at) "
                 "VALUES (:id, :tid, :vid, :g1, :g2, :mm, :cn, "
-                ":ic, 'accepted', false, 100, false, NOW(), NOW())"
+                "false, :crit, 'accepted', false, 100, false, NOW(), NOW())"
             ),
             {
                 "id": str(uuid.uuid4()),
@@ -625,7 +656,7 @@ async def push_library_to_vessel(
                 "g2": g2,
                 "mm": mm,
                 "cn": cn,
-                "ic": bool(node["is_critical"]),
+                "crit": node_criticality,
             },
         )
         existing_keys.add(key)

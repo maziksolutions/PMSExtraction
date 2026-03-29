@@ -51,6 +51,7 @@ class Component(TenantBase):
     page_reference: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     confidence_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     is_critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    criticality: Mapped[str] = mapped_column(String(20), nullable=False, default="non_critical")
 
     qc_status: Mapped[QCStatus] = mapped_column(
         Enum(QCStatus, name="qc_status"),

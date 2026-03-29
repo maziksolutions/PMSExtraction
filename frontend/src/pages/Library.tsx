@@ -30,6 +30,7 @@ interface ComponentStructureNode {
   component_name?: string
   component_type?: string
   is_critical: boolean
+  criticality?: string
   status: 'active' | 'pending_approval'
 }
 
@@ -202,6 +203,16 @@ const ComponentStructureTab: React.FC = () => {
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
           {vtLoading ? (
             <div className="py-8 text-center text-slate-600 text-xs">Loading...</div>
+          ) : vesselTypes.length === 0 ? (
+            <div className="py-6 text-center space-y-2">
+              <p className="text-slate-500 text-xs">No vessel types found.</p>
+              <button
+                onClick={() => queryClient.invalidateQueries({ queryKey: ['library', 'vessel-types'] })}
+                className="text-xs text-sky-400 hover:text-sky-300 underline"
+              >
+                Retry
+              </button>
+            </div>
           ) : vesselTypes.map((vt) => (
             <button
               key={vt.id}
@@ -233,27 +244,28 @@ const ComponentStructureTab: React.FC = () => {
               <p className="text-xs text-slate-500">{total} components</p>
             )}
           </div>
-          {selectedVesselTypeId && (
-            <div className="flex items-center gap-2">
-              <input ref={fileInputRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={handleFileChange} />
-              <a
-                href={`${apiClient.defaults.baseURL}/library/component-structure/template`}
-                download="component_library_template.xlsx"
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 hover:text-white rounded-lg transition-colors text-sm"
-              >
-                <FileDown className="w-3.5 h-3.5" />
-                Template
-              </a>
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={importMutation.isPending}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors disabled:opacity-50 text-sm"
-              >
-                {importMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-                Import Excel
-              </button>
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            <input ref={fileInputRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={handleFileChange} />
+            <a
+              href={`${apiClient.defaults.baseURL}/library/component-structure/template`}
+              download="component_library_template.xlsx"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 hover:text-white rounded-lg transition-colors text-sm"
+            >
+              <FileDown className="w-3.5 h-3.5" />
+              Template
+            </a>
+            <button
+              onClick={() => {
+                if (!selectedVesselTypeId) { setImportError('Select a vessel type first'); return }
+                fileInputRef.current?.click()
+              }}
+              disabled={importMutation.isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors disabled:opacity-50 text-sm"
+            >
+              {importMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+              Import Excel
+            </button>
+          </div>
         </div>
 
         {/* Banners */}
@@ -310,9 +322,12 @@ const ComponentStructureTab: React.FC = () => {
                         <td className="px-4 py-2.5 text-slate-300 font-mono text-xs">{node.component_code || '—'}</td>
                         <td className="px-4 py-2.5 text-slate-200 text-sm">{node.component_name || '—'}</td>
                         <td className="px-4 py-2.5">
-                          {node.is_critical
-                            ? <span className="text-amber-400 text-xs font-medium">Critical</span>
-                            : <span className="text-slate-600 text-xs">—</span>}
+                          {(() => {
+                            const crit = (node as any).criticality ?? (node.is_critical ? 'critical' : 'non_critical')
+                            if (crit === 'critical') return <span className="text-xs font-medium text-red-400">Critical</span>
+                            if (crit === 'essential') return <span className="text-xs font-medium text-amber-400">Essential</span>
+                            return <span className="text-xs text-slate-500">Non Critical</span>
+                          })()}
                         </td>
                         <td className="px-4 py-2.5">
                           <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border ${

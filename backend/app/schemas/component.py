@@ -24,6 +24,7 @@ class ComponentOut(BaseModel):
     page_reference: Optional[int] = None
     confidence_score: Optional[int] = None
     is_critical: bool
+    criticality: str = "non_critical"
     qc_status: QCStatus
     is_unmapped: bool
     extraction_notes: Optional[str] = None
@@ -46,6 +47,7 @@ class ComponentCreate(BaseModel):
     specification: Optional[str] = None
     serial_number: Optional[str] = None
     is_critical: bool = False
+    criticality: str = "non_critical"
     job_pages: Optional[str] = None
     spare_pages: Optional[str] = None
     pdf_reference: Optional[str] = None
@@ -61,6 +63,7 @@ class ComponentUpdate(BaseModel):
     specification: Optional[str] = None
     serial_number: Optional[str] = None
     is_critical: Optional[bool] = None
+    criticality: Optional[str] = None
     qc_status: Optional[QCStatus] = None
     extraction_notes: Optional[str] = None
     job_pages: Optional[str] = None
