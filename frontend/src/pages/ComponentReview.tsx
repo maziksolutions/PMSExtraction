@@ -217,6 +217,8 @@ const ComponentReview: React.FC = () => {
   const [importResult, setImportResult] = useState<string | null>(null)
   const [autoLinkLoading, setAutoLinkLoading] = useState(false)
   const [libraryLoading, setLibraryLoading] = useState(false)
+  const [showLibraryModal, setShowLibraryModal] = useState(false)
+  const [selectedVesselTypeId, setSelectedVesselTypeId] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const hasAutoLoaded = React.useRef(false)
 
@@ -242,6 +244,12 @@ const ComponentReview: React.FC = () => {
     enabled: !!vesselId,
   })
 
+  const vesselTypesQuery = useQuery({
+    queryKey: ['library', 'vessel-types'],
+    queryFn: () => apiClient.get('/library/vessel-types').then(r => r.data),
+  })
+  const vesselTypes: { id: string; name: string; component_count: number }[] = vesselTypesQuery.data?.items ?? []
+
   const bulkAcceptMutation = useMutation({
     mutationFn: (ids: string[]) =>
       apiClient.post(`/vessels/${vesselId}/components/bulk-accept`, { ids }).then((r) => r.data),
@@ -266,24 +274,9 @@ const ComponentReview: React.FC = () => {
   // Reset to page 1 when any filter changes
   React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, pageSize])
 
-  // Auto-load standard components from library on first visit if vessel has none
   React.useEffect(() => {
-    if (!allComponentsQuery.isLoading && allComponentsQuery.isFetched && !hasAutoLoaded.current) {
-      const count = allComponentsQuery.data?.total ?? allComponentsQuery.data?.items?.length ?? 0
-      if (count === 0) {
-        hasAutoLoaded.current = true
-        apiClient.post('/library/component-structure/push-to-vessel', { vessel_id: vesselId })
-          .then((res) => {
-            if (res.data.added > 0) {
-              setImportResult(`Auto-loaded ${res.data.added} standard components from library.`)
-              queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
-              queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
-            }
-          })
-          .catch(() => {}) // Silent fail — library may be empty
-      } else {
-        hasAutoLoaded.current = true
-      }
+    if (!allComponentsQuery.isLoading && allComponentsQuery.isFetched) {
+      hasAutoLoaded.current = true
     }
   }, [allComponentsQuery.isLoading, allComponentsQuery.isFetched])
 
@@ -298,10 +291,13 @@ const ComponentReview: React.FC = () => {
     setAutoLinkLoading(false)
   }
 
-  const handleLoadFromLibrary = async () => {
+  const handleLoadFromLibrary = async (vesselTypeId?: string) => {
     setLibraryLoading(true)
+    setShowLibraryModal(false)
     try {
-      const res = await apiClient.post('/library/component-structure/push-to-vessel', { vessel_id: vesselId })
+      const body: Record<string, string> = { vessel_id: vesselId! }
+      if (vesselTypeId) body.vessel_type_id = vesselTypeId
+      const res = await apiClient.post('/library/component-structure/push-to-vessel', body)
       setImportResult(`Loaded ${res.data.added} standard components from library (${res.data.skipped} already existed).`)
       queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
@@ -519,7 +515,7 @@ const ComponentReview: React.FC = () => {
 
           {/* Load from Library */}
           <button
-            onClick={handleLoadFromLibrary}
+            onClick={() => setShowLibraryModal(true)}
             disabled={libraryLoading}
             className="flex items-center gap-1.5 rounded-lg border border-sky-700 bg-sky-900/30 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-sky-800/40 hover:text-white disabled:opacity-50"
           >
@@ -615,7 +611,7 @@ const ComponentReview: React.FC = () => {
             </p>
             <div className="flex justify-center gap-3 pt-1 flex-wrap">
               <button
-                onClick={handleLoadFromLibrary}
+                onClick={() => setShowLibraryModal(true)}
                 disabled={libraryLoading}
                 className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
               >
@@ -784,6 +780,35 @@ const ComponentReview: React.FC = () => {
             )}
           </div>
         )}
+      {/* Load from Library Modal */}
+      {showLibraryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-96 space-y-4">
+            <h3 className="text-lg font-semibold text-white">Load Standard Components</h3>
+            <p className="text-sm text-slate-400">Select the vessel type to load its standard component structure onto this vessel.</p>
+            <select
+              value={selectedVesselTypeId}
+              onChange={(e) => setSelectedVesselTypeId(e.target.value)}
+              className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-sky-500"
+            >
+              <option value="">— Select vessel type —</option>
+              {vesselTypes.map(vt => (
+                <option key={vt.id} value={vt.id}>{vt.name} ({vt.component_count} components)</option>
+              ))}
+            </select>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowLibraryModal(false)} className="px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+              <button
+                onClick={() => handleLoadFromLibrary(selectedVesselTypeId || undefined)}
+                disabled={!selectedVesselTypeId || libraryLoading}
+                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-sm disabled:opacity-50"
+              >
+                Load Components
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       </div>
     </div>
   )

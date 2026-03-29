@@ -97,49 +97,62 @@ const ComponentStructureTab: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
-  const [showAddModal, setShowAddModal] = useState(false)
-  const [addForm, setAddForm] = useState<AddNodeForm>(EMPTY_NODE_FORM)
-  const [addSuccess, setAddSuccess] = useState(false)
-  const [rejectingId, setRejectingId] = useState<string | null>(null)
-  const [rejectReason, setRejectReason] = useState('')
+  const [selectedVesselTypeId, setSelectedVesselTypeId] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
+  const [showAddTypeModal, setShowAddTypeModal] = useState(false)
+  const [newTypeName, setNewTypeName] = useState('')
+  const [addTypeError, setAddTypeError] = useState('')
 
-  const { data: pageData, isLoading } = useQuery({
-    queryKey: ['library', 'component-structure', page, pageSize],
+  // Vessel types list
+  const { data: vtData, isLoading: vtLoading } = useQuery({
+    queryKey: ['library', 'vessel-types'],
     queryFn: async () => {
-      const res = await apiClient.get('/library/component-structure', { params: { page, page_size: pageSize } })
+      const res = await apiClient.get('/library/vessel-types')
       return res.data
     },
+  })
+  const vesselTypes: { id: string; name: string; is_system: boolean; component_count: number }[] = vtData?.items ?? []
+
+  // Auto-select first vessel type
+  React.useEffect(() => {
+    if (!selectedVesselTypeId && vesselTypes.length > 0) {
+      setSelectedVesselTypeId(vesselTypes[0].id)
+    }
+  }, [vesselTypes])
+
+  // Components for selected vessel type
+  const { data: pageData, isLoading } = useQuery({
+    queryKey: ['library', 'component-structure', selectedVesselTypeId, page, pageSize],
+    queryFn: async () => {
+      if (!selectedVesselTypeId) return { items: [], total: 0 }
+      const res = await apiClient.get('/library/component-structure', {
+        params: { vessel_type_id: selectedVesselTypeId, page, page_size: pageSize },
+      })
+      return res.data
+    },
+    enabled: !!selectedVesselTypeId,
   })
   const nodes: ComponentStructureNode[] = pageData?.items ?? []
   const total: number = pageData?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
-  const pendingNodes = nodes.filter((n) => n.status === 'pending_approval')
-
-  const { data: approvalRequests = [] } = useQuery<ApprovalRequest[]>({
-    queryKey: ['library', 'component-structure', 'approval-requests'],
-    queryFn: async () => {
-      const res = await apiClient.get('/library/component-structure/approval-requests')
-      return res.data
-    },
-    enabled: pendingNodes.length > 0,
-  })
-
   const importMutation = useMutation({
     mutationFn: async (file: File) => {
       const form = new FormData()
       form.append('file', file)
-      const res = await apiClient.post('/library/component-structure/import', form, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
+      const res = await apiClient.post(
+        `/library/component-structure/import?vessel_type_id=${selectedVesselTypeId ?? ''}`,
+        form,
+        { headers: { 'Content-Type': 'multipart/form-data' } },
+      )
       return res.data as ImportResult
     },
     onSuccess: (data) => {
       setImportResult(data)
       setImportError(null)
       queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] }); setPage(1)
+      queryClient.invalidateQueries({ queryKey: ['library', 'vessel-types'] })
     },
     onError: (err: any) => {
       const detail = err?.response?.data?.detail ?? err?.message ?? 'Unknown error'
@@ -147,386 +160,230 @@ const ComponentStructureTab: React.FC = () => {
     },
   })
 
-  const addNodeMutation = useMutation({
-    mutationFn: async (payload: AddNodeForm) => {
-      const res = await apiClient.post('/library/component-structure/nodes', payload)
+  const createVesselTypeMutation = useMutation({
+    mutationFn: async (name: string) => {
+      const res = await apiClient.post('/library/vessel-types', { name })
       return res.data
     },
-    onSuccess: () => {
-      setAddSuccess(true)
-      setAddForm(EMPTY_NODE_FORM)
-      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] }); setPage(1)
-      setTimeout(() => {
-        setAddSuccess(false)
-        setShowAddModal(false)
-      }, 2000)
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['library', 'vessel-types'] })
+      setSelectedVesselTypeId(data.id)
+      setShowAddTypeModal(false)
+      setNewTypeName('')
+      setAddTypeError('')
     },
-  })
-
-  const approveMutation = useMutation({
-    mutationFn: async (requestId: string) => {
-      await apiClient.post(`/library/component-structure/approval-requests/${requestId}/approve`)
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] }); setPage(1)
-      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure', 'approval-requests'] })
-    },
-  })
-
-  const rejectMutation = useMutation({
-    mutationFn: async ({ requestId, reason }: { requestId: string; reason: string }) => {
-      await apiClient.post(`/library/component-structure/approval-requests/${requestId}/reject`, { reason })
-    },
-    onSuccess: () => {
-      setRejectingId(null)
-      setRejectReason('')
-      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] }); setPage(1)
-      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure', 'approval-requests'] })
+    onError: (err: any) => {
+      setAddTypeError(err?.response?.data?.detail ?? 'Failed to create vessel type')
     },
   })
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!selectedVesselTypeId) { setImportError('Please select a vessel type first'); return }
     const file = e.target.files?.[0]
-    if (file) {
-      importMutation.mutate(file)
-      e.target.value = ''
-    }
+    if (file) { importMutation.mutate(file); e.target.value = '' }
   }
 
-  const handleAddFormChange = (field: keyof AddNodeForm, value: string | boolean) => {
-    setAddForm((prev) => ({ ...prev, [field]: value }))
-  }
+  const selectedType = vesselTypes.find(vt => vt.id === selectedVesselTypeId)
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-white">Component Structure Library</h2>
-          <p className="text-sm text-slate-400 mt-1">Organisation-wide shared component hierarchy</p>
+    <div className="flex gap-4 h-full min-h-0">
+      {/* Left: Vessel Type list */}
+      <div className="w-60 shrink-0 rounded-xl border border-slate-800 bg-slate-900 flex flex-col">
+        <div className="flex items-center justify-between px-3 py-3 border-b border-slate-800">
+          <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Vessel Types</p>
+          <button
+            onClick={() => setShowAddTypeModal(true)}
+            className="rounded p-1 text-slate-500 hover:text-sky-400 hover:bg-slate-800"
+            title="Add vessel type"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
         </div>
-        <div className="flex gap-3">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.csv"
-            className="hidden"
-            onChange={handleFileChange}
-          />
-          <div className="flex flex-col items-end gap-1.5">
-            <div className="flex gap-2">
+        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+          {vtLoading ? (
+            <div className="py-8 text-center text-slate-600 text-xs">Loading...</div>
+          ) : vesselTypes.map((vt) => (
+            <button
+              key={vt.id}
+              onClick={() => { setSelectedVesselTypeId(vt.id); setPage(1) }}
+              className={`w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm text-left transition-colors ${
+                selectedVesselTypeId === vt.id
+                  ? 'bg-sky-600/20 text-sky-300 border border-sky-600/30'
+                  : 'text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              <span className="flex-1 truncate">{vt.name}</span>
+              <span className="text-xs text-slate-500 bg-slate-800 rounded-full px-1.5 py-0.5 shrink-0">
+                {vt.component_count}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Right: Components for selected vessel type */}
+      <div className="flex-1 min-w-0 flex flex-col gap-3">
+        {/* Header row */}
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-white">
+              {selectedType ? selectedType.name : 'Select a vessel type'}
+            </h2>
+            {selectedType && (
+              <p className="text-xs text-slate-500">{total} components</p>
+            )}
+          </div>
+          {selectedVesselTypeId && (
+            <div className="flex items-center gap-2">
+              <input ref={fileInputRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={handleFileChange} />
               <a
                 href={`${apiClient.defaults.baseURL}/library/component-structure/template`}
                 download="component_library_template.xlsx"
-                className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 hover:text-white rounded-lg transition-colors text-sm"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 hover:text-white rounded-lg transition-colors text-sm"
               >
-                <FileDown className="w-4 h-4" />
-                Download Template
+                <FileDown className="w-3.5 h-3.5" />
+                Template
               </a>
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={importMutation.isPending}
-                className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors disabled:opacity-50 text-sm"
               >
-                {importMutation.isPending ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Upload className="w-4 h-4" />
-                )}
+                {importMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
                 Import Excel
               </button>
             </div>
-            <p className="text-xs text-slate-500">
-              Columns: <span className="text-slate-400">ShipComponentName | HierarchyComponentCode | ShipComponentCode | ComponentType | Priority | Status | Quantity | Category</span>
-            </p>
+          )}
+        </div>
+
+        {/* Banners */}
+        {importResult && (
+          <div className="flex items-center gap-3 p-3 bg-emerald-900/40 border border-emerald-600/50 rounded-lg text-sm">
+            <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span className="text-emerald-300">Successfully imported <strong>{importResult.imported}</strong> components (version {importResult.version})</span>
+            <button onClick={() => setImportResult(null)} className="ml-auto text-emerald-600 hover:text-emerald-300"><XCircle className="w-4 h-4" /></button>
           </div>
-          <button
-            onClick={() => { setShowAddModal(true); setAddSuccess(false) }}
-            className="flex items-center gap-2 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            Add Node
-          </button>
-        </div>
-      </div>
+        )}
+        {importError && (
+          <div className="flex items-center gap-3 p-3 bg-red-900/40 border border-red-600/50 rounded-lg text-sm">
+            <XCircle className="w-4 h-4 text-red-400 shrink-0" />
+            <span className="text-red-300">{importError}</span>
+            <button onClick={() => setImportError(null)} className="ml-auto text-red-600 hover:text-red-300"><XCircle className="w-4 h-4" /></button>
+          </div>
+        )}
 
-      {/* Import result banner */}
-      {importResult && (
-        <div className="flex items-center gap-3 p-4 bg-emerald-900/40 border border-emerald-600/50 rounded-lg">
-          <CheckCircle className="w-5 h-5 text-emerald-400 flex-shrink-0" />
-          <span className="text-emerald-300">
-            Successfully imported <strong>{importResult.imported}</strong> nodes (version {importResult.version})
-          </span>
-          <button onClick={() => setImportResult(null)} className="ml-auto text-emerald-400 hover:text-emerald-300">
-            <XCircle className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-      {importError && (
-        <div className="flex items-center gap-3 p-4 bg-red-900/40 border border-red-600/50 rounded-lg">
-          <XCircle className="w-5 h-5 text-red-400 flex-shrink-0" />
-          <span className="text-red-300">{importError}</span>
-          <button onClick={() => setImportError(null)} className="ml-auto text-red-400 hover:text-red-300">
-            <XCircle className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      {/* Tree Table */}
-      <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-700 bg-slate-900/50">
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Hierarchy Code</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Category</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Component Type</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Component Code</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Component Name</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Type</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Critical</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {isLoading ? (
-                <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-slate-400">
-                    <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2" />
-                    Loading component structure...
-                  </td>
-                </tr>
-              ) : nodes.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
-                    No nodes found. Import an Excel file or add a node manually.
-                  </td>
-                </tr>
-              ) : (
-                nodes.map((node) => (
-                  <tr key={node.id} className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors">
-                    <td className="px-4 py-3 text-slate-300 font-mono text-xs">{node.machinery_code || node.group1_code}</td>
-                    <td className="px-4 py-3 text-slate-200">{node.group1_name}</td>
-                    <td className="px-4 py-3 text-slate-300">{node.group2_name}</td>
-                    <td className="px-4 py-3 text-slate-300 font-mono text-xs">{node.component_code || '—'}</td>
-                    <td className="px-4 py-3 text-slate-400">{node.component_name || '—'}</td>
-                    <td className="px-4 py-3 text-slate-400 text-xs">{node.component_type || '—'}</td>
-                    <td className="px-4 py-3">
-                      {node.is_critical ? (
-                        <span className="text-amber-400 text-xs font-medium">Critical</span>
-                      ) : (
-                        <span className="text-slate-500 text-xs">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      {node.status === 'active' ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-900/40 text-emerald-400 text-xs rounded-full border border-emerald-600/40">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                          Active
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-900/40 text-amber-400 text-xs rounded-full border border-amber-600/40">
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                          Pending
-                        </span>
-                      )}
-                    </td>
+        {/* Table */}
+        {!selectedVesselTypeId ? (
+          <div className="flex-1 flex items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-900">
+            <p className="text-slate-500 text-sm">Select a vessel type from the left panel</p>
+          </div>
+        ) : (
+          <div className="flex-1 bg-slate-800 border border-slate-700 rounded-xl overflow-hidden flex flex-col">
+            <div className="flex-1 overflow-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-700 bg-slate-900/50 sticky top-0">
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium text-xs">Hierarchy Code</th>
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium text-xs">Category</th>
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium text-xs">Component Type</th>
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium text-xs">Component Code</th>
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium text-xs">Component Name</th>
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium text-xs">Critical</th>
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium text-xs">Status</th>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination bar */}
-        <div className="flex items-center justify-between border-t border-slate-700 px-4 py-3">
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <span>{total} total</span>
-            <span>·</span>
-            <span>Show</span>
-            <select
-              value={pageSize}
-              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }}
-              className="bg-slate-700 border border-slate-600 rounded px-2 py-0.5 text-white"
-            >
-              {PAGE_SIZE_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-            <span>per page</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1}
-              className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40"
-            >
-              ← Prev
-            </button>
-            <span className="px-3 text-xs text-slate-400">Page {page} of {totalPages}</span>
-            <button
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40"
-            >
-              Next →
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Approval Requests */}
-      {approvalRequests.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-            <AlertTriangle className="w-5 h-5 text-amber-400" />
-            Approval Requests ({approvalRequests.length})
-          </h3>
-          <div className="space-y-3">
-            {approvalRequests.map((req) => (
-              <div key={req.id} className="bg-slate-800 border border-amber-600/30 rounded-xl p-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-1 text-sm">
-                    <p className="text-white font-medium">
-                      {req.node.group1_name} / {req.node.group2_name} / {req.node.machinery_name}
-                      {req.node.component_name ? ` / ${req.node.component_name}` : ''}
-                    </p>
-                    <p className="text-slate-400">
-                      Requested by <span className="text-slate-300">{req.requested_by}</span> ·{' '}
-                      {new Date(req.requested_at).toLocaleDateString()}
-                    </p>
-                    {req.reason && <p className="text-slate-400 italic">"{req.reason}"</p>}
-                  </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    {rejectingId === req.id ? (
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={rejectReason}
-                          onChange={(e) => setRejectReason(e.target.value)}
-                          placeholder="Reason for rejection..."
-                          className="px-3 py-1.5 bg-slate-700 border border-slate-600 rounded-lg text-sm text-white placeholder-slate-500 w-48 focus:outline-none focus:border-sky-500"
-                        />
-                        <button
-                          onClick={() => rejectMutation.mutate({ requestId: req.id, reason: rejectReason })}
-                          disabled={rejectMutation.isPending}
-                          className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
-                        >
-                          Confirm
-                        </button>
-                        <button
-                          onClick={() => { setRejectingId(null); setRejectReason('') }}
-                          className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-sm rounded-lg transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <button
-                          onClick={() => approveMutation.mutate(req.id)}
-                          disabled={approveMutation.isPending}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
-                        >
-                          <CheckCircle className="w-4 h-4" />
-                          Approve
-                        </button>
-                        <button
-                          onClick={() => setRejectingId(req.id)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-red-900/50 hover:bg-red-800 text-red-300 text-sm rounded-lg border border-red-700/50 transition-colors"
-                        >
-                          <XCircle className="w-4 h-4" />
-                          Reject
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Add Node Modal */}
-      {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-semibold text-white">Add Component Structure Node</h3>
-              <button
-                onClick={() => { setShowAddModal(false); setAddSuccess(false); setAddForm(EMPTY_NODE_FORM) }}
-                className="text-slate-400 hover:text-white transition-colors"
-              >
-                <XCircle className="w-5 h-5" />
-              </button>
+                </thead>
+                <tbody>
+                  {isLoading ? (
+                    <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">
+                      <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2" />Loading...
+                    </td></tr>
+                  ) : nodes.length === 0 ? (
+                    <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                      No components yet. Import an Excel file to populate this vessel type.
+                    </td></tr>
+                  ) : (
+                    nodes.map((node) => (
+                      <tr key={node.id} className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors">
+                        <td className="px-4 py-2.5 text-slate-300 font-mono text-xs">{(node as any).machinery_code || (node as any).group1_code || '—'}</td>
+                        <td className="px-4 py-2.5 text-slate-200 text-xs">{node.group1_name}</td>
+                        <td className="px-4 py-2.5 text-slate-300 text-xs">{node.group2_name}</td>
+                        <td className="px-4 py-2.5 text-slate-300 font-mono text-xs">{node.component_code || '—'}</td>
+                        <td className="px-4 py-2.5 text-slate-200 text-sm">{node.component_name || '—'}</td>
+                        <td className="px-4 py-2.5">
+                          {node.is_critical
+                            ? <span className="text-amber-400 text-xs font-medium">Critical</span>
+                            : <span className="text-slate-600 text-xs">—</span>}
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border ${
+                            node.status === 'active'
+                              ? 'bg-emerald-900/40 text-emerald-400 border-emerald-600/40'
+                              : 'bg-amber-900/40 text-amber-400 border-amber-600/40'
+                          }`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${node.status === 'active' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                            {node.status === 'active' ? 'Active' : 'Pending'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
 
-            {addSuccess ? (
-              <div className="flex flex-col items-center gap-3 py-8">
-                <CheckCircle className="w-12 h-12 text-emerald-400" />
-                <p className="text-emerald-300 font-medium">Submitted for approval</p>
-                <p className="text-slate-400 text-sm">The node will appear once approved by an administrator.</p>
+            {/* Pagination */}
+            <div className="flex items-center justify-between border-t border-slate-700 px-4 py-2.5 shrink-0">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <span>{total} total</span>
+                <span>·</span>
+                <span>Show</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }}
+                  className="bg-slate-700 border border-slate-600 rounded px-2 py-0.5 text-white text-xs"
+                >
+                  {PAGE_SIZE_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <span>per page</span>
               </div>
-            ) : (
-              <form
-                onSubmit={(e) => { e.preventDefault(); addNodeMutation.mutate(addForm) }}
-                className="space-y-4"
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+                  className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40">← Prev</button>
+                <span className="px-3 text-xs text-slate-400">Page {page} of {totalPages}</span>
+                <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
+                  className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40">Next →</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Add Vessel Type Modal */}
+      {showAddTypeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-96 space-y-4">
+            <h3 className="text-lg font-semibold text-white">Add Vessel Type</h3>
+            <input
+              autoFocus
+              type="text"
+              value={newTypeName}
+              onChange={(e) => setNewTypeName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && newTypeName.trim()) createVesselTypeMutation.mutate(newTypeName.trim()) }}
+              placeholder="e.g. VLCC, Container Ship, RoRo..."
+              className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+            />
+            {addTypeError && <p className="text-red-400 text-sm">{addTypeError}</p>}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setShowAddTypeModal(false); setNewTypeName(''); setAddTypeError('') }}
+                className="px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+              <button
+                onClick={() => { if (newTypeName.trim()) createVesselTypeMutation.mutate(newTypeName.trim()) }}
+                disabled={!newTypeName.trim() || createVesselTypeMutation.isPending}
+                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-sm disabled:opacity-50"
               >
-                <div className="grid grid-cols-2 gap-4">
-                  {(
-                    [
-                      ['group1_code', 'Group 1 Code', true],
-                      ['group1_name', 'Group 1 Name', true],
-                      ['group2_code', 'Group 2 Code', true],
-                      ['group2_name', 'Group 2 Name', true],
-                      ['machinery_code', 'Machinery Code', true],
-                      ['machinery_name', 'Machinery Name', true],
-                      ['component_code', 'Component Code', false],
-                      ['component_name', 'Component Name', false],
-                      ['component_type', 'Component Type', false],
-                    ] as [keyof AddNodeForm, string, boolean][]
-                  ).map(([field, label, required]) => (
-                    <div key={field} className={field === 'component_type' ? 'col-span-2' : ''}>
-                      <label className="block text-sm font-medium text-slate-400 mb-1">
-                        {label} {required && <span className="text-red-400">*</span>}
-                      </label>
-                      <input
-                        type="text"
-                        value={addForm[field] as string}
-                        onChange={(e) => handleAddFormChange(field, e.target.value)}
-                        required={required}
-                        className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 text-sm"
-                      />
-                    </div>
-                  ))}
-                </div>
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={addForm.is_critical}
-                    onChange={(e) => handleAddFormChange('is_critical', e.target.checked)}
-                    className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-sky-600 focus:ring-sky-500"
-                  />
-                  <span className="text-sm text-slate-300">Mark as Critical</span>
-                </label>
-                <div className="flex gap-3 pt-2">
-                  <button
-                    type="submit"
-                    disabled={addNodeMutation.isPending}
-                    className="flex items-center gap-2 px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg transition-colors disabled:opacity-50"
-                  >
-                    {addNodeMutation.isPending && <RefreshCw className="w-4 h-4 animate-spin" />}
-                    Submit for Approval
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setShowAddModal(false); setAddForm(EMPTY_NODE_FORM) }}
-                    className="px-5 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            )}
+                {createVesselTypeMutation.isPending ? 'Creating...' : 'Create'}
+              </button>
+            </div>
           </div>
         </div>
       )}

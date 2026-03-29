@@ -7,6 +7,7 @@ from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
+from app.core.config import settings
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +22,37 @@ from app.models.vessel import VesselProject
 from app.services.deduplication import is_duplicate_component, is_duplicate_job, is_duplicate_spare
 
 router = APIRouter()
+
+_DEFAULT_VESSEL_TYPES = [
+    ("Oil Tanker", 1),
+    ("Oil/Chemical Tanker", 2),
+    ("Chemical Tanker", 3),
+    ("Gas Carrier", 4),
+    ("LPG Carrier", 5),
+    ("Bulk Carrier", 6),
+    ("Offshore Vessel", 7),
+]
+
+
+async def _ensure_vessel_types(tenant_id: str, db: AsyncSession) -> None:
+    """Seed the default vessel types for a tenant if none exist yet."""
+    count_result = await db.execute(
+        text("SELECT COUNT(*) FROM vessel_types WHERE tenant_id = :tid AND is_deleted = false"),
+        {"tid": tenant_id},
+    )
+    count = count_result.scalar_one()
+    if count == 0:
+        for name, sort_order in _DEFAULT_VESSEL_TYPES:
+            await db.execute(
+                text(
+                    "INSERT INTO vessel_types (id, tenant_id, name, is_system, sort_order, is_deleted, created_at, updated_at) "
+                    "VALUES (:id, :tid, :name, true, :sort, false, NOW(), NOW()) "
+                    "ON CONFLICT DO NOTHING"
+                ),
+                {"id": str(uuid.uuid4()), "tid": tenant_id, "name": name, "sort": sort_order},
+            )
+        await db.commit()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,6 +111,59 @@ _LIBRARY_ALIASES = {
 
 def _normalise_library_row(raw: dict) -> dict:
     return {_LIBRARY_ALIASES.get(k.lower().strip(), k.lower().strip()): v for k, v in raw.items()}
+
+
+# ===========================================================================
+# Vessel Types
+# ===========================================================================
+
+
+@router.get("/library/vessel-types", summary="List vessel types for tenant")
+async def list_vessel_types(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Return all vessel types, seeding defaults if first call."""
+    tid = str(current_user.tenant_id)
+    await _ensure_vessel_types(tid, db)
+    result = await db.execute(
+        text(
+            "SELECT id, name, is_system, sort_order, "
+            "(SELECT COUNT(*) FROM component_structure_library csl "
+            " WHERE csl.vessel_type_id = vt.id AND csl.is_deleted = false) AS component_count "
+            "FROM vessel_types vt "
+            "WHERE tenant_id = :tid AND is_deleted = false "
+            "ORDER BY sort_order, name"
+        ),
+        {"tid": tid},
+    )
+    rows = result.mappings().all()
+    return {"items": [dict(r) for r in rows]}
+
+
+@router.post("/library/vessel-types", status_code=status.HTTP_201_CREATED, summary="Create a vessel type")
+async def create_vessel_type(
+    body: dict[str, Any],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="name is required")
+    new_id = uuid.uuid4()
+    try:
+        await db.execute(
+            text(
+                "INSERT INTO vessel_types (id, tenant_id, name, is_system, sort_order, is_deleted, created_at, updated_at) "
+                "VALUES (:id, :tid, :name, false, 100, false, NOW(), NOW())"
+            ),
+            {"id": str(new_id), "tid": str(current_user.tenant_id), "name": name},
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Vessel type '{name}' already exists")
+    return {"id": str(new_id), "name": name}
 
 
 @router.get(
@@ -150,6 +235,7 @@ async def import_component_structure(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     file: UploadFile = File(...),
+    vessel_type_id: Optional[str] = Query(None, description="Vessel type UUID to tag these components"),
 ) -> dict[str, Any]:
     """
     Parse an Excel (.xlsx) or CSV file and bulk-insert component_structure_library rows.
@@ -256,9 +342,9 @@ async def import_component_structure(
                 f"INSERT INTO component_structure_library "
                 f"(id, tenant_id, group1_code, group1_name, group2_code, group2_name, "
                 f"machinery_code, machinery_name, component_code, component_name, "
-                f"component_type, is_critical, {ver_col}, status, is_deleted, created_at, updated_at) "
+                f"component_type, is_critical, {ver_col}, status, is_deleted, vessel_type_id, created_at, updated_at) "
                 f"VALUES (:id, :tid, :g1c, :g1n, :g2c, :g2n, :mc, :mn, :cc, :cn, "
-                f":ct, :ic, :ver, 'active', false, NOW(), NOW())"
+                f":ct, :ic, :ver, 'active', false, :vtid, NOW(), NOW())"
             ),
             {
                 "id": str(uuid.uuid4()),
@@ -274,6 +360,7 @@ async def import_component_structure(
                 "ct": mapped["component_type"],
                 "ic": mapped["is_critical"],
                 "ver": new_version,
+                "vtid": vessel_type_id or None,
             },
         )
         imported += 1
@@ -290,18 +377,25 @@ async def list_component_structure(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     status_filter: Optional[str] = Query(None, alias="status"),
+    vessel_type_id: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=1000),
 ) -> dict[str, Any]:
-    """List component structure library nodes, optionally filtered by status."""
-    where_extra = "AND status = :st " if status_filter else ""
-    params = {"tid": str(current_user.tenant_id), "st": status_filter}
+    """List component structure library nodes, optionally filtered by status and vessel type."""
+    where_clauses = ["tenant_id = :tid", "is_deleted = false"]
+    params: dict[str, Any] = {"tid": str(current_user.tenant_id)}
+
+    if status_filter:
+        where_clauses.append("status = :st")
+        params["st"] = status_filter
+    if vessel_type_id:
+        where_clauses.append("vessel_type_id = :vtid")
+        params["vtid"] = vessel_type_id
+
+    where_sql = " AND ".join(where_clauses)
 
     count_result = await db.execute(
-        text(
-            f"SELECT COUNT(*) FROM component_structure_library "
-            f"WHERE tenant_id = :tid AND is_deleted = false {where_extra}"
-        ),
+        text(f"SELECT COUNT(*) FROM component_structure_library WHERE {where_sql}"),
         params,
     )
     total: int = count_result.scalar_one()
@@ -310,9 +404,9 @@ async def list_component_structure(
         text(
             "SELECT id, group1_code, group1_name, group2_code, group2_name, "
             "machinery_code, machinery_name, component_code, component_name, "
-            "component_type, is_critical, status, version, created_at "
+            "component_type, is_critical, status, version, vessel_type_id, created_at "
             "FROM component_structure_library "
-            f"WHERE tenant_id = :tid AND is_deleted = false {where_extra}"
+            f"WHERE {where_sql} "
             "ORDER BY group1_name, group2_name, machinery_name, component_name "
             f"LIMIT {page_size} OFFSET {(page - 1) * page_size}"
         ),
@@ -456,16 +550,23 @@ async def push_library_to_vessel(
 
     await _get_vessel_or_404(vessel_id, db)
 
-    # Load all active library nodes for this tenant
+    vessel_type_id = body.get("vessel_type_id")
+
+    # Load active library nodes, filtered by vessel type if specified
+    lib_where = "tenant_id = :tid AND status = 'active' AND is_deleted = false"
+    lib_params: dict[str, Any] = {"tid": str(current_user.tenant_id)}
+    if vessel_type_id:
+        lib_where += " AND vessel_type_id = :vtid"
+        lib_params["vtid"] = vessel_type_id
+
     lib_result = await db.execute(
         text(
             "SELECT group1_name, group2_name, machinery_name, component_name, "
-            "component_type, is_critical "
-            "FROM component_structure_library "
-            "WHERE tenant_id = :tid AND status = 'active' AND is_deleted = false "
+            f"component_type, is_critical FROM component_structure_library "
+            f"WHERE {lib_where} "
             "ORDER BY group1_name, group2_name, machinery_name, component_name"
         ),
-        {"tid": str(current_user.tenant_id)},
+        lib_params,
     )
     lib_nodes = lib_result.mappings().all()
 
