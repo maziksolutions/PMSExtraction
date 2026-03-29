@@ -7,7 +7,7 @@ import io
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -46,35 +46,43 @@ async def list_components(
     min_confidence: Optional[int] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=500),
+    page_size: int = Query(100, ge=1, le=1000),
 ) -> dict[str, Any]:
     await _get_vessel_or_404(vessel_id, db)
-    query = select(Component).where(
+    base_where = [
         Component.vessel_id == vessel_id,
         Component.tenant_id == current_user.tenant_id,
         Component.is_deleted == False,
-    )
+    ]
     if group1:
-        query = query.where(Component.group1 == group1)
+        base_where.append(Component.group1 == group1)
     if group2:
-        query = query.where(Component.group2 == group2)
+        base_where.append(Component.group2 == group2)
     if main_machinery:
-        query = query.where(Component.main_machinery == main_machinery)
+        base_where.append(Component.main_machinery == main_machinery)
     if qc_status:
         try:
-            query = query.where(Component.qc_status == QCStatus(qc_status))
+            base_where.append(Component.qc_status == QCStatus(qc_status))
         except ValueError:
             pass
     if min_confidence is not None:
-        query = query.where(Component.confidence_score >= min_confidence)
+        base_where.append(Component.confidence_score >= min_confidence)
     if is_unmapped is not None:
-        query = query.where(Component.is_unmapped == is_unmapped)
+        base_where.append(Component.is_unmapped == is_unmapped)
 
-    query = query.order_by(Component.group1, Component.group2, Component.component_name)
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    total_result = await db.execute(select(func.count()).select_from(Component).where(*base_where))
+    total: int = total_result.scalar_one()
+
+    query = (
+        select(Component)
+        .where(*base_where)
+        .order_by(Component.group1, Component.group2, Component.main_machinery, Component.component_name)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     result = await db.execute(query)
     components = result.scalars().all()
-    return {"items": [ComponentOut.model_validate(c) for c in components], "page": page}
+    return {"items": [ComponentOut.model_validate(c) for c in components], "page": page, "page_size": page_size, "total": total}
 
 
 @router.post(

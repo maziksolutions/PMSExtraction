@@ -90,6 +90,8 @@ type GlobalEntity = 'component' | 'job' | 'spare'
 
 // ─── Component Structure Tab ──────────────────────────────────────────────────
 
+const PAGE_SIZE_OPTIONS = [100, 200, 500, 1000]
+
 const ComponentStructureTab: React.FC = () => {
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -100,14 +102,19 @@ const ComponentStructureTab: React.FC = () => {
   const [addSuccess, setAddSuccess] = useState(false)
   const [rejectingId, setRejectingId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(100)
 
-  const { data: nodes = [], isLoading } = useQuery<ComponentStructureNode[]>({
-    queryKey: ['library', 'component-structure'],
+  const { data: pageData, isLoading } = useQuery({
+    queryKey: ['library', 'component-structure', page, pageSize],
     queryFn: async () => {
-      const res = await apiClient.get('/library/component-structure')
-      return res.data.items ?? res.data
+      const res = await apiClient.get('/library/component-structure', { params: { page, page_size: pageSize } })
+      return res.data
     },
   })
+  const nodes: ComponentStructureNode[] = pageData?.items ?? []
+  const total: number = pageData?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   const pendingNodes = nodes.filter((n) => n.status === 'pending_approval')
 
@@ -132,7 +139,7 @@ const ComponentStructureTab: React.FC = () => {
     onSuccess: (data) => {
       setImportResult(data)
       setImportError(null)
-      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] })
+      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] }); setPage(1)
     },
     onError: (err: any) => {
       const detail = err?.response?.data?.detail ?? err?.message ?? 'Unknown error'
@@ -148,7 +155,7 @@ const ComponentStructureTab: React.FC = () => {
     onSuccess: () => {
       setAddSuccess(true)
       setAddForm(EMPTY_NODE_FORM)
-      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] })
+      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] }); setPage(1)
       setTimeout(() => {
         setAddSuccess(false)
         setShowAddModal(false)
@@ -161,7 +168,7 @@ const ComponentStructureTab: React.FC = () => {
       await apiClient.post(`/library/component-structure/approval-requests/${requestId}/approve`)
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] })
+      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] }); setPage(1)
       queryClient.invalidateQueries({ queryKey: ['library', 'component-structure', 'approval-requests'] })
     },
   })
@@ -173,7 +180,7 @@ const ComponentStructureTab: React.FC = () => {
     onSuccess: () => {
       setRejectingId(null)
       setRejectReason('')
-      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] })
+      queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] }); setPage(1)
       queryClient.invalidateQueries({ queryKey: ['library', 'component-structure', 'approval-requests'] })
     },
   })
@@ -329,6 +336,40 @@ const ComponentStructureTab: React.FC = () => {
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* Pagination bar */}
+        <div className="flex items-center justify-between border-t border-slate-700 px-4 py-3">
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <span>{total} total</span>
+            <span>·</span>
+            <span>Show</span>
+            <select
+              value={pageSize}
+              onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }}
+              className="bg-slate-700 border border-slate-600 rounded px-2 py-0.5 text-white"
+            >
+              {PAGE_SIZE_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <span>per page</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40"
+            >
+              ← Prev
+            </button>
+            <span className="px-3 text-xs text-slate-400">Page {page} of {totalPages}</span>
+            <button
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40"
+            >
+              Next →
+            </button>
+          </div>
         </div>
       </div>
 

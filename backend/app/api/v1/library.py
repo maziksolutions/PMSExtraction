@@ -291,10 +291,21 @@ async def list_component_structure(
     db: Annotated[AsyncSession, Depends(get_db)],
     status_filter: Optional[str] = Query(None, alias="status"),
     page: int = Query(1, ge=1),
-    page_size: int = Query(100, ge=1, le=500),
+    page_size: int = Query(100, ge=1, le=1000),
 ) -> dict[str, Any]:
     """List component structure library nodes, optionally filtered by status."""
     where_extra = "AND status = :st " if status_filter else ""
+    params = {"tid": str(current_user.tenant_id), "st": status_filter}
+
+    count_result = await db.execute(
+        text(
+            f"SELECT COUNT(*) FROM component_structure_library "
+            f"WHERE tenant_id = :tid AND is_deleted = false {where_extra}"
+        ),
+        params,
+    )
+    total: int = count_result.scalar_one()
+
     result = await db.execute(
         text(
             "SELECT id, group1_code, group1_name, group2_code, group2_name, "
@@ -305,10 +316,10 @@ async def list_component_structure(
             "ORDER BY group1_name, group2_name, machinery_name, component_name "
             f"LIMIT {page_size} OFFSET {(page - 1) * page_size}"
         ),
-        {"tid": str(current_user.tenant_id), "st": status_filter},
+        params,
     )
     rows = result.mappings().all()
-    return {"items": [dict(r) for r in rows], "page": page, "page_size": page_size}
+    return {"items": [dict(r) for r in rows], "page": page, "page_size": page_size, "total": total}
 
 
 @router.post(

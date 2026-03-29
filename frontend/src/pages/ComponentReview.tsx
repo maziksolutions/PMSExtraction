@@ -195,6 +195,8 @@ interface InlineEdit {
   qc_status?: string
 }
 
+const COMP_PAGE_SIZE_OPTIONS = [100, 200, 500, 1000]
+
 const ComponentReview: React.FC = () => {
   const { vesselId } = useParams<{ vesselId: string }>()
   const queryClient = useQueryClient()
@@ -207,6 +209,8 @@ const ComponentReview: React.FC = () => {
   const [expandedG2, setExpandedG2] = useState<Set<string>>(new Set())
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [filterQC, setFilterQC] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(100)
   const [showAddModal, setShowAddModal] = useState(false)
   const [addContext, setAddContext] = useState<{ group1?: string; group2?: string; machinery?: string }>({})
   const [edits, setEdits] = useState<Record<string, InlineEdit>>({})
@@ -214,11 +218,12 @@ const ComponentReview: React.FC = () => {
   const [autoLinkLoading, setAutoLinkLoading] = useState(false)
   const [libraryLoading, setLibraryLoading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const hasAutoLoaded = React.useRef(false)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped],
+    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, page, pageSize],
     queryFn: () => {
-      const params: Record<string, string> = {}
+      const params: Record<string, string | number> = { page, page_size: pageSize }
       if (selectedGroup1) params.group1 = selectedGroup1
       if (selectedGroup2) params.group2 = selectedGroup2
       if (selectedMachinery) params.main_machinery = selectedMachinery
@@ -229,10 +234,11 @@ const ComponentReview: React.FC = () => {
     enabled: !!vesselId,
   })
 
+  // Fetch all components for tree building (large page_size, no filters)
   const allComponentsQuery = useQuery({
     queryKey: ['components-all', vesselId],
     queryFn: () =>
-      apiClient.get(`/vessels/${vesselId}/components`, { params: { page_size: 500 } }).then((r) => r.data),
+      apiClient.get(`/vessels/${vesselId}/components`, { params: { page_size: 5000 } }).then((r) => r.data),
     enabled: !!vesselId,
   })
 
@@ -256,6 +262,30 @@ const ComponentReview: React.FC = () => {
       setEdits({})
     },
   })
+
+  // Reset to page 1 when any filter changes
+  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, pageSize])
+
+  // Auto-load standard components from library on first visit if vessel has none
+  React.useEffect(() => {
+    if (!allComponentsQuery.isLoading && allComponentsQuery.isFetched && !hasAutoLoaded.current) {
+      const count = allComponentsQuery.data?.total ?? allComponentsQuery.data?.items?.length ?? 0
+      if (count === 0) {
+        hasAutoLoaded.current = true
+        apiClient.post('/library/component-structure/push-to-vessel', { vessel_id: vesselId })
+          .then((res) => {
+            if (res.data.added > 0) {
+              setImportResult(`Auto-loaded ${res.data.added} standard components from library.`)
+              queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
+              queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
+            }
+          })
+          .catch(() => {}) // Silent fail — library may be empty
+      } else {
+        hasAutoLoaded.current = true
+      }
+    }
+  }, [allComponentsQuery.isLoading, allComponentsQuery.isFetched])
 
   const handleAutoLink = async () => {
     setAutoLinkLoading(true)
@@ -314,23 +344,26 @@ const ComponentReview: React.FC = () => {
     setEdits(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }))
   }
 
-  // Build 3-level tree: group1 → group2 → main_machinery
-  const tree = useMemo<Record<string, TreeNode>>(() => {
+  // Build 3-level sorted tree: group1 → group2 → main_machinery
+  const tree = useMemo<TreeNode[]>(() => {
     const allComponents: Component[] = allComponentsQuery.data?.items ?? []
-    const nodes: Record<string, TreeNode> = {}
+    const map: Record<string, TreeNode> = {}
     for (const comp of allComponents) {
-      if (!nodes[comp.group1]) nodes[comp.group1] = { group1: comp.group1, group2s: {}, count: 0 }
-      nodes[comp.group1].count++
-      if (!nodes[comp.group1].group2s[comp.group2])
-        nodes[comp.group1].group2s[comp.group2] = { mainMachineries: {}, count: 0 }
-      nodes[comp.group1].group2s[comp.group2].count++
+      if (!map[comp.group1]) map[comp.group1] = { group1: comp.group1, group2s: {}, count: 0 }
+      map[comp.group1].count++
+      if (!map[comp.group1].group2s[comp.group2])
+        map[comp.group1].group2s[comp.group2] = { mainMachineries: {}, count: 0 }
+      map[comp.group1].group2s[comp.group2].count++
       const mm = comp.main_machinery
-      nodes[comp.group1].group2s[comp.group2].mainMachineries[mm] =
-        (nodes[comp.group1].group2s[comp.group2].mainMachineries[mm] ?? 0) + 1
+      map[comp.group1].group2s[comp.group2].mainMachineries[mm] =
+        (map[comp.group1].group2s[comp.group2].mainMachineries[mm] ?? 0) + 1
     }
-    return nodes
+    // Sort alphabetically at every level
+    return Object.values(map).sort((a, b) => a.group1.localeCompare(b.group1))
   }, [allComponentsQuery.data])
 
+  const total: number = data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const components: Component[] = data?.items ?? []
 
   return (
@@ -369,11 +402,11 @@ const ComponentReview: React.FC = () => {
         >
           All Components
           <span className="ml-auto rounded-full bg-slate-700 px-1.5 text-xs text-slate-400">
-            {allComponentsQuery.data?.items?.length ?? 0}
+            {allComponentsQuery.data?.total ?? allComponentsQuery.data?.items?.length ?? 0}
           </span>
         </button>
 
-        {Object.values(tree).map((node) => (
+        {tree.map((node) => (
           <div key={node.group1}>
             {/* Group 1 */}
             <div className="flex items-center gap-1">
@@ -400,8 +433,8 @@ const ComponentReview: React.FC = () => {
               </button>
             </div>
 
-            {/* Group 2 */}
-            {expandedG1.has(node.group1) && Object.entries(node.group2s).map(([g2, g2data]) => (
+            {/* Group 2 — sorted */}
+            {expandedG1.has(node.group1) && Object.entries(node.group2s).sort(([a], [b]) => a.localeCompare(b)).map(([g2, g2data]) => (
               <div key={g2} className="ml-5">
                 <div className="flex items-center gap-1">
                   <button
@@ -426,8 +459,8 @@ const ComponentReview: React.FC = () => {
                   </button>
                 </div>
 
-                {/* Main Machinery */}
-                {expandedG2.has(`${node.group1}::${g2}`) && Object.entries(g2data.mainMachineries).map(([mm, count]) => (
+                {/* Main Machinery — sorted */}
+                {expandedG2.has(`${node.group1}::${g2}`) && Object.entries(g2data.mainMachineries).sort(([a], [b]) => a.localeCompare(b)).map(([mm, count]) => (
                   <div key={mm} className="ml-5 flex items-center gap-1">
                     <button
                       onClick={() => { setSelectedGroup1(node.group1); setSelectedGroup2(g2); setSelectedMachinery(mm); setShowUnmapped(false) }}
@@ -712,6 +745,42 @@ const ComponentReview: React.FC = () => {
                   })}
                 </tbody>
               </table>
+            )}
+
+            {/* Pagination bar */}
+            {!isLoading && components.length > 0 && (
+              <div className="flex items-center justify-between border-t border-slate-800 px-4 py-2.5">
+                <div className="flex items-center gap-2 text-xs text-slate-500">
+                  <span>{total} total</span>
+                  <span>·</span>
+                  <span>Show</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => setPageSize(Number(e.target.value))}
+                    className="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-slate-300 text-xs"
+                  >
+                    {COMP_PAGE_SIZE_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <span>per page</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                    disabled={page === 1}
+                    className="px-2 py-1 rounded text-xs bg-slate-800 text-slate-400 hover:bg-slate-700 disabled:opacity-40"
+                  >
+                    ← Prev
+                  </button>
+                  <span className="px-3 text-xs text-slate-500">Page {page} of {totalPages}</span>
+                  <button
+                    onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                    disabled={page >= totalPages}
+                    className="px-2 py-1 rounded text-xs bg-slate-800 text-slate-400 hover:bg-slate-700 disabled:opacity-40"
+                  >
+                    Next →
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         )}
