@@ -3,61 +3,64 @@
 Revision ID: 0008
 Revises: 0007
 Create Date: 2026-03-29
+
+NOTE: Uses raw idempotent SQL (IF NOT EXISTS) because op.create_unique_constraint
+with postgresql_where generates ALTER TABLE ADD CONSTRAINT UNIQUE which PostgreSQL
+does not support with a WHERE clause — only CREATE UNIQUE INDEX supports that.
 """
 from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
 
 revision = "0008"
 down_revision = "0007"
 branch_labels = None
 depends_on = None
 
-DEFAULT_VESSEL_TYPES = [
-    "Oil Tanker",
-    "Oil/Chemical Tanker",
-    "Chemical Tanker",
-    "Gas Carrier",
-    "LPG Carrier",
-    "Bulk Carrier",
-    "Offshore Vessel",
-]
-
 
 def upgrade() -> None:
-    op.create_table(
-        "vessel_types",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column("tenant_id", UUID(as_uuid=True), nullable=False, index=True),
-        sa.Column("name", sa.String(200), nullable=False),
-        sa.Column("is_system", sa.Boolean(), nullable=False, server_default="false"),
-        sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("is_deleted", sa.Boolean(), nullable=False, server_default="false"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
-    )
-    op.create_unique_constraint(
-        "uq_vessel_types_tenant_name",
-        "vessel_types",
-        ["tenant_id", "name"],
-        postgresql_where=sa.text("is_deleted = false"),
-    )
+    # Create vessel_types table (idempotent)
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS vessel_types (
+            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            tenant_id   UUID NOT NULL,
+            name        VARCHAR(200) NOT NULL,
+            is_system   BOOLEAN NOT NULL DEFAULT false,
+            sort_order  INTEGER NOT NULL DEFAULT 0,
+            is_deleted  BOOLEAN NOT NULL DEFAULT false,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """)
 
-    op.add_column(
-        "component_structure_library",
-        sa.Column("vessel_type_id", UUID(as_uuid=True), nullable=True),
-    )
-    op.create_foreign_key(
-        "fk_csl_vessel_type",
-        "component_structure_library",
-        "vessel_types",
-        ["vessel_type_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    # Partial unique index — only CREATE UNIQUE INDEX supports WHERE clause in PG
+    op.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_vessel_types_tenant_name
+        ON vessel_types (tenant_id, name)
+        WHERE is_deleted = false
+    """)
+
+    # Add vessel_type_id to component_structure_library (idempotent)
+    op.execute("""
+        ALTER TABLE component_structure_library
+        ADD COLUMN IF NOT EXISTS vessel_type_id UUID
+    """)
+
+    # Add FK only if it doesn't already exist
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'fk_csl_vessel_type'
+            ) THEN
+                ALTER TABLE component_structure_library
+                ADD CONSTRAINT fk_csl_vessel_type
+                FOREIGN KEY (vessel_type_id) REFERENCES vessel_types(id)
+                ON DELETE SET NULL;
+            END IF;
+        END $$
+    """)
 
 
 def downgrade() -> None:
-    op.drop_constraint("fk_csl_vessel_type", "component_structure_library", type_="foreignkey")
-    op.drop_column("component_structure_library", "vessel_type_id")
-    op.drop_table("vessel_types")
+    op.execute("ALTER TABLE component_structure_library DROP CONSTRAINT IF EXISTS fk_csl_vessel_type")
+    op.execute("ALTER TABLE component_structure_library DROP COLUMN IF EXISTS vessel_type_id")
+    op.execute("DROP TABLE IF EXISTS vessel_types")
