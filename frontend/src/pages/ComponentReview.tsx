@@ -16,6 +16,8 @@ import {
   FolderPlus,
   Wrench,
   RefreshCw,
+  Layers,
+  FileDown,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 
@@ -210,6 +212,7 @@ const ComponentReview: React.FC = () => {
   const [edits, setEdits] = useState<Record<string, InlineEdit>>({})
   const [importResult, setImportResult] = useState<string | null>(null)
   const [autoLinkLoading, setAutoLinkLoading] = useState(false)
+  const [libraryLoading, setLibraryLoading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data, isLoading } = useQuery({
@@ -263,6 +266,19 @@ const ComponentReview: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
     } catch { setImportResult('Auto-link failed.') }
     setAutoLinkLoading(false)
+  }
+
+  const handleLoadFromLibrary = async () => {
+    setLibraryLoading(true)
+    try {
+      const res = await apiClient.post('/library/component-structure/push-to-vessel', { vessel_id: vesselId })
+      setImportResult(`Loaded ${res.data.added} standard components from library (${res.data.skipped} already existed).`)
+      queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
+    } catch (err: any) {
+      setImportResult(`Load from library failed: ${err?.response?.data?.detail ?? err?.message}`)
+    }
+    setLibraryLoading(false)
   }
 
   const handleExcelImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -459,6 +475,24 @@ const ComponentReview: React.FC = () => {
             Import Excel
           </button>
           <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleExcelImport} />
+          <a
+            href={`${apiClient.defaults.baseURL}/vessels/components/import-template`}
+            download="components_import_template.xlsx"
+            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+          >
+            <FileDown className="h-3.5 w-3.5" />
+            Template
+          </a>
+
+          {/* Load from Library */}
+          <button
+            onClick={handleLoadFromLibrary}
+            disabled={libraryLoading}
+            className="flex items-center gap-1.5 rounded-lg border border-sky-700 bg-sky-900/30 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-sky-800/40 hover:text-white disabled:opacity-50"
+          >
+            {libraryLoading ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />}
+            Load from Library
+          </button>
 
           {/* Auto-link pages */}
           <button
@@ -546,10 +580,18 @@ const ComponentReview: React.FC = () => {
               Import an Excel file or add components manually.<br />
               <strong className="text-slate-400">Excel columns:</strong> Group | Sub-Group | Main Machinery | Component Name | Maker | Model | Serial Number | Specification | Critical | Job Pages | Spare Pages | PDF Reference
             </p>
-            <div className="flex justify-center gap-3 pt-1">
+            <div className="flex justify-center gap-3 pt-1 flex-wrap">
+              <button
+                onClick={handleLoadFromLibrary}
+                disabled={libraryLoading}
+                className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+              >
+                {libraryLoading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Layers className="h-4 w-4" />}
+                Load from Library
+              </button>
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500"
+                className="flex items-center gap-2 rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
               >
                 <Upload className="h-4 w-4" /> Import Excel / CSV
               </button>

@@ -3,7 +3,10 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any, List, Optional
 
+import io
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -244,6 +247,64 @@ async def remap_component(
     await db.commit()
     await db.refresh(comp)
     return ComponentOut.model_validate(comp)
+
+
+@router.get("/components/import-template", summary="Download blank Excel template for component import")
+async def download_components_template() -> StreamingResponse:
+    """Return a pre-formatted .xlsx template for the Components page import."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Components"
+
+    headers = [
+        "Group", "Sub-Group", "Main Machinery", "Component Name",
+        "Maker", "Model", "Serial Number", "Specification",
+        "Critical", "Job Pages", "Spare Pages", "PDF Reference",
+    ]
+    sample_rows = [
+        ["Propulsion", "Main Engine", "Main Engine", "Cylinder Head",
+         "MAN B&W", "S60MC-C", "SN-12345", "6-cylinder, 2-stroke diesel",
+         "Yes", "12-15", "45-48", "ME-Manual-p12"],
+        ["Propulsion", "Main Engine", "Main Engine", "Fuel Injection Pump",
+         "MAN B&W", "S60MC-C", "", "High-pressure fuel injection",
+         "Yes", "18-20", "50-52", "ME-Manual-p18"],
+        ["Ballast System", "Ballast Pumps", "Ballast Pump No.1", "Ballast Pump",
+         "Shinko", "SBP-500", "BP-001", "500 m³/h, 2.5 bar",
+         "No", "", "60-62", "BP-Manual-p5"],
+        ["Deck Machinery", "Mooring", "Anchor Windlass", "Anchor Windlass",
+         "Rolls-Royce", "AW-250", "", "250 kN pull",
+         "No", "8", "70", ""],
+    ]
+
+    header_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+
+    for col_idx, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    for row_idx, row in enumerate(sample_rows, start=2):
+        for col_idx, val in enumerate(row, start=1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 4, 16)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=components_import_template.xlsx"},
+    )
 
 
 @router.post("/{vessel_id}/components/import-excel", summary="Import component hierarchy from Excel/CSV")

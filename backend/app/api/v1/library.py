@@ -6,6 +6,7 @@ import uuid
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,6 +45,102 @@ async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselPr
 # ===========================================================================
 
 
+# Column aliases for the library import format:
+# ShipComponentName | HierarchyComponentCode | ShipComponentCode | ComponentType | Priority | Status | Quantity | Category
+_LIBRARY_ALIASES = {
+    "shipcomponentname": "component_name",
+    "ship component name": "component_name",
+    "componentname": "component_name",
+    "component name": "component_name",
+    "hierarchycomponentcode": "hierarchy_code",
+    "hierarchy component code": "hierarchy_code",
+    "hierarchy code": "hierarchy_code",
+    "hierarchycode": "hierarchy_code",
+    "shipcomponentcode": "component_code",
+    "ship component code": "component_code",
+    "componentcode": "component_code",
+    "component code": "component_code",
+    "componenttype": "component_type",
+    "component type": "component_type",
+    "priority": "priority",
+    "status": "item_status",
+    "quantity": "quantity",
+    "category": "category",
+    # Legacy internal field names also accepted
+    "group1_name": "group1_name",
+    "group2_name": "group2_name",
+    "machinery_name": "machinery_name",
+    "component_name": "component_name",
+    "group1_code": "group1_code",
+    "group2_code": "group2_code",
+    "machinery_code": "machinery_code",
+}
+
+
+def _normalise_library_row(raw: dict) -> dict:
+    return {_LIBRARY_ALIASES.get(k.lower().strip(), k.lower().strip()): v for k, v in raw.items()}
+
+
+@router.get(
+    "/library/component-structure/template",
+    summary="F-03: Download blank Excel template for component structure import",
+    response_class=StreamingResponse,
+)
+async def download_library_template() -> StreamingResponse:
+    """Return a pre-formatted .xlsx template for the component structure library import."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Component Structure"
+
+    headers = [
+        "ShipComponentName",
+        "HierarchyComponentCode",
+        "ShipComponentCode",
+        "ComponentType",
+        "Priority",
+        "Status",
+        "Quantity",
+        "Category",
+    ]
+    sample_rows = [
+        ["Main Engine", "1.001.001.001", "ME-001", "Engine", "High", "Active", "1", "Propulsion"],
+        ["Main Engine - Cylinder Head", "1.001.001.002", "ME-001-CH", "Sub-Component", "High", "Active", "6", "Propulsion"],
+        ["Ballast Pump", "2.001.001.001", "BP-001", "Pump", "Medium", "Active", "2", "Ballast System"],
+        ["Anchor Windlass", "3.001.001.001", "AW-001", "Deck Machinery", "Medium", "Active", "1", "Deck Equipment"],
+    ]
+
+    header_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+
+    for col_idx, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    for row_idx, row in enumerate(sample_rows, start=2):
+        for col_idx, val in enumerate(row, start=1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+
+    # Auto-width columns
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 4, 18)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=component_library_template.xlsx"},
+    )
+
+
 @router.post(
     "/library/component-structure/import",
     status_code=status.HTTP_201_CREATED,
@@ -56,9 +153,8 @@ async def import_component_structure(
 ) -> dict[str, Any]:
     """
     Parse an Excel (.xlsx) or CSV file and bulk-insert component_structure_library rows.
-    Expected columns (case-insensitive): group1_code, group1_name, group2_code, group2_name,
-    machinery_code, machinery_name, component_code, component_name, component_type,
-    is_critical.
+    Expected columns: ShipComponentName | HierarchyComponentCode | ShipComponentCode |
+    ComponentType | Priority | Status | Quantity | Category
     """
     content = await file.read()
     filename = (file.filename or "").lower()
@@ -102,68 +198,44 @@ async def import_component_structure(
 
     imported = 0
     for raw in rows:
-        # Normalise keys: lowercase, strip, collapse spaces to underscore
-        r = {k.lower().strip().replace(" ", "_"): v for k, v in raw.items()}
+        r = _normalise_library_row(raw)
 
-        # ── Detect column format ──────────────────────────────────────────
-        # Format A (user's format): ShipComponentName, HierarchyComponentCode,
-        #   ShipComponentCode, ComponentType, Priority, Status, Quantity, Category
-        # Format B (legacy): group1_code, group1_name, group2_code, …
-        is_user_format = "shipcomponentname" in r
+        comp_name = str(r.get("component_name") or "").strip()
+        if not comp_name:
+            continue
 
-        if is_user_format:
-            comp_name = r.get("shipcomponentname", "").strip()
-            if not comp_name:
-                continue
-
-            hierarchy_code = r.get("hierarchycomponentcode", "").strip()
-            ship_code = r.get("shipcomponentcode", "").strip()
-            comp_type = r.get("componenttype", "").strip()
-            category = r.get("category", "").strip()
-            priority = r.get("priority", "").strip().lower()
-
-            # Derive group codes by splitting the dot-notation hierarchy code
-            # e.g. "1.001.001.002" → group1="1", group2="1.001", machinery="1.001.001"
-            parts = hierarchy_code.split(".")
-            group1_code = parts[0] if parts else ""
-            group2_code = ".".join(parts[:2]) if len(parts) >= 2 else group1_code
-            # If 4-level code, last level is the component; parent 3 = machinery
-            if len(parts) >= 4:
-                machinery_code = ".".join(parts[:3])
-            else:
-                machinery_code = hierarchy_code
-
-            is_critical = priority in ("high", "critical")
-
-            mapped = {
-                "group1_code": group1_code or None,
-                "group1_name": category or "Uncategorised",
-                "group2_code": group2_code or None,
-                "group2_name": comp_type or category or "Uncategorised",
-                "machinery_code": machinery_code or None,
-                "machinery_name": comp_type or None,
-                "component_code": ship_code or None,
-                "component_name": comp_name,
-                "component_type": comp_type or None,
-                "is_critical": is_critical,
-            }
+        # Derive group hierarchy from dot-notation hierarchy_code if present
+        # e.g. "1.001.001.002" → group1_code="1", group2_code="1.001", machinery_code="1.001.001"
+        hierarchy_code = str(r.get("hierarchy_code") or "").strip()
+        parts = [p for p in hierarchy_code.split(".") if p]
+        group1_code = r.get("group1_code") or (parts[0] if parts else None)
+        group2_code = r.get("group2_code") or (".".join(parts[:2]) if len(parts) >= 2 else group1_code)
+        if r.get("machinery_code"):
+            machinery_code = r["machinery_code"]
+        elif len(parts) >= 4:
+            machinery_code = ".".join(parts[:3])
+        elif len(parts) >= 3:
+            machinery_code = ".".join(parts[:3])
         else:
-            comp_name = r.get("component_name", "").strip()
-            if not comp_name:
-                continue
-            critical_raw = str(r.get("is_critical", "")).lower()
-            mapped = {
-                "group1_code": r.get("group1_code", "") or None,
-                "group1_name": r.get("group1_name", "") or None,
-                "group2_code": r.get("group2_code", "") or None,
-                "group2_name": r.get("group2_name", "") or None,
-                "machinery_code": r.get("machinery_code", "") or None,
-                "machinery_name": r.get("machinery_name", "") or None,
-                "component_code": r.get("component_code", "") or None,
-                "component_name": comp_name,
-                "component_type": r.get("component_type", "") or None,
-                "is_critical": critical_raw in ("yes", "true", "1", "y"),
-            }
+            machinery_code = hierarchy_code or None
+
+        comp_type = str(r.get("component_type") or "").strip() or None
+        category = str(r.get("category") or "").strip() or None
+        priority = str(r.get("priority") or "").strip().lower()
+        is_critical = priority in ("high", "critical", "yes", "true", "1")
+
+        mapped = {
+            "group1_code": group1_code or None,
+            "group1_name": r.get("group1_name") or category or "Uncategorised",
+            "group2_code": group2_code or None,
+            "group2_name": r.get("group2_name") or comp_type or category or "Uncategorised",
+            "machinery_code": machinery_code or None,
+            "machinery_name": r.get("machinery_name") or comp_type or None,
+            "component_code": r.get("component_code") or None,
+            "component_name": comp_name,
+            "component_type": comp_type,
+            "is_critical": is_critical,
+        }
 
         await db.execute(
             text(
@@ -326,6 +398,115 @@ async def approve_node(
     )
     await db.commit()
     return {"id": str(request_id), "status": "active"}
+
+
+@router.post(
+    "/library/component-structure/push-to-vessel",
+    summary="F-03: Push active library nodes to a vessel as accepted components (idempotent)",
+)
+async def push_library_to_vessel(
+    body: dict[str, Any],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """
+    Copy all active component_structure_library nodes for this tenant into the
+    vessel's components table with qc_status=accepted.  Already-existing rows
+    (same group1/group2/main_machinery/component_name) are skipped so the
+    operation is safe to call multiple times.
+    """
+    vessel_id_str = body.get("vessel_id")
+    if not vessel_id_str:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="vessel_id is required",
+        )
+    try:
+        vessel_id = uuid.UUID(vessel_id_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid vessel_id UUID",
+        )
+
+    await _get_vessel_or_404(vessel_id, db)
+
+    # Load all active library nodes for this tenant
+    lib_result = await db.execute(
+        text(
+            "SELECT group1_name, group2_name, machinery_name, component_name, "
+            "component_type, is_critical "
+            "FROM component_structure_library "
+            "WHERE tenant_id = :tid AND status = 'active' AND is_deleted = false "
+            "ORDER BY group1_name, group2_name, machinery_name, component_name"
+        ),
+        {"tid": str(current_user.tenant_id)},
+    )
+    lib_nodes = lib_result.mappings().all()
+
+    if not lib_nodes:
+        return {"added": 0, "skipped": 0, "message": "No active library nodes found"}
+
+    # Load existing component names for this vessel (for dedup)
+    existing_result = await db.execute(
+        text(
+            "SELECT group1, group2, main_machinery, component_name "
+            "FROM components "
+            "WHERE vessel_id = :vid AND tenant_id = :tid AND is_deleted = false"
+        ),
+        {"vid": str(vessel_id), "tid": str(current_user.tenant_id)},
+    )
+    existing_keys: set[tuple] = {
+        (
+            (r["group1"] or "").lower().strip(),
+            (r["group2"] or "").lower().strip(),
+            (r["main_machinery"] or "").lower().strip(),
+            (r["component_name"] or "").lower().strip(),
+        )
+        for r in existing_result.mappings().all()
+    }
+
+    added = 0
+    skipped = 0
+    for node in lib_nodes:
+        g1 = (node["group1_name"] or "Uncategorised").strip()
+        g2 = (node["group2_name"] or "Uncategorised").strip()
+        mm = (node["machinery_name"] or "Unknown").strip()
+        cn = (node["component_name"] or "").strip()
+        if not cn:
+            skipped += 1
+            continue
+
+        key = (g1.lower(), g2.lower(), mm.lower(), cn.lower())
+        if key in existing_keys:
+            skipped += 1
+            continue
+
+        await db.execute(
+            text(
+                "INSERT INTO components "
+                "(id, tenant_id, vessel_id, group1, group2, main_machinery, component_name, "
+                "is_critical, qc_status, is_unmapped, confidence_score, is_deleted, "
+                "created_at, updated_at) "
+                "VALUES (:id, :tid, :vid, :g1, :g2, :mm, :cn, "
+                ":ic, 'accepted', false, 100, false, NOW(), NOW())"
+            ),
+            {
+                "id": str(uuid.uuid4()),
+                "tid": str(current_user.tenant_id),
+                "vid": str(vessel_id),
+                "g1": g1,
+                "g2": g2,
+                "mm": mm,
+                "cn": cn,
+                "ic": bool(node["is_critical"]),
+            },
+        )
+        existing_keys.add(key)
+        added += 1
+
+    await db.commit()
+    return {"added": added, "skipped": skipped}
 
 
 @router.post(

@@ -12,6 +12,7 @@ import {
   BookOpen,
   GitMerge,
   RefreshCw,
+  FileDown,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 
@@ -104,7 +105,7 @@ const ComponentStructureTab: React.FC = () => {
     queryKey: ['library', 'component-structure'],
     queryFn: async () => {
       const res = await apiClient.get('/library/component-structure')
-      return res.data
+      return res.data.items ?? res.data
     },
   })
 
@@ -204,19 +205,29 @@ const ComponentStructureTab: React.FC = () => {
             className="hidden"
             onChange={handleFileChange}
           />
-          <div className="flex flex-col items-end gap-1">
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={importMutation.isPending}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors disabled:opacity-50"
-            >
-              {importMutation.isPending ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
-              ) : (
-                <Upload className="w-4 h-4" />
-              )}
-              Import Excel
-            </button>
+          <div className="flex flex-col items-end gap-1.5">
+            <div className="flex gap-2">
+              <a
+                href={`${apiClient.defaults.baseURL}/library/component-structure/template`}
+                download="component_library_template.xlsx"
+                className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 hover:text-white rounded-lg transition-colors text-sm"
+              >
+                <FileDown className="w-4 h-4" />
+                Download Template
+              </a>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={importMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors disabled:opacity-50"
+              >
+                {importMutation.isPending ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Upload className="w-4 h-4" />
+                )}
+                Import Excel
+              </button>
+            </div>
             <p className="text-xs text-slate-500">
               Columns: <span className="text-slate-400">ShipComponentName | HierarchyComponentCode | ShipComponentCode | ComponentType | Priority | Status | Quantity | Category</span>
             </p>
@@ -499,7 +510,7 @@ const GlobalLibrariesTab: React.FC = () => {
     queryKey: ['library', 'global', activeEntity],
     queryFn: async () => {
       const res = await apiClient.get(`/library/global/${activeEntity}`)
-      return res.data
+      return res.data.items ?? res.data
     },
   })
 
