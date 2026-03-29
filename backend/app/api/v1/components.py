@@ -46,7 +46,7 @@ async def list_components(
     min_confidence: Optional[int] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(100, ge=1, le=1000),
+    page_size: int = Query(100, ge=1, le=5000),
 ) -> dict[str, Any]:
     await _get_vessel_or_404(vessel_id, db)
     base_where = [
