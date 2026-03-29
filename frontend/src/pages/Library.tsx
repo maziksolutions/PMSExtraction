@@ -134,8 +134,9 @@ const ComponentStructureTab: React.FC = () => {
       setImportError(null)
       queryClient.invalidateQueries({ queryKey: ['library', 'component-structure'] })
     },
-    onError: () => {
-      setImportError('Import failed. Please check the file format and try again.')
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail ?? err?.message ?? 'Unknown error'
+      setImportError(`Import failed: ${detail}`)
     },
   })
 

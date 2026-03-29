@@ -40,6 +40,13 @@ def upgrade() -> None:
         sa.Column("rejection_reason", sa.Text(), nullable=True),
     )
 
+    # Add server defaults for created_at/updated_at so raw SQL INSERTs don't need to supply them
+    op.execute(
+        "ALTER TABLE component_structure_library "
+        "ALTER COLUMN created_at SET DEFAULT NOW(), "
+        "ALTER COLUMN updated_at SET DEFAULT NOW()"
+    )
+
 
 def downgrade() -> None:
     op.drop_column("component_structure_library", "rejection_reason")

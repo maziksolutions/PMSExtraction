@@ -185,14 +185,28 @@ async def import_component_structure(
         )
 
     # Determine current max version for this tenant
-    ver_result = await db.execute(
-        text(
-            "SELECT COALESCE(MAX(version), 0) AS max_ver "
-            "FROM component_structure_library "
-            "WHERE tenant_id = :tid AND is_deleted = false"
-        ),
-        {"tid": str(current_user.tenant_id)},
-    )
+    # Use library_version if the 0007 migration hasn't run yet, else version
+    try:
+        ver_result = await db.execute(
+            text(
+                "SELECT COALESCE(MAX(version), 0) AS max_ver "
+                "FROM component_structure_library "
+                "WHERE tenant_id = :tid AND is_deleted = false"
+            ),
+            {"tid": str(current_user.tenant_id)},
+        )
+        ver_col = "version"
+    except Exception:
+        await db.rollback()
+        ver_result = await db.execute(
+            text(
+                "SELECT COALESCE(MAX(library_version), 0) AS max_ver "
+                "FROM component_structure_library "
+                "WHERE tenant_id = :tid AND is_deleted = false"
+            ),
+            {"tid": str(current_user.tenant_id)},
+        )
+        ver_col = "library_version"
     ver_row = ver_result.mappings().one()
     new_version: int = (ver_row["max_ver"] or 0) + 1
 
@@ -239,12 +253,12 @@ async def import_component_structure(
 
         await db.execute(
             text(
-                "INSERT INTO component_structure_library "
-                "(id, tenant_id, group1_code, group1_name, group2_code, group2_name, "
-                "machinery_code, machinery_name, component_code, component_name, "
-                "component_type, is_critical, version, status, is_deleted) "
-                "VALUES (:id, :tid, :g1c, :g1n, :g2c, :g2n, :mc, :mn, :cc, :cn, "
-                ":ct, :ic, :ver, 'active', false)"
+                f"INSERT INTO component_structure_library "
+                f"(id, tenant_id, group1_code, group1_name, group2_code, group2_name, "
+                f"machinery_code, machinery_name, component_code, component_name, "
+                f"component_type, is_critical, {ver_col}, status, is_deleted, created_at, updated_at) "
+                f"VALUES (:id, :tid, :g1c, :g1n, :g2c, :g2n, :mc, :mn, :cc, :cn, "
+                f":ct, :ic, :ver, 'active', false, NOW(), NOW())"
             ),
             {
                 "id": str(uuid.uuid4()),
@@ -321,9 +335,9 @@ async def add_component_structure_node(
             "INSERT INTO component_structure_library "
             "(id, tenant_id, group1_code, group1_name, group2_code, group2_name, "
             "machinery_code, machinery_name, component_code, component_name, "
-            "component_type, is_critical, version, status, is_deleted) "
+            "component_type, is_critical, version, status, is_deleted, created_at, updated_at) "
             "VALUES (:id, :tid, :g1c, :g1n, :g2c, :g2n, :mc, :mn, :cc, :cn, "
-            ":ct, :ic, 1, 'pending_approval', false)"
+            ":ct, :ic, 1, 'pending_approval', false, NOW(), NOW())"
         ),
         {
             "id": str(new_id),
