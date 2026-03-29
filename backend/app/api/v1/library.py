@@ -139,19 +139,27 @@ async def list_vessel_types(
     """Return all vessel types, seeding defaults if first call."""
     tid = str(current_user.tenant_id)
     await _ensure_vessel_types(tid, db)
-    result = await db.execute(
-        text(
-            "SELECT id, name, is_system, sort_order, "
-            "(SELECT COUNT(*) FROM component_structure_library csl "
-            " WHERE csl.vessel_type_id = vt.id AND csl.is_deleted = false) AS component_count "
-            "FROM vessel_types vt "
-            "WHERE tenant_id = :tid AND is_deleted = false "
-            "ORDER BY sort_order, name"
-        ),
-        {"tid": tid},
-    )
-    rows = result.mappings().all()
-    return {"items": [dict(r) for r in rows]}
+    try:
+        result = await db.execute(
+            text(
+                "SELECT id, name, is_system, sort_order, "
+                "(SELECT COUNT(*) FROM component_structure_library csl "
+                " WHERE csl.vessel_type_id = vt.id AND csl.is_deleted = false) AS component_count "
+                "FROM vessel_types vt "
+                "WHERE tenant_id = :tid AND is_deleted = false "
+                "ORDER BY sort_order, name"
+            ),
+            {"tid": tid},
+        )
+        rows = result.mappings().all()
+        return {"items": [dict(r) for r in rows]}
+    except Exception as err:
+        logger.error("list_vessel_types SELECT failed for tenant %s: %s", tid, err)
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="vessel_types table not available — migration may still be running. Please refresh in a moment.",
+        )
 
 
 @router.post("/library/vessel-types", status_code=status.HTTP_201_CREATED, summary="Create a vessel type")

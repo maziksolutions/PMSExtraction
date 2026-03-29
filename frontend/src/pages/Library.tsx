@@ -106,12 +106,14 @@ const ComponentStructureTab: React.FC = () => {
   const [addTypeError, setAddTypeError] = useState('')
 
   // Vessel types list
-  const { data: vtData, isLoading: vtLoading } = useQuery({
+  const { data: vtData, isLoading: vtLoading, error: vtError } = useQuery({
     queryKey: ['library', 'vessel-types'],
     queryFn: async () => {
       const res = await apiClient.get('/library/vessel-types')
       return res.data
     },
+    retry: 3,
+    retryDelay: 2000,
   })
   const vesselTypes: { id: string; name: string; is_system: boolean; component_count: number }[] = vtData?.items ?? []
 
@@ -202,7 +204,21 @@ const ComponentStructureTab: React.FC = () => {
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
           {vtLoading ? (
-            <div className="py-8 text-center text-slate-600 text-xs">Loading...</div>
+            <div className="py-8 text-center text-slate-600 text-xs">
+              <RefreshCw className="w-4 h-4 animate-spin mx-auto mb-1" />
+              Loading...
+            </div>
+          ) : vtError ? (
+            <div className="py-6 text-center space-y-2 px-2">
+              <p className="text-red-400 text-xs">Failed to load vessel types.</p>
+              <p className="text-slate-600 text-xs">{(vtError as any)?.response?.data?.detail ?? 'Check server logs'}</p>
+              <button
+                onClick={() => queryClient.invalidateQueries({ queryKey: ['library', 'vessel-types'] })}
+                className="text-xs text-sky-400 hover:text-sky-300 underline"
+              >
+                Retry
+              </button>
+            </div>
           ) : vesselTypes.length === 0 ? (
             <div className="py-6 text-center space-y-2">
               <p className="text-slate-500 text-xs">No vessel types found.</p>
