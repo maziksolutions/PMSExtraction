@@ -233,11 +233,7 @@ async def extract_entities(
 # ---------------------------------------------------------------------------
 
 
-async def auto_extract_from_manual(
-    manual_id_str: str,
-    vessel_id_str: str,
-    tenant_id_str: str,
-) -> None:
+async def auto_extract_from_manual(manual_id_str: str) -> None:
     """
     Background task: extract Components, Jobs, and Spares from a Manual.
 
@@ -252,18 +248,14 @@ async def auto_extract_from_manual(
     from sqlalchemy import select, update
 
     manual_id = uuid.UUID(manual_id_str)
-    vessel_id = uuid.UUID(vessel_id_str)
-    tenant_id = uuid.UUID(tenant_id_str)
 
     async with AsyncSessionLocal() as db:
         # ------------------------------------------------------------------
-        # Load the manual
+        # Load the manual (vessel_id and tenant_id come from the record itself)
         # ------------------------------------------------------------------
         result = await db.execute(
             select(Manual).where(
                 Manual.id == manual_id,
-                Manual.vessel_id == vessel_id,
-                Manual.tenant_id == tenant_id,
                 Manual.is_deleted == False,
             )
         )
@@ -271,6 +263,9 @@ async def auto_extract_from_manual(
         if manual is None:
             logger.warning("auto_extract_from_manual: manual %s not found", manual_id_str)
             return
+
+        vessel_id = manual.vessel_id
+        tenant_id = manual.tenant_id
 
         # Load vessel for shipyard fallback
         from app.models.vessel import VesselProject
@@ -303,69 +298,108 @@ async def auto_extract_from_manual(
         await db.commit()
 
         # ------------------------------------------------------------------
-        # Get text: use stored DB text first, fall back to reading file
+        # Get text with [PAGE N] markers.
+        # Use stored DB text if it already has markers; otherwise re-extract
+        # from blob storage (handles both old records and blob-stored files).
         # ------------------------------------------------------------------
         filename = manual.original_filename
         file_path = manual.blob_storage_key
         full_text = ""
 
-        # Primary source: text extracted at upload time and persisted in DB
-        if getattr(manual, "extracted_text", None):
-            full_text = manual.extracted_text  # type: ignore[assignment]
-
-        # Fallback: re-read from disk if DB text is missing (e.g. older records)
-        if not full_text and file_path and os.path.exists(file_path):
+        stored_text = getattr(manual, "extracted_text", None) or ""
+        if stored_text and "[PAGE " in stored_text:
+            # Already has page markers — use as-is
+            full_text = stored_text
+            logger.info("auto_extract_from_manual: using stored extracted_text for %s", filename)
+        else:
+            # Need to (re-)extract: try blob storage first, then local disk
+            file_bytes: Optional[bytes] = None
             ext = (manual.file_extension or "").lower()
-            if ext == "pdf":
+
+            # Try blob storage (MinIO / Azure)
+            is_local_path = file_path and (
+                file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
+            )
+            if file_path and not is_local_path:
                 try:
-                    import asyncio as _asyncio
-                    import pdfplumber
+                    from app.services.blob_storage import BlobStorageService
+                    blob_svc = BlobStorageService()
+                    file_bytes = await blob_svc.download_bytes(file_path)
+                    logger.info(
+                        "auto_extract_from_manual: downloaded %d bytes from blob for %s",
+                        len(file_bytes), filename,
+                    )
+                except Exception as blob_err:
+                    logger.warning(
+                        "auto_extract_from_manual: blob download failed for %s: %s", filename, blob_err
+                    )
 
-                    def _read_pdf(path: str) -> str:
-                        parts: list[str] = []
-                        with pdfplumber.open(path) as pdf:
-                            for page_num, page in enumerate(pdf.pages, start=1):
-                                page_parts: list[str] = []
-                                # Extract prose text
-                                text = page.extract_text()
-                                if text and text.strip():
-                                    page_parts.append(text)
-                                # Also extract tables (machinery lists are mostly tables)
-                                try:
-                                    tables = page.extract_tables()
-                                    for table in (tables or []):
-                                        if not table:
-                                            continue
-                                        rows = []
-                                        for row in table:
-                                            if row and any(cell for cell in row if cell):
-                                                rows.append(" | ".join(
-                                                    str(cell).strip() if cell else ""
-                                                    for cell in row
-                                                ))
-                                        if rows:
-                                            page_parts.append("[TABLE]\n" + "\n".join(rows))
-                                except Exception:
-                                    pass
-                                if page_parts:
-                                    parts.append(f"[PAGE {page_num}]\n" + "\n".join(page_parts))
-                        return "\n\n".join(parts)
+            # Fallback to local disk
+            if file_bytes is None and file_path and os.path.exists(file_path):
+                with open(file_path, "rb") as fh:
+                    file_bytes = fh.read()
 
-                    full_text = await _asyncio.to_thread(_read_pdf, file_path)
-                except Exception as pdf_err:
-                    logger.warning("pdfplumber failed for %s: %s", filename, pdf_err)
-            elif ext in ("docx",):
-                try:
-                    import asyncio as _asyncio
-                    import docx
+            if file_bytes is not None:
+                if ext == "pdf":
+                    try:
+                        import asyncio as _asyncio
+                        import pdfplumber
+                        import io as _io
 
-                    def _read_docx(path: str) -> str:
-                        doc = docx.Document(path)
-                        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+                        def _read_pdf_bytes(data: bytes) -> str:
+                            parts: list[str] = []
+                            with pdfplumber.open(_io.BytesIO(data)) as pdf:
+                                for page_num, page in enumerate(pdf.pages, start=1):
+                                    page_parts: list[str] = []
+                                    text = page.extract_text()
+                                    if text and text.strip():
+                                        page_parts.append(text)
+                                    try:
+                                        for table in (page.extract_tables() or []):
+                                            if not table:
+                                                continue
+                                            rows = [
+                                                " | ".join(str(c).strip() if c else "" for c in row)
+                                                for row in table if row and any(c for c in row if c)
+                                            ]
+                                            if rows:
+                                                page_parts.append("[TABLE]\n" + "\n".join(rows))
+                                    except Exception:
+                                        pass
+                                    if page_parts:
+                                        parts.append(f"[PAGE {page_num}]\n" + "\n".join(page_parts))
+                            return "\n\n".join(parts)
 
-                    full_text = await _asyncio.to_thread(_read_docx, file_path)
-                except Exception as docx_err:
-                    logger.warning("docx extraction failed for %s: %s", filename, docx_err)
+                        full_text = await _asyncio.to_thread(_read_pdf_bytes, file_bytes)
+                        # Persist the freshly-extracted text so future calls are instant
+                        if full_text:
+                            await db.execute(
+                                update(Manual)
+                                .where(Manual.id == manual_id)
+                                .values(extracted_text=full_text)
+                            )
+                            await db.commit()
+                    except Exception as pdf_err:
+                        logger.warning("pdfplumber failed for %s: %s", filename, pdf_err)
+                elif ext == "docx":
+                    try:
+                        import asyncio as _asyncio
+                        import docx
+                        import io as _io
+
+                        def _read_docx_bytes(data: bytes) -> str:
+                            doc = docx.Document(_io.BytesIO(data))
+                            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+                        full_text = await _asyncio.to_thread(_read_docx_bytes, file_bytes)
+                    except Exception as docx_err:
+                        logger.warning("docx extraction failed for %s: %s", filename, docx_err)
+            elif stored_text:
+                # Last resort: use stored text even without page markers
+                full_text = stored_text
+                logger.warning(
+                    "auto_extract_from_manual: using stored text without [PAGE] markers for %s", filename
+                )
 
         if not full_text.strip():
             logger.warning("auto_extract_from_manual: no text extracted from %s, skipping", filename)

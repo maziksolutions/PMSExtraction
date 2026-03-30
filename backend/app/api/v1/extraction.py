@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+
+logger = logging.getLogger(__name__)
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -85,9 +88,9 @@ async def _run_extract_all(
 
     for mid in manual_ids:
         try:
-            await auto_extract_from_manual(mid, vessel_id_str, tenant_id_str)
-        except Exception:
-            pass
+            await auto_extract_from_manual(mid)
+        except Exception as exc:
+            logger.error("_run_extract_all: extraction failed for manual %s: %s", mid, exc)
         _extract_state[vessel_id_str]["done"] += 1
 
     _extract_state[vessel_id_str]["status"] = "completed"
