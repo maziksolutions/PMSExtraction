@@ -76,21 +76,39 @@ def download_sharepoint_file(
         session.commit()
 
         try:
-            # Step 2: build Graph API download URL
-            graph_base = "https://graph.microsoft.com/v1.0"
-            headers = {"Authorization": f"Bearer {access_token}"}
+            # Step 2: resolve download URL
+            # If sharepoint_path is already a pre-signed https:// URL (from listing), use it
+            # directly. Otherwise call Graph API to resolve the path.
+            if sharepoint_path.startswith("https://"):
+                download_url: str = sharepoint_path
+            else:
+                graph_base = "https://graph.microsoft.com/v1.0"
+                # Get a fresh client-credentials token if no user token supplied
+                if access_token:
+                    headers = {"Authorization": f"Bearer {access_token}"}
+                else:
+                    from app.services.sharepoint import SharePointService
+                    fresh_token = SharePointService._get_client_credentials_token()
+                    headers = {"Authorization": f"Bearer {fresh_token}"}
 
-            with httpx.Client(timeout=30) as client:
-                meta_resp = client.get(
-                    f"{graph_base}/me/drive/root:/{sharepoint_path}",
-                    headers=headers,
-                )
-                meta_resp.raise_for_status()
-                meta = meta_resp.json()
-                download_url: str = meta.get("@microsoft.graph.downloadUrl", "")
+                with httpx.Client(timeout=30) as client:
+                    # Try sites-based URL first (SharePoint), fall back to /me/drive
+                    from app.services.sharepoint import SharePointService
+                    site_id, rel_path = SharePointService._parse_folder_url(sharepoint_path)
+                    meta_resp = client.get(
+                        f"{graph_base}/sites/{site_id}/drive/root:/{rel_path}",
+                        headers=headers,
+                    )
+                    if meta_resp.status_code >= 400:
+                        meta_resp = client.get(
+                            f"{graph_base}/me/drive/root:/{sharepoint_path}",
+                            headers=headers,
+                        )
+                    meta_resp.raise_for_status()
+                    download_url = meta_resp.json().get("@microsoft.graph.downloadUrl", "")
 
             if not download_url:
-                raise ValueError("No downloadUrl returned from Graph API")
+                raise ValueError("No downloadUrl resolved for this file")
 
             # Step 3: stream to blob storage
             blob_key = (

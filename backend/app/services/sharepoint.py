@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -9,15 +9,19 @@ import httpx
 logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {"pdf", "docx", "doc", "xlsx", "xls", "png", "jpg", "jpeg", "tiff"}
+_MAX_DEPTH = 6  # maximum folder recursion depth
 
 
 class SharePointService:
     """
-    Thin wrapper around the Microsoft Graph API for SharePoint file operations.
-    All methods are async and expect a valid Azure AD access token.
+    Wrapper around Microsoft Graph API for SharePoint file operations.
+    Authenticates via client-credentials flow using environment variables:
+      AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
     """
 
-    def __init__(self, access_token: str) -> None:
+    def __init__(self, access_token: Optional[str] = None) -> None:
+        if not access_token:
+            access_token = self._get_client_credentials_token()
         self.token = access_token
         self.graph_base = "https://graph.microsoft.com/v1.0"
         self._headers = {
@@ -26,66 +30,155 @@ class SharePointService:
         }
 
     # ------------------------------------------------------------------
+    # Client-credentials token (app-level, no user consent required)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_client_credentials_token() -> str:
+        """
+        Obtain an OAuth2 token using the client-credentials flow.
+        Requires AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET.
+        The registered app needs Sites.Read.All and Files.Read.All app permissions.
+        """
+        from app.core.config import settings
+
+        tenant_id = getattr(settings, "AZURE_TENANT_ID", None)
+        client_id = getattr(settings, "AZURE_CLIENT_ID", None)
+        client_secret = getattr(settings, "AZURE_CLIENT_SECRET", None)
+
+        if not (tenant_id and client_id and client_secret):
+            raise ValueError(
+                "AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET "
+                "must be set to use SharePoint integration."
+            )
+
+        token_url = (
+            f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+        )
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "scope": "https://graph.microsoft.com/.default",
+        }
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(token_url, data=data)
+            resp.raise_for_status()
+            return resp.json()["access_token"]
+
+    # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
     async def list_folder_contents(self, folder_url: str) -> List[Dict[str, Any]]:
         """
-        List files inside a SharePoint folder using the Microsoft Graph API
-        driveItem children endpoint.
+        Recursively list ALL files inside a SharePoint folder (including sub-folders).
 
         Returns a list of dicts:
-            {name, path, size, mimeType, webUrl}
+            {name, path, size, mimeType, webUrl, download_url, folder_path}
 
         Only files with supported extensions are returned.
         """
         site_id, drive_path = self._parse_folder_url(folder_url)
 
         async with httpx.AsyncClient(timeout=30) as client:
-            url = (
-                f"{self.graph_base}/sites/{site_id}"
-                f"/drive/root:/{drive_path}:/children"
-            )
-            items: List[Dict[str, Any]] = []
-            next_link: str | None = url
+            # Get the drive for this site so we can use item IDs reliably
+            if drive_path:
+                start_url = (
+                    f"{self.graph_base}/sites/{site_id}"
+                    f"/drive/root:/{drive_path}:/children"
+                )
+            else:
+                start_url = f"{self.graph_base}/sites/{site_id}/drive/root/children"
 
-            while next_link:
-                resp = await client.get(next_link, headers=self._headers)
-                resp.raise_for_status()
-                data = resp.json()
+            items = await self._list_recursive(client, site_id, url=start_url, depth=0)
 
-                for item in data.get("value", []):
-                    # Skip folders
-                    if "folder" in item:
-                        continue
+        return items
 
-                    name: str = item.get("name", "")
-                    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-                    if ext not in ALLOWED_EXTENSIONS:
-                        continue
+    async def _list_recursive(
+        self,
+        client: httpx.AsyncClient,
+        site_id: str,
+        url: str,
+        depth: int,
+        folder_path: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Recursively traverse folders using the Graph API children endpoint."""
+        if depth > _MAX_DEPTH:
+            logger.warning("Max recursion depth %d reached at %s", _MAX_DEPTH, folder_path)
+            return []
 
-                    items.append(
-                        {
-                            "name": name,
-                            "path": item.get("parentReference", {}).get("path", "")
-                            + "/"
-                            + name,
-                            "size": item.get("size", 0),
-                            "mimeType": item.get("file", {}).get(
-                                "mimeType", "application/octet-stream"
-                            ),
-                            "webUrl": item.get("webUrl", ""),
-                        }
+        items: List[Dict[str, Any]] = []
+        next_link: Optional[str] = url
+
+        while next_link:
+            resp = await client.get(next_link, headers=self._headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+            for item in data.get("value", []):
+                name: str = item.get("name", "")
+                item_id: str = item.get("id", "")
+                current_path = f"{folder_path}/{name}" if folder_path else name
+
+                if "folder" in item:
+                    # Recurse into subfolder using its item ID (more reliable than path)
+                    sub_url = (
+                        f"{self.graph_base}/sites/{site_id}"
+                        f"/drive/items/{item_id}/children"
                     )
+                    sub_items = await self._list_recursive(
+                        client, site_id, url=sub_url,
+                        depth=depth + 1, folder_path=current_path,
+                    )
+                    items.extend(sub_items)
+                    continue
 
-                next_link = data.get("@odata.nextLink")
+                ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+                if ext not in ALLOWED_EXTENSIONS:
+                    continue
+
+                # Store the pre-signed download URL so the task can use it directly
+                download_url = item.get("@microsoft.graph.downloadUrl", "")
+                if not download_url:
+                    # Request it explicitly when not included in the listing
+                    try:
+                        meta_resp = await client.get(
+                            f"{self.graph_base}/sites/{site_id}/drive/items/{item_id}",
+                            headers={**self._headers, "Prefer": "allowthrottleablequeries"},
+                        )
+                        meta_resp.raise_for_status()
+                        download_url = meta_resp.json().get("@microsoft.graph.downloadUrl", "")
+                    except Exception as err:
+                        logger.warning("Could not get download URL for %s: %s", name, err)
+
+                items.append(
+                    {
+                        "name": name,
+                        "path": download_url or current_path,  # pre-signed URL or fallback
+                        "size": item.get("size", 0),
+                        "mimeType": item.get("file", {}).get(
+                            "mimeType", "application/octet-stream"
+                        ),
+                        "webUrl": item.get("webUrl", ""),
+                        "download_url": download_url,
+                        "folder_path": folder_path,
+                        "modified": item.get("lastModifiedDateTime", ""),
+                    }
+                )
+
+            next_link = data.get("@odata.nextLink")
 
         return items
 
     async def get_download_url(self, file_path: str) -> str:
         """
-        Retrieve a temporary @microsoft.graph.downloadUrl for a SharePoint file.
+        Retrieve a temporary download URL for a SharePoint file.
+        If file_path is already a pre-signed https:// URL, return it as-is.
         """
+        if file_path.startswith("https://"):
+            return file_path
+
         site_id, _ = self._parse_folder_url(file_path)
         relative_path = file_path.lstrip("/")
 
@@ -107,8 +200,6 @@ class SharePointService:
         """
         Stream-download a file from a pre-signed SharePoint download URL and
         upload it directly to blob storage.
-
-        Returns the total number of bytes written.
         """
         from app.services.blob_storage import BlobStorageService
 
@@ -142,14 +233,15 @@ class SharePointService:
     @staticmethod
     def _parse_folder_url(folder_url: str) -> tuple[str, str]:
         """
-        Extract (site_id_or_hostname, drive_path) from a SharePoint URL.
+        Extract (site_id, drive_path) from a SharePoint URL.
 
-        Supports formats:
+        Handles:
           https://{tenant}.sharepoint.com/sites/{site}/Shared Documents/{path}
-          https://graph.microsoft.com/v1.0/sites/{site_id}/...
+          https://{tenant}.sharepoint.com/sites/{site}/LibraryName/Forms/AllItems.aspx
+          https://{tenant}.sharepoint.com/sites/{site}/LibraryName/{subfolder}
         """
         parsed = urlparse(folder_url)
-        hostname = parsed.netloc  # e.g. "contoso.sharepoint.com"
+        hostname = parsed.netloc
         path_parts = [p for p in parsed.path.split("/") if p]
 
         # Locate /sites/{site_name} in path
@@ -157,10 +249,18 @@ class SharePointService:
             sites_idx = path_parts.index("sites")
             site_name = path_parts[sites_idx + 1]
             site_id = f"{hostname}:/sites/{site_name}"
-            # Everything after /sites/{site_name} is the drive path
-            drive_path = "/".join(path_parts[sites_idx + 2:])
+            remaining = path_parts[sites_idx + 2:]
+
+            # Strip SharePoint UI fragments (Forms, AllItems.aspx, etc.)
+            ui_stops = {"Forms", "AllItems.aspx", "_layouts", "Shared%20Documents"}
+            clean = []
+            for part in remaining:
+                if part in ui_stops or part.endswith(".aspx"):
+                    break
+                clean.append(part)
+
+            drive_path = "/".join(clean)
         except (ValueError, IndexError):
-            # Fallback: treat the whole path as the drive path and use hostname as site
             site_id = hostname
             drive_path = parsed.path.lstrip("/")
 

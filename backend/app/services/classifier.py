@@ -143,18 +143,31 @@ def _classify_with_claude(text_sample: str, filename: str, page_count: int) -> O
 
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-        prompt = f"""You are a maritime document classifier. Analyse the following vessel manual and return a JSON classification.
+        prompt = f"""You are an expert maritime document classifier specialising in ship technical documentation and PMS (Planned Maintenance System) data.
 
 Filename: {filename}
 Page count: {page_count}
 Text sample (first pages):
 ---
-{text_sample[:4000]}
+{text_sample[:8000]}
 ---
 
-Classify this document and return ONLY valid JSON in this exact format:
+Classify this document into EXACTLY ONE of the following categories:
+
+- **Instruction Manual**: Manufacturer's technical/operation/maintenance manual for a specific piece of equipment (contains operating procedures, maintenance schedules, overhaul instructions, spare parts lists). Examples: engine manuals, pump manuals, compressor manuals, crane manuals.
+- **Machinery Particulars**: A list/register/inventory of all equipment on the vessel — tabular format with columns like No., Equipment Name, Maker, Model, Serial No., Capacity. May be titled "Machinery List", "Equipment Register", "Maker List", or similar.
+- **General Arrangement**: Deck plans, layout drawings, accommodation plans showing spatial arrangement of the vessel. Little or no text — mostly drawings.
+- **Pipeline Diagrams/P&ID**: Piping & Instrumentation Diagrams, system flow diagrams, schematic diagrams for piping/hydraulic/pneumatic systems.
+- **LSA/FFA Plans**: Life Saving Appliance plans, Fire Fighting Appliance plans, fire safety plans, muster lists, evacuation diagrams.
+- **Tank Capacity Plan**: Tank tables, sounding tables, ullage tables, stability booklets, capacity plans.
+- **Electrical Diagrams**: Single-line diagrams, wiring diagrams, cable lists, switchboard diagrams, load lists.
+- **Yard/Finished Drawings**: Shipyard construction drawings, as-built drawings, structural drawings, hull drawings.
+- **Class Certificates/Surveys**: Classification certificates, survey reports, DOC/SMC/IOPP certificates, flag state certificates.
+- **Unknown/Unclassifiable**: Cannot determine category with reasonable confidence.
+
+Return ONLY valid JSON in this exact format:
 {{
-  "category": "<one of: Instruction Manual | Machinery Particulars | General Arrangement | Pipeline Diagrams/P&ID | LSA/FFA Plans | Tank Capacity Plan | Yard/Finished Drawings | Electrical Diagrams | Class Certificates/Surveys | Unknown/Unclassifiable>",
+  "category": "<category name exactly as listed above>",
   "confidence": <integer 0-100>,
   "useful_for_extraction": "<yes | partial | no>",
   "pages_with_components": "<page range like '1-20, 35-40' or empty string>",
@@ -164,11 +177,13 @@ Classify this document and return ONLY valid JSON in this exact format:
 }}
 
 Rules:
-- useful_for_extraction = "yes" if the document contains machinery components, maintenance jobs, or spare parts data
-- useful_for_extraction = "partial" if it has some relevant data mixed with other content
-- useful_for_extraction = "no" if it is certificates, drawings, or general plans with no extractable PMS data
-- Page ranges should be based on where relevant content appears in the document
-- confidence should reflect how certain you are about the category (80-95 for clear matches, 40-65 for uncertain)"""
+- useful_for_extraction = "yes" if: Instruction Manual OR Machinery Particulars (contains extractable PMS data)
+- useful_for_extraction = "partial" if: document has some components/jobs/spares mixed with drawings or certificates
+- useful_for_extraction = "no" if: certificates, drawings, plans, diagrams with no equipment data to extract
+- Page ranges: estimate based on document structure (e.g. machinery lists usually start page 1; spare parts often in final third)
+- If page_count is 0 or unknown, leave page range fields as empty strings
+- confidence 85-98: very clear match; 65-84: probable match; 40-64: uncertain; below 40: use Unknown/Unclassifiable
+- Machinery Particulars vs Instruction Manual: if the document covers ONE piece of equipment in depth → Instruction Manual; if it lists MANY different equipment items → Machinery Particulars"""
 
         model_id = getattr(settings, "CLAUDE_MODEL_ID", "claude-sonnet-4-6")
         message = client.messages.create(
@@ -198,8 +213,8 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
     Classify a PDF manual.
     Uses Claude AI if ANTHROPIC_API_KEY is set, otherwise falls back to keyword matching.
     """
-    pages_text, total_pages = _extract_pdf_text(content, max_pages=30)
-    text_sample = "\n\n".join(pages_text[:10])
+    pages_text, total_pages = _extract_pdf_text(content, max_pages=40)
+    text_sample = "\n\n".join(pages_text[:20])
 
     # Try Claude first
     ai_result = _classify_with_claude(text_sample, filename, total_pages)

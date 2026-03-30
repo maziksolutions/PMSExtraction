@@ -160,29 +160,36 @@ async def start_ingestion(
     db.add(session)
     await db.flush()
 
+    # Create manuals and collect (manual_id, download_url) for task dispatch
+    manual_tasks: list[tuple[str, str]] = []
     for file_info in body.selected_files:
+        name = file_info.get("name", "unknown")
+        # Prefer pre-signed download_url from listing; fall back to path
+        download_url = file_info.get("download_url") or file_info.get("path", "")
         manual = Manual(
             tenant_id=current_user.tenant_id,
             vessel_id=vessel_id,
-            original_filename=file_info.get("name", "unknown"),
-            file_extension=file_info.get("name", "").rsplit(".", 1)[-1].lower() if "." in file_info.get("name", "") else "pdf",
+            original_filename=name,
+            file_extension=name.rsplit(".", 1)[-1].lower() if "." in name else "pdf",
             file_size_bytes=file_info.get("size", 0),
-            sharepoint_path=file_info.get("path", ""),
+            sharepoint_path=download_url,
             status=ManualStatus.queued,
             uploaded_by=current_user.id,
         )
         db.add(manual)
+        await db.flush()
+        manual_tasks.append((str(manual.id), download_url))
 
     await db.commit()
     await db.refresh(session)
 
-    # Dispatch Celery tasks
+    # Dispatch Celery tasks with correct manual_id and pre-signed download URL
     try:
         from app.tasks.ingestion import download_sharepoint_file
-        for file_info in body.selected_files:
-            download_sharepoint_file.delay(str(session.id), file_info.get("path", ""))
+        for manual_id, download_url in manual_tasks:
+            download_sharepoint_file.delay(manual_id, download_url, "")
     except Exception:
-        pass  # Tasks will be dispatched when Celery is available
+        pass  # Celery may not be available in dev
 
     return IngestionSessionOut.model_validate(session)
 
@@ -528,15 +535,18 @@ async def screening_status(
 
 @router.get(
     "/{vessel_id}/manuals/{manual_id}/view",
-    summary="View / download a manual file",
+    summary="Get a pre-signed URL to view / download a manual file",
 )
 async def view_manual(
     vessel_id: uuid.UUID,
     manual_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> FileResponse:
-    """Serve the uploaded manual file for inline viewing in the browser."""
+) -> dict:
+    """Return a short-lived pre-signed URL for the manual file in blob storage."""
+    from fastapi.responses import JSONResponse
+    from app.services.blob_storage import BlobStorageService
+
     await _get_vessel_or_404(vessel_id, db)
     result = await db.execute(
         select(Manual).where(
@@ -550,25 +560,16 @@ async def view_manual(
     if manual is None:
         raise HTTPException(status_code=404, detail="Manual not found")
 
-    file_path = manual.blob_storage_key
-    if not file_path or not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not available on disk. Please re-upload.")
+    blob_key = manual.blob_storage_key
+    if not blob_key:
+        raise HTTPException(status_code=404, detail="File not available. Please re-upload.")
 
-    mime_map = {
-        "pdf": "application/pdf",
-        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "doc": "application/msword",
-        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "xls": "application/vnd.ms-excel",
-    }
-    media_type = mime_map.get(manual.file_extension, "application/octet-stream")
-
-    return FileResponse(
-        path=file_path,
-        media_type=media_type,
-        filename=manual.original_filename,
-        headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
-    )
+    try:
+        blob_service = BlobStorageService()
+        presigned_url = await blob_service.get_download_url(blob_key, expires_in=3600)
+        return {"url": presigned_url, "filename": manual.original_filename}
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"Could not generate file URL: {exc}")
 
 
 @router.delete(

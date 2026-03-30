@@ -639,9 +639,6 @@ const ManualReview: React.FC = () => {
                 const edit = edits[m.id] ?? {}
                 const changed = Object.keys(edit).length > 0
                 const isSelected = selectedIds.has(m.id)
-                const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1'
-                const viewUrl = `${apiBase}/vessels/${vesselId}/manuals/${m.id}/view`
-
                 return (
                   <tr
                     key={m.id}
@@ -657,7 +654,16 @@ const ManualReview: React.FC = () => {
                     </td>
                     <td className="px-3 py-3 max-w-xs">
                       <button
-                        onClick={() => window.open(viewUrl, '_blank')}
+                        onClick={async () => {
+                          try {
+                            const { data } = await apiClient.get<{ url: string }>(
+                              `/vessels/${vesselId}/manuals/${m.id}/view`
+                            )
+                            window.open(data.url, '_blank')
+                          } catch {
+                            alert('Could not open file. Please try again.')
+                          }
+                        }}
                         className="flex items-center gap-1.5 text-left hover:text-sky-400 transition-colors group"
                         title="Click to view PDF"
                       >
