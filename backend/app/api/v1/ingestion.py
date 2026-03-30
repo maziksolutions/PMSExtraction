@@ -720,7 +720,8 @@ async def view_manual(
 
     blob_key = manual.blob_storage_key
     if not blob_key:
-        raise HTTPException(status_code=404, detail="File not available. Please re-upload.")
+        _log.warning("view_manual: manual_id=%s has no blob_storage_key", manual_id)
+        raise HTTPException(status_code=404, detail="File not available — this manual has no stored file. Please delete and re-upload it.")
 
     mime_map = {
         "pdf": "application/pdf",
@@ -739,11 +740,14 @@ async def view_manual(
     # Local file path (starts with / on Linux or drive letter on Windows)
     is_local_path = blob_key.startswith("/") or (len(blob_key) > 1 and blob_key[1] == ":")
 
+    _log.info("view_manual: manual_id=%s blob_key=%s is_local=%s", manual_id, blob_key, is_local_path)
+
     if is_local_path:
         if not os.path.exists(blob_key):
+            _log.warning("view_manual: local file missing at path=%s", blob_key)
             raise HTTPException(
                 status_code=404,
-                detail="File was stored on an ephemeral disk that no longer exists. Please re-upload.",
+                detail=f"File was stored on an ephemeral local disk that no longer exists (path: {blob_key}). Please delete and re-upload this manual.",
             )
         with open(blob_key, "rb") as fh:
             file_bytes = fh.read()
@@ -767,14 +771,16 @@ async def view_manual(
             _log.warning("view_manual: Azure presigned URL failed for key=%s: %s — falling back to stream", blob_key, exc)
 
     try:
+        _log.info("view_manual: downloading from blob storage key=%s", blob_key)
         file_bytes = await blob_service.download_bytes(blob_key)
+        _log.info("view_manual: downloaded %d bytes for key=%s", len(file_bytes), blob_key)
         return Response(
             content=file_bytes,
             media_type=media_type,
             headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
         )
     except Exception as exc:
-        _log.error("view_manual: blob download failed for key=%s: %s", blob_key, exc)
+        _log.error("view_manual: blob download FAILED key=%s error=%s", blob_key, exc, exc_info=True)
         raise HTTPException(status_code=502, detail=f"Could not retrieve file from storage: {exc}")
 
 

@@ -17,6 +17,7 @@ import {
   Zap,
 } from 'lucide-react'
 import apiClient from '@/api/client'
+import { useAuthStore } from '@/store/authStore'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -771,28 +772,35 @@ const ManualReview: React.FC = () => {
                     <td className="px-3 py-3 max-w-xs">
                       <button
                         onClick={async () => {
+                          const token = useAuthStore.getState().accessToken
+                          const base = (apiClient.defaults.baseURL ?? '/api/v1').replace(/\/$/, '')
+                          const url = `${base}/vessels/${vesselId}/manuals/${m.id}/view`
                           try {
-                            const resp = await apiClient.get(
-                              `/vessels/${vesselId}/manuals/${m.id}/view`,
-                              { responseType: 'arraybuffer', timeout: 120_000 }
-                            )
-                            // If response is JSON (presigned URL), parse and open it
-                            const contentType: string = resp.headers['content-type'] ?? ''
-                            if (contentType.includes('application/json')) {
-                              const text = new TextDecoder().decode(resp.data as ArrayBuffer)
-                              const json = JSON.parse(text) as { url: string }
+                            const resp = await fetch(url, {
+                              headers: { Authorization: `Bearer ${token}` },
+                              signal: AbortSignal.timeout(120_000),
+                            })
+                            if (!resp.ok) {
+                              const errData = await resp.json().catch(() => null)
+                              const msg = errData?.detail ?? `Server error ${resp.status}`
+                              alert(`Could not open file:\n${msg}`)
+                              return
+                            }
+                            const ct = resp.headers.get('content-type') ?? ''
+                            if (ct.includes('application/json')) {
+                              // Azure SAS redirect
+                              const json = await resp.json() as { url: string }
                               window.open(json.url, '_blank')
                             } else {
-                              // Binary response — create a blob URL and open it
-                              const blob = new Blob([resp.data as ArrayBuffer], { type: contentType || 'application/pdf' })
+                              // Binary stream (MinIO) — create a blob URL
+                              const blob = await resp.blob()
                               const blobUrl = URL.createObjectURL(blob)
                               const win = window.open(blobUrl, '_blank')
-                              // Revoke after tab has had time to load
                               setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000)
                               if (!win) alert('Please allow popups for this site to view files.')
                             }
-                          } catch {
-                            alert('Could not open file. Please try again.')
+                          } catch (err: any) {
+                            alert(`Could not open file:\n${err?.message ?? 'Network error'}`)
                           }
                         }}
                         className="flex items-center gap-1.5 text-left hover:text-sky-400 transition-colors group"
