@@ -147,9 +147,9 @@ def _classify_with_claude(text_sample: str, filename: str, page_count: int) -> O
 
 Filename: {filename}
 Page count: {page_count}
-Text sample (first pages):
+Full document text (all pages):
 ---
-{text_sample[:8000]}
+{text_sample}
 ---
 
 Classify this document into EXACTLY ONE of the following categories:
@@ -213,8 +213,8 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
     Classify a PDF manual.
     Uses Claude AI if ANTHROPIC_API_KEY is set, otherwise falls back to keyword matching.
     """
-    pages_text, total_pages = _extract_pdf_text(content, max_pages=40)
-    text_sample = "\n\n".join(pages_text[:20])
+    pages_text, total_pages = _extract_pdf_text(content, max_pages=9999)  # all pages
+    text_sample = "\n\n".join(pages_text)
 
     # Try Claude first
     ai_result = _classify_with_claude(text_sample, filename, total_pages)

@@ -335,11 +335,6 @@ async def auto_extract_from_manual(
             logger.warning("auto_extract_from_manual: no text extracted from %s, skipping", filename)
             return
 
-        # Limit to first 80,000 characters to stay within Claude's context window
-        MAX_CHARS = 80_000
-        if len(full_text) > MAX_CHARS:
-            full_text = full_text[:MAX_CHARS]
-
         # ------------------------------------------------------------------
         # Determine which entity types to extract based on category
         # ------------------------------------------------------------------
@@ -351,14 +346,60 @@ async def auto_extract_from_manual(
             extraction_types = ["component"]
 
         # ------------------------------------------------------------------
-        # Run extractions
+        # Chunk the full text so every page is processed.
+        # Claude claude-sonnet-4-6 has a 200k token context window.
+        # 120,000 chars ≈ 30,000 tokens — leaves ample room for system
+        # prompt and a large JSON response.
+        # ------------------------------------------------------------------
+        CHUNK_SIZE = 120_000
+        OVERLAP = 2_000  # small overlap to avoid cutting mid-table
+
+        def _chunk_text(text: str) -> list[str]:
+            if len(text) <= CHUNK_SIZE:
+                return [text]
+            chunks: list[str] = []
+            start = 0
+            while start < len(text):
+                end = min(start + CHUNK_SIZE, len(text))
+                chunks.append(text[start:end])
+                start = end - OVERLAP
+            return chunks
+
+        text_chunks = _chunk_text(full_text)
+        logger.info(
+            "auto_extract_from_manual: %s → %d chars, %d chunk(s)",
+            filename, len(full_text), len(text_chunks),
+        )
+
+        # ------------------------------------------------------------------
+        # Run extractions across all chunks
         # ------------------------------------------------------------------
         components_to_add: list[Component] = []
         jobs_to_add: list[Job] = []
         spares_to_add: list[Spare] = []
 
         for etype in extraction_types:
-            records = await extract_entities(full_text, etype, filename)
+            all_records: list[dict] = []
+            for chunk_idx, chunk in enumerate(text_chunks):
+                chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
+                records = await extract_entities(chunk, etype, chunk_label)
+                all_records.extend(records)
+
+            # Deduplicate components by name (case-insensitive) to avoid
+            # duplicates from the overlap region between chunks
+            if etype == "component" and len(text_chunks) > 1:
+                seen: set[str] = set()
+                deduped: list[dict] = []
+                for r in all_records:
+                    key = (r.get("component_name") or "").strip().lower()
+                    if key and key not in seen:
+                        seen.add(key)
+                        deduped.append(r)
+                    elif not key:
+                        deduped.append(r)
+                all_records = deduped
+
+            records = all_records
 
             for record in records:
                 confidence = int(record.get("confidence_score", 70))

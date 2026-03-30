@@ -103,31 +103,23 @@ async def list_sharepoint_files(
     vessel = await _get_vessel_or_404(vessel_id, db)
     folder_url = body.folder_url or vessel.sharepoint_folder_url or ""
 
+    if not folder_url:
+        raise HTTPException(status_code=400, detail="No SharePoint folder URL provided.")
+
     try:
         sp_service = SharePointService()
         files = await sp_service.list_folder_contents(folder_url)
-    except Exception:
-        # Mock data for dev
-        files = [
-            {
-                "name": "Engine_Manual_MAN_B&W.pdf",
-                "size": 5_242_880,
-                "path": f"{folder_url}/Engine_Manual_MAN_B&W.pdf",
-                "modified": "2024-01-15T10:00:00Z",
-            },
-            {
-                "name": "Pumps_Instruction_Manual.pdf",
-                "size": 2_097_152,
-                "path": f"{folder_url}/Pumps_Instruction_Manual.pdf",
-                "modified": "2024-01-10T08:30:00Z",
-            },
-            {
-                "name": "General_Arrangement_Drawing.pdf",
-                "size": 8_388_608,
-                "path": f"{folder_url}/General_Arrangement_Drawing.pdf",
-                "modified": "2024-01-05T12:00:00Z",
-            },
-        ]
+    except ValueError as exc:
+        # Missing Azure credentials — surface a clear error
+        raise HTTPException(
+            status_code=503,
+            detail=f"SharePoint not configured: {exc}. Ensure AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET are set in Railway environment variables.",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"SharePoint listing failed: {exc}",
+        )
 
     return SharePointFileListResponse(files=files, total=len(files))
 
