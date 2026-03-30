@@ -22,27 +22,47 @@ router = APIRouter()
 
 # ---------------------------------------------------------------------------
 # Runtime bootstrap — create table if migration hasn't run yet
+# Run DDL in autocommit mode to avoid "cannot run inside a transaction" errors.
 # ---------------------------------------------------------------------------
 
+_bootstrapped: bool = False  # module-level flag — only runs once per process
+
+
 async def _bootstrap(db: AsyncSession) -> None:
-    await db.execute(text("""
-        CREATE TABLE IF NOT EXISTS maker_models (
-            id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            tenant_id        UUID NOT NULL,
-            maker            VARCHAR(255) NOT NULL,
-            model            VARCHAR(255),
-            component_category VARCHAR(100),
-            is_deleted       BOOLEAN NOT NULL DEFAULT false,
-            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-    """))
-    await db.execute(text("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_maker_models_tenant_maker_model
-        ON maker_models (tenant_id, maker, COALESCE(model, ''))
-        WHERE is_deleted = false
-    """))
-    await db.commit()
+    global _bootstrapped
+    if _bootstrapped:
+        return
+    try:
+        # Use SAVEPOINT so a DDL error doesn't abort the outer transaction
+        await db.execute(text("SAVEPOINT bootstrap_sp"))
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS maker_models (
+                id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tenant_id        UUID NOT NULL,
+                maker            VARCHAR(255) NOT NULL,
+                model            VARCHAR(255),
+                component_category VARCHAR(100),
+                is_deleted       BOOLEAN NOT NULL DEFAULT false,
+                created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        await db.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_maker_models_tenant_maker_model
+            ON maker_models (tenant_id, maker, COALESCE(model, ''))
+            WHERE is_deleted = false
+        """))
+        await db.execute(text("RELEASE SAVEPOINT bootstrap_sp"))
+        await db.commit()
+        _bootstrapped = True
+    except Exception:
+        # Table/index already exists from migration — that's fine
+        try:
+            await db.execute(text("ROLLBACK TO SAVEPOINT bootstrap_sp"))
+            await db.execute(text("RELEASE SAVEPOINT bootstrap_sp"))
+        except Exception:
+            pass
+        _bootstrapped = True
 
 
 # ---------------------------------------------------------------------------

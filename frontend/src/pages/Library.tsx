@@ -463,9 +463,14 @@ const MakerModelTab: React.FC = () => {
 
   const addMutation = useMutation({
     mutationFn: () => apiClient.post('/maker-models', { maker: newMaker.trim(), model: newModel.trim() || null }).then(r => r.data),
-    onSuccess: () => {
+    onSuccess: (_data, _vars, _ctx) => {
+      const label = `${newMaker.trim()}${newModel.trim() ? ` / ${newModel.trim()}` : ''}`
       queryClient.invalidateQueries({ queryKey: ['maker-models'] })
       setNewMaker(''); setNewModel(''); setShowAddRow(false)
+      setImportMsg({ type: 'ok', text: `Added "${label}" to the library.` })
+    },
+    onError: (err: any) => {
+      setImportMsg({ type: 'err', text: err?.response?.data?.detail ?? err?.message ?? 'Failed to add entry. Please try again.' })
     },
   })
 
