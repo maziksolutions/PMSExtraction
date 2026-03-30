@@ -53,6 +53,11 @@ class VesselProject(TenantBase):
         nullable=True,
     )
 
+    shipyard: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="RESTRICT"),

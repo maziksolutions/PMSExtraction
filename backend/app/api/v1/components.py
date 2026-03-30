@@ -45,6 +45,7 @@ async def list_components(
     qc_status: Optional[str] = Query(None),
     min_confidence: Optional[int] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=5000),
 ) -> dict[str, Any]:
@@ -69,6 +70,17 @@ async def list_components(
         base_where.append(Component.confidence_score >= min_confidence)
     if is_unmapped is not None:
         base_where.append(Component.is_unmapped == is_unmapped)
+    if search:
+        search_term = f"%{search}%"
+        from sqlalchemy import or_
+        base_where.append(
+            or_(
+                Component.component_name.ilike(search_term),
+                Component.maker.ilike(search_term),
+                Component.model.ilike(search_term),
+                Component.main_machinery.ilike(search_term),
+            )
+        )
 
     total_result = await db.execute(select(func.count()).select_from(Component).where(*base_where))
     total: int = total_result.scalar_one()
@@ -83,6 +95,30 @@ async def list_components(
     result = await db.execute(query)
     components = result.scalars().all()
     return {"items": [ComponentOut.model_validate(c) for c in components], "page": page, "page_size": page_size, "total": total}
+
+
+@router.post(
+    "/{vessel_id}/components/auto-merge-extracted",
+    summary="Auto-merge extracted components into matching library components",
+)
+async def auto_merge_extracted(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """
+    For each extracted component (has source_manual_id), find the best matching
+    library component (source_manual_id IS NULL) by component name similarity.
+    If similarity >= 70%, merge extracted data into library component and delete
+    the extracted duplicate.
+    """
+    from app.services.component_matcher import auto_merge_extracted_components
+    merged, unmatched = await auto_merge_extracted_components(
+        db=db,
+        vessel_id=vessel_id,
+        tenant_id=current_user.tenant_id,
+    )
+    return {"merged": merged, "unmatched": unmatched}
 
 
 @router.post(

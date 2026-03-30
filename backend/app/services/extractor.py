@@ -248,6 +248,17 @@ async def auto_extract_from_manual(
             logger.warning("auto_extract_from_manual: manual %s not found", manual_id_str)
             return
 
+        # Load vessel for shipyard fallback
+        from app.models.vessel import VesselProject
+        vessel_result = await db.execute(
+            select(VesselProject).where(
+                VesselProject.id == vessel_id,
+                VesselProject.is_deleted == False,
+            )
+        )
+        vessel_obj = vessel_result.scalar_one_or_none()
+        vessel_shipyard = getattr(vessel_obj, "shipyard", None) or None
+
         category: Optional[str] = manual.category
         if not category or category.strip().lower() in ("", "unknown/unclassifiable", "unknown"):
             logger.info(
@@ -406,6 +417,13 @@ async def auto_extract_from_manual(
                 source_page = record.get("source_page_number")
 
                 if etype == "component":
+                    _maker = record.get("maker") or None
+                    _model = record.get("model") or None
+                    # For components without maker info, use shipyard as maker
+                    if not _maker and vessel_shipyard:
+                        _maker = vessel_shipyard
+                    if not _model and _maker:
+                        _model = "N/A"
                     comp = Component(
                         tenant_id=tenant_id,
                         vessel_id=vessel_id,
@@ -416,8 +434,8 @@ async def auto_extract_from_manual(
                         group2=record.get("group2") or "Uncategorised",
                         main_machinery=record.get("main_machinery") or "Unknown",
                         component_name=record.get("component_name") or "Unknown Component",
-                        maker=record.get("maker") or None,
-                        model=record.get("model") or None,
+                        maker=_maker,
+                        model=_model,
                         serial_number=record.get("serial_number") or None,
                         specification=record.get("specification") or None,
                         is_critical=bool(record.get("is_critical", False)),
@@ -501,3 +519,18 @@ async def auto_extract_from_manual(
             len(jobs_to_add),
             len(spares_to_add),
         )
+
+        # Auto-merge extracted components into matching library components
+        try:
+            from app.services.component_matcher import auto_merge_extracted_components
+            merged, unmatched = await auto_merge_extracted_components(
+                db=db,
+                vessel_id=vessel_id,
+                tenant_id=tenant_id,
+            )
+            logger.info(
+                "auto_extract_from_manual: auto-merge vessel=%s merged=%d unmatched=%d",
+                vessel_id_str, merged, unmatched,
+            )
+        except Exception as merge_exc:
+            logger.warning("auto_extract_from_manual: auto-merge failed: %s", merge_exc)

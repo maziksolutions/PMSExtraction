@@ -59,3 +59,7 @@ api_router.include_router(extraction.router, prefix="/vessels", tags=["Extractio
 api_router.include_router(extraction.router, tags=["ExtractionPrompts"])
 api_router.include_router(library.router, tags=["Library"])
 api_router.include_router(precheck.router, prefix="/vessels", tags=["PreCheck"])
+
+# Maker/Model Library
+from app.api.v1 import maker_models  # noqa: E402
+api_router.include_router(maker_models.router, tags=["MakerModels"])

@@ -98,6 +98,7 @@ async def create_vessel(
         imo_number=vessel_data.imo_number,
         vessel_type=vessel_data.vessel_type,
         sharepoint_folder_url=vessel_data.sharepoint_folder_url,
+        shipyard=vessel_data.shipyard,
         created_by=current_user.id,
     )
     db.add(vessel)

@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useRef } from 'react'
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -18,6 +18,8 @@ import {
   RefreshCw,
   Layers,
   FileDown,
+  Search,
+  GitMerge,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 
@@ -227,9 +229,10 @@ const ComponentReview: React.FC = () => {
   const [selectedVesselTypeId, setSelectedVesselTypeId] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const hasAutoLoaded = React.useRef(false)
+  const [searchQuery, setSearchQuery] = useState('')
 
   const { data, isLoading } = useQuery({
-    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, page, pageSize],
+    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, page, pageSize, searchQuery],
     queryFn: () => {
       const params: Record<string, string | number> = { page, page_size: pageSize }
       if (selectedGroup1) params.group1 = selectedGroup1
@@ -237,6 +240,7 @@ const ComponentReview: React.FC = () => {
       if (selectedMachinery) params.main_machinery = selectedMachinery
       if (filterQC) params.qc_status = filterQC
       if (showUnmapped) params.is_unmapped = 'true'
+      if (searchQuery) params.search = searchQuery
       return apiClient.get(`/vessels/${vesselId}/components`, { params }).then((r) => r.data)
     },
     enabled: !!vesselId,
@@ -255,6 +259,13 @@ const ComponentReview: React.FC = () => {
     queryFn: () => apiClient.get('/library/vessel-types').then(r => r.data),
   })
   const vesselTypes: { id: string; name: string; component_count: number }[] = vesselTypesQuery.data?.items ?? []
+
+  const makersQuery = useQuery({
+    queryKey: ['maker-models', 'makers'],
+    queryFn: () => apiClient.get('/maker-models/makers').then(r => r.data),
+    staleTime: 60_000,
+  })
+  const makers: string[] = makersQuery.data?.items ?? []
 
   const bulkAcceptMutation = useMutation({
     mutationFn: (ids: string[]) =>
@@ -279,6 +290,7 @@ const ComponentReview: React.FC = () => {
 
   // Reset to page 1 when any filter changes
   React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, pageSize])
+  useEffect(() => { setPage(1) }, [searchQuery])
 
   React.useEffect(() => {
     if (!allComponentsQuery.isLoading && allComponentsQuery.isFetched) {
@@ -498,9 +510,28 @@ const ComponentReview: React.FC = () => {
       {/* Right Panel */}
       <div className="flex flex-1 flex-col gap-4 overflow-hidden">
         {/* Toolbar */}
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-2xl font-bold text-white mr-2">Components</h1>
+        <div className="flex flex-col gap-2">
+          <h1 className="text-2xl font-bold text-white">Components</h1>
 
+          {/* Search bar */}
+          <div className="relative mb-3">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search components, maker, model..."
+              className="w-full rounded-lg border border-slate-700 bg-slate-800 py-2 pl-9 pr-4 text-sm text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+              >✕</button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
           {/* Import Excel */}
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -537,6 +568,25 @@ const ComponentReview: React.FC = () => {
           >
             {autoLinkLoading ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Link2 className="h-3.5 w-3.5" />}
             Auto-Link Pages
+          </button>
+
+          {/* Auto-Merge Extracted */}
+          <button
+            onClick={async () => {
+              setAutoLinkLoading(true)
+              try {
+                const res = await apiClient.post(`/vessels/${vesselId}/components/auto-merge-extracted`)
+                setImportResult(`Auto-merged: ${res.data.merged} components linked to library, ${res.data.unmatched} new unmapped.`)
+                queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
+                queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
+              } catch { setImportResult('Auto-merge failed.') }
+              setAutoLinkLoading(false)
+            }}
+            disabled={autoLinkLoading}
+            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 disabled:opacity-50"
+          >
+            <GitMerge className="h-4 w-4" />
+            Auto-Merge
           </button>
 
           {/* Add Component */}
@@ -592,6 +642,7 @@ const ComponentReview: React.FC = () => {
               <option value="rejected">Rejected</option>
               <option value="modified">Modified</option>
             </select>
+          </div>
           </div>
         </div>
 
@@ -684,12 +735,19 @@ const ComponentReview: React.FC = () => {
                           <p className="text-xs text-slate-500 truncate">{comp.group1} › {comp.group2} › {comp.main_machinery}</p>
                         </td>
                         <td className="px-3 py-2.5">
-                          <input
-                            value={edit.maker ?? comp.maker ?? ''}
-                            onChange={e => setEdit(comp.id, 'maker', e.target.value)}
-                            className="w-24 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                            placeholder="—"
-                          />
+                          <>
+                            <input
+                              type="text"
+                              list="makers-list"
+                              value={edit.maker ?? comp.maker ?? ''}
+                              onChange={(e) => setEdit(comp.id, 'maker', e.target.value)}
+                              className="w-28 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                              placeholder="Maker..."
+                            />
+                            <datalist id="makers-list">
+                              {makers.map(mk => <option key={mk} value={mk} />)}
+                            </datalist>
+                          </>
                         </td>
                         <td className="px-3 py-2.5">
                           <input
