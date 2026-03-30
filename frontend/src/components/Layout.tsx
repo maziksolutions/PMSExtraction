@@ -1,5 +1,7 @@
 import React, { useState } from 'react'
-import { NavLink, Outlet, useParams } from 'react-router-dom'
+import { NavLink, Outlet, useParams, useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import apiClient from '@/api/client'
 import {
   LayoutDashboard,
   Ship,
@@ -7,6 +9,7 @@ import {
   LogOut,
   Menu,
   ChevronRight,
+  ChevronLeft,
   MessageSquare,
   BarChart2,
   Shield,
@@ -67,7 +70,15 @@ const vesselNavItems = (vesselId: string) => [
 const Layout: React.FC = () => {
   const { user } = useAuthStore()
   const { logout } = useAuth()
+  const navigate = useNavigate()
   const { vesselId } = useParams<{ vesselId?: string }>()
+
+  const vesselQuery = useQuery<{ name: string; imo_number: string; vessel_type: string }>({
+    queryKey: ['vessel-header', vesselId],
+    queryFn: () => apiClient.get(`/vessels/${vesselId}`).then(r => r.data),
+    enabled: !!vesselId,
+    staleTime: 60_000,
+  })
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [activityOpen, setActivityOpen] = useState(false)
 
@@ -121,7 +132,29 @@ const Layout: React.FC = () => {
         {/* Vessel-level nav when inside a vessel context */}
         {vesselId && (
           <>
-            <p className="mb-2 mt-4 px-3 text-xs font-semibold uppercase tracking-widest text-slate-600">
+            <div className="mt-4 mb-1 px-2">
+              <button
+                onClick={() => { navigate('/vessels'); setSidebarOpen(false) }}
+                className="flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+              >
+                <ChevronLeft className="h-3 w-3 shrink-0" />
+                All Vessels
+              </button>
+              {vesselQuery.data && (
+                <button
+                  onClick={() => { navigate(`/vessels/${vesselId}/ingestion`); setSidebarOpen(false) }}
+                  className="mt-0.5 flex w-full flex-col rounded-lg border border-slate-800 bg-slate-800/60 px-3 py-2 text-left hover:border-sky-700 hover:bg-slate-800 transition-colors"
+                >
+                  <span className="truncate text-sm font-semibold text-white leading-tight">
+                    {vesselQuery.data.name}
+                  </span>
+                  <span className="mt-0.5 truncate text-xs text-slate-500">
+                    {vesselQuery.data.imo_number} · {vesselQuery.data.vessel_type}
+                  </span>
+                </button>
+              )}
+            </div>
+            <p className="mb-2 mt-3 px-3 text-xs font-semibold uppercase tracking-widest text-slate-600">
               Vessel Workflow
             </p>
             {vesselNavItems(vesselId).map((item) => (
