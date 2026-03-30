@@ -59,7 +59,20 @@ async def auto_merge_extracted_components(
     )
     extracted_components = list(ext_result.scalars().all())
 
-    if not library_components or not extracted_components:
+    if not extracted_components:
+        return 0, 0
+
+    if not library_components:
+        # No library to merge into — mark everything as unmapped so they appear in the UI
+        for ext_comp in extracted_components:
+            ext_comp.is_unmapped = True
+            db.add(ext_comp)
+        await db.commit()
+        logger.info(
+            "auto_merge: vessel=%s no library components — marked %d as unmapped",
+            vessel_id,
+            len(extracted_components),
+        )
         return 0, len(extracted_components)
 
     # Build name index for library components

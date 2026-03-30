@@ -30,9 +30,14 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "Extract the main equipment plus any sub-components or assemblies mentioned.\n\n"
             "GROUP CLASSIFICATION GUIDE (use these exact values where applicable):\n"
             "  group1 options: Propulsion | Deck Machinery | Auxiliary Machinery | Hull Equipment | "
-            "Navigation & Communication | Safety Equipment | Cargo Handling | Hotel/Accommodation\n"
+            "Navigation & Communication | Safety Equipment | Cargo Handling | Hotel/Accommodation | Tanks & Capacities\n"
             "  group2 examples: Main Engine | Auxiliary Engine | Boiler | Steering Gear | "
-            "Anchor/Mooring | Cargo Pump | Ballast System | Fire Fighting | HVAC | Lifesaving\n\n"
+            "Anchor/Mooring | Cargo Pump | Ballast System | Fire Fighting | HVAC | Lifesaving | "
+            "Fuel Oil Tanks | Ballast Tanks | Fresh Water Tanks | Cargo Tanks | Void Spaces\n\n"
+            "TANK CAPACITY PLAN format: Each row is ONE tank. "
+            "component_name = tank name (e.g. 'Fuel Oil Tank No.1 Port'), "
+            "specification = tank capacity in m³ or tonnes (e.g. '120.5 m³'), "
+            "group1 = 'Tanks & Capacities', group2 = tank type category.\n\n"
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
             '  "group1": "top-level machinery group",\n'
@@ -442,6 +447,7 @@ async def auto_extract_from_manual(
                         job_pages=record.get("job_pages") or None,
                         spare_pages=record.get("spare_pages") or None,
                         page_reference=int(source_page) if source_page is not None else None,
+                        pdf_reference=filename,
                     )
                     components_to_add.append(comp)
 
