@@ -291,9 +291,10 @@ async def _process_uploaded_file(
                     with _pdfplumber.open(_io.BytesIO(data)) as pdf:
                         total = len(pdf.pages)
                         for page_num, page in enumerate(pdf.pages, start=1):
+                            page_parts: list[str] = []
                             text = page.extract_text()
                             if text and text.strip():
-                                parts.append(text)
+                                page_parts.append(text)
                             try:
                                 for table in (page.extract_tables() or []):
                                     if not table:
@@ -303,9 +304,12 @@ async def _process_uploaded_file(
                                         for row in table if row and any(c for c in row if c)
                                     ]
                                     if rows:
-                                        parts.append(f"[TABLE page {page_num}]\n" + "\n".join(rows))
+                                        page_parts.append("[TABLE]\n" + "\n".join(rows))
                             except Exception:
                                 pass
+                            if page_parts:
+                                # Page marker on every page so Claude reports accurate page numbers
+                                parts.append(f"[PAGE {page_num}]\n" + "\n".join(page_parts))
                     return "\n\n".join(parts), total
 
                 extracted_text, page_count_val = await asyncio.to_thread(_read_pdf, file_bytes)

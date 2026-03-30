@@ -21,116 +21,135 @@ DEFAULT_PROMPTS: dict[str, dict] = {
         "system": (
             "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist "
             "with deep knowledge of ship machinery, equipment nomenclature, and maintenance systems.\n\n"
-            "The document may be a MACHINERY LIST/REGISTER (tabular, one row per equipment item) "
-            "or a TECHNICAL MANUAL (prose with descriptions of one piece of equipment). "
-            "Extract ALL equipment entries regardless of format — do not miss any rows.\n\n"
-            "MACHINERY LIST format: Each table row is ONE component. "
-            "Typical columns: No. | Equipment/Description | Maker/Manufacturer | Type/Model | Serial No. | Capacity/Rating | Location.\n\n"
-            "TECHNICAL MANUAL format: The manual itself describes one main piece of equipment. "
-            "Extract the main equipment plus any sub-components or assemblies mentioned.\n\n"
-            "GROUP CLASSIFICATION GUIDE (use these exact values where applicable):\n"
-            "  group1 options: Propulsion | Deck Machinery | Auxiliary Machinery | Hull Equipment | "
+            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n\n"
+            "DOCUMENT TYPES — handle all of these:\n\n"
+            "1. MACHINERY LIST / REGISTER (tabular, one row = one component)\n"
+            "   Columns: No. | Equipment | Maker | Model/Type | Serial No. | Capacity | Location\n"
+            "   → Extract EVERY row. Use table section headers for group1/group2.\n\n"
+            "2. SINGLE-EQUIPMENT SPECIFICATION SHEET (title names ONE main piece of equipment)\n"
+            "   The maker and model are usually in the document TITLE or first heading.\n"
+            "   → Extract the MAIN EQUIPMENT as one component (take maker from the title/heading).\n"
+            "   → Extract each explicitly named SUB-ASSEMBLY or sub-component as a separate component\n"
+            "     (e.g. Blower, Motor, Pump, Compressor, Valve, Controller, Heat Exchanger — if named).\n"
+            "   → Do NOT create a component for every spec row (Type, Capacity, Source, etc.) —\n"
+            "     only create components for physical equipment/assemblies.\n"
+            "   → Use the specification field to capture the key ratings (kW, rpm, capacity, m³, bar).\n\n"
+            "3. TANK CAPACITY PLAN (each row is one tank)\n"
+            "   → component_name = tank name, specification = capacity in m³ or tonnes,\n"
+            "     group1 = 'Tanks & Capacities', group2 = tank category.\n\n"
+            "GROUP CLASSIFICATION GUIDE:\n"
+            "  group1: Propulsion | Deck Machinery | Auxiliary Machinery | Hull Equipment | "
             "Navigation & Communication | Safety Equipment | Cargo Handling | Hotel/Accommodation | Tanks & Capacities\n"
             "  group2 examples: Main Engine | Auxiliary Engine | Boiler | Steering Gear | "
-            "Anchor/Mooring | Cargo Pump | Ballast System | Fire Fighting | HVAC | Lifesaving | "
-            "Fuel Oil Tanks | Ballast Tanks | Fresh Water Tanks | Cargo Tanks | Void Spaces\n\n"
-            "TANK CAPACITY PLAN format: Each row is ONE tank. "
-            "component_name = tank name (e.g. 'Fuel Oil Tank No.1 Port'), "
-            "specification = tank capacity in m³ or tonnes (e.g. '120.5 m³'), "
-            "group1 = 'Tanks & Capacities', group2 = tank type category.\n\n"
+            "Sewage Treatment | Fresh Water System | Ballast System | Fire Fighting | HVAC | "
+            "Fuel Oil System | Air System | Lifesaving | Cargo Pump | Anchor/Mooring\n\n"
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
             '  "group1": "top-level machinery group",\n'
             '  "group2": "machinery sub-group",\n'
-            '  "main_machinery": "the main machinery system this component belongs to",\n'
-            '  "component_name": "exact name from the document — do not paraphrase",\n'
-            '  "maker": "manufacturer/maker name or null",\n'
-            '  "model": "model/type number or null",\n'
-            '  "serial_number": "serial or hull number or null",\n'
-            '  "specification": "capacity, power, flow rate, pressure, kW, rpm, or key specs — be specific, or null",\n'
-            '  "is_critical": true if propulsion/steering/power generation/fire/safety equipment, false otherwise,\n'
+            '  "main_machinery": "the main equipment this component belongs to or IS",\n'
+            '  "component_name": "exact name — for main equipment use the full name from the title",\n'
+            '  "maker": "manufacturer name — check document title, header, and Name Plate rows; null if absent",\n'
+            '  "model": "model/type number — check Type rows and document title; null if absent",\n'
+            '  "serial_number": "serial number or null",\n'
+            '  "specification": "key ratings: power (kW), capacity (m³/h), pressure (bar), rpm, etc. — be specific; null if absent",\n'
+            '  "is_critical": true if propulsion/steering/power generation/fire/safety/sewage treatment equipment,\n'
             '  "job_pages": null,\n'
             '  "spare_pages": null,\n'
-            '  "source_page_number": integer page number or null,\n'
+            '  "source_page_number": integer — the [PAGE N] number where this component appears,\n'
             '  "confidence_score": integer 70-98\n'
             "}\n\n"
             "STRICT RULES:\n"
-            "- Extract EVERY equipment row — skipping rows is the most common error, do not do it\n"
-            "- Fill maker and model whenever those columns exist in the table\n"
-            "- specification must capture numeric ratings (e.g. '500 kW', '200 m³/h at 4 bar') not generic descriptions\n"
-            "- If the table has section headers (e.g. 'PROPULSION', 'DECK EQUIPMENT'), use them for group1/group2\n"
-            "- Do not invent data — use null when information is absent\n"
+            "- source_page_number MUST come from the [PAGE N] marker in the text — do not guess\n"
+            "- For specification sheets: maker comes from the TITLE / HEADER (e.g. 'TAIKO Ship-Clean' → maker='Taiko')\n"
+            "- For specification sheets: model comes from Type row (e.g. 'Type: SBH-25' → model='SBH-25')\n"
+            "- Fill maker and model whenever those columns or rows exist\n"
+            "- specification must capture numeric ratings not generic text\n"
+            "- Do not invent data — null when genuinely absent\n"
             "- Return ONLY the JSON array, no explanation, no markdown fences"
         ),
         "user_template": (
-            "Extract every machinery and equipment entry from this maritime document. "
-            "This is either a machinery list (extract every table row) or a technical manual "
-            "(extract the main equipment and all sub-components mentioned).\n\n{text}"
+            "Document: {filename}\n\n"
+            "Extract every piece of physical equipment and machinery from this maritime document. "
+            "The text contains [PAGE N] markers — use them for source_page_number.\n"
+            "If this is a specification sheet for one equipment, extract the main equipment (maker from the title) "
+            "and any named sub-assemblies (motors, blowers, pumps, etc.).\n"
+            "If this is a machinery list, extract every table row.\n\n"
+            "{text}"
         ),
     },
     "job": {
         "system": (
             "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist.\n\n"
-            "Extract ALL maintenance jobs, service intervals, and inspection tasks from this ship technical manual. "
-            "Maintenance schedules often appear in tables with columns like: Job | Interval | Running Hours | Remarks.\n\n"
+            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n\n"
+            "Extract ALL maintenance jobs, service intervals, and inspection tasks. "
+            "Maintenance schedules appear as tables (Job | Interval | Running Hours | Remarks) "
+            "or as numbered procedure lists with frequencies.\n\n"
             "FREQUENCY TYPE MAPPING:\n"
-            "  - Daily / 24h → 'daily'\n"
-            "  - Weekly / 7 days → 'weekly'\n"
-            "  - Monthly / 4 weeks / 30 days → 'monthly'\n"
-            "  - 3 months / quarterly → 'quarterly'\n"
-            "  - 6 months / half yearly → 'half_yearly'\n"
-            "  - 12 months / annually / yearly → 'yearly'\n"
-            "  - Running hours (e.g. every 500 h, 1000 h, 4000 h) → 'running_hours'\n\n"
+            "  Daily / 24h → 'daily'\n"
+            "  Weekly / 7 days → 'weekly'\n"
+            "  Monthly / 30 days → 'monthly'\n"
+            "  3 months / quarterly → 'quarterly'\n"
+            "  6 months / half yearly → 'half_yearly'\n"
+            "  12 months / annually → 'yearly'\n"
+            "  Running hours (e.g. every 500 h, 1000 h) → 'running_hours', frequency = the hour value\n\n"
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
-            '  "job_name": "concise descriptive name (e.g. \'Replace lube oil filter\', \'Inspect fuel injectors\')",\n'
-            '  "job_code": "job code/number from the manual or null",\n'
-            '  "job_description": "detailed procedure description or null",\n'
-            '  "safety_precaution": "safety warnings or precautions mentioned or null",\n'
-            '  "frequency": integer value (e.g. 500 for every 500 running hours, 6 for 6-monthly) or null,\n'
+            '  "job_name": "concise name (e.g. \'Replace lube oil filter\', \'Inspect anode\')",\n'
+            '  "job_code": "job code/number from manual or null",\n'
+            '  "job_description": "procedure detail or null",\n'
+            '  "safety_precaution": "safety warnings or null",\n'
+            '  "frequency": integer or null,\n'
             '  "frequency_type": "daily|weekly|monthly|quarterly|half_yearly|yearly|running_hours or null",\n'
-            '  "is_critical": true if the job relates to propulsion, steering, safety, or regulatory compliance, false otherwise,\n'
-            '  "source_page_number": integer page number or null,\n'
+            '  "is_critical": true if propulsion/steering/safety/regulatory,\n'
+            '  "source_page_number": integer from [PAGE N] marker or null,\n'
             '  "confidence_score": integer 70-98\n'
             "}\n\n"
             "RULES:\n"
-            "- Extract every distinct job/interval — do not merge different jobs into one\n"
-            "- For running hours jobs, frequency = the hour value (e.g. 500, 1000, 4000)\n"
-            "- Include safety precautions when explicitly stated in the manual\n"
-            "- If no maintenance jobs are found, return []\n"
-            "- Return ONLY the JSON array, no explanation, no markdown fences"
+            "- source_page_number from [PAGE N] markers — do not guess\n"
+            "- Extract every distinct job — do not merge different tasks\n"
+            "- If no maintenance jobs exist, return []\n"
+            "- Return ONLY the JSON array, no markdown fences"
         ),
         "user_template": (
-            "Extract all maintenance jobs, service intervals, and inspection tasks "
-            "from this ship technical manual:\n\n{text}"
+            "Document: {filename}\n\n"
+            "Extract all maintenance jobs, service intervals, and inspection tasks. "
+            "Use [PAGE N] markers for source_page_number.\n\n{text}"
         ),
     },
     "spare": {
         "system": (
             "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist.\n\n"
-            "Extract ALL spare parts, recommended spares, and consumables from this ship technical manual. "
-            "Spare parts lists typically appear as tables with columns like: "
-            "Item No. | Part Name | Part Number | Quantity | Remarks.\n\n"
+            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n\n"
+            "Extract ALL spare parts, recommended spares, and consumables. "
+            "Spare parts lists appear as tables with columns like:\n"
+            "  Item No. | Part Name | Part Number | Drawing No. | Qty | Remarks\n"
+            "They may also appear as numbered lists under headings like 'Recommended Spare Parts' or 'Spare Parts List'.\n\n"
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
             '  "part_name": "exact part name from the document",\n'
-            '  "part_number": "manufacturer part number or catalog number or null",\n'
-            '  "specification": "size, material, rating, quantity, or relevant spec or null",\n'
-            '  "spare_maker": "manufacturer of this spare part or null",\n'
-            '  "spare_model": "model or type designation this spare fits or null",\n'
-            '  "source_page_number": integer page number or null,\n'
+            '  "part_number": "part/catalog number exactly as printed or null",\n'
+            '  "drawing_number": "drawing or diagram reference number or null",\n'
+            '  "drawing_position": "item/position number on the drawing or null",\n'
+            '  "specification": "size, material, quantity, standard (e.g. JIS, ISO), or rating — or null",\n'
+            '  "spare_maker": "manufacturer — infer from document maker if not explicit (e.g. if doc is a Taiko manual, spare_maker=Taiko); null only if truly unknown",\n'
+            '  "spare_model": "model or equipment type this spare fits or null",\n'
+            '  "source_page_number": integer from [PAGE N] marker or null,\n'
             '  "confidence_score": integer 70-98\n'
             "}\n\n"
             "RULES:\n"
-            "- Extract EVERY spare part row from all spare parts tables\n"
-            "- Include part numbers exactly as they appear (do not reformat)\n"
-            "- specification should capture quantity, material, size where listed\n"
-            "- If no spare parts are found, return []\n"
-            "- Return ONLY the JSON array, no explanation, no markdown fences"
+            "- source_page_number from [PAGE N] markers only\n"
+            "- Extract EVERY row from spare parts tables — never skip rows\n"
+            "- Part numbers: include exactly as printed (do not reformat)\n"
+            "- spare_maker: if the manual is for one specific maker (e.g. 'TAIKO Ship-Clean'), "
+            "  set spare_maker to that maker for all parts unless a different maker is stated\n"
+            "- If no spare parts found, return []\n"
+            "- Return ONLY the JSON array, no markdown fences"
         ),
         "user_template": (
-            "Extract all spare parts, recommended spares, and consumables "
-            "from this ship technical manual:\n\n{text}"
+            "Document: {filename}\n\n"
+            "Extract all spare parts, recommended spares, and consumables. "
+            "Use [PAGE N] markers for source_page_number.\n\n{text}"
         ),
     },
 }
@@ -162,7 +181,7 @@ async def extract_entities(
 
     prompt_config = DEFAULT_PROMPTS.get(extraction_type, DEFAULT_PROMPTS["component"])
     system_prompt = custom_prompt or prompt_config["system"]
-    user_message = prompt_config["user_template"].format(text=text_chunk)
+    user_message = prompt_config["user_template"].format(text=text_chunk, filename=filename)
 
     try:
         client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -306,10 +325,11 @@ async def auto_extract_from_manual(
                         parts: list[str] = []
                         with pdfplumber.open(path) as pdf:
                             for page_num, page in enumerate(pdf.pages, start=1):
+                                page_parts: list[str] = []
                                 # Extract prose text
                                 text = page.extract_text()
                                 if text and text.strip():
-                                    parts.append(text)
+                                    page_parts.append(text)
                                 # Also extract tables (machinery lists are mostly tables)
                                 try:
                                     tables = page.extract_tables()
@@ -324,11 +344,11 @@ async def auto_extract_from_manual(
                                                     for cell in row
                                                 ))
                                         if rows:
-                                            parts.append(
-                                                f"[TABLE page {page_num}]\n" + "\n".join(rows)
-                                            )
+                                            page_parts.append("[TABLE]\n" + "\n".join(rows))
                                 except Exception:
                                     pass
+                                if page_parts:
+                                    parts.append(f"[PAGE {page_num}]\n" + "\n".join(page_parts))
                         return "\n\n".join(parts)
 
                     full_text = await _asyncio.to_thread(_read_pdf, file_path)
@@ -352,14 +372,24 @@ async def auto_extract_from_manual(
             return
 
         # ------------------------------------------------------------------
-        # Determine which entity types to extract based on category
+        # Determine which entity types to extract based on category and
+        # classifier signals (pages_with_spares / pages_with_jobs)
         # ------------------------------------------------------------------
         norm_category = category.strip()
+        extraction_types: list[str] = ["component"]  # always extract components
+
+        has_spares_signal = bool(getattr(manual, "pages_with_spares", None))
+        has_jobs_signal = bool(getattr(manual, "pages_with_jobs", None))
+
         if norm_category == "Instruction Manual":
+            # Full instruction manuals always contain jobs + spares
             extraction_types = ["component", "job", "spare"]
-        else:
-            # Machinery Particulars and everything else → components only
-            extraction_types = ["component"]
+        elif has_jobs_signal:
+            extraction_types.append("job")
+            if has_spares_signal:
+                extraction_types.append("spare")
+        elif has_spares_signal:
+            extraction_types.append("spare")
 
         # ------------------------------------------------------------------
         # Chunk the full text so every page is processed.
@@ -494,6 +524,8 @@ async def auto_extract_from_manual(
                         qc_status=QCStatus.pending,
                         part_name=record.get("part_name") or "Unknown Part",
                         part_number=record.get("part_number") or None,
+                        drawing_number=record.get("drawing_number") or None,
+                        drawing_position=record.get("drawing_position") or None,
                         specification=record.get("specification") or None,
                         spare_maker=record.get("spare_maker") or None,
                         spare_model=record.get("spare_model") or None,
