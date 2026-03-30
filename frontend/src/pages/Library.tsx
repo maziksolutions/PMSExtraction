@@ -13,6 +13,9 @@ import {
   GitMerge,
   RefreshCw,
   FileDown,
+  Trash2,
+  Search,
+  Wrench,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 
@@ -422,6 +425,170 @@ const ComponentStructureTab: React.FC = () => {
   )
 }
 
+// ─── Maker / Model Library Sub-tab ───────────────────────────────────────────
+
+const MakerModelTab: React.FC = () => {
+  const queryClient = useQueryClient()
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [importMsg, setImportMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
+  const [newMaker, setNewMaker] = useState('')
+  const [newModel, setNewModel] = useState('')
+  const [showAddRow, setShowAddRow] = useState(false)
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['maker-models', search, page],
+    queryFn: () =>
+      apiClient.get('/maker-models', { params: { search: search || undefined, page, page_size: 100 } }).then(r => r.data),
+  })
+  const items: { id: string; maker: string; model: string | null; component_category: string | null }[] = data?.items ?? []
+  const total: number = data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / 100))
+
+  const importMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData()
+      form.append('file', file)
+      return apiClient.post('/maker-models/import', form, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data)
+    },
+    onSuccess: (d) => {
+      setImportMsg({ type: 'ok', text: `Imported ${d.imported} entries (${d.skipped} duplicates skipped).` })
+      queryClient.invalidateQueries({ queryKey: ['maker-models'] })
+    },
+    onError: (err: any) => {
+      setImportMsg({ type: 'err', text: err?.response?.data?.detail ?? err?.message ?? 'Import failed' })
+    },
+  })
+
+  const addMutation = useMutation({
+    mutationFn: () => apiClient.post('/maker-models', { maker: newMaker.trim(), model: newModel.trim() || null }).then(r => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['maker-models'] })
+      setNewMaker(''); setNewModel(''); setShowAddRow(false)
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiClient.delete(`/maker-models/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['maker-models'] }),
+  })
+
+  return (
+    <div className="space-y-4">
+      {/* Toolbar */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative flex-1 min-w-48">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => { setSearch(e.target.value); setPage(1) }}
+            placeholder="Search maker or model..."
+            className="w-full rounded-lg border border-slate-700 bg-slate-800 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+          />
+        </div>
+        <button
+          onClick={() => setShowAddRow(r => !r)}
+          className="flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700"
+        >
+          <Plus className="h-4 w-4" /> Add Entry
+        </button>
+        <input ref={fileInputRef} type="file" accept=".xlsx,.csv" className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) { importMutation.mutate(f); e.target.value = '' } }} />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={importMutation.isPending}
+          className="flex items-center gap-2 rounded-lg bg-sky-700 px-3 py-2 text-sm text-white hover:bg-sky-600 disabled:opacity-50"
+        >
+          {importMutation.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+          Import Excel / CSV
+        </button>
+      </div>
+
+      {/* Import hint */}
+      <p className="text-xs text-slate-500">
+        Excel/CSV columns: <span className="text-slate-400 font-mono">Maker</span> (required), <span className="text-slate-400 font-mono">Model</span> (optional), <span className="text-slate-400 font-mono">Category</span> (optional). Duplicates are skipped automatically.
+      </p>
+
+      {/* Result banner */}
+      {importMsg && (
+        <div className={`flex items-center gap-3 rounded-lg border px-4 py-3 text-sm ${importMsg.type === 'ok' ? 'border-emerald-600/40 bg-emerald-900/30 text-emerald-300' : 'border-red-600/40 bg-red-900/30 text-red-300'}`}>
+          {importMsg.type === 'ok' ? <CheckCircle className="h-4 w-4 shrink-0" /> : <XCircle className="h-4 w-4 shrink-0" />}
+          {importMsg.text}
+          <button onClick={() => setImportMsg(null)} className="ml-auto text-slate-500 hover:text-slate-300">✕</button>
+        </div>
+      )}
+
+      {/* Add row inline */}
+      {showAddRow && (
+        <div className="flex items-center gap-2 rounded-lg border border-sky-700/40 bg-slate-800 px-4 py-3">
+          <input type="text" value={newMaker} onChange={e => setNewMaker(e.target.value)}
+            placeholder="Maker name *" className="flex-1 rounded border border-slate-600 bg-slate-700 px-2 py-1.5 text-sm text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none" />
+          <input type="text" value={newModel} onChange={e => setNewModel(e.target.value)}
+            placeholder="Model (optional)" className="flex-1 rounded border border-slate-600 bg-slate-700 px-2 py-1.5 text-sm text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none" />
+          <button
+            onClick={() => addMutation.mutate()}
+            disabled={!newMaker.trim() || addMutation.isPending}
+            className="rounded bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500 disabled:opacity-50"
+          >Add</button>
+          <button onClick={() => setShowAddRow(false)} className="text-slate-500 hover:text-slate-300 text-xs">Cancel</button>
+        </div>
+      )}
+
+      {/* Table */}
+      <div className="rounded-xl border border-slate-700 bg-slate-800 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-700 bg-slate-900/50">
+              <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Maker</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Model</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Category</th>
+              <th className="px-4 py-3 w-10" />
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading ? (
+              <tr><td colSpan={4} className="py-10 text-center text-slate-500">
+                <RefreshCw className="h-5 w-5 animate-spin mx-auto mb-2" />Loading...
+              </td></tr>
+            ) : items.length === 0 ? (
+              <tr><td colSpan={4} className="py-10 text-center text-slate-500">
+                No entries yet. Import an Excel/CSV file or add entries manually.
+              </td></tr>
+            ) : items.map(item => (
+              <tr key={item.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                <td className="px-4 py-2.5 text-slate-200 font-medium">{item.maker}</td>
+                <td className="px-4 py-2.5 text-slate-400">{item.model ?? <span className="text-slate-600">—</span>}</td>
+                <td className="px-4 py-2.5 text-slate-500 text-xs">{item.component_category ?? '—'}</td>
+                <td className="px-4 py-2.5">
+                  <button onClick={() => deleteMutation.mutate(item.id)}
+                    className="text-slate-600 hover:text-red-400 transition-colors">
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between border-t border-slate-700 px-4 py-2.5">
+            <span className="text-xs text-slate-500">{total} total entries</span>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+                className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40">← Prev</button>
+              <span className="px-3 text-xs text-slate-400">Page {page} of {totalPages}</span>
+              <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages}
+                className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40">Next →</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Global Libraries Tab ─────────────────────────────────────────────────────
 
 const GLOBAL_ENTITY_LABELS: Record<GlobalEntity, string> = {
@@ -431,6 +598,7 @@ const GLOBAL_ENTITY_LABELS: Record<GlobalEntity, string> = {
 }
 
 const GlobalLibrariesTab: React.FC = () => {
+  const [activeSub, setActiveSub] = useState<'makers' | 'component' | 'job' | 'spare'>('makers')
   const [activeEntity, setActiveEntity] = useState<GlobalEntity>('component')
   const [populateVesselId, setPopulateVesselId] = useState('')
   const [populateResult, setPopulateResult] = useState<PopulateResult | null>(null)
@@ -442,18 +610,15 @@ const GlobalLibrariesTab: React.FC = () => {
       const res = await apiClient.get(`/library/global/${activeEntity}`)
       return res.data.items ?? res.data
     },
+    enabled: activeSub !== 'makers',
   })
 
   const populateMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiClient.post(`/library/global/${activeEntity}/populate`, {
-        vessel_id: populateVesselId,
-      })
+      const res = await apiClient.post(`/library/global/${activeEntity}/populate`, { vessel_id: populateVesselId })
       return res.data as PopulateResult
     },
-    onSuccess: (data) => {
-      setPopulateResult(data)
-    },
+    onSuccess: (data) => setPopulateResult(data),
   })
 
   const toggleRow = (id: string) => {
@@ -464,141 +629,140 @@ const GlobalLibrariesTab: React.FC = () => {
     })
   }
 
+  const SUB_TABS = [
+    { key: 'makers' as const, label: 'Maker / Model Library', icon: <Wrench className="w-4 h-4" /> },
+    { key: 'component' as const, label: 'Components', icon: null },
+    { key: 'job' as const, label: 'Jobs', icon: null },
+    { key: 'spare' as const, label: 'Spares', icon: null },
+  ]
+
   return (
     <div className="space-y-6">
       {/* Sub-tabs */}
       <div className="flex gap-1 bg-slate-900/50 p-1 rounded-lg w-fit">
-        {(Object.keys(GLOBAL_ENTITY_LABELS) as GlobalEntity[]).map((entity) => (
+        {SUB_TABS.map(({ key, label, icon }) => (
           <button
-            key={entity}
-            onClick={() => { setActiveEntity(entity); setPopulateResult(null) }}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-              activeEntity === entity
-                ? 'bg-sky-600 text-white'
-                : 'text-slate-400 hover:text-white hover:bg-slate-700'
+            key={key}
+            onClick={() => {
+              setActiveSub(key)
+              if (key !== 'makers') setActiveEntity(key as GlobalEntity)
+              setPopulateResult(null)
+            }}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              activeSub === key ? 'bg-sky-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'
             }`}
           >
-            {GLOBAL_ENTITY_LABELS[entity]}
+            {icon}
+            {label}
           </button>
         ))}
       </div>
 
-      {/* Populate from Vessel */}
-      <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
-        <h3 className="text-sm font-semibold text-slate-300 mb-3">Populate from Vessel</h3>
-        <div className="flex items-center gap-3">
-          <input
-            type="text"
-            value={populateVesselId}
-            onChange={(e) => setPopulateVesselId(e.target.value)}
-            placeholder="Enter Vessel ID..."
-            className="px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 text-sm w-60"
-          />
-          <button
-            onClick={() => { setPopulateResult(null); populateMutation.mutate() }}
-            disabled={!populateVesselId.trim() || populateMutation.isPending}
-            className="flex items-center gap-2 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg transition-colors disabled:opacity-50 text-sm"
-          >
-            {populateMutation.isPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-            Populate
-          </button>
-          {populateResult && (
-            <div className="flex items-center gap-4 text-sm">
-              <span className="text-emerald-400">
-                <strong>{populateResult.added}</strong> added
-              </span>
-              <span className="text-slate-400">
-                <strong>{populateResult.duplicates}</strong> duplicates skipped
-              </span>
+      {/* Maker/Model sub-tab */}
+      {activeSub === 'makers' && <MakerModelTab />}
+
+      {/* Component / Job / Spare cross-project global library */}
+      {activeSub !== 'makers' && (
+        <>
+          {/* Populate from Vessel */}
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
+            <h3 className="text-sm font-semibold text-slate-300 mb-3">Populate from Vessel</h3>
+            <div className="flex items-center gap-3">
+              <input
+                type="text"
+                value={populateVesselId}
+                onChange={(e) => setPopulateVesselId(e.target.value)}
+                placeholder="Enter Vessel ID..."
+                className="px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 text-sm w-60"
+              />
+              <button
+                onClick={() => { setPopulateResult(null); populateMutation.mutate() }}
+                disabled={!populateVesselId.trim() || populateMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg transition-colors disabled:opacity-50 text-sm"
+              >
+                {populateMutation.isPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                Populate
+              </button>
+              {populateResult && (
+                <div className="flex items-center gap-4 text-sm">
+                  <span className="text-emerald-400"><strong>{populateResult.added}</strong> added</span>
+                  <span className="text-slate-400"><strong>{populateResult.duplicates}</strong> duplicates skipped</span>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
+          </div>
 
-      {/* Table */}
-      <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-700 bg-slate-900/50">
-                <th className="text-left px-4 py-3 text-slate-400 font-medium w-8" />
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Canonical Data</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Occurrences</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">Source Vessels</th>
-                <th className="text-left px-4 py-3 text-slate-400 font-medium">First Seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              {isLoading ? (
-                <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-slate-400">
-                    <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2" />
-                    Loading {GLOBAL_ENTITY_LABELS[activeEntity].toLowerCase()}...
-                  </td>
-                </tr>
-              ) : entries.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
-                    No {GLOBAL_ENTITY_LABELS[activeEntity].toLowerCase()} found in global library.
-                  </td>
-                </tr>
-              ) : (
-                entries.map((entry) => {
-                  const isExpanded = expandedRows.has(entry.id)
-                  const dataKeys = Object.keys(entry.canonical_data)
-                  const previewKey = dataKeys[0]
-                  const previewValue = previewKey ? String(entry.canonical_data[previewKey]) : ''
-
-                  return (
-                    <React.Fragment key={entry.id}>
-                      <tr className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors">
-                        <td className="px-4 py-3">
-                          <button
-                            onClick={() => toggleRow(entry.id)}
-                            className="text-slate-500 hover:text-slate-300 transition-colors"
-                          >
-                            {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                          </button>
-                        </td>
-                        <td className="px-4 py-3">
-                          {isExpanded ? (
-                            <div className="space-y-1">
-                              {dataKeys.map((key) => (
-                                <div key={key} className="flex gap-2 text-xs">
-                                  <span className="text-slate-500 font-medium w-32 flex-shrink-0">{key}:</span>
-                                  <span className="text-slate-300">{String(entry.canonical_data[key])}</span>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-slate-300">
-                              {previewKey && (
-                                <>
+          {/* Table */}
+          <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-700 bg-slate-900/50">
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium w-8" />
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium">Canonical Data</th>
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium">Occurrences</th>
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium">Source Vessels</th>
+                    <th className="text-left px-4 py-3 text-slate-400 font-medium">First Seen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {isLoading ? (
+                    <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">
+                      <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2" />Loading...
+                    </td></tr>
+                  ) : entries.length === 0 ? (
+                    <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">
+                      No {activeSub}s found in global library.
+                    </td></tr>
+                  ) : entries.map((entry) => {
+                    const isExpanded = expandedRows.has(entry.id)
+                    const dataKeys = Object.keys(entry.canonical_data)
+                    const previewKey = dataKeys[0]
+                    const previewValue = previewKey ? String(entry.canonical_data[previewKey]) : ''
+                    return (
+                      <React.Fragment key={entry.id}>
+                        <tr className="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors">
+                          <td className="px-4 py-3">
+                            <button onClick={() => toggleRow(entry.id)} className="text-slate-500 hover:text-slate-300">
+                              {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                            </button>
+                          </td>
+                          <td className="px-4 py-3">
+                            {isExpanded ? (
+                              <div className="space-y-1">
+                                {dataKeys.map(key => (
+                                  <div key={key} className="flex gap-2 text-xs">
+                                    <span className="text-slate-500 font-medium w-32 flex-shrink-0">{key}:</span>
+                                    <span className="text-slate-300">{String(entry.canonical_data[key])}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-slate-300">
+                                {previewKey && (<>
                                   <span className="text-slate-500 text-xs">{previewKey}: </span>
                                   <span className="text-slate-200">{previewValue.slice(0, 80)}{previewValue.length > 80 ? '…' : ''}</span>
-                                </>
-                              )}
+                                </>)}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="inline-flex items-center px-2 py-0.5 bg-sky-900/40 text-sky-400 text-xs rounded-full border border-sky-600/40">
+                              {entry.occurrence_count}
                             </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className="inline-flex items-center px-2 py-0.5 bg-sky-900/40 text-sky-400 text-xs rounded-full border border-sky-600/40">
-                            {entry.occurrence_count}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-slate-400 text-xs">{entry.source_vessels.length} vessels</td>
-                        <td className="px-4 py-3 text-slate-400 text-xs">
-                          {new Date(entry.first_seen_at).toLocaleDateString()}
-                        </td>
-                      </tr>
-                    </React.Fragment>
-                  )
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                          </td>
+                          <td className="px-4 py-3 text-slate-400 text-xs">{entry.source_vessels.length} vessels</td>
+                          <td className="px-4 py-3 text-slate-400 text-xs">{new Date(entry.first_seen_at).toLocaleDateString()}</td>
+                        </tr>
+                      </React.Fragment>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }
