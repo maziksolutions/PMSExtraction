@@ -29,39 +29,47 @@ _bootstrapped: bool = False  # module-level flag — only runs once per process
 
 
 async def _bootstrap(db: AsyncSession) -> None:
+    """
+    Ensure maker_models table exists. Uses information_schema to check first
+    so we never issue DDL that would put the session in an aborted state.
+    """
     global _bootstrapped
     if _bootstrapped:
         return
     try:
-        # Use SAVEPOINT so a DDL error doesn't abort the outer transaction
-        await db.execute(text("SAVEPOINT bootstrap_sp"))
-        await db.execute(text("""
-            CREATE TABLE IF NOT EXISTS maker_models (
-                id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tenant_id        UUID NOT NULL,
-                maker            VARCHAR(255) NOT NULL,
-                model            VARCHAR(255),
-                component_category VARCHAR(100),
-                is_deleted       BOOLEAN NOT NULL DEFAULT false,
-                created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """))
-        await db.execute(text("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_maker_models_tenant_maker_model
-            ON maker_models (tenant_id, maker, COALESCE(model, ''))
-            WHERE is_deleted = false
-        """))
-        await db.execute(text("RELEASE SAVEPOINT bootstrap_sp"))
-        await db.commit()
-        _bootstrapped = True
+        # Non-DDL check — safe inside any transaction
+        result = await db.execute(text(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = 'maker_models'"
+        ))
+        if result.scalar_one_or_none() is None:
+            # Table genuinely doesn't exist — create it
+            await db.execute(text("""
+                CREATE TABLE maker_models (
+                    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id        UUID NOT NULL,
+                    maker            VARCHAR(255) NOT NULL,
+                    model            VARCHAR(255),
+                    component_category VARCHAR(100),
+                    is_deleted       BOOLEAN NOT NULL DEFAULT false,
+                    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await db.execute(text("""
+                CREATE UNIQUE INDEX uq_maker_models_tenant_maker_model
+                ON maker_models (tenant_id, maker, COALESCE(model, ''))
+                WHERE is_deleted = false
+            """))
+            await db.commit()
     except Exception:
-        # Table/index already exists from migration — that's fine
+        # Rollback is CRITICAL here — without it the session stays in an
+        # "aborted transaction" state and every subsequent query returns 500.
         try:
-            await db.execute(text("ROLLBACK TO SAVEPOINT bootstrap_sp"))
-            await db.execute(text("RELEASE SAVEPOINT bootstrap_sp"))
+            await db.rollback()
         except Exception:
             pass
+    finally:
         _bootstrapped = True
 
 

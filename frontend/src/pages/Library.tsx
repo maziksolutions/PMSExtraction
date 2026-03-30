@@ -774,15 +774,144 @@ const GlobalLibrariesTab: React.FC = () => {
 
 // ─── Manual Matches Tab ───────────────────────────────────────────────────────
 
+const CONFIDENCE_COLORS: Record<string, string> = {
+  exact: 'bg-emerald-700 text-emerald-100',
+  high: 'bg-sky-700 text-sky-100',
+  medium: 'bg-amber-700 text-amber-100',
+  low: 'bg-slate-600 text-slate-200',
+}
+
 const ManualMatchesTab: React.FC = () => {
+  const [selectedVesselId, setSelectedVesselId] = useState('')
+  const [matches, setMatches] = useState<any[]>([])
+  const [runMsg, setRunMsg] = useState<string | null>(null)
+  const [isRunning, setIsRunning] = useState(false)
+
+  const vesselsQuery = useQuery({
+    queryKey: ['vessels-list-matches'],
+    queryFn: () => apiClient.get('/vessels?page=1&page_size=200').then(r => r.data),
+  })
+  const vessels: { id: string; name: string; imo_number: string }[] = vesselsQuery.data?.items ?? []
+
+  const savedQuery = useQuery({
+    queryKey: ['manual-matches', selectedVesselId],
+    queryFn: () => apiClient.get(`/library/${selectedVesselId}/manuals/matches`, { params: { page_size: 200 } }).then(r => r.data),
+    enabled: !!selectedVesselId,
+  })
+  const savedItems: any[] = savedQuery.data?.items ?? []
+
+  const handleFindMatches = async () => {
+    if (!selectedVesselId) return
+    setIsRunning(true)
+    setRunMsg(null)
+    try {
+      const res = await apiClient.post(`/library/${selectedVesselId}/manuals/find-matches`)
+      const data = res.data
+      setMatches(data.matches ?? [])
+      setRunMsg(`Found ${data.total ?? 0} cross-project matches.`)
+      savedQuery.refetch()
+    } catch (err: any) {
+      setRunMsg(err?.response?.data?.detail ?? err?.message ?? 'Match search failed.')
+    }
+    setIsRunning(false)
+  }
+
+  const displayItems = matches.length > 0 ? matches : savedItems
+
   return (
-    <div className="flex flex-col items-center justify-center py-20 space-y-4">
-      <GitMerge className="w-16 h-16 text-slate-600" />
-      <h3 className="text-lg font-semibold text-slate-400">No Vessel Context</h3>
-      <p className="text-slate-500 text-center max-w-md">
-        Select a vessel from the <strong className="text-slate-400">Manuals</strong> page to view
-        cross-project manual matches and similarity scores for that vessel's documents.
+    <div className="space-y-4">
+      {/* Vessel selector + action */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <select
+          value={selectedVesselId}
+          onChange={e => { setSelectedVesselId(e.target.value); setMatches([]) }}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-sky-500 focus:outline-none min-w-64"
+        >
+          <option value="">— Select a vessel —</option>
+          {vessels.map(v => (
+            <option key={v.id} value={v.id}>{v.name} ({v.imo_number})</option>
+          ))}
+        </select>
+        <button
+          onClick={handleFindMatches}
+          disabled={!selectedVesselId || isRunning}
+          className="flex items-center gap-2 rounded-lg bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:opacity-50"
+        >
+          {isRunning ? <RefreshCw className="h-4 w-4 animate-spin" /> : <GitMerge className="h-4 w-4" />}
+          {isRunning ? 'Searching...' : 'Find Cross-Project Matches'}
+        </button>
+        {selectedVesselId && !isRunning && (
+          <button
+            onClick={() => savedQuery.refetch()}
+            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700"
+          >
+            <RefreshCw className="h-4 w-4" /> Reload Saved
+          </button>
+        )}
+      </div>
+
+      <p className="text-xs text-slate-500">
+        Finds manuals from other vessel projects in your organisation that are identical (SHA-256) or have similar filenames (≥60% match). Useful for reusing already-extracted PMS data.
       </p>
+
+      {/* Result message */}
+      {runMsg && (
+        <div className="rounded-lg border border-sky-700/40 bg-sky-900/20 px-4 py-2 text-sm text-sky-300">
+          {runMsg}
+        </div>
+      )}
+
+      {/* No vessel selected */}
+      {!selectedVesselId && (
+        <div className="flex flex-col items-center justify-center py-16 space-y-3 text-center">
+          <GitMerge className="w-12 h-12 text-slate-600" />
+          <p className="text-slate-500">Select a vessel above to find matching manuals across other projects.</p>
+        </div>
+      )}
+
+      {/* Results table */}
+      {selectedVesselId && displayItems.length === 0 && !isRunning && (
+        <div className="py-10 text-center text-slate-500 text-sm">
+          No matches found yet. Click "Find Cross-Project Matches" to search.
+        </div>
+      )}
+
+      {displayItems.length > 0 && (
+        <div className="rounded-xl border border-slate-700 bg-slate-800 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-700 bg-slate-900/50">
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Source Manual</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Matched Manual</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Matched Vessel</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Score</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Confidence</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-700/50">
+              {displayItems.map((item: any, i: number) => (
+                <tr key={item.id ?? `${item.source_manual_id}-${i}`} className="hover:bg-slate-700/30">
+                  <td className="px-4 py-2.5 text-slate-200 max-w-xs truncate" title={item.source_manual_name}>
+                    {item.source_manual_name}
+                  </td>
+                  <td className="px-4 py-2.5 text-slate-300 max-w-xs truncate" title={item.matched_manual_name}>
+                    {item.matched_manual_name}
+                  </td>
+                  <td className="px-4 py-2.5 text-slate-400">{item.matched_vessel_name ?? '—'}</td>
+                  <td className="px-4 py-2.5 text-slate-300">
+                    {item.match_score != null ? `${Math.round(item.match_score * 100)}%` : '—'}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONFIDENCE_COLORS[item.match_confidence] ?? 'bg-slate-600 text-slate-200'}`}>
+                      {item.match_confidence ?? '—'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
