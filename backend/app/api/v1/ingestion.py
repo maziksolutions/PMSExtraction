@@ -401,17 +401,39 @@ async def upload_manuals(
         db.add(manual)
         await db.flush()
 
-        # Save file to local disk so the view endpoint can serve it (best-effort)
-        upload_dir = os.path.join(settings.UPLOAD_DIR, str(vessel_id))
+        # Upload to blob storage (primary) — key: {tenant_id}/{vessel_id}/{manual_id}/{filename}
+        blob_key = f"{current_user.tenant_id}/{vessel_id}/{manual.id}/{filename}"
+        mime_map_upload = {
+            "pdf": "application/pdf",
+            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "doc": "application/msword",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "xls": "application/vnd.ms-excel",
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "tiff": "image/tiff",
+        }
+        content_type_upload = mime_map_upload.get(ext, "application/octet-stream")
         try:
-            os.makedirs(upload_dir, exist_ok=True)
-            file_path = os.path.join(upload_dir, f"{manual.id}.{ext}")
-            with open(file_path, "wb") as f:
-                f.write(content)
-            manual.blob_storage_key = file_path
+            from app.services.blob_storage import BlobStorageService as _BlobSvc
+            import io as _io
+            _blob = _BlobSvc()
+            await _blob.upload_stream(blob_key, _io.BytesIO(content), content_type_upload)
+            manual.blob_storage_key = blob_key
             db.add(manual)
-        except Exception:
-            pass  # Disk save is best-effort; extracted_text in DB is the primary source
+        except Exception as _blob_exc:
+            # Blob storage unavailable — fall back to local disk
+            try:
+                upload_dir = os.path.join(settings.UPLOAD_DIR, str(vessel_id))
+                os.makedirs(upload_dir, exist_ok=True)
+                file_path = os.path.join(upload_dir, f"{manual.id}.{ext}")
+                with open(file_path, "wb") as f:
+                    f.write(content)
+                manual.blob_storage_key = file_path
+                db.add(manual)
+            except Exception:
+                pass  # Disk save best-effort; extracted_text in DB is primary source
 
         created_manuals.append(ManualOut.model_validate(manual))
 
@@ -564,9 +586,35 @@ async def view_manual(
     if not blob_key:
         raise HTTPException(status_code=404, detail="File not available. Please re-upload.")
 
+    # Detect whether blob_key is a local file path or a real blob storage key.
+    # Local paths start with / (Linux) or a drive letter like C:\ (Windows).
+    is_local_path = blob_key.startswith("/") or (len(blob_key) > 1 and blob_key[1] == ":")
+
+    if is_local_path:
+        # Serve directly from disk (local dev / fallback)
+        if not os.path.exists(blob_key):
+            raise HTTPException(status_code=404, detail="File not available on disk. Please re-upload.")
+        mime_map = {
+            "pdf": "application/pdf",
+            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "doc": "application/msword",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "xls": "application/vnd.ms-excel",
+        }
+        media_type = mime_map.get((manual.file_extension or "").lower(), "application/octet-stream")
+        # Read file bytes and return as streaming response so frontend can open blob URL
+        with open(blob_key, "rb") as fh:
+            file_bytes = fh.read()
+        from fastapi.responses import Response
+        return Response(
+            content=file_bytes,
+            media_type=media_type,
+            headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
+        )
+
+    # Blob storage key — generate a pre-signed URL
     try:
-        blob_service = BlobStorageService()
-        presigned_url = await blob_service.get_download_url(blob_key, expires_in=3600)
+        presigned_url = await BlobStorageService().get_download_url(blob_key, expires_in=3600)
         return {"url": presigned_url, "filename": manual.original_filename}
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"Could not generate file URL: {exc}")

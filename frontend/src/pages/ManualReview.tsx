@@ -656,10 +656,25 @@ const ManualReview: React.FC = () => {
                       <button
                         onClick={async () => {
                           try {
-                            const { data } = await apiClient.get<{ url: string }>(
-                              `/vessels/${vesselId}/manuals/${m.id}/view`
+                            const resp = await apiClient.get(
+                              `/vessels/${vesselId}/manuals/${m.id}/view`,
+                              { responseType: 'arraybuffer' }
                             )
-                            window.open(data.url, '_blank')
+                            // If response is JSON (presigned URL), parse and open it
+                            const contentType: string = resp.headers['content-type'] ?? ''
+                            if (contentType.includes('application/json')) {
+                              const text = new TextDecoder().decode(resp.data as ArrayBuffer)
+                              const json = JSON.parse(text) as { url: string }
+                              window.open(json.url, '_blank')
+                            } else {
+                              // Binary response — create a blob URL and open it
+                              const blob = new Blob([resp.data as ArrayBuffer], { type: contentType || 'application/pdf' })
+                              const blobUrl = URL.createObjectURL(blob)
+                              const win = window.open(blobUrl, '_blank')
+                              // Revoke after tab has had time to load
+                              setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000)
+                              if (!win) alert('Please allow popups for this site to view files.')
+                            }
                           } catch {
                             alert('Could not open file. Please try again.')
                           }
