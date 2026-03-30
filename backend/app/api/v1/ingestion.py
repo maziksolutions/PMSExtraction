@@ -396,8 +396,10 @@ async def upload_manuals(
         "xls": "application/vnd.ms-excel",
     }
 
+    # Phase 1: read all files, create DB records
     created_manuals = []
-    pending_bg: list[tuple[str, str, str, bytes]] = []  # (manual_id, blob_key, ext, content)
+    pending_bg: list[tuple[str, str, str, bytes, str, str]] = []  # (manual_id, vid, tid, content, ext, filename)
+    blob_upload_tasks: list[tuple] = []  # (manual_id, blob_key, content, content_type, ext, vessel_id_str)
 
     for upload in files:
         filename = upload.filename or "unknown"
@@ -446,31 +448,40 @@ async def upload_manuals(
         db.add(manual)
         await db.flush()
 
-        # Upload raw bytes to blob storage
         blob_key = f"{current_user.tenant_id}/{vessel_id}/{manual.id}/{filename}"
         content_type_upload = mime_map_upload.get(ext, "application/octet-stream")
-        try:
-            _blob = _BlobSvc()
-            await _blob.upload_stream(blob_key, _io.BytesIO(content), content_type_upload)
-            manual.blob_storage_key = blob_key
-            db.add(manual)
-        except Exception:
-            # Blob storage unavailable — fall back to local disk
-            try:
-                upload_dir = os.path.join(settings.UPLOAD_DIR, str(vessel_id))
-                os.makedirs(upload_dir, exist_ok=True)
-                file_path = os.path.join(upload_dir, f"{manual.id}.{ext}")
-                with open(file_path, "wb") as f:
-                    f.write(content)
-                manual.blob_storage_key = file_path
-                db.add(manual)
-            except Exception:
-                pass
+        blob_upload_tasks.append((str(manual.id), blob_key, content, content_type_upload, ext, str(vessel_id)))
 
-        created_manuals.append(ManualOut.model_validate(manual))
+        created_manuals.append((manual, ManualOut.model_validate(manual)))
         pending_bg.append((str(manual.id), str(vessel_id), str(current_user.tenant_id), content, ext, filename))
 
     await db.commit()
+
+    # Phase 2: upload blobs in parallel
+    async def _upload_one(manual_id: str, blob_key: str, content: bytes, content_type: str, ext: str, vid: str):
+        try:
+            _blob = _BlobSvc()
+            await _blob.upload_stream(blob_key, _io.BytesIO(content), content_type)
+            await db.execute(
+                update(Manual).where(Manual.id == uuid.UUID(manual_id)).values(blob_storage_key=blob_key)
+            )
+            await db.commit()
+        except Exception:
+            # Blob storage unavailable — fall back to local disk
+            try:
+                upload_dir = os.path.join(settings.UPLOAD_DIR, vid)
+                os.makedirs(upload_dir, exist_ok=True)
+                file_path = os.path.join(upload_dir, f"{manual_id}.{ext}")
+                with open(file_path, "wb") as fh:
+                    fh.write(content)
+                await db.execute(
+                    update(Manual).where(Manual.id == uuid.UUID(manual_id)).values(blob_storage_key=file_path)
+                )
+                await db.commit()
+            except Exception:
+                pass
+
+    await asyncio.gather(*[_upload_one(*args) for args in blob_upload_tasks])
 
     # Kick off background processing for each file (text extraction + classification)
     for manual_id, vid, tid, content, ext, filename in pending_bg:
@@ -484,7 +495,8 @@ async def upload_manuals(
             filename=filename,
         )
 
-    return {"uploaded": len(created_manuals), "manuals": [m.model_dump() for m in created_manuals]}
+    manual_outs = [out for (_manual, out) in created_manuals]
+    return {"uploaded": len(manual_outs), "manuals": [m.model_dump() for m in manual_outs]}
 
 
 # ---------------------------------------------------------------------------
@@ -582,6 +594,82 @@ async def screen_all_manuals(
     return {"started": True, "total": total, "message": f"Screening {total} manuals with Claude AI."}
 
 
+@router.post(
+    "/{vessel_id}/manuals/screen-selected",
+    summary="Screen (classify) selected manuals for a vessel using Claude AI",
+)
+async def screen_selected_manuals(
+    vessel_id: uuid.UUID,
+    body: dict,
+    background_tasks: BackgroundTasks,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Re-classifies selected manuals for the vessel using Claude AI (or keyword fallback)."""
+    await _get_vessel_or_404(vessel_id, db)
+
+    manual_ids: list[str] = body.get("manual_ids", [])
+    if not manual_ids:
+        return {"started": False, "message": "No manual_ids provided.", "total": 0}
+
+    vessel_id_str = str(vessel_id)
+    _screening_state[vessel_id_str] = {
+        "total": len(manual_ids),
+        "done": 0,
+        "status": "running",
+    }
+    background_tasks.add_task(
+        _run_screening_task, vessel_id_str, str(current_user.tenant_id), manual_ids
+    )
+    return {"started": True, "total": len(manual_ids)}
+
+
+# In-memory extraction progress tracker (per vessel_id string)
+_extract_state: dict[str, dict] = {}
+
+
+async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) -> None:
+    """Background task: runs auto_extract_from_manual for each selected manual."""
+    from app.services.extractor import auto_extract_from_manual
+    from app.core.database import AsyncSessionLocal
+
+    _extract_state[vessel_id_str] = {"total": len(manual_ids), "done": 0, "status": "running"}
+    try:
+        async with AsyncSessionLocal() as db:
+            for manual_id in manual_ids:
+                try:
+                    await auto_extract_from_manual(manual_id, db)
+                except Exception:
+                    pass
+                _extract_state[vessel_id_str]["done"] += 1
+        _extract_state[vessel_id_str]["status"] = "completed"
+    except Exception:
+        _extract_state[vessel_id_str]["status"] = "failed"
+
+
+@router.post(
+    "/{vessel_id}/manuals/extract-selected",
+    summary="Extract data from selected manuals using Claude AI",
+)
+async def extract_selected_manuals(
+    vessel_id: uuid.UUID,
+    body: dict,
+    background_tasks: BackgroundTasks,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Runs extraction on the selected manuals using Claude AI."""
+    await _get_vessel_or_404(vessel_id, db)
+
+    manual_ids: list[str] = body.get("manual_ids", [])
+    if not manual_ids:
+        return {"started": False, "message": "No manual_ids provided.", "total": 0}
+
+    vessel_id_str = str(vessel_id)
+    background_tasks.add_task(_run_extract_selected_task, vessel_id_str, manual_ids)
+    return {"started": True, "total": len(manual_ids)}
+
+
 @router.get(
     "/{vessel_id}/manuals/screening-status",
     summary="Get screening progress for a vessel",
@@ -665,9 +753,15 @@ async def view_manual(
             headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
         )
 
-    # Blob storage key — download bytes then stream to browser
+    # Blob storage key — try presigned URL first (faster for large files), fall back to streaming
+    blob_service = BlobStorageService()
     try:
-        blob_service = BlobStorageService()
+        presigned_url = await blob_service.get_download_url(blob_key, expires_in=3600)
+        return JSONResponse({"url": presigned_url}, status_code=200)
+    except Exception:
+        pass
+
+    try:
         file_bytes = await blob_service.download_bytes(blob_key)
         return Response(
             content=file_bytes,

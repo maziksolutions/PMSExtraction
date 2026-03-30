@@ -4,7 +4,7 @@ import uuid
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -68,34 +68,57 @@ async def list_manuals(
     category: Optional[str] = Query(None),
     manual_status: Optional[str] = Query(None, alias="status"),
     min_confidence: Optional[int] = Query(None),
+    sort_by: str = Query("filename", regex="^(filename|created_at|confidence)$"),
+    sort_order: str = Query("asc", regex="^(asc|desc)$"),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(100, ge=1, le=1000),
 ) -> dict[str, Any]:
     await _get_vessel_or_404(vessel_id, db)
 
-    query = select(Manual).where(
+    base_filter = [
         Manual.vessel_id == vessel_id,
         Manual.tenant_id == current_user.tenant_id,
         Manual.is_deleted == False,
-    )
+    ]
 
     if category:
-        query = query.where(Manual.category == category)
+        base_filter.append(Manual.category == category)
     if manual_status:
         try:
-            query = query.where(Manual.status == ManualStatus(manual_status))
+            base_filter.append(Manual.status == ManualStatus(manual_status))
         except ValueError:
             pass
     if min_confidence is not None:
-        query = query.where(Manual.classification_confidence >= min_confidence)
+        base_filter.append(Manual.classification_confidence >= min_confidence)
 
-    query = query.order_by(Manual.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    # Count query
+    count_result = await db.execute(select(func.count()).select_from(Manual).where(*base_filter))
+    total = count_result.scalar_one()
+
+    # Determine order column
+    if sort_by == "filename":
+        order_col = Manual.original_filename
+    elif sort_by == "created_at":
+        order_col = Manual.created_at
+    else:  # confidence
+        order_col = Manual.classification_confidence
+
+    order_expr = order_col.asc() if sort_order == "asc" else order_col.desc()
+
+    query = (
+        select(Manual)
+        .where(*base_filter)
+        .order_by(order_expr)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     result = await db.execute(query)
     manuals = result.scalars().all()
     return {
         "items": [ManualOut.model_validate(m) for m in manuals],
         "page": page,
         "page_size": page_size,
+        "total": total,
     }
 
 

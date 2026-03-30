@@ -296,6 +296,10 @@ const ManualReview: React.FC = () => {
 
   const [filterCategory, setFilterCategory] = useState('')
   const [filterConfidence, setFilterConfidence] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(100)
+  const [sortBy, setSortBy] = useState('filename')
+  const [sortOrder, setSortOrder] = useState('asc')
   const [edits, setEdits] = useState<Record<string, Partial<Manual>>>({})
   const [screeningPolling, setScreeningPolling] = useState(false)
   const [extractionPolling, setExtractionPolling] = useState(false)
@@ -303,10 +307,20 @@ const ManualReview: React.FC = () => {
 
   // ── Data queries ──────────────────────────────────────────────────────────
 
+  // Reset to page 1 when filters or sort changes
+  useEffect(() => {
+    setPage(1)
+  }, [filterCategory, filterConfidence, sortBy, sortOrder, pageSize])
+
   const { data, isLoading } = useQuery({
-    queryKey: ['manuals', vesselId, filterCategory, filterConfidence],
+    queryKey: ['manuals', vesselId, filterCategory, filterConfidence, page, pageSize, sortBy, sortOrder],
     queryFn: () => {
-      const params: Record<string, string> = {}
+      const params: Record<string, string | number> = {
+        page,
+        page_size: pageSize,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+      }
       if (filterCategory) params.category = filterCategory
       if (filterConfidence) params.min_confidence = filterConfidence
       return apiClient
@@ -382,6 +396,26 @@ const ManualReview: React.FC = () => {
     },
   })
 
+  const screenSelectedMutation = useMutation({
+    mutationFn: () =>
+      apiClient
+        .post(`/vessels/${vesselId}/manuals/screen-selected`, { manual_ids: Array.from(selectedIds) })
+        .then((r) => r.data),
+    onSuccess: (data) => {
+      if (data.started) setScreeningPolling(true)
+    },
+  })
+
+  const extractSelectedMutation = useMutation({
+    mutationFn: () =>
+      apiClient
+        .post(`/vessels/${vesselId}/manuals/extract-selected`, { manual_ids: Array.from(selectedIds) })
+        .then((r) => r.data),
+    onSuccess: (data) => {
+      if (data.started) setExtractionPolling(true)
+    },
+  })
+
   // ── Editing / saving ──────────────────────────────────────────────────────
 
   const saveMutation = useMutation({
@@ -439,10 +473,20 @@ const ManualReview: React.FC = () => {
   }
 
   const toggleSelectAll = () => {
-    if (selectedIds.size === manuals.length) {
-      setSelectedIds(new Set())
+    const pageIds = manuals.map((m) => m.id)
+    const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id))
+    if (allPageSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        pageIds.forEach((id) => next.delete(id))
+        return next
+      })
     } else {
-      setSelectedIds(new Set(manuals.map((m) => m.id)))
+      setSelectedIds((prev) => {
+        const next = new Set(prev)
+        pageIds.forEach((id) => next.add(id))
+        return next
+      })
     }
   }
 
@@ -456,6 +500,7 @@ const ManualReview: React.FC = () => {
     ? Math.round((extractionData.done / extractionData.total) * 100) : 0
 
   const manuals: Manual[] = data?.items ?? []
+  const total: number = data?.total ?? 0
   const gaps: Gap[] = missingReport?.gaps ?? []
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -499,6 +544,16 @@ const ManualReview: React.FC = () => {
             {isExtracting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
             {isExtracting ? `Extracting ${extractionData?.done ?? 0}/${extractionData?.total ?? '...'}` : 'Extract All'}
           </button>
+          {selectedIds.size > 0 && (
+            <button
+              onClick={() => extractSelectedMutation.mutate()}
+              disabled={isExtracting || extractSelectedMutation.isPending}
+              className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-60"
+            >
+              <Zap className="h-4 w-4" />
+              Extract Selected ({selectedIds.size})
+            </button>
+          )}
           <button
             onClick={() => screenAllMutation.mutate()}
             disabled={isScreening}
@@ -507,6 +562,16 @@ const ManualReview: React.FC = () => {
             {isScreening ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
             {isScreening ? `Screening ${screeningData?.done ?? 0}/${screeningData?.total ?? '...'}` : 'Screen All'}
           </button>
+          {selectedIds.size > 0 && (
+            <button
+              onClick={() => screenSelectedMutation.mutate()}
+              disabled={isScreening || screenSelectedMutation.isPending}
+              className="flex items-center gap-2 rounded-lg bg-violet-500 px-4 py-2 text-sm font-medium text-white hover:bg-violet-400 disabled:opacity-60"
+            >
+              <ScanSearch className="h-4 w-4" />
+              Screen Selected ({selectedIds.size})
+            </button>
+          )}
         </div>
       </div>
 
@@ -594,6 +659,22 @@ const ManualReview: React.FC = () => {
           <option value="85">High (≥85%)</option>
           <option value="60">Medium (≥60%)</option>
         </select>
+        <select
+          value={`${sortBy}:${sortOrder}`}
+          onChange={(e) => {
+            const [sb, so] = e.target.value.split(':')
+            setSortBy(sb)
+            setSortOrder(so)
+          }}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
+        >
+          <option value="filename:asc">Filename A-Z</option>
+          <option value="filename:desc">Filename Z-A</option>
+          <option value="created_at:desc">Date (newest)</option>
+          <option value="created_at:asc">Date (oldest)</option>
+          <option value="confidence:desc">Confidence (high)</option>
+          <option value="confidence:asc">Confidence (low)</option>
+        </select>
         {(filterCategory || filterConfidence) && (
           <button
             onClick={() => { setFilterCategory(''); setFilterConfidence('') }}
@@ -617,7 +698,7 @@ const ManualReview: React.FC = () => {
                 <th className="px-3 py-3">
                   <input
                     type="checkbox"
-                    checked={selectedIds.size === manuals.length && manuals.length > 0}
+                    checked={manuals.length > 0 && manuals.every((m) => selectedIds.has(m.id))}
                     onChange={toggleSelectAll}
                     className="rounded border-slate-600"
                   />
@@ -794,6 +875,42 @@ const ManualReview: React.FC = () => {
           </table>
         )}
       </div>
+
+      {/* Pagination controls */}
+      {total > 0 && (
+        <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-slate-400">
+          <span>
+            Showing {Math.min((page - 1) * pageSize + 1, total)}–{Math.min(page * pageSize, total)} of {total} manuals
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1 text-xs text-slate-300 hover:bg-slate-700 disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <span className="text-xs">Page {page} / {Math.ceil(total / pageSize) || 1}</span>
+            <button
+              onClick={() => setPage((p) => Math.min(Math.ceil(total / pageSize), p + 1))}
+              disabled={page >= Math.ceil(total / pageSize)}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1 text-xs text-slate-300 hover:bg-slate-700 disabled:opacity-40"
+            >
+              Next
+            </button>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+            >
+              <option value={100}>100 / page</option>
+              <option value={200}>200 / page</option>
+              <option value={500}>500 / page</option>
+              <option value={1000}>1000 / page</option>
+            </select>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
