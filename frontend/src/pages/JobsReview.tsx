@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, CheckCircle, XCircle, Upload, Filter, AlertCircle, ExternalLink } from 'lucide-react'
+import { Play, CheckCircle, XCircle, Upload, AlertCircle, ExternalLink } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface Job {
@@ -40,16 +40,18 @@ const JobsReview: React.FC = () => {
   const [filterUnmapped, setFilterUnmapped] = useState(false)
   const [filterFreqType, setFilterFreqType] = useState('')
   const [filterNoCMS, setFilterNoCMS] = useState(false)
+  const [filterJobName, setFilterJobName] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const { data, isLoading } = useQuery({
-    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS],
+    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, filterJobName],
     queryFn: () => {
       const params: Record<string, string> = {}
       if (filterQC) params.qc_status = filterQC
       if (filterCritical) params.is_critical = filterCritical
       if (filterUnmapped) params.is_unmapped = 'true'
       if (filterFreqType) params.frequency_type = filterFreqType
+      if (filterJobName) params.search = filterJobName
       return apiClient.get(`/vessels/${vesselId}/jobs`, { params }).then((r) => r.data)
     },
     enabled: !!vesselId,
@@ -147,47 +149,12 @@ const JobsReview: React.FC = () => {
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 p-3">
-        <Filter className="h-4 w-4 shrink-0 text-slate-400" />
-        <select
-          value={filterQC}
-          onChange={(e) => setFilterQC(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200"
-        >
-          <option value="">All QC Status</option>
-          <option value="pending">Pending</option>
-          <option value="accepted">Accepted</option>
-          <option value="rejected">Rejected</option>
-        </select>
-        <select
-          value={filterCritical}
-          onChange={(e) => setFilterCritical(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200"
-        >
-          <option value="">All Jobs</option>
-          <option value="true">Critical Only</option>
-          <option value="false">Non-Critical</option>
-        </select>
-        <select
-          value={filterFreqType}
-          onChange={(e) => setFilterFreqType(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200"
-        >
-          <option value="">All Frequencies</option>
-          <option value="daily">Daily</option>
-          <option value="weekly">Weekly</option>
-          <option value="monthly">Monthly</option>
-          <option value="quarterly">Quarterly</option>
-          <option value="yearly">Yearly</option>
-          <option value="running_hours">Running Hours</option>
-        </select>
+      {/* Quick toggle filters */}
+      <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => setFilterUnmapped(!filterUnmapped)}
           className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors ${
-            filterUnmapped
-              ? 'border-amber-600 bg-amber-900/20 text-amber-300'
-              : 'border-slate-700 text-slate-400 hover:bg-slate-800'
+            filterUnmapped ? 'border-amber-600 bg-amber-900/20 text-amber-300' : 'border-slate-700 text-slate-400 hover:bg-slate-800'
           }`}
         >
           <AlertCircle className="h-3 w-3" />
@@ -196,13 +163,19 @@ const JobsReview: React.FC = () => {
         <button
           onClick={() => setFilterNoCMS(!filterNoCMS)}
           className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
-            filterNoCMS
-              ? 'border-sky-600 bg-sky-900/20 text-sky-300'
-              : 'border-slate-700 text-slate-400 hover:bg-slate-800'
+            filterNoCMS ? 'border-sky-600 bg-sky-900/20 text-sky-300' : 'border-slate-700 text-slate-400 hover:bg-slate-800'
           }`}
         >
           CMS Codes Pending
         </button>
+        {(filterQC || filterCritical || filterFreqType || filterJobName) && (
+          <button
+            onClick={() => { setFilterQC(''); setFilterCritical(''); setFilterFreqType(''); setFilterJobName('') }}
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200"
+          >
+            Clear column filters
+          </button>
+        )}
       </div>
 
       {/* Table */}
@@ -237,6 +210,63 @@ const JobsReview: React.FC = () => {
                 <th className="px-4 py-3">Confidence</th>
                 <th className="px-4 py-3">Source</th>
                 <th className="px-4 py-3">QC Status</th>
+              </tr>
+              {/* Column filter row */}
+              <tr className="border-b border-slate-800 bg-slate-950">
+                <td className="px-4 py-1.5" />
+                <td className="px-4 py-1.5">
+                  <input
+                    type="text"
+                    value={filterJobName}
+                    onChange={(e) => setFilterJobName(e.target.value)}
+                    placeholder="Search..."
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                  />
+                </td>
+                <td className="px-4 py-1.5" />
+                <td className="px-4 py-1.5" />
+                <td className="px-4 py-1.5">
+                  <select
+                    value={filterFreqType}
+                    onChange={(e) => setFilterFreqType(e.target.value)}
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
+                  >
+                    <option value="">All</option>
+                    <option value="daily">Daily</option>
+                    <option value="weekly">Weekly</option>
+                    <option value="monthly">Monthly</option>
+                    <option value="quarterly">Quarterly</option>
+                    <option value="yearly">Yearly</option>
+                    <option value="running_hours">Running Hours</option>
+                  </select>
+                </td>
+                <td className="px-4 py-1.5" />
+                <td className="px-4 py-1.5" />
+                <td className="px-4 py-1.5">
+                  <select
+                    value={filterCritical}
+                    onChange={(e) => setFilterCritical(e.target.value)}
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
+                  >
+                    <option value="">All</option>
+                    <option value="true">Critical</option>
+                    <option value="false">Non-Critical</option>
+                  </select>
+                </td>
+                <td className="px-4 py-1.5" />
+                <td className="px-4 py-1.5" />
+                <td className="px-4 py-1.5">
+                  <select
+                    value={filterQC}
+                    onChange={(e) => setFilterQC(e.target.value)}
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
+                  >
+                    <option value="">All</option>
+                    <option value="pending">Pending</option>
+                    <option value="accepted">Accepted</option>
+                    <option value="rejected">Rejected</option>
+                  </select>
+                </td>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">

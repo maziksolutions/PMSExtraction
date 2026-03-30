@@ -68,6 +68,8 @@ async def list_manuals(
     category: Optional[str] = Query(None),
     manual_status: Optional[str] = Query(None, alias="status"),
     min_confidence: Optional[int] = Query(None),
+    search: Optional[str] = Query(None),
+    useful_for_extraction: Optional[str] = Query(None),
     sort_by: str = Query("filename", regex="^(filename|created_at|confidence)$"),
     sort_order: str = Query("asc", regex="^(asc|desc)$"),
     page: int = Query(1, ge=1),
@@ -90,6 +92,10 @@ async def list_manuals(
             pass
     if min_confidence is not None:
         base_filter.append(Manual.classification_confidence >= min_confidence)
+    if search:
+        base_filter.append(Manual.original_filename.ilike(f"%{search}%"))
+    if useful_for_extraction:
+        base_filter.append(Manual.useful_for_extraction == useful_for_extraction)
 
     # Count query
     count_result = await db.execute(select(func.count()).select_from(Manual).where(*base_filter))

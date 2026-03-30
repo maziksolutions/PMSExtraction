@@ -145,24 +145,29 @@ async def list_maker_models(
     page_size: int = Query(100, ge=1, le=500),
 ) -> dict[str, Any]:
     await _bootstrap(db)
+    # Use separate param names for each ILIKE occurrence — asyncpg maps named→positional
+    # and breaks when the same name appears more than once in a single text() call.
     search_pat = f"%{search}%" if search else None
     count_q = text("""
         SELECT COUNT(*) FROM maker_models
         WHERE tenant_id = :tid AND is_deleted = false
-        AND (:search IS NULL OR maker ILIKE :pat OR model ILIKE :pat)
+        AND (:search IS NULL OR maker ILIKE :pat1 OR model ILIKE :pat2)
     """)
-    total = (await db.execute(count_q, {"tid": str(current_user.tenant_id), "search": search, "pat": search_pat})).scalar_one()
+    total = (await db.execute(count_q, {
+        "tid": str(current_user.tenant_id),
+        "search": search, "pat1": search_pat, "pat2": search_pat,
+    })).scalar_one()
 
     rows_q = text("""
         SELECT id, maker, model, component_category, created_at FROM maker_models
         WHERE tenant_id = :tid AND is_deleted = false
-        AND (:search IS NULL OR maker ILIKE :pat OR model ILIKE :pat)
+        AND (:search IS NULL OR maker ILIKE :pat1 OR model ILIKE :pat2)
         ORDER BY maker, model
         LIMIT :lim OFFSET :off
     """)
     rows = (await db.execute(rows_q, {
         "tid": str(current_user.tenant_id),
-        "search": search, "pat": search_pat,
+        "search": search, "pat1": search_pat, "pat2": search_pat,
         "lim": page_size, "off": (page - 1) * page_size,
     })).fetchall()
 

@@ -18,7 +18,6 @@ import {
   RefreshCw,
   Layers,
   FileDown,
-  Search,
   GitMerge,
 } from 'lucide-react'
 import apiClient from '@/api/client'
@@ -217,6 +216,9 @@ const ComponentReview: React.FC = () => {
   const [expandedG2, setExpandedG2] = useState<Set<string>>(new Set())
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [filterQC, setFilterQC] = useState('')
+  const [filterCompName, setFilterCompName] = useState('')
+  const [filterMaker, setFilterMaker] = useState('')
+  const [filterModel, setFilterModel] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
   const [showAddModal, setShowAddModal] = useState(false)
@@ -229,10 +231,9 @@ const ComponentReview: React.FC = () => {
   const [selectedVesselTypeId, setSelectedVesselTypeId] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const hasAutoLoaded = React.useRef(false)
-  const [searchQuery, setSearchQuery] = useState('')
 
   const { data, isLoading } = useQuery({
-    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, page, pageSize, searchQuery],
+    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, page, pageSize, filterCompName, filterMaker, filterModel],
     queryFn: () => {
       const params: Record<string, string | number> = { page, page_size: pageSize }
       if (selectedGroup1) params.group1 = selectedGroup1
@@ -240,7 +241,9 @@ const ComponentReview: React.FC = () => {
       if (selectedMachinery) params.main_machinery = selectedMachinery
       if (filterQC) params.qc_status = filterQC
       if (showUnmapped) params.is_unmapped = 'true'
-      if (searchQuery) params.search = searchQuery
+      if (filterCompName) params.search = filterCompName
+      if (filterMaker) params.maker_filter = filterMaker
+      if (filterModel) params.model_filter = filterModel
       return apiClient.get(`/vessels/${vesselId}/components`, { params }).then((r) => r.data)
     },
     enabled: !!vesselId,
@@ -289,8 +292,7 @@ const ComponentReview: React.FC = () => {
   })
 
   // Reset to page 1 when any filter changes
-  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, pageSize])
-  useEffect(() => { setPage(1) }, [searchQuery])
+  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, pageSize, filterCompName, filterMaker, filterModel])
 
   React.useEffect(() => {
     if (!allComponentsQuery.isLoading && allComponentsQuery.isFetched) {
@@ -513,24 +515,6 @@ const ComponentReview: React.FC = () => {
         <div className="flex flex-col gap-2">
           <h1 className="text-2xl font-bold text-white">Components</h1>
 
-          {/* Search bar */}
-          <div className="relative mb-3">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Search components, maker, model..."
-              className="w-full rounded-lg border border-slate-700 bg-slate-800 py-2 pl-9 pr-4 text-sm text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
-              >✕</button>
-            )}
-          </div>
-
           <div className="flex flex-wrap items-center gap-2">
           {/* Import Excel */}
           <button
@@ -631,17 +615,6 @@ const ComponentReview: React.FC = () => {
               </button>
             )}
 
-            <select
-              value={filterQC}
-              onChange={(e) => setFilterQC(e.target.value)}
-              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-            >
-              <option value="">All QC Status</option>
-              <option value="pending">Pending</option>
-              <option value="accepted">Accepted</option>
-              <option value="rejected">Rejected</option>
-              <option value="modified">Modified</option>
-            </select>
           </div>
           </div>
         </div>
@@ -716,6 +689,54 @@ const ComponentReview: React.FC = () => {
                     <th className="px-3 py-3">PDF Reference</th>
                     <th className="px-3 py-3">Critical</th>
                     <th className="px-3 py-3">QC</th>
+                  </tr>
+                  {/* Column filter row */}
+                  <tr className="border-b border-slate-800 bg-slate-950">
+                    <td className="px-3 py-1.5" />
+                    <td className="px-3 py-1.5">
+                      <input
+                        type="text"
+                        value={filterCompName}
+                        onChange={(e) => setFilterCompName(e.target.value)}
+                        placeholder="Search..."
+                        className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                      />
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <input
+                        type="text"
+                        value={filterMaker}
+                        onChange={(e) => setFilterMaker(e.target.value)}
+                        placeholder="Filter..."
+                        className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                      />
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <input
+                        type="text"
+                        value={filterModel}
+                        onChange={(e) => setFilterModel(e.target.value)}
+                        placeholder="Filter..."
+                        className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                      />
+                    </td>
+                    <td className="px-3 py-1.5" />
+                    <td className="px-3 py-1.5" />
+                    <td className="px-3 py-1.5" />
+                    <td className="px-3 py-1.5" />
+                    <td className="px-3 py-1.5">
+                      <select
+                        value={filterQC}
+                        onChange={(e) => setFilterQC(e.target.value)}
+                        className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
+                      >
+                        <option value="">All</option>
+                        <option value="pending">Pending</option>
+                        <option value="accepted">Accepted</option>
+                        <option value="rejected">Rejected</option>
+                        <option value="modified">Modified</option>
+                      </select>
+                    </td>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">

@@ -42,36 +42,48 @@ async def list_jobs(
     is_critical: Optional[bool] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
     frequency_type: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(100, ge=1, le=1000),
 ) -> dict[str, Any]:
+    from sqlalchemy import func as _func, or_
     await _get_vessel_or_404(vessel_id, db)
-    query = select(Job).where(
+    base_where = [
         Job.vessel_id == vessel_id,
         Job.tenant_id == current_user.tenant_id,
         Job.is_deleted == False,
-    )
+    ]
     if component_id:
-        query = query.where(Job.component_id == component_id)
+        base_where.append(Job.component_id == component_id)
     if qc_status:
         try:
-            query = query.where(Job.qc_status == QCStatus(qc_status))
+            base_where.append(Job.qc_status == QCStatus(qc_status))
         except ValueError:
             pass
     if is_critical is not None:
-        query = query.where(Job.is_critical == is_critical)
+        base_where.append(Job.is_critical == is_critical)
     if is_unmapped is not None:
-        query = query.where(Job.is_unmapped == is_unmapped)
+        base_where.append(Job.is_unmapped == is_unmapped)
     if frequency_type:
         try:
-            query = query.where(Job.frequency_type == FrequencyType(frequency_type))
+            base_where.append(Job.frequency_type == FrequencyType(frequency_type))
         except ValueError:
             pass
+    if search:
+        base_where.append(
+            or_(
+                Job.job_name.ilike(f"%{search}%"),
+                Job.job_code.ilike(f"%{search}%"),
+            )
+        )
 
-    query = query.order_by(Job.job_name).offset((page - 1) * page_size).limit(page_size)
+    total_result = await db.execute(select(_func.count()).select_from(Job).where(*base_where))
+    total: int = total_result.scalar_one()
+
+    query = select(Job).where(*base_where).order_by(Job.job_name).offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     jobs = result.scalars().all()
-    return {"items": [JobOut.model_validate(j) for j in jobs], "page": page}
+    return {"items": [JobOut.model_validate(j) for j in jobs], "page": page, "page_size": page_size, "total": total}
 
 
 @router.post(

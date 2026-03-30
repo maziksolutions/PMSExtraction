@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   RefreshCw,
   Save,
-  Filter,
   ScanSearch,
   Copy,
   FileText,
@@ -296,6 +295,8 @@ const ManualReview: React.FC = () => {
 
   const [filterCategory, setFilterCategory] = useState('')
   const [filterConfidence, setFilterConfidence] = useState('')
+  const [filterFilename, setFilterFilename] = useState('')
+  const [filterUseful, setFilterUseful] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
   const [sortBy, setSortBy] = useState('filename')
@@ -310,10 +311,10 @@ const ManualReview: React.FC = () => {
   // Reset to page 1 when filters or sort changes
   useEffect(() => {
     setPage(1)
-  }, [filterCategory, filterConfidence, sortBy, sortOrder, pageSize])
+  }, [filterCategory, filterConfidence, filterFilename, filterUseful, sortBy, sortOrder, pageSize])
 
   const { data, isLoading } = useQuery({
-    queryKey: ['manuals', vesselId, filterCategory, filterConfidence, page, pageSize, sortBy, sortOrder],
+    queryKey: ['manuals', vesselId, filterCategory, filterConfidence, filterFilename, filterUseful, page, pageSize, sortBy, sortOrder],
     queryFn: () => {
       const params: Record<string, string | number> = {
         page,
@@ -323,6 +324,8 @@ const ManualReview: React.FC = () => {
       }
       if (filterCategory) params.category = filterCategory
       if (filterConfidence) params.min_confidence = filterConfidence
+      if (filterFilename) params.search = filterFilename
+      if (filterUseful) params.useful_for_extraction = filterUseful
       return apiClient
         .get(`/vessels/${vesselId}/manuals`, { params })
         .then((r) => r.data)
@@ -639,34 +642,13 @@ const ManualReview: React.FC = () => {
         </div>
       )}
 
-      {/* Filter bar */}
-      <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900 p-3">
-        <Filter className="h-4 w-4 text-slate-400" />
-        <select
-          value={filterCategory}
-          onChange={(e) => setFilterCategory(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
-        >
-          <option value="">All Categories</option>
-          {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <select
-          value={filterConfidence}
-          onChange={(e) => setFilterConfidence(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
-        >
-          <option value="">All Confidence</option>
-          <option value="85">High (≥85%)</option>
-          <option value="60">Medium (≥60%)</option>
-        </select>
+      {/* Sort bar — compact */}
+      <div className="flex items-center gap-2 text-xs text-slate-500">
+        <span>Sort:</span>
         <select
           value={`${sortBy}:${sortOrder}`}
-          onChange={(e) => {
-            const [sb, so] = e.target.value.split(':')
-            setSortBy(sb)
-            setSortOrder(so)
-          }}
-          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
+          onChange={(e) => { const [sb, so] = e.target.value.split(':'); setSortBy(sb); setSortOrder(so) }}
+          className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
         >
           <option value="filename:asc">Filename A-Z</option>
           <option value="filename:desc">Filename Z-A</option>
@@ -675,12 +657,12 @@ const ManualReview: React.FC = () => {
           <option value="confidence:desc">Confidence (high)</option>
           <option value="confidence:asc">Confidence (low)</option>
         </select>
-        {(filterCategory || filterConfidence) && (
+        {(filterCategory || filterConfidence || filterFilename || filterUseful) && (
           <button
-            onClick={() => { setFilterCategory(''); setFilterConfidence('') }}
-            className="text-xs text-slate-400 underline hover:text-slate-200"
+            onClick={() => { setFilterCategory(''); setFilterConfidence(''); setFilterFilename(''); setFilterUseful('') }}
+            className="ml-2 rounded border border-slate-700 px-2 py-1 text-slate-400 hover:text-slate-200"
           >
-            Clear
+            Clear all filters
           </button>
         )}
       </div>
@@ -713,6 +695,59 @@ const ManualReview: React.FC = () => {
                 <th className="px-3 py-3">Confidence</th>
                 <th className="px-3 py-3">Comments</th>
                 <th className="px-3 py-3">Actions</th>
+              </tr>
+              {/* Column filter row */}
+              <tr className="border-b border-slate-800 bg-slate-950">
+                <td className="px-3 py-1.5" />
+                <td className="px-3 py-1.5">
+                  <input
+                    type="text"
+                    value={filterFilename}
+                    onChange={(e) => setFilterFilename(e.target.value)}
+                    placeholder="Filter filename..."
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
+                  />
+                </td>
+                <td className="px-3 py-1.5" />
+                <td className="px-3 py-1.5">
+                  <select
+                    value={filterCategory}
+                    onChange={(e) => setFilterCategory(e.target.value)}
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
+                  >
+                    <option value="">All</option>
+                    {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </td>
+                <td className="px-3 py-1.5">
+                  <select
+                    value={filterUseful}
+                    onChange={(e) => setFilterUseful(e.target.value)}
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
+                  >
+                    <option value="">All</option>
+                    <option value="yes">Yes</option>
+                    <option value="no">No</option>
+                    <option value="partial">Partial</option>
+                  </select>
+                </td>
+                <td className="px-3 py-1.5" />
+                <td className="px-3 py-1.5" />
+                <td className="px-3 py-1.5" />
+                <td className="px-3 py-1.5">
+                  <select
+                    value={filterConfidence}
+                    onChange={(e) => setFilterConfidence(e.target.value)}
+                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
+                  >
+                    <option value="">Any</option>
+                    <option value="85">≥85%</option>
+                    <option value="60">≥60%</option>
+                    <option value="40">≥40%</option>
+                  </select>
+                </td>
+                <td className="px-3 py-1.5" />
+                <td className="px-3 py-1.5" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">

@@ -753,13 +753,18 @@ async def view_manual(
             headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
         )
 
-    # Blob storage key — try presigned URL first (faster for large files), fall back to streaming
+    # Blob storage key
     blob_service = BlobStorageService()
-    try:
-        presigned_url = await blob_service.get_download_url(blob_key, expires_in=3600)
-        return JSONResponse({"url": presigned_url}, status_code=200)
-    except Exception:
-        pass
+
+    # Azure SAS URLs are publicly accessible from the browser — use presigned URL redirect.
+    # MinIO presigned URLs contain the internal Railway hostname and are NOT browser-accessible,
+    # so always stream the bytes directly for MinIO.
+    if blob_service._use_azure:
+        try:
+            presigned_url = await blob_service.get_download_url(blob_key, expires_in=3600)
+            return JSONResponse({"url": presigned_url}, status_code=200)
+        except Exception as exc:
+            _log.warning("view_manual: Azure presigned URL failed for key=%s: %s — falling back to stream", blob_key, exc)
 
     try:
         file_bytes = await blob_service.download_bytes(blob_key)

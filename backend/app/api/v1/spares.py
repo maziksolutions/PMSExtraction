@@ -40,34 +40,47 @@ async def list_spares(
     extraction_method: Optional[str] = Query(None),
     qc_status: Optional[str] = Query(None),
     is_critical: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(100, ge=1, le=1000),
 ) -> dict[str, Any]:
+    from sqlalchemy import func as _func, or_
     await _get_vessel_or_404(vessel_id, db)
-    query = select(Spare).where(
+    base_where = [
         Spare.vessel_id == vessel_id,
         Spare.tenant_id == current_user.tenant_id,
         Spare.is_deleted == False,
-    )
+    ]
     if component_id:
-        query = query.where(Spare.component_id == component_id)
+        base_where.append(Spare.component_id == component_id)
     if extraction_method:
         try:
-            query = query.where(Spare.extraction_method == ExtractionMethod(extraction_method))
+            base_where.append(Spare.extraction_method == ExtractionMethod(extraction_method))
         except ValueError:
             pass
     if qc_status:
         try:
-            query = query.where(Spare.qc_status == QCStatus(qc_status))
+            base_where.append(Spare.qc_status == QCStatus(qc_status))
         except ValueError:
             pass
     if is_critical is not None:
-        query = query.where(Spare.is_critical == is_critical)
+        base_where.append(Spare.is_critical == is_critical)
+    if search:
+        base_where.append(
+            or_(
+                Spare.part_name.ilike(f"%{search}%"),
+                Spare.part_number.ilike(f"%{search}%"),
+                Spare.spare_maker.ilike(f"%{search}%"),
+            )
+        )
 
-    query = query.order_by(Spare.part_name).offset((page - 1) * page_size).limit(page_size)
+    total_result = await db.execute(select(_func.count()).select_from(Spare).where(*base_where))
+    total: int = total_result.scalar_one()
+
+    query = select(Spare).where(*base_where).order_by(Spare.part_name).offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     spares = result.scalars().all()
-    return {"items": [SpareOut.model_validate(s) for s in spares], "page": page}
+    return {"items": [SpareOut.model_validate(s) for s in spares], "page": page, "page_size": page_size, "total": total}
 
 
 @router.post(

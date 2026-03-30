@@ -46,6 +46,8 @@ async def list_components(
     min_confidence: Optional[int] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
+    maker_filter: Optional[str] = Query(None),
+    model_filter: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=5000),
 ) -> dict[str, Any]:
@@ -81,6 +83,10 @@ async def list_components(
                 Component.main_machinery.ilike(search_term),
             )
         )
+    if maker_filter:
+        base_where.append(Component.maker.ilike(f"%{maker_filter}%"))
+    if model_filter:
+        base_where.append(Component.model.ilike(f"%{model_filter}%"))
 
     total_result = await db.execute(select(func.count()).select_from(Component).where(*base_where))
     total: int = total_result.scalar_one()
