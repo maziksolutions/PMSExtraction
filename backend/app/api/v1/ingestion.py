@@ -549,17 +549,20 @@ async def screening_status(
 
 @router.get(
     "/{vessel_id}/manuals/{manual_id}/view",
-    summary="Get a pre-signed URL to view / download a manual file",
+    summary="Stream a manual file for inline viewing",
 )
 async def view_manual(
     vessel_id: uuid.UUID,
     manual_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict:
-    """Return a short-lived pre-signed URL for the manual file in blob storage."""
-    from fastapi.responses import JSONResponse
+):
+    """Stream the manual file bytes directly. Works with both local disk and blob storage."""
+    import logging as _logging
+    from fastapi.responses import Response
     from app.services.blob_storage import BlobStorageService
+
+    _log = _logging.getLogger(__name__)
 
     await _get_vessel_or_404(vessel_id, db)
     result = await db.execute(
@@ -578,38 +581,49 @@ async def view_manual(
     if not blob_key:
         raise HTTPException(status_code=404, detail="File not available. Please re-upload.")
 
-    # Detect whether blob_key is a local file path or a real blob storage key.
-    # Local paths start with / (Linux) or a drive letter like C:\ (Windows).
+    mime_map = {
+        "pdf": "application/pdf",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc": "application/msword",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls": "application/vnd.ms-excel",
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "tiff": "image/tiff",
+    }
+    ext = (manual.file_extension or "").lower().lstrip(".")
+    media_type = mime_map.get(ext, "application/octet-stream")
+
+    # Local file path (starts with / on Linux or drive letter on Windows)
     is_local_path = blob_key.startswith("/") or (len(blob_key) > 1 and blob_key[1] == ":")
 
     if is_local_path:
-        # Serve directly from disk (local dev / fallback)
         if not os.path.exists(blob_key):
-            raise HTTPException(status_code=404, detail="File not available on disk. Please re-upload.")
-        mime_map = {
-            "pdf": "application/pdf",
-            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "doc": "application/msword",
-            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "xls": "application/vnd.ms-excel",
-        }
-        media_type = mime_map.get((manual.file_extension or "").lower(), "application/octet-stream")
-        # Read file bytes and return as streaming response so frontend can open blob URL
+            raise HTTPException(
+                status_code=404,
+                detail="File was stored on an ephemeral disk that no longer exists. Please re-upload.",
+            )
         with open(blob_key, "rb") as fh:
             file_bytes = fh.read()
-        from fastapi.responses import Response
         return Response(
             content=file_bytes,
             media_type=media_type,
             headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
         )
 
-    # Blob storage key — generate a pre-signed URL
+    # Blob storage key — download bytes then stream to browser
     try:
-        presigned_url = await BlobStorageService().get_download_url(blob_key, expires_in=3600)
-        return {"url": presigned_url, "filename": manual.original_filename}
+        blob_service = BlobStorageService()
+        file_bytes = await blob_service.download_bytes(blob_key)
+        return Response(
+            content=file_bytes,
+            media_type=media_type,
+            headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
+        )
     except Exception as exc:
-        raise HTTPException(status_code=404, detail=f"Could not generate file URL: {exc}")
+        _log.error("view_manual: blob download failed for key=%s: %s", blob_key, exc)
+        raise HTTPException(status_code=502, detail=f"Could not retrieve file from storage: {exc}")
 
 
 @router.delete(
