@@ -169,6 +169,7 @@ const Ingestion: React.FC = () => {
       selectedFiles.forEach(f => formData.append('files', f))
       const res = await apiClient.post(`/vessels/${vesselId}/ingestion/upload`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 300_000, // 5 minutes for large file uploads
       })
       return res.data
     },

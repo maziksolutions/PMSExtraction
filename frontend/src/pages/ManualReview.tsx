@@ -658,7 +658,7 @@ const ManualReview: React.FC = () => {
                           try {
                             const resp = await apiClient.get(
                               `/vessels/${vesselId}/manuals/${m.id}/view`,
-                              { responseType: 'arraybuffer' }
+                              { responseType: 'arraybuffer', timeout: 120_000 }
                             )
                             // If response is JSON (presigned URL), parse and open it
                             const contentType: string = resp.headers['content-type'] ?? ''

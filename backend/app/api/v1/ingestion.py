@@ -6,7 +6,10 @@ from typing import Annotated, Any
 import asyncio
 import os
 
+import logging as _log_mod
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
+
+logger = _log_mod.getLogger(__name__)
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -258,6 +261,106 @@ async def get_session(
     }
 
 
+async def _process_uploaded_file(
+    manual_id: str,
+    vessel_id_str: str,
+    tenant_id_str: str,
+    file_bytes: bytes,
+    file_ext: str,
+    filename: str,
+) -> None:
+    """
+    Background task: extract text from an uploaded file and classify it with Claude.
+    Runs after the upload response has already been returned to the user.
+    """
+    import io as _io
+    from app.core.database import AsyncSessionLocal
+    from app.models.ingestion import Manual, ManualStatus
+    from sqlalchemy import select as _select, update as _update
+
+    async with AsyncSessionLocal() as db:
+        # Extract text from PDF/DOCX
+        extracted_text = ""
+        page_count_val = 0
+
+        if file_ext == "pdf":
+            try:
+                def _read_pdf(data: bytes) -> tuple[str, int]:
+                    import pdfplumber as _pdfplumber
+                    parts: list[str] = []
+                    with _pdfplumber.open(_io.BytesIO(data)) as pdf:
+                        total = len(pdf.pages)
+                        for page_num, page in enumerate(pdf.pages, start=1):
+                            text = page.extract_text()
+                            if text and text.strip():
+                                parts.append(text)
+                            try:
+                                for table in (page.extract_tables() or []):
+                                    if not table:
+                                        continue
+                                    rows = [
+                                        " | ".join(str(c).strip() if c else "" for c in row)
+                                        for row in table if row and any(c for c in row if c)
+                                    ]
+                                    if rows:
+                                        parts.append(f"[TABLE page {page_num}]\n" + "\n".join(rows))
+                            except Exception:
+                                pass
+                    return "\n\n".join(parts), total
+
+                extracted_text, page_count_val = await asyncio.to_thread(_read_pdf, file_bytes)
+            except Exception as exc:
+                logger.warning("_process_uploaded_file: PDF extraction failed for %s: %s", filename, exc)
+
+        elif file_ext == "docx":
+            try:
+                def _read_docx(data: bytes) -> str:
+                    import docx as _docx
+                    doc = _docx.Document(_io.BytesIO(data))
+                    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+                extracted_text = await asyncio.to_thread(_read_docx, file_bytes)
+            except Exception as exc:
+                logger.warning("_process_uploaded_file: DOCX extraction failed for %s: %s", filename, exc)
+
+        # Classify with Claude (or keyword fallback)
+        from app.services.classifier import classify_pdf, _keyword_classify, ClassificationResult
+        try:
+            if file_ext == "pdf":
+                result = await asyncio.to_thread(classify_pdf, file_bytes, filename)
+            else:
+                result = await asyncio.to_thread(_keyword_classify, [], filename, 0)
+        except Exception:
+            result = ClassificationResult(
+                category="Unknown/Unclassifiable",
+                confidence=40,
+                useful_for_extraction="no",
+                pages_with_components="",
+                pages_with_jobs="",
+                pages_with_spares="",
+                page_count=page_count_val,
+            )
+
+        # Update the manual record
+        await db.execute(
+            _update(Manual)
+            .where(Manual.id == uuid.UUID(manual_id))
+            .values(
+                status=ManualStatus.classified,
+                category=result.category,
+                classification_confidence=result.confidence,
+                useful_for_extraction=result.useful_for_extraction,
+                pages_with_components=result.pages_with_components,
+                pages_with_jobs=result.pages_with_jobs,
+                pages_with_spares=result.pages_with_spares,
+                page_count=page_count_val or result.page_count or None,
+                extracted_text=extracted_text or None,
+            )
+        )
+        await db.commit()
+        logger.info("_process_uploaded_file: classified %s → %s (%d%%)", filename, result.category, result.confidence)
+
+
 @router.post(
     "/{vessel_id}/ingestion/upload",
     status_code=status.HTTP_201_CREATED,
@@ -267,17 +370,35 @@ async def upload_manuals(
     vessel_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
 ) -> dict[str, Any]:
-    """Upload one or more PDF/document files directly without SharePoint."""
-    await _get_vessel_or_404(vessel_id, db)
-
+    """
+    Upload one or more files directly.
+    Files are saved to blob storage immediately and returned to the user.
+    PDF text extraction + AI classification run in the background so the
+    upload response is instant regardless of file size.
+    """
     import hashlib as _hashlib
+    import io as _io
+    from app.services.blob_storage import BlobStorageService as _BlobSvc
+
+    await _get_vessel_or_404(vessel_id, db)
 
     ALLOWED_EXTENSIONS = {"pdf", "docx", "doc", "xlsx", "xls"}
     MAX_SIZE = 50 * 1024 * 1024  # 50 MB per file
 
+    mime_map_upload = {
+        "pdf": "application/pdf",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc": "application/msword",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls": "application/vnd.ms-excel",
+    }
+
     created_manuals = []
+    pending_bg: list[tuple[str, str, str, bytes]] = []  # (manual_id, blob_key, ext, content)
+
     for upload in files:
         filename = upload.filename or "unknown"
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "pdf"
@@ -293,7 +414,7 @@ async def upload_manuals(
                 detail=f"File '{filename}' exceeds the 50 MB limit.",
             )
 
-        # F-09: compute SHA-256 and check for within-project duplicates
+        # Duplicate check via SHA-256
         sha256 = _hashlib.sha256(content).hexdigest()
         existing_hash = await db.execute(
             select(Manual).where(
@@ -306,69 +427,7 @@ async def upload_manuals(
         original_manual = existing_hash.scalars().first()
         is_dup = original_manual is not None
 
-        # Auto-classify the document — run sync PDF+Claude work in a thread
-        # to avoid blocking the async event loop on large files.
-        from app.services.classifier import classify_pdf, _keyword_classify
-        try:
-            result = await asyncio.to_thread(classify_pdf, content, filename)
-        except Exception:
-            # Fallback: keyword-only classification so upload never fails
-            try:
-                result = await asyncio.to_thread(_keyword_classify, [], filename, 0)
-            except Exception:
-                from app.services.classifier import ClassificationResult
-                result = ClassificationResult(
-                    category="Unknown/Unclassifiable",
-                    confidence=40,
-                    useful_for_extraction="no",
-                    pages_with_components="",
-                    pages_with_jobs="",
-                    pages_with_spares="",
-                    page_count=0,
-                )
-
-        # Extract text at upload time so it persists in DB across ephemeral filesystem redeploys
-        extracted_text = ""
-        page_count_val = result.page_count or 0
-        if ext == "pdf":
-            try:
-                def _extract_text_and_tables(data: bytes) -> tuple[str, int]:
-                    import io as _io
-                    import pdfplumber as _pdfplumber
-                    parts: list[str] = []
-                    with _pdfplumber.open(_io.BytesIO(data)) as pdf:
-                        total = len(pdf.pages)
-                        for page_num, page in enumerate(pdf.pages, start=1):
-                            text = page.extract_text()
-                            if text and text.strip():
-                                parts.append(text)
-                            try:
-                                tables = page.extract_tables()
-                                for table in (tables or []):
-                                    if not table:
-                                        continue
-                                    rows = []
-                                    for row in table:
-                                        if row and any(cell for cell in row if cell):
-                                            rows.append(" | ".join(
-                                                str(cell).strip() if cell else ""
-                                                for cell in row
-                                            ))
-                                    if rows:
-                                        parts.append(f"[TABLE page {page_num}]\n" + "\n".join(rows))
-                            except Exception:
-                                pass
-                    return "\n\n".join(parts), total
-
-                extracted_text, page_count_val = await asyncio.to_thread(
-                    _extract_text_and_tables, content
-                )
-                # Cap at 200k chars — enough for a very large manual
-                if len(extracted_text) > 200_000:
-                    extracted_text = extracted_text[:200_000]
-            except Exception:
-                pass
-
+        # Save record immediately with status=queued; classification runs in background
         manual = Manual(
             tenant_id=current_user.tenant_id,
             vessel_id=vessel_id,
@@ -376,45 +435,26 @@ async def upload_manuals(
             file_extension=ext,
             file_size_bytes=len(content),
             sharepoint_path="",
-            status=ManualStatus.classified,
+            status=ManualStatus.queued,
             uploaded_by=current_user.id,
             sha256_hash=sha256,
             is_duplicate=is_dup,
             duplicate_of_id=original_manual.id if is_dup else None,
-            category=result.category,
-            classification_confidence=result.confidence,
-            useful_for_extraction=result.useful_for_extraction,
-            pages_with_components=result.pages_with_components,
-            pages_with_jobs=result.pages_with_jobs,
-            pages_with_spares=result.pages_with_spares,
-            extracted_text=extracted_text or None,
-            page_count=page_count_val or None,
+            category=None,
+            classification_confidence=None,
         )
         db.add(manual)
         await db.flush()
 
-        # Upload to blob storage (primary) — key: {tenant_id}/{vessel_id}/{manual_id}/{filename}
+        # Upload raw bytes to blob storage
         blob_key = f"{current_user.tenant_id}/{vessel_id}/{manual.id}/{filename}"
-        mime_map_upload = {
-            "pdf": "application/pdf",
-            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "doc": "application/msword",
-            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "xls": "application/vnd.ms-excel",
-            "png": "image/png",
-            "jpg": "image/jpeg",
-            "jpeg": "image/jpeg",
-            "tiff": "image/tiff",
-        }
         content_type_upload = mime_map_upload.get(ext, "application/octet-stream")
         try:
-            from app.services.blob_storage import BlobStorageService as _BlobSvc
-            import io as _io
             _blob = _BlobSvc()
             await _blob.upload_stream(blob_key, _io.BytesIO(content), content_type_upload)
             manual.blob_storage_key = blob_key
             db.add(manual)
-        except Exception as _blob_exc:
+        except Exception:
             # Blob storage unavailable — fall back to local disk
             try:
                 upload_dir = os.path.join(settings.UPLOAD_DIR, str(vessel_id))
@@ -425,11 +465,24 @@ async def upload_manuals(
                 manual.blob_storage_key = file_path
                 db.add(manual)
             except Exception:
-                pass  # Disk save best-effort; extracted_text in DB is primary source
+                pass
 
         created_manuals.append(ManualOut.model_validate(manual))
+        pending_bg.append((str(manual.id), str(vessel_id), str(current_user.tenant_id), content, ext, filename))
 
     await db.commit()
+
+    # Kick off background processing for each file (text extraction + classification)
+    for manual_id, vid, tid, content, ext, filename in pending_bg:
+        background_tasks.add_task(
+            _process_uploaded_file,
+            manual_id=manual_id,
+            vessel_id_str=vid,
+            tenant_id_str=tid,
+            file_bytes=content,
+            file_ext=ext,
+            filename=filename,
+        )
 
     return {"uploaded": len(created_manuals), "manuals": [m.model_dump() for m in created_manuals]}
 
