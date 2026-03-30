@@ -187,15 +187,12 @@ async def add_maker_model(
     if not maker:
         raise HTTPException(status_code=400, detail="maker is required")
 
+    # ON CONFLICT DO NOTHING handles the partial unique index (is_deleted=false)
+    # without repeating named params (which breaks asyncpg's positional mapping)
     await db.execute(text("""
         INSERT INTO maker_models (id, tenant_id, maker, model, component_category)
-        SELECT gen_random_uuid(), :tid, :maker, :model, :cat
-        WHERE NOT EXISTS (
-            SELECT 1 FROM maker_models
-            WHERE tenant_id = :tid AND maker = :maker
-            AND COALESCE(model, '') = COALESCE(:model, '')
-            AND is_deleted = false
-        )
+        VALUES (gen_random_uuid(), :tid, :maker, :model, :cat)
+        ON CONFLICT DO NOTHING
     """), {"tid": str(current_user.tenant_id), "maker": maker, "model": model, "cat": category})
     await db.commit()
     return {"status": "ok", "maker": maker, "model": model}
@@ -257,13 +254,8 @@ async def import_maker_models(
 
         result = await db.execute(text("""
             INSERT INTO maker_models (id, tenant_id, maker, model, component_category)
-            SELECT gen_random_uuid(), :tid, :maker, :model, :cat
-            WHERE NOT EXISTS (
-                SELECT 1 FROM maker_models
-                WHERE tenant_id = :tid AND maker = :maker
-                AND COALESCE(model, '') = COALESCE(:model, '')
-                AND is_deleted = false
-            )
+            VALUES (gen_random_uuid(), :tid, :maker, :model, :cat)
+            ON CONFLICT DO NOTHING
         """), {"tid": tid, "maker": maker, "model": model, "cat": category})
         if result.rowcount > 0:
             imported += 1
