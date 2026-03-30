@@ -9,11 +9,12 @@ extracted duplicate so the library component row is enriched in-place.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from difflib import SequenceMatcher
 from typing import Optional
 
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.component import Component, QCStatus
@@ -21,12 +22,80 @@ from app.models.ingestion import Manual
 
 logger = logging.getLogger(__name__)
 
-MATCH_THRESHOLD = 0.68  # minimum similarity to consider a match
+MATCH_THRESHOLD = 0.55  # lowered — normalization handles most variation now
+
+
+# ---------------------------------------------------------------------------
+# Name normalization
+# ---------------------------------------------------------------------------
+
+# Common maritime abbreviations: pattern → replacement (all lowercase)
+_ABBREV_PATTERNS: list[tuple[str, str]] = [
+    # Fluid types
+    (r'\bf\.?\s*o\.?\b', 'fuel oil'),
+    (r'\bb\.?\s*w\.?\b', 'ballast water'),
+    (r'\bf\.?\s*w\.?\b', 'fresh water'),
+    (r'\bl\.?\s*o\.?\b', 'lube oil'),
+    (r'\bd\.?\s*o\.?\b', 'diesel oil'),
+    (r'\bs\.?\s*w\.?\b', 'sea water'),
+    (r'\bh\.?\s*f\.?\s*o\.?\b', 'heavy fuel oil'),
+    (r'\bm\.?\s*g\.?\s*o\.?\b', 'marine gas oil'),
+    (r'\bd\.?\s*w\.?\b', 'drinking water'),
+    # Side indicators (parenthesised or standalone)
+    (r'\(\s*p\s*\)', 'port'),
+    (r'\(\s*s\s*\)', 'starboard'),
+    (r'\(\s*c\s*\)', 'centre'),
+    (r'\bstbd\b', 'starboard'),
+    (r'\bsb\b', 'starboard'),
+    (r'\bps\b', 'port starboard'),
+    # Position
+    (r'\bfwd\b', 'forward'),
+    (r'\baft\b', 'after'),
+    (r'\bno\.?\s*', 'no '),
+    # Tank suffixes
+    (r'\btk\b', 'tank'),
+    (r'\bsett?\.?\b', 'settling'),
+    (r'\bserv\.?\b', 'service'),
+    (r'\bdb\b', 'double bottom'),
+]
+
+_COMPILED = [(re.compile(pat, re.IGNORECASE), repl) for pat, repl in _ABBREV_PATTERNS]
+
+
+def _normalize(name: str) -> str:
+    """Lowercase, expand abbreviations, strip punctuation."""
+    s = name.strip().lower()
+    for regex, repl in _COMPILED:
+        s = regex.sub(repl, s)
+    s = re.sub(r'[^\w\s]', ' ', s)   # strip remaining punctuation
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
 
 
 def _similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio()
+    """
+    Combined similarity: max of token-Jaccard and character SequenceMatcher,
+    both operating on normalized names.
+    """
+    na, nb = _normalize(a), _normalize(b)
+    if not na or not nb:
+        return 0.0
 
+    # Token Jaccard — robust to word reordering and abbreviation differences
+    tokens_a = set(na.split())
+    tokens_b = set(nb.split())
+    union = tokens_a | tokens_b
+    jaccard = len(tokens_a & tokens_b) / len(union) if union else 0.0
+
+    # Character SequenceMatcher on normalized strings
+    char_sim = SequenceMatcher(None, na, nb).ratio()
+
+    return max(jaccard, char_sim)
+
+
+# ---------------------------------------------------------------------------
+# Main merge function
+# ---------------------------------------------------------------------------
 
 async def auto_merge_extracted_components(
     db: AsyncSession,
@@ -132,6 +201,13 @@ async def auto_merge_extracted_components(
             ext_comp.is_unmapped = True
             db.add(ext_comp)
             unmatched += 1
+
+            logger.info(
+                "auto_merge: NO MATCH for '%s' (best='%s' score=%.2f)",
+                ext_comp.component_name,
+                best_match.component_name if best_match else "—",
+                best_score,
+            )
 
     # Soft-delete the extracted duplicates that were merged
     for comp_id in to_delete:

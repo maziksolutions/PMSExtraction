@@ -506,6 +506,9 @@ async def auto_link_pages(
     if not manual_map:
         return {"updated": 0, "message": "No classified manuals with page data found."}
 
+    # Build a fast lookup: manual_id -> manual entry
+    manual_by_id = {m["id"]: m for m in manual_map}
+
     # Get components missing page data
     comps_res = await db.execute(
         select(Component).where(
@@ -516,36 +519,41 @@ async def auto_link_pages(
     )
     components = comps_res.scalars().all()
 
-    # Simple keyword match: component main_machinery vs manual filename
     updated = 0
     for comp in components:
-        if comp.job_pages and comp.spare_pages:
-            continue  # already filled
+        if comp.job_pages and comp.spare_pages and comp.pdf_reference:
+            continue  # already fully filled
 
-        search_text = (comp.main_machinery + " " + comp.component_name).lower()
-        best_manual = None
-        best_score = 0
-        for m in manual_map:
-            manual_words = set(m["name"].lower().replace("_", " ").replace("-", " ").split())
-            comp_words = set(search_text.split())
-            score = len(manual_words & comp_words)
-            if score > best_score:
-                best_score = score
-                best_manual = m
+        matched_manual = None
 
-        if best_manual is None and manual_map:
-            # Fall back to first manual
-            best_manual = manual_map[0]
+        # Priority 1: component already has a source_manual_id — use that manual's page data
+        if comp.source_manual_id and comp.source_manual_id in manual_by_id:
+            matched_manual = manual_by_id[comp.source_manual_id]
+        else:
+            # Priority 2: keyword overlap between component name/machinery and manual filename
+            # Only accept a genuine match (score > 0) — never fall back to an arbitrary manual
+            search_text = (comp.main_machinery + " " + comp.component_name).lower()
+            best_score = 0
+            for m in manual_map:
+                manual_words = set(m["name"].lower().replace("_", " ").replace("-", " ").split())
+                comp_words = set(search_text.split())
+                score = len(manual_words & comp_words)
+                if score > best_score:
+                    best_score = score
+                    matched_manual = m
 
-        if best_manual:
+            if best_score == 0:
+                matched_manual = None  # no genuine match — skip this component
+
+        if matched_manual:
             if not comp.job_pages:
-                comp.job_pages = best_manual["job_pages"]
+                comp.job_pages = matched_manual["job_pages"]
             if not comp.spare_pages:
-                comp.spare_pages = best_manual["spare_pages"]
+                comp.spare_pages = matched_manual["spare_pages"]
             if not comp.pdf_reference:
-                comp.pdf_reference = best_manual["pdf_ref"]
+                comp.pdf_reference = matched_manual["pdf_ref"]
             if not comp.source_manual_id:
-                comp.source_manual_id = best_manual["id"]
+                comp.source_manual_id = matched_manual["id"]
             db.add(comp)
             updated += 1
 
