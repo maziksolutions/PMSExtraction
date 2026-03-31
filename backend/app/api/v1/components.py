@@ -312,20 +312,25 @@ async def download_components_template() -> StreamingResponse:
     headers = [
         "Group", "Sub-Group", "Main Machinery", "Component Name",
         "Maker", "Model", "Serial Number", "Specification",
+        "Location/Sets Installed", "Machinery Particulars",
         "Critical", "Job Pages", "Spare Pages", "PDF Reference",
     ]
     sample_rows = [
         ["Propulsion", "Main Engine", "Main Engine", "Cylinder Head",
          "MAN B&W", "S60MC-C", "SN-12345", "6-cylinder, 2-stroke diesel",
+         "Engine Room", "Machinery Particulars Rev.3",
          "Yes", "12-15", "45-48", "ME-Manual-p12"],
         ["Propulsion", "Main Engine", "Main Engine", "Fuel Injection Pump",
          "MAN B&W", "S60MC-C", "", "High-pressure fuel injection",
+         "Engine Room", "",
          "Yes", "18-20", "50-52", "ME-Manual-p18"],
         ["Ballast System", "Ballast Pumps", "Ballast Pump No.1", "Ballast Pump",
          "Shinko", "SBP-500", "BP-001", "500 m³/h, 2.5 bar",
+         "Pump Room", "Machinery Particulars Rev.3",
          "No", "", "60-62", "BP-Manual-p5"],
         ["Deck Machinery", "Mooring", "Anchor Windlass", "Anchor Windlass",
          "Rolls-Royce", "AW-250", "", "250 kN pull",
+         "Forecastle Deck", "",
          "No", "8", "70", ""],
     ]
 
@@ -354,6 +359,88 @@ async def download_components_template() -> StreamingResponse:
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": "attachment; filename=components_import_template.xlsx"},
+    )
+
+
+@router.get("/{vessel_id}/components/export", summary="Export QC-accepted components as Excel")
+async def export_components(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    qc_status: Optional[str] = Query("accepted"),
+) -> StreamingResponse:
+    """Export components (default: QC accepted) as .xlsx in the import format."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    await _get_vessel_or_404(vessel_id, db)
+
+    base_where = [
+        Component.vessel_id == vessel_id,
+        Component.tenant_id == current_user.tenant_id,
+        Component.is_deleted == False,
+    ]
+    if qc_status:
+        try:
+            base_where.append(Component.qc_status == QCStatus(qc_status))
+        except ValueError:
+            pass
+
+    result = await db.execute(
+        select(Component)
+        .where(*base_where)
+        .order_by(Component.group1, Component.group2, Component.main_machinery, Component.component_name)
+    )
+    components = result.scalars().all()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Components"
+
+    headers = [
+        "Group", "Sub-Group", "Main Machinery", "Component Name",
+        "Maker", "Model", "Serial Number", "Specification",
+        "Location/Sets Installed", "Machinery Particulars",
+        "Critical", "Job Pages", "Spare Pages", "PDF Reference",
+    ]
+
+    header_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+
+    for col_idx, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    for row_idx, comp in enumerate(components, start=2):
+        ws.cell(row=row_idx, column=1, value=comp.group1)
+        ws.cell(row=row_idx, column=2, value=comp.group2)
+        ws.cell(row=row_idx, column=3, value=comp.main_machinery)
+        ws.cell(row=row_idx, column=4, value=comp.component_name)
+        ws.cell(row=row_idx, column=5, value=comp.maker or "")
+        ws.cell(row=row_idx, column=6, value=comp.model or "")
+        ws.cell(row=row_idx, column=7, value=comp.serial_number or "")
+        ws.cell(row=row_idx, column=8, value=comp.specification or "")
+        ws.cell(row=row_idx, column=9, value=comp.location or "")
+        ws.cell(row=row_idx, column=10, value=comp.machinery_particulars or "")
+        ws.cell(row=row_idx, column=11, value="Yes" if comp.is_critical else "No")
+        ws.cell(row=row_idx, column=12, value=comp.job_pages or "")
+        ws.cell(row=row_idx, column=13, value=comp.spare_pages or "")
+        ws.cell(row=row_idx, column=14, value=comp.pdf_reference or "")
+
+    for col in ws.columns:
+        max_len = max((len(str(cell.value or "")) for cell in col), default=10)
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 4, 16)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=components_export_{vessel_id}.xlsx"},
     )
 
 
@@ -425,6 +512,12 @@ async def import_components_excel(
         "maker": "maker",
         "manufacturer": "maker",
         "model": "model",
+        "location/sets installed": "location",
+        "location": "location",
+        "sets installed": "location",
+        "machinery particulars": "machinery_particulars",
+        "mp reference": "machinery_particulars",
+        "machinery_particulars": "machinery_particulars",
     }
 
     def _normalise(row: dict) -> dict:
@@ -456,6 +549,8 @@ async def import_components_excel(
             model=r.get("model") or None,
             specification=r.get("specification") or None,
             serial_number=r.get("serial_number") or None,
+            location=r.get("location") or None,
+            machinery_particulars=r.get("machinery_particulars") or None,
             is_critical=is_critical,
             job_pages=r.get("job_pages") or None,
             spare_pages=r.get("spare_pages") or None,

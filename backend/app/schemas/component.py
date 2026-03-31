@@ -20,6 +20,8 @@ class ComponentOut(BaseModel):
     model: Optional[str] = None
     specification: Optional[str] = None
     serial_number: Optional[str] = None
+    location: Optional[str] = None
+    machinery_particulars: Optional[str] = None
     source_manual_id: Optional[uuid.UUID] = None
     page_reference: Optional[int] = None
     confidence_score: Optional[int] = None
@@ -46,6 +48,8 @@ class ComponentCreate(BaseModel):
     model: Optional[str] = None
     specification: Optional[str] = None
     serial_number: Optional[str] = None
+    location: Optional[str] = None
+    machinery_particulars: Optional[str] = None
     is_critical: bool = False
     criticality: str = "non_critical"
     job_pages: Optional[str] = None
@@ -62,6 +66,8 @@ class ComponentUpdate(BaseModel):
     model: Optional[str] = None
     specification: Optional[str] = None
     serial_number: Optional[str] = None
+    location: Optional[str] = None
+    machinery_particulars: Optional[str] = None
     is_critical: Optional[bool] = None
     criticality: Optional[str] = None
     qc_status: Optional[QCStatus] = None

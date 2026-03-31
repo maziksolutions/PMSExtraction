@@ -41,6 +41,8 @@ class Component(TenantBase):
     model: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     specification: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     serial_number: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    location: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    machinery_particulars: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     source_manual_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),

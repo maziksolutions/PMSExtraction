@@ -52,6 +52,8 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             '  "maker": "manufacturer name — check document title, header, and Name Plate rows; null if absent",\n'
             '  "model": "model/type number — check Type rows and document title; null if absent",\n'
             '  "serial_number": "serial number or null",\n'
+            '  "location": "physical location or sets installed (e.g. Engine Room, 2 sets) — from Location or Installed column; null if absent",\n'
+            '  "machinery_particulars": "machinery particulars document reference or list number — from MP No. or similar column; null if absent",\n'
             '  "specification": "key ratings: power (kW), capacity (m³/h), pressure (bar), rpm, etc. — be specific; null if absent",\n'
             '  "is_critical": true if propulsion/steering/power generation/fire/safety/sewage treatment equipment,\n'
             '  "job_pages": null,\n'
@@ -74,7 +76,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "The text contains [PAGE N] markers — use them for source_page_number.\n"
             "If this is a specification sheet for one equipment, extract the main equipment (maker from the title) "
             "and any named sub-assemblies (motors, blowers, pumps, etc.).\n"
-            "If this is a machinery list, extract every table row.\n\n"
+            "If this is a machinery list, extract every table row including location and machinery particulars reference if present.\n\n"
             "{text}"
         ),
     },
@@ -279,13 +281,27 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         vessel_shipyard = getattr(vessel_obj, "shipyard", None) or None
 
         category: Optional[str] = manual.category
-        if not category or category.strip().lower() in ("", "unknown/unclassifiable", "unknown"):
+        norm_cat = (category or "").strip().lower()
+        # Skip only if truly unknown AND no page signals from classifier
+        pages_with_any = (
+            getattr(manual, "pages_with_components", None)
+            or getattr(manual, "pages_with_jobs", None)
+            or getattr(manual, "pages_with_spares", None)
+        )
+        if norm_cat in ("", "unknown/unclassifiable", "unknown") and not pages_with_any:
             logger.info(
-                "auto_extract_from_manual: skipping manual %s — category=%r",
+                "auto_extract_from_manual: skipping manual %s — category=%r, no page signals",
                 manual_id_str,
                 category,
             )
             return
+        # If unknown but has page signals, treat as Instruction Manual for extraction
+        if norm_cat in ("", "unknown/unclassifiable", "unknown"):
+            category = "Instruction Manual"
+            logger.info(
+                "auto_extract_from_manual: treating unknown manual %s as Instruction Manual (has page signals)",
+                manual_id_str,
+            )
 
         # ------------------------------------------------------------------
         # Mark as scanning
@@ -507,6 +523,8 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                         model=_model,
                         serial_number=record.get("serial_number") or None,
                         specification=record.get("specification") or None,
+                        location=record.get("location") or None,
+                        machinery_particulars=record.get("machinery_particulars") or None,
                         is_critical=bool(record.get("is_critical", False)),
                         job_pages=record.get("job_pages") or None,
                         spare_pages=record.get("spare_pages") or None,

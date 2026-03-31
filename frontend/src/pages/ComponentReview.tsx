@@ -32,6 +32,8 @@ interface Component {
   model: string | null
   specification: string | null
   serial_number: string | null
+  location: string | null
+  machinery_particulars: string | null
   source_manual_id: string | null
   page_reference: number | null
   confidence_score: number | null
@@ -567,6 +569,16 @@ const ComponentReview: React.FC = () => {
             Auto-Merge
           </button>
 
+          {/* Export Accepted */}
+          <a
+            href={`${apiClient.defaults.baseURL}/vessels/${vesselId}/components/export?qc_status=accepted`}
+            download={`components_export.xlsx`}
+            className="flex items-center gap-1.5 rounded-lg border border-green-700 bg-green-900/30 px-3 py-1.5 text-xs font-medium text-green-300 hover:bg-green-800/40 hover:text-white"
+          >
+            <FileDown className="h-3.5 w-3.5" />
+            Export Accepted
+          </a>
+
           {/* Add Component */}
           <button
             onClick={() => { setAddContext({}); setShowAddModal(true) }}
@@ -694,6 +706,8 @@ const ComponentReview: React.FC = () => {
                     <th className="px-3 py-3">Job Pages</th>
                     <th className="px-3 py-3">Spare Pages</th>
                     <th className="px-3 py-3">PDF Reference</th>
+                    <th className="px-3 py-3">Location</th>
+                    <th className="px-3 py-3">Mach. Particulars</th>
                     <th className="px-3 py-3">Critical</th>
                     <th className="px-3 py-3">QC</th>
                   </tr>
@@ -760,6 +774,12 @@ const ComponentReview: React.FC = () => {
                             className="w-32 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                             placeholder="filename"
                           />
+                        </td>
+                        <td className="px-3 py-2.5 text-xs text-slate-400">
+                          {comp.location || '—'}
+                        </td>
+                        <td className="px-3 py-2.5 text-xs text-slate-400 max-w-[140px] truncate" title={comp.machinery_particulars || ''}>
+                          {comp.machinery_particulars || '—'}
                         </td>
                         <td className="px-3 py-2.5">
                           <select
