@@ -225,6 +225,59 @@ async def delete_component(
         await db.commit()
 
 
+@router.post("/{vessel_id}/components/bulk-update", summary="Bulk update fields on selected components")
+async def bulk_update_components(
+    vessel_id: uuid.UUID,
+    body: dict,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """
+    Apply the same field values to all specified component IDs.
+    Body: { "ids": [...], "updates": { field: value, ... } }
+    Only fields present in updates (with non-empty string / non-None values) are applied.
+    """
+    ids = [uuid.UUID(i) for i in body.get("ids", [])]
+    updates: dict = body.get("updates", {})
+    if not ids or not updates:
+        return {"updated": 0}
+
+    # Whitelist of patchable fields
+    ALLOWED = {
+        "qc_status", "criticality", "is_critical",
+        "maker", "model", "specification", "serial_number",
+        "location", "machinery_particulars",
+        "job_pages", "spare_pages", "pdf_reference",
+    }
+    safe_updates = {k: v for k, v in updates.items() if k in ALLOWED and v is not None and v != ""}
+
+    if not safe_updates:
+        return {"updated": 0}
+
+    # Convert qc_status string → enum
+    if "qc_status" in safe_updates:
+        try:
+            safe_updates["qc_status"] = QCStatus(safe_updates["qc_status"])
+        except ValueError:
+            safe_updates.pop("qc_status")
+
+    result = await db.execute(
+        select(Component).where(
+            Component.id.in_(ids),
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == current_user.tenant_id,
+            Component.is_deleted == False,
+        )
+    )
+    components = result.scalars().all()
+    for comp in components:
+        for field, value in safe_updates.items():
+            setattr(comp, field, value)
+        db.add(comp)
+    await db.commit()
+    return {"updated": len(components)}
+
+
 @router.post("/{vessel_id}/components/bulk-accept", summary="Bulk accept components")
 async def bulk_accept_components(
     vessel_id: uuid.UUID,

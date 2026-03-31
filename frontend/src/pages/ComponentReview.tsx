@@ -227,6 +227,8 @@ const ComponentReview: React.FC = () => {
   const [addContext, setAddContext] = useState<{ group1?: string; group2?: string; machinery?: string }>({})
   const [edits, setEdits] = useState<Record<string, InlineEdit>>({})
   const [importResult, setImportResult] = useState<string | null>(null)
+  const [showBatchPanel, setShowBatchPanel] = useState(false)
+  const [batchFields, setBatchFields] = useState<Record<string, string>>({})
   const [autoLinkLoading, setAutoLinkLoading] = useState(false)
   const [libraryLoading, setLibraryLoading] = useState(false)
   const [showLibraryModal, setShowLibraryModal] = useState(false)
@@ -287,6 +289,18 @@ const ComponentReview: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
       setEdits({})
+    },
+  })
+
+  const bulkUpdateMutation = useMutation({
+    mutationFn: ({ ids, updates }: { ids: string[]; updates: Record<string, string> }) =>
+      apiClient.post(`/vessels/${vesselId}/components/bulk-update`, { ids, updates }).then((r) => r.data),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
+      setImportResult(`Batch updated ${data.updated} component(s).`)
+      setSelectedIds(new Set())
+      setShowBatchPanel(false)
+      setBatchFields({})
     },
   })
 
@@ -651,6 +665,13 @@ const ComponentReview: React.FC = () => {
                   <XCircle className="h-3.5 w-3.5" />
                   Reject ({selectedIds.size})
                 </button>
+                <button
+                  onClick={() => { setShowBatchPanel(p => !p); setBatchFields({}) }}
+                  className="flex items-center gap-1.5 rounded-lg bg-violet-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-600"
+                >
+                  <Wrench className="h-3.5 w-3.5" />
+                  Batch Edit ({selectedIds.size})
+                </button>
               </>
             )}
 
@@ -669,6 +690,146 @@ const ComponentReview: React.FC = () => {
           </div>
           </div>
         </div>
+
+        {/* Batch Update Panel */}
+        {showBatchPanel && selectedIds.size > 0 && (
+          <div className="rounded-xl border border-violet-700 bg-violet-900/20 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-violet-300">
+                Batch Update — {selectedIds.size} selected component(s)
+              </p>
+              <button onClick={() => { setShowBatchPanel(false); setBatchFields({}) }} className="text-slate-500 hover:text-white">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-400">Fill only the fields you want to update. Empty fields are ignored.</p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              {/* Criticality */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-slate-500 uppercase tracking-wide">Criticality</label>
+                <select
+                  value={batchFields.criticality ?? ''}
+                  onChange={e => setBatchFields(p => ({ ...p, criticality: e.target.value }))}
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none"
+                >
+                  <option value="">— no change —</option>
+                  <option value="non_critical">Non Critical</option>
+                  <option value="essential">Essential</option>
+                  <option value="critical">Critical</option>
+                </select>
+              </div>
+              {/* QC Status */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-slate-500 uppercase tracking-wide">QC Status</label>
+                <select
+                  value={batchFields.qc_status ?? ''}
+                  onChange={e => setBatchFields(p => ({ ...p, qc_status: e.target.value }))}
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none"
+                >
+                  <option value="">— no change —</option>
+                  <option value="pending">Pending</option>
+                  <option value="accepted">Accepted</option>
+                  <option value="rejected">Rejected</option>
+                  <option value="modified">Modified</option>
+                </select>
+              </div>
+              {/* Maker */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-slate-500 uppercase tracking-wide">Maker</label>
+                <input
+                  list="batch-makers-list"
+                  value={batchFields.maker ?? ''}
+                  onChange={e => setBatchFields(p => ({ ...p, maker: e.target.value }))}
+                  placeholder="e.g. Wartsila"
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none"
+                />
+                <datalist id="batch-makers-list">
+                  {makers.map(mk => <option key={mk} value={mk} />)}
+                </datalist>
+              </div>
+              {/* Model */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-slate-500 uppercase tracking-wide">Model</label>
+                <input
+                  value={batchFields.model ?? ''}
+                  onChange={e => setBatchFields(p => ({ ...p, model: e.target.value }))}
+                  placeholder="e.g. W6L20"
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none"
+                />
+              </div>
+              {/* PDF Reference */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-slate-500 uppercase tracking-wide">PDF Reference</label>
+                <input
+                  value={batchFields.pdf_reference ?? ''}
+                  onChange={e => setBatchFields(p => ({ ...p, pdf_reference: e.target.value }))}
+                  placeholder="filename.pdf"
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none"
+                />
+              </div>
+              {/* Job Pages */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-slate-500 uppercase tracking-wide">Job Pages</label>
+                <input
+                  value={batchFields.job_pages ?? ''}
+                  onChange={e => setBatchFields(p => ({ ...p, job_pages: e.target.value }))}
+                  placeholder="e.g. 21-50"
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none"
+                />
+              </div>
+              {/* Spare Pages */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-slate-500 uppercase tracking-wide">Spare Pages</label>
+                <input
+                  value={batchFields.spare_pages ?? ''}
+                  onChange={e => setBatchFields(p => ({ ...p, spare_pages: e.target.value }))}
+                  placeholder="e.g. 81-120"
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none"
+                />
+              </div>
+              {/* Location */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-slate-500 uppercase tracking-wide">Location</label>
+                <input
+                  value={batchFields.location ?? ''}
+                  onChange={e => setBatchFields(p => ({ ...p, location: e.target.value }))}
+                  placeholder="e.g. Engine Room"
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none"
+                />
+              </div>
+              {/* Machinery Particulars */}
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-slate-500 uppercase tracking-wide">Mach. Particulars</label>
+                <input
+                  value={batchFields.machinery_particulars ?? ''}
+                  onChange={e => setBatchFields(p => ({ ...p, machinery_particulars: e.target.value }))}
+                  placeholder="e.g. 4-stroke diesel"
+                  className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none"
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                onClick={() => {
+                  const nonEmpty = Object.fromEntries(Object.entries(batchFields).filter(([, v]) => v !== ''))
+                  if (Object.keys(nonEmpty).length === 0) { alert('No fields to update — fill in at least one field.'); return }
+                  bulkUpdateMutation.mutate({ ids: Array.from(selectedIds), updates: nonEmpty })
+                }}
+                disabled={bulkUpdateMutation.isPending}
+                className="flex items-center gap-1.5 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-50"
+              >
+                <Save className="h-4 w-4" />
+                Apply to {selectedIds.size} component(s)
+              </button>
+              <button
+                onClick={() => setBatchFields({})}
+                className="text-xs text-slate-500 hover:text-slate-300"
+              >
+                Clear fields
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Import / auto-link result banner */}
         {importResult && (
