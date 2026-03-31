@@ -529,24 +529,34 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                     file_path = manual.blob_storage_key
                     content: bytes | None = None
 
+                    logger.info(
+                        "_run_screening_task: loading %s blob_key=%r",
+                        manual.original_filename, file_path,
+                    )
+
                     # Try local disk first
                     if file_path and os.path.exists(file_path):
                         with open(file_path, "rb") as f:
                             content = f.read()
+                        logger.info("_run_screening_task: loaded from disk %d bytes", len(content))
                     else:
-                        # Not on local disk — try blob storage (MinIO / Azure)
-                        is_local_path = file_path and (
-                            file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
-                        )
-                        if file_path and not is_local_path:
+                        # Not on local disk — try blob storage (MinIO / Azure).
+                        # NOTE: do NOT skip paths that start with "/" — on Railway the
+                        # blob_storage_key may look like an absolute path but the file
+                        # no longer exists on local disk after a container restart.
+                        if file_path:
                             try:
                                 from app.services.blob_storage import BlobStorageService
                                 blob_svc = BlobStorageService()
                                 content = await blob_svc.download_bytes(file_path)
+                                logger.info(
+                                    "_run_screening_task: downloaded from blob %d bytes for %s",
+                                    len(content), manual.original_filename,
+                                )
                             except Exception as blob_err:
                                 logger.warning(
-                                    "_run_screening_task: blob download failed for %s: %s",
-                                    manual.original_filename, blob_err,
+                                    "_run_screening_task: blob download failed for %s key=%r: %s",
+                                    manual.original_filename, file_path, blob_err,
                                 )
 
                     # Reset classification fields BEFORE re-classifying so stale data
