@@ -317,7 +317,13 @@ const ComponentReview: React.FC = () => {
     setAutoLinkLoading(true)
     try {
       const res = await apiClient.post(`/vessels/${vesselId}/components/auto-link-pages`)
-      setImportResult(`Auto-linked page references for ${res.data.updated} components.`)
+      if (res.data.updated === 0) {
+        setImportResult(
+          '⚠ Auto-Link found 0 matches. Make sure manuals are extracted first: go to Manual Review → select manuals → Extract Selected, then retry Auto-Link.'
+        )
+      } else {
+        setImportResult(`Auto-linked page references for ${res.data.updated} components.`)
+      }
       queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
     } catch { setImportResult('Auto-link failed.') }
@@ -573,7 +579,13 @@ const ComponentReview: React.FC = () => {
               setAutoLinkLoading(true)
               try {
                 const res = await apiClient.post(`/vessels/${vesselId}/components/auto-merge-extracted`)
-                setImportResult(`Auto-merged: ${res.data.merged} components linked to library, ${res.data.unmatched} new unmapped.`)
+                if (res.data.merged === 0 && res.data.unmatched === 0) {
+                  setImportResult(
+                    '⚠ Auto-Merge found no extracted components to merge. Go to Manual Review → select instruction manuals → Extract Selected first, then retry Auto-Merge.'
+                  )
+                } else {
+                  setImportResult(`Auto-merged: ${res.data.merged} components linked to library, ${res.data.unmatched} new unmapped.`)
+                }
                 queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
                 queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
               } catch { setImportResult('Auto-merge failed.') }
