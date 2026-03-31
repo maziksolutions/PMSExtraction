@@ -128,14 +128,18 @@ def _extract_pdf_text(content: bytes, max_pages: int = 9999) -> tuple[list[str],
 
 def _make_marked_text(pages_text: list[str], max_chars: int = 400_000) -> str:
     """
-    Build a single string with [PAGE N] markers for every page.
-    max_chars cap is generous (400k ≈ 100k tokens, within Groq's 128k limit)
-    so the full document is sent rather than sampled sections.
+    Build a single string with [PAGE N] markers.
+    Sends each page truncated to first 800 chars so all pages are covered
+    while staying within Groq's free-tier token limits.
+    This preserves headings, table headers and first rows — enough to
+    identify what section each page belongs to.
     """
     parts: list[str] = []
     total = 0
     for i, text in enumerate(pages_text, start=1):
-        snippet = f"[PAGE {i}]\n{text}" if text else f"[PAGE {i}]"
+        # Truncate each page to first 800 chars to keep total manageable
+        truncated = text[:800] if text else ""
+        snippet = f"[PAGE {i}]\n{truncated}" if truncated else f"[PAGE {i}]"
         total += len(snippet)
         parts.append(snippet)
         if total >= max_chars:
@@ -311,7 +315,10 @@ def _classify_with_groq(pages_text: list[str], filename: str, page_count: int) -
             max_tokens=1024,
             temperature=0,
         )
-        raw = response.choices[0].message.content.strip()
+        raw = (response.choices[0].message.content or "").strip()
+        if not raw:
+            _log.warning("classifier[groq]: empty response for %s", filename)
+            return None
 
         _log.info("classifier[groq]: raw response for %s: %s", filename, raw[:300])
         if "```" in raw:
