@@ -549,6 +549,18 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                     manual.original_filename, blob_err,
                                 )
 
+                    # Reset classification fields BEFORE re-classifying so stale data
+                    # never persists if the new result differs (e.g. empty page ranges).
+                    await db.execute(
+                        update(Manual).where(Manual.id == manual.id).values(
+                            pages_with_components="",
+                            pages_with_jobs="",
+                            pages_with_spares="",
+                            status=ManualStatus.uploaded,
+                        )
+                    )
+                    await db.commit()
+
                     ext = (manual.file_extension or "").lower()
                     if content and ext == "pdf":
                         cr = await asyncio.to_thread(classify_pdf, content, manual.original_filename)

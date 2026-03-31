@@ -256,6 +256,30 @@ Rules:
 # Public interface
 # ---------------------------------------------------------------------------
 
+# Categories that cannot logically contain maintenance jobs or spare parts
+_NO_JOB_SPARE_CATEGORIES = {
+    "General Arrangement",
+    "Pipeline Diagrams/P&ID",
+    "LSA/FFA Plans",
+    "Tank Capacity Plan",
+    "Electrical Diagrams",
+    "Yard/Finished Drawings",
+    "Class Certificates/Surveys",
+    "Unknown/Unclassifiable",
+}
+
+
+def _sanitise_result(result: ClassificationResult) -> ClassificationResult:
+    """Force page ranges to empty string for categories that cannot have jobs/spares."""
+    if result.category in _NO_JOB_SPARE_CATEGORIES:
+        result.pages_with_jobs = ""
+        result.pages_with_spares = ""
+        # components page range only makes sense for Machinery Particulars / Instruction Manual
+        if result.category not in {"Machinery Particulars", "Instruction Manual"}:
+            result.pages_with_components = ""
+    return result
+
+
 def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
     """
     Classify a PDF manual.
@@ -269,7 +293,7 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
         category = ai_result.get("category", "Unknown/Unclassifiable")
         if category not in VALID_CATEGORIES:
             category = "Unknown/Unclassifiable"
-        return ClassificationResult(
+        result = ClassificationResult(
             category=category,
             confidence=max(0, min(100, int(ai_result.get("confidence", 60)))),
             useful_for_extraction=ai_result.get("useful_for_extraction", "partial"),
@@ -278,9 +302,10 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
             pages_with_spares=ai_result.get("pages_with_spares", ""),
             page_count=total_pages,
         )
+        return _sanitise_result(result)
 
     # Fallback: keyword matching
-    return _keyword_classify(pages_text, filename, total_pages)
+    return _sanitise_result(_keyword_classify(pages_text, filename, total_pages))
 
 
 def _keyword_classify(pages_text: list[str], filename: str, total_pages: int) -> ClassificationResult:
