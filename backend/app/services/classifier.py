@@ -452,27 +452,36 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
 # Public interface
 # ---------------------------------------------------------------------------
 
-# Categories that cannot logically contain maintenance jobs or spare parts
+# Categories that cannot contain maintenance jobs or spare parts
 _NO_JOB_SPARE_CATEGORIES = {
     "General Arrangement",
     "Pipeline Diagrams/P&ID",
     "LSA/FFA Plans",
-    "Tank Capacity Plan",
     "Electrical Diagrams",
     "Yard/Finished Drawings",
     "Class Certificates/Surveys",
     "Unknown/Unclassifiable",
 }
 
+# Categories that CAN have component pages (tanks, equipment lists etc.)
+_HAS_COMPONENTS_CATEGORIES = {
+    "Instruction Manual",
+    "Machinery Particulars",
+    "Tank Capacity Plan",  # tanks listed in capacity plan are components
+}
+
 
 def _sanitise_result(result: ClassificationResult) -> ClassificationResult:
-    """Force page ranges to empty string for categories that cannot have jobs/spares."""
+    """Force page ranges to empty string where they cannot logically exist."""
     if result.category in _NO_JOB_SPARE_CATEGORIES:
         result.pages_with_jobs = ""
         result.pages_with_spares = ""
-        # components page range only makes sense for Machinery Particulars / Instruction Manual
-        if result.category not in {"Machinery Particulars", "Instruction Manual"}:
-            result.pages_with_components = ""
+    if result.category not in _HAS_COMPONENTS_CATEGORIES:
+        result.pages_with_components = ""
+    # Tank Capacity Plan never has jobs or spares
+    if result.category == "Tank Capacity Plan":
+        result.pages_with_jobs = ""
+        result.pages_with_spares = ""
     return result
 
 
@@ -494,9 +503,21 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
         category = ai_result.get("category", "Unknown/Unclassifiable")
         if category not in VALID_CATEGORIES:
             category = "Unknown/Unclassifiable"
+        ai_confidence = max(0, min(100, int(ai_result.get("confidence", 60))))
+
+        # If AI is uncertain, also run keyword classifier and pick the better result
+        if category == "Unknown/Unclassifiable" or ai_confidence < 50:
+            kw = _keyword_classify(pages_text, filename, total_pages)
+            if kw.category != "Unknown/Unclassifiable" and kw.confidence >= ai_confidence:
+                _log.info(
+                    "classifier: AI returned %s (%d%%) — keyword classifier wins with %s (%d%%)",
+                    category, ai_confidence, kw.category, kw.confidence,
+                )
+                return _sanitise_result(kw)
+
         result = ClassificationResult(
             category=category,
-            confidence=max(0, min(100, int(ai_result.get("confidence", 60)))),
+            confidence=ai_confidence,
             useful_for_extraction=ai_result.get("useful_for_extraction", "partial"),
             pages_with_components=ai_result.get("pages_with_components", ""),
             pages_with_jobs=ai_result.get("pages_with_jobs", ""),
