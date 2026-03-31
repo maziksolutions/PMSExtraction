@@ -581,17 +581,25 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                 "_run_screening_task: using stored extracted_text (%d chars) for %s",
                                 len(stored_text), manual.original_filename,
                             )
-                            from app.services.classifier import _classify_with_claude, _sanitise_result, _keyword_classify as _kw_cls
+                            from app.services.classifier import (
+                                _classify_with_gemini, _classify_with_claude,
+                                _sanitise_result, _keyword_classify as _kw_cls,
+                                VALID_CATEGORIES, ClassificationResult,
+                            )
                             # Parse stored text into per-page list by [PAGE N] markers
                             import re as _re
                             parts = _re.split(r'\[PAGE \d+\]\n?', stored_text)
                             pages_text = [p.strip() for p in parts if p.strip()]
                             page_count = manual.page_count or len(pages_text)
+                            # Try Gemini (free) first, then Claude, then keywords
                             ai = await asyncio.to_thread(
-                                _classify_with_claude, pages_text, manual.original_filename, page_count
+                                _classify_with_gemini, pages_text, manual.original_filename, page_count
                             )
+                            if not ai:
+                                ai = await asyncio.to_thread(
+                                    _classify_with_claude, pages_text, manual.original_filename, page_count
+                                )
                             if ai:
-                                from app.services.classifier import VALID_CATEGORIES, ClassificationResult
                                 category = ai.get("category", "Unknown/Unclassifiable")
                                 if category not in VALID_CATEGORIES:
                                     category = "Unknown/Unclassifiable"

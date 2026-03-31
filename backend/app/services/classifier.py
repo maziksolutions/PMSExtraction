@@ -275,6 +275,109 @@ Rules:
 
 
 # ---------------------------------------------------------------------------
+# Gemini AI classifier (free tier)
+# ---------------------------------------------------------------------------
+
+def _build_classification_prompt(filename: str, page_count: int, marked_text: str) -> str:
+    return f"""You are an expert maritime document classifier specialising in ship technical documentation and PMS (Planned Maintenance System) data.
+
+Filename: {filename}
+Total pages: {page_count}
+
+The document text below includes [PAGE N] markers. Use these exact page numbers when reporting pages.
+
+Document text:
+---
+{marked_text}
+---
+
+Classify this document into EXACTLY ONE of the following categories:
+
+- **Instruction Manual**: Manufacturer's technical/operation/maintenance manual for a specific piece of equipment (contains operating procedures, maintenance schedules, overhaul instructions, spare parts lists, or equipment specifications). Even a short specification sheet for one piece of equipment counts as Instruction Manual if it describes a single equipment item in detail.
+- **Machinery Particulars**: A list/register/inventory of ALL equipment on the vessel — tabular format with many rows, columns like No. | Equipment | Maker | Model | Serial No.
+- **General Arrangement**: Deck plans, layout drawings showing spatial arrangement of the vessel.
+- **Pipeline Diagrams/P&ID**: Piping & Instrumentation Diagrams, system flow diagrams, hydraulic schematics.
+- **LSA/FFA Plans**: Life Saving Appliance plans, Fire Fighting Appliance plans, fire safety plans.
+- **Tank Capacity Plan**: Tank tables, sounding tables, ullage tables, stability booklets.
+- **Electrical Diagrams**: Single-line diagrams, wiring diagrams, cable lists.
+- **Yard/Finished Drawings**: Shipyard construction drawings, as-built drawings.
+- **Class Certificates/Surveys**: Classification certificates, survey reports, safety certificates.
+- **Unknown/Unclassifiable**: Cannot determine category with reasonable confidence.
+
+For each field below, list the EXACT page numbers (from [PAGE N] markers) where that content appears.
+Use comma-separated individual page numbers — NOT ranges. E.g. "5, 6, 7, 12, 13" not "5-7, 12-13".
+
+- **pages_with_components**: Pages showing equipment specs, general description, name plate data, or component lists.
+- **pages_with_jobs**: Pages containing maintenance schedules, service intervals, or inspection procedures.
+- **pages_with_spares**: Pages containing spare parts lists or recommended spares.
+
+Return ONLY valid JSON in this exact format:
+{{
+  "category": "<category name exactly as listed above>",
+  "confidence": <integer 0-100>,
+  "useful_for_extraction": "<yes | partial | no>",
+  "pages_with_components": "<comma-separated page numbers e.g. '1, 2, 3, 15' or empty string if none>",
+  "pages_with_jobs": "<comma-separated page numbers e.g. '40, 41, 42, 55, 56' or empty string if none>",
+  "pages_with_spares": "<comma-separated page numbers e.g. '66, 67, 68' or empty string if none>",
+  "reasoning": "<one sentence explanation>"
+}}
+
+Rules:
+- Use [PAGE N] markers to identify EXACT page numbers — do NOT guess or estimate
+- List every individual page number — do NOT use ranges or hyphens
+- useful_for_extraction = "yes" if Instruction Manual OR Machinery Particulars
+- useful_for_extraction = "partial" if spec sheet with maker/model but no maintenance section
+- useful_for_extraction = "no" if purely drawings, plans, certificates, or P&IDs
+- confidence 85-98: very clear; 65-84: probable; 40-64: uncertain; <40: use Unknown/Unclassifiable
+- Machinery Particulars vs Instruction Manual: one equipment in depth → Instruction Manual; many equipment rows → Machinery Particulars
+- If a section is genuinely absent, return empty string — do NOT invent page numbers"""
+
+
+def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int) -> Optional[dict]:
+    """Call Gemini API (free tier) to classify the manual. Returns parsed JSON or None on failure."""
+    try:
+        import google.generativeai as genai
+        from app.core.config import settings
+
+        if not settings.GEMINI_API_KEY:
+            return None
+
+        genai.configure(api_key=settings.GEMINI_API_KEY)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        marked_text = _make_marked_text(pages_text, max_chars=80_000)
+        non_empty = sum(1 for p in pages_text if p.strip())
+        _log.info(
+            "classifier[gemini]: %s — pages=%d non_empty=%d text_chars=%d",
+            filename, page_count, non_empty, len(marked_text),
+        )
+
+        prompt = _build_classification_prompt(filename, page_count, marked_text)
+        response = model.generate_content(prompt)
+        raw = response.text.strip()
+
+        _log.info("classifier[gemini]: raw response for %s: %s", filename, raw[:300])
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw.strip())
+        _log.info(
+            "classifier[gemini]: %s → category=%s confidence=%s jobs=%s spares=%s",
+            filename,
+            parsed.get("category"),
+            parsed.get("confidence"),
+            parsed.get("pages_with_jobs"),
+            parsed.get("pages_with_spares"),
+        )
+        return parsed
+
+    except Exception as exc:
+        _log.warning("classifier: Gemini call failed for %s: %s", filename, exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
 
@@ -305,13 +408,17 @@ def _sanitise_result(result: ClassificationResult) -> ClassificationResult:
 def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
     """
     Classify a PDF manual.
-    Uses Claude AI if ANTHROPIC_API_KEY is set, otherwise falls back to keyword matching.
+    Priority: Gemini (free) → Claude (paid) → keyword fallback.
     """
     pages_text, total_pages = _extract_pdf_text(content)
     _log.info("classifier: extracted %d pages from %s (%d bytes)", total_pages, filename, len(content))
 
-    # Try Claude first — passes pages_text so [PAGE N] markers give precise ranges
-    ai_result = _classify_with_claude(pages_text, filename, total_pages)
+    # Try Gemini first (free tier)
+    ai_result = _classify_with_gemini(pages_text, filename, total_pages)
+
+    # Fall back to Claude if Gemini not configured or failed
+    if not ai_result:
+        ai_result = _classify_with_claude(pages_text, filename, total_pages)
     if ai_result:
         category = ai_result.get("category", "Unknown/Unclassifiable")
         if category not in VALID_CATEGORIES:

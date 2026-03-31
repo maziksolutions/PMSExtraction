@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
     CLAUDE_MODEL_ID: str = "claude-sonnet-4-6"
+    GEMINI_API_KEY: str = ""
     EXTRACTION_MAX_TOKENS: int = 8192
 
     # File storage (local disk — ephemeral on Railway; mount a Volume for persistence)
