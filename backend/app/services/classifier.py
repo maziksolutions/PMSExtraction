@@ -250,6 +250,7 @@ Return ONLY valid JSON in this exact format:
 
 Rules:
 - Use [PAGE N] markers to identify EXACT page numbers — do NOT guess or estimate
+- CRITICAL: Never report a page number higher than {page_count}. The document has exactly {page_count} pages. Any page number above {page_count} does not exist.
 - List every individual page number where the content appears — do NOT use ranges or hyphens
 - pages_with_components STRICT RULE: only include a page if it has name + maker + model all present together on that page. Do NOT include pages that only have the equipment name. Do NOT include procedure, description, or drawing pages just because they reference equipment.
 - useful_for_extraction = "yes" if Instruction Manual OR Machinery Particulars
@@ -403,6 +404,7 @@ Return ONLY valid JSON in this exact format:
 
 Rules:
 - Use [PAGE N] markers to identify EXACT page numbers — do NOT guess or estimate
+- CRITICAL: Never report a page number higher than {page_count}. The document has exactly {page_count} pages. Any page number above {page_count} does not exist.
 - List every individual page number where that content appears — do NOT use ranges or hyphens
 - pages_with_components STRICT RULE: only include a page if it has name + maker + model all present together. Do NOT include pages that only mention the equipment name without maker/model. Do NOT include procedure pages, general description pages, or drawing pages just because they reference equipment.
 - useful_for_extraction = "yes" if Instruction Manual, Machinery Particulars, OR Tank Capacity Plan
@@ -498,8 +500,32 @@ _HAS_COMPONENTS_CATEGORIES = {
 }
 
 
+def _clamp_pages(page_str: str, max_page: int) -> str:
+    """
+    Remove any page numbers from a comma-separated string that exceed max_page.
+    This prevents AI hallucination of page numbers beyond the actual document length.
+    """
+    if not page_str or not max_page:
+        return page_str
+    valid: list[str] = []
+    for token in page_str.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            n = int(token)
+            if 1 <= n <= max_page:
+                valid.append(str(n))
+            else:
+                _log.warning("classifier: dropping out-of-range page %d (max=%d)", n, max_page)
+        except ValueError:
+            pass  # skip non-numeric tokens
+    return ", ".join(valid)
+
+
 def _sanitise_result(result: ClassificationResult) -> ClassificationResult:
-    """Force page ranges to empty string where they cannot logically exist."""
+    """Force page ranges to empty string where they cannot logically exist,
+    and clamp page numbers to the actual document length."""
     if result.category in _NO_JOB_SPARE_CATEGORIES:
         result.pages_with_jobs = ""
         result.pages_with_spares = ""
@@ -511,6 +537,11 @@ def _sanitise_result(result: ClassificationResult) -> ClassificationResult:
         result.pages_with_spares = ""
         # Tanks ARE components — override AI if it said no
         result.useful_for_extraction = "yes"
+    # Strip hallucinated page numbers that exceed the actual page count
+    if result.page_count:
+        result.pages_with_components = _clamp_pages(result.pages_with_components, result.page_count)
+        result.pages_with_jobs = _clamp_pages(result.pages_with_jobs, result.page_count)
+        result.pages_with_spares = _clamp_pages(result.pages_with_spares, result.page_count)
     return result
 
 
