@@ -587,9 +587,9 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                 _sanitise_result, _keyword_classify as _kw_cls,
                                 VALID_CATEGORIES, ClassificationResult,
                             )
-                            # Parse stored text into per-page list by [PAGE N] markers
+                            # Parse stored text into per-page list by [PAGE N] or [PAGE N, doc_page=X] markers
                             import re as _re
-                            parts = _re.split(r'\[PAGE \d+\]\n?', stored_text)
+                            parts = _re.split(r'\[PAGE \d+(?:, doc_page=[^\]]+)?\]\n?', stored_text)
                             pages_text = [p.strip() for p in parts if p.strip()]
                             page_count = manual.page_count or len(pages_text)
                             # Try Groq (free, 30 RPM) → Gemini → Claude → keywords

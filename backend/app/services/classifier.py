@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -127,26 +128,90 @@ def _extract_pdf_text(content: bytes, max_pages: int = 9999) -> tuple[list[str],
         return [], 0
 
 
-def _make_marked_text(pages_text: list[str], max_chars: int = 400_000) -> str:
+# Matches a standalone page number line: "9", "- 9 -", "– 9 –"
+_PAGE_NUM_RE = re.compile(r'^[-–]?\s*(\d{1,4})\s*[-–]?$')
+# Matches "Page 9" or "PAGE 9"
+_PAGE_LABEL_RE = re.compile(r'^[Pp][Aa][Gg][Ee]\s+(\d{1,4})$')
+
+
+def _detect_printed_page_num(text: str) -> Optional[int]:
     """
-    Build a single string with [PAGE N] markers.
-    Sends each page truncated to first 800 chars so all pages are covered
-    while staying within Groq's free-tier token limits.
-    This preserves headings, table headers and first rows — enough to
-    identify what section each page belongs to.
+    Detect the page number visibly printed in the document by scanning the
+    last 4 lines (footer) then first 4 lines (header) of the extracted text.
+    Returns None if no printed page number is found on this page.
+    """
+    if not text:
+        return None
+    lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
+    if not lines:
+        return None
+    # Check footer first (most common), then header
+    for line in lines[-4:] + lines[:4]:
+        m = _PAGE_NUM_RE.fullmatch(line)
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 9999:
+                return n
+        m = _PAGE_LABEL_RE.fullmatch(line)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _make_marked_text(pages_text: list[str], max_chars: int = 400_000) -> tuple[str, set[int]]:
+    """
+    Build a single string with [PAGE N, doc_page=X] markers.
+    - N       : physical PDF page position (1-indexed)
+    - doc_page: the page number actually printed in the document,
+                or 'none' if the page carries no printed number.
+
+    Returns (marked_text, valid_doc_pages) where valid_doc_pages is the set
+    of printed page numbers found in the document — used to validate AI output.
     """
     parts: list[str] = []
     total = 0
+    valid_doc_pages: set[int] = set()
     for i, text in enumerate(pages_text, start=1):
-        # Truncate each page to first 800 chars to keep total manageable
         truncated = text[:800] if text else ""
-        snippet = f"[PAGE {i}]\n{truncated}" if truncated else f"[PAGE {i}]"
+        printed = _detect_printed_page_num(text)
+        if printed is not None:
+            valid_doc_pages.add(printed)
+            marker = f"[PAGE {i}, doc_page={printed}]"
+        else:
+            marker = f"[PAGE {i}, doc_page=none]"
+        snippet = f"{marker}\n{truncated}" if truncated else marker
         total += len(snippet)
         parts.append(snippet)
         if total >= max_chars:
             _log.warning("classifier: document truncated at page %d (>%d chars)", i, max_chars)
             break
-    return "\n\n".join(parts)
+    return "\n\n".join(parts), valid_doc_pages
+
+
+def _filter_to_valid_pages(page_str: str, valid_doc_pages: set[int]) -> str:
+    """
+    Keep only page numbers that were actually printed in the document.
+    Drops any number the AI invented that doesn't appear as a doc_page marker.
+    Falls back to returning page_str unchanged if valid_doc_pages is empty
+    (document has no printed page numbers at all).
+    """
+    if not page_str or not valid_doc_pages:
+        return page_str
+    kept: list[str] = []
+    for token in page_str.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            n = int(token)
+            if n in valid_doc_pages:
+                kept.append(str(n))
+            else:
+                _log.warning("classifier: dropping page %d — not a printed doc page (valid: %s)",
+                             n, sorted(valid_doc_pages)[:15])
+        except ValueError:
+            pass
+    return ", ".join(kept)
 
 
 def _find_pages_for_topic(pages_text: list[str], keywords: list[str]) -> str:
@@ -187,13 +252,13 @@ def _classify_with_claude(pages_text: list[str], filename: str, page_count: int)
 
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-        # Build marked text for Claude — include [PAGE N] markers so page ranges are precise
-        marked_text = _make_marked_text(pages_text, max_chars=80_000)
+        # Build marked text for Claude — include [PAGE N, doc_page=X] markers
+        marked_text, valid_doc_pages = _make_marked_text(pages_text, max_chars=80_000)
 
         non_empty = sum(1 for p in pages_text if p.strip())
         _log.info(
-            "classifier: %s — pages=%d non_empty=%d text_chars=%d",
-            filename, page_count, non_empty, len(marked_text),
+            "classifier: %s — pages=%d non_empty=%d text_chars=%d printed_pages=%s",
+            filename, page_count, non_empty, len(marked_text), sorted(valid_doc_pages),
         )
 
         prompt = f"""You are an expert maritime document classifier specialising in ship technical documentation and PMS (Planned Maintenance System) data.
@@ -201,7 +266,11 @@ def _classify_with_claude(pages_text: list[str], filename: str, page_count: int)
 Filename: {filename}
 Total pages: {page_count}
 
-The document text below includes [PAGE N] markers. Use these exact page numbers when reporting page ranges.
+The document text below includes [PAGE N, doc_page=X] markers where:
+- N       = physical PDF page position (do NOT use this in your answer)
+- doc_page = the page number visibly printed in the document, or "none" if the page has no printed number
+
+IMPORTANT: Always use doc_page values when reporting pages. Skip pages marked doc_page=none.
 
 Document text:
 ---
@@ -242,16 +311,16 @@ Return ONLY valid JSON in this exact format:
   "confidence": <integer 0-100>,
   "useful_for_extraction": "<yes | partial | no>",
   "supply_type": "<OEM | yard_supply>",
-  "pages_with_components": "<comma-separated page numbers from [PAGE N] markers e.g. '1, 2, 3, 15' or empty string if none>",
-  "pages_with_jobs": "<comma-separated page numbers from [PAGE N] markers e.g. '40, 41, 42, 55, 56' or empty string if none>",
-  "pages_with_spares": "<comma-separated page numbers from [PAGE N] markers e.g. '66, 67, 68' or empty string if none>",
+  "pages_with_components": "<comma-separated doc_page numbers e.g. '1, 2, 9' — only pages with a printed doc_page number, empty string if none>",
+  "pages_with_jobs": "<comma-separated doc_page numbers e.g. '9, 12, 13' — only pages with a printed doc_page number, empty string if none>",
+  "pages_with_spares": "<comma-separated doc_page numbers e.g. '15, 16' — only pages with a printed doc_page number, empty string if none>",
   "reasoning": "<one sentence explanation>"
 }}
 
 Rules:
-- Use [PAGE N] markers to identify EXACT page numbers — do NOT guess or estimate
-- CRITICAL: Never report a page number higher than {page_count}. The document has exactly {page_count} pages. Any page number above {page_count} does not exist.
-- List every individual page number where the content appears — do NOT use ranges or hyphens
+- CRITICAL: Use ONLY doc_page values from the markers — never use PDF position N. Never invent a number not seen as a doc_page value.
+- CRITICAL: Skip pages marked doc_page=none — they have no printed page reference and must NOT appear in your output.
+- List every individual doc_page number where the content appears — do NOT use ranges or hyphens
 - pages_with_components STRICT RULE: only include a page if it has name + maker + model all present together on that page. Do NOT include pages that only have the equipment name. Do NOT include procedure, description, or drawing pages just because they reference equipment.
 - useful_for_extraction = "yes" if Instruction Manual OR Machinery Particulars
 - useful_for_extraction = "partial" if spec sheet or drawing with some equipment data (e.g. a spec sheet with maker/model but no maintenance section)
@@ -276,6 +345,10 @@ Rules:
             if raw.startswith("json"):
                 raw = raw[4:]
         parsed = json.loads(raw.strip())
+        # Filter page fields to only printed page numbers seen in the document
+        if valid_doc_pages:
+            for field in ("pages_with_components", "pages_with_jobs", "pages_with_spares"):
+                parsed[field] = _filter_to_valid_pages(parsed.get(field, ""), valid_doc_pages)
         _log.info(
             "classifier: %s → category=%s confidence=%s jobs=%s spares=%s",
             filename,
@@ -309,11 +382,11 @@ def _classify_with_groq(pages_text: list[str], filename: str, page_count: int) -
             base_url="https://api.groq.com/openai/v1",
         )
 
-        marked_text = _make_marked_text(pages_text, max_chars=80_000)
+        marked_text, valid_doc_pages = _make_marked_text(pages_text, max_chars=80_000)
         non_empty = sum(1 for p in pages_text if p.strip())
         _log.info(
-            "classifier[groq]: %s — pages=%d non_empty=%d text_chars=%d",
-            filename, page_count, non_empty, len(marked_text),
+            "classifier[groq]: %s — pages=%d non_empty=%d text_chars=%d printed_pages=%s",
+            filename, page_count, non_empty, len(marked_text), sorted(valid_doc_pages),
         )
 
         prompt = _build_classification_prompt(filename, page_count, marked_text)
@@ -334,6 +407,10 @@ def _classify_with_groq(pages_text: list[str], filename: str, page_count: int) -
             if raw.startswith("json"):
                 raw = raw[4:]
         parsed = json.loads(raw.strip())
+        # Filter page fields to only printed page numbers seen in the document
+        if valid_doc_pages:
+            for field in ("pages_with_components", "pages_with_jobs", "pages_with_spares"):
+                parsed[field] = _filter_to_valid_pages(parsed.get(field, ""), valid_doc_pages)
         _log.info(
             "classifier[groq]: %s → category=%s confidence=%s jobs=%s spares=%s",
             filename,
@@ -359,7 +436,12 @@ def _build_classification_prompt(filename: str, page_count: int, marked_text: st
 Filename: {filename}
 Total pages: {page_count}
 
-The document text below includes [PAGE N] markers. Use these exact page numbers when reporting pages.
+The document text below includes [PAGE N, doc_page=X] markers where:
+- N       = physical PDF page position (used internally, do NOT use this in your answer)
+- doc_page = the page number visibly printed in the document, or "none" if the page has no printed number
+
+IMPORTANT: When reporting page numbers, always use the doc_page value (e.g. "9"), NOT the PDF position N.
+Only include pages where doc_page is a number. Skip all pages marked doc_page=none — they have no printed page reference.
 
 Document text:
 ---
@@ -396,16 +478,16 @@ Return ONLY valid JSON in this exact format:
   "confidence": <integer 0-100>,
   "useful_for_extraction": "<yes | partial | no>",
   "supply_type": "<OEM | yard_supply>",
-  "pages_with_components": "<comma-separated page numbers e.g. '1, 2, 3, 15' or empty string if none>",
-  "pages_with_jobs": "<comma-separated page numbers e.g. '40, 41, 42, 55, 56' or empty string if none>",
-  "pages_with_spares": "<comma-separated page numbers e.g. '66, 67, 68' or empty string if none>",
+  "pages_with_components": "<comma-separated doc_page numbers e.g. '1, 2, 9' — only pages with a printed doc_page number, empty string if none>",
+  "pages_with_jobs": "<comma-separated doc_page numbers e.g. '9, 12, 13' — only pages with a printed doc_page number, empty string if none>",
+  "pages_with_spares": "<comma-separated doc_page numbers e.g. '15, 16' — only pages with a printed doc_page number, empty string if none>",
   "reasoning": "<one sentence explanation>"
 }}
 
 Rules:
-- Use [PAGE N] markers to identify EXACT page numbers — do NOT guess or estimate
-- CRITICAL: Never report a page number higher than {page_count}. The document has exactly {page_count} pages. Any page number above {page_count} does not exist.
-- List every individual page number where that content appears — do NOT use ranges or hyphens
+- CRITICAL: Use ONLY doc_page values from the markers — never use the PDF position N. Never invent a number not seen in a doc_page marker.
+- CRITICAL: Skip pages marked doc_page=none — they carry no printed page reference and must NOT appear in your output.
+- List every individual doc_page number where that content appears — do NOT use ranges or hyphens
 - pages_with_components STRICT RULE: only include a page if it has name + maker + model all present together. Do NOT include pages that only mention the equipment name without maker/model. Do NOT include procedure pages, general description pages, or drawing pages just because they reference equipment.
 - useful_for_extraction = "yes" if Instruction Manual, Machinery Particulars, OR Tank Capacity Plan
 - useful_for_extraction = "partial" if spec sheet with maker/model but no maintenance section
@@ -426,11 +508,11 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
         if not settings.GEMINI_API_KEY:
             return None
 
-        marked_text = _make_marked_text(pages_text, max_chars=80_000)
+        marked_text, valid_doc_pages = _make_marked_text(pages_text, max_chars=80_000)
         non_empty = sum(1 for p in pages_text if p.strip())
         _log.info(
-            "classifier[gemini]: %s — pages=%d non_empty=%d text_chars=%d",
-            filename, page_count, non_empty, len(marked_text),
+            "classifier[gemini]: %s — pages=%d non_empty=%d text_chars=%d printed_pages=%s",
+            filename, page_count, non_empty, len(marked_text), sorted(valid_doc_pages),
         )
 
         prompt = _build_classification_prompt(filename, page_count, marked_text)
@@ -461,6 +543,10 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
             if raw.startswith("json"):
                 raw = raw[4:]
         parsed = json.loads(raw.strip())
+        # Filter page fields to only printed page numbers seen in the document
+        if valid_doc_pages:
+            for field in ("pages_with_components", "pages_with_jobs", "pages_with_spares"):
+                parsed[field] = _filter_to_valid_pages(parsed.get(field, ""), valid_doc_pages)
         _log.info(
             "classifier[gemini]: %s → category=%s confidence=%s jobs=%s spares=%s",
             filename,
@@ -537,7 +623,8 @@ def _sanitise_result(result: ClassificationResult) -> ClassificationResult:
         result.pages_with_spares = ""
         # Tanks ARE components — override AI if it said no
         result.useful_for_extraction = "yes"
-    # Strip hallucinated page numbers that exceed the actual page count
+    # _clamp_pages is a last-resort safety net for the keyword fallback path
+    # (AI paths already filter via _filter_to_valid_pages inside each classifier)
     if result.page_count:
         result.pages_with_components = _clamp_pages(result.pages_with_components, result.page_count)
         result.pages_with_jobs = _clamp_pages(result.pages_with_jobs, result.page_count)
