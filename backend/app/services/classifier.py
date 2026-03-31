@@ -174,23 +174,23 @@ def _make_marked_text(pages_text: list[str], max_chars: int = 400_000) -> tuple[
     ]
     detected = {n for n in printed_nums if n is not None}
 
-    # If the document has no printed page numbers at all, fall back to physical
-    # page positions so the AI can still reference pages meaningfully.
+    # For pages with no detected printed number, fall back to physical page
+    # position so that no page is ever skipped — cover pages, unnumbered
+    # drawings etc. still need to be checked for maker/model information.
     if not detected:
         _log.info("classifier: no printed page numbers detected — using physical page positions")
-        printed_nums = list(range(1, len(pages_text) + 1))
-        detected = set(printed_nums)
+    resolved: list[int] = [
+        n if n is not None else i
+        for i, n in enumerate(printed_nums, start=1)
+    ]
 
     parts: list[str] = []
     total = 0
     valid_doc_pages: set[int] = set()
-    for i, (text, dp) in enumerate(zip(pages_text, printed_nums), start=1):
+    for i, (text, dp) in enumerate(zip(pages_text, resolved), start=1):
         truncated = text[:800] if text else ""
-        if dp is not None:
-            valid_doc_pages.add(dp)
-            marker = f"[PAGE {i}, doc_page={dp}]"
-        else:
-            marker = f"[PAGE {i}, doc_page=none]"
+        valid_doc_pages.add(dp)
+        marker = f"[PAGE {i}, doc_page={dp}]"
         snippet = f"{marker}\n{truncated}" if truncated else marker
         total += len(snippet)
         parts.append(snippet)
@@ -280,9 +280,10 @@ Total pages: {page_count}
 
 The document text below includes [PAGE N, doc_page=X] markers where:
 - N       = physical PDF page position (do NOT use this in your answer)
-- doc_page = the page number visibly printed in the document, or "none" if the page has no printed number
+- doc_page = the page number printed in the document if visible, otherwise the physical PDF page position
 
-IMPORTANT: Always use doc_page values when reporting pages. Skip pages marked doc_page=none.
+IMPORTANT: Always use the doc_page value when reporting page numbers, never use N.
+Every page has a valid doc_page — do NOT skip any page. Even unnumbered cover pages or drawing pages may contain maker name and model number that must be captured.
 
 Document text:
 ---
@@ -326,8 +327,9 @@ Return ONLY valid JSON in this exact format:
 
 Rules:
 - CRITICAL: Use ONLY doc_page values from the markers — never use PDF position N. Never invent a number not seen as a doc_page value.
-- CRITICAL: Skip pages marked doc_page=none — they have no printed page reference and must NOT appear in your output.
+- Every page has a doc_page value — include any page where the content is found, including unnumbered cover/title pages.
 - List every individual doc_page number where the content appears — do NOT use ranges or hyphens
+- pages_with_components for Instruction Manual: expect only 1-3 pages total. If you are listing more than 5 pages you are marking the wrong pages — keep only pages where maker name AND model number appear side by side in a table or header on that specific page.
 - pages_with_jobs must be empty for everything except Instruction Manual
 - pages_with_spares must be empty for everything except Instruction Manual and Yard/Finished Drawings
 - useful_for_extraction = "yes" if Instruction Manual OR Machinery Particulars
@@ -444,11 +446,11 @@ Filename: {filename}
 Total pages: {page_count}
 
 The document text below includes [PAGE N, doc_page=X] markers where:
-- N       = physical PDF page position (used internally, do NOT use this in your answer)
-- doc_page = the page number visibly printed in the document, or "none" if the page has no printed number
+- N       = physical PDF page position (do NOT use this in your answer)
+- doc_page = the page number printed in the document if visible, otherwise the physical PDF page position
 
-IMPORTANT: When reporting page numbers, always use the doc_page value (e.g. "9"), NOT the PDF position N.
-Only include pages where doc_page is a number. Skip all pages marked doc_page=none — they have no printed page reference.
+IMPORTANT: Always use the doc_page value when reporting page numbers, never use N.
+Every page has a valid doc_page — do NOT skip any page. Even unnumbered cover pages or drawing pages may contain maker name and model number that must be captured.
 
 Document text:
 ---
@@ -472,8 +474,8 @@ For each field below, list the EXACT page numbers (from [PAGE N] markers) where 
 Use comma-separated individual page numbers — NOT ranges. E.g. "5, 6, 7, 12, 13" not "5-7, 12-13".
 
 - **pages_with_components**:
-  - If category is **Instruction Manual** or **Machinery Particulars**: only include a page if it has ALL THREE together — (1) equipment NAME, (2) MAKER/MANUFACTURER, and (3) MODEL number. Typically cover pages, name-plate data pages, "Technical Data" or "Specifications" tables.
-  - If category is **Yard/Finished Drawings**: include pages where any component or equipment name is visible — assembly drawings, parts lists with item numbers, outfit lists. No maker/model requirement.
+  - If category is **Instruction Manual** or **Machinery Particulars**: VERY FEW pages qualify — typically just 1 to 3 pages. Only include a page where ALL THREE appear together on the SAME page: (1) the equipment NAME, (2) the MAKER/MANUFACTURER name, AND (3) the MODEL number or type code. This combination is found ONLY on cover pages, title pages, nameplate/specification tables, or "Technical Data" sections. Every other page (procedures, maintenance steps, drawings, tables of contents) does NOT qualify even if the equipment is mentioned. Do not list pages just because they contain the equipment name.
+  - If category is **Yard/Finished Drawings**: include pages where component or equipment names appear with item numbers in parts tables — assembly drawing pages with numbered parts lists qualify. No maker/model requirement.
   - If category is **Tank Capacity Plan**: include pages with tank names + capacity or sounding data.
   - All other categories: leave empty.
 - **pages_with_jobs**: Only populate for **Instruction Manuals**. Pages with maintenance schedules, service intervals, inspection checklists, lubrication schedules — headings like "Maintenance", "Service Schedule", "Periodic Inspection", tables with "Interval | Task" or "Running Hours | Description" columns. Leave empty for ALL other document types.
@@ -491,9 +493,10 @@ Return ONLY valid JSON in this exact format:
 }}
 
 Rules:
-- CRITICAL: Use ONLY doc_page values from the markers — never use the PDF position N. Never invent a number not seen in a doc_page marker.
-- CRITICAL: Skip pages marked doc_page=none — they carry no printed page reference and must NOT appear in your output.
+- CRITICAL: Use ONLY doc_page values from the markers — never use the PDF position N. Never invent a number not seen in any doc_page marker.
+- Every page has a doc_page value — include any page where the content is found, including unnumbered cover/title pages.
 - List every individual doc_page number where that content appears — do NOT use ranges or hyphens
+- pages_with_components for Instruction Manual: expect only 1-3 pages total. If you are listing more than 5 pages, you are marking the wrong pages — review and keep only those where maker name AND model number appear side by side in a table or header on that specific page.
 - pages_with_jobs must be empty for everything except Instruction Manual
 - pages_with_spares must be empty for everything except Instruction Manual and Yard/Finished Drawings
 - useful_for_extraction = "yes" if Instruction Manual, Machinery Particulars, OR Tank Capacity Plan
