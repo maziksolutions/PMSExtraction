@@ -126,89 +126,22 @@ def _extract_pdf_text(content: bytes, max_pages: int = 9999) -> tuple[list[str],
         return [], 0
 
 
-def _make_marked_text(pages_text: list[str], max_chars: int = 120_000) -> str:
+def _make_marked_text(pages_text: list[str], max_chars: int = 400_000) -> str:
     """
-    Build a single string with [PAGE N] markers.
-    Samples beginning + middle + end of the document so that component specs
-    (usually first), maintenance schedules (middle) and spare parts (usually last)
-    are all represented even for large manuals.
+    Build a single string with [PAGE N] markers for every page.
+    max_chars cap is generous (400k ≈ 100k tokens, within Groq's 128k limit)
+    so the full document is sent rather than sampled sections.
     """
-    n = len(pages_text)
-    if n == 0:
-        return ""
-
-    def _page_snippet(i: int) -> str:
-        text = pages_text[i]
-        return f"[PAGE {i + 1}]\n{text}" if text else f"[PAGE {i + 1}]"
-
-    # Allocate budget: 40% start, 30% middle, 30% end
-    budget_start = int(max_chars * 0.40)
-    budget_mid   = int(max_chars * 0.30)
-    budget_end   = int(max_chars * 0.30)
-
-    # --- start ---
-    start_parts: list[str] = []
-    used = 0
-    for i in range(n):
-        s = _page_snippet(i)
-        if used + len(s) > budget_start:
+    parts: list[str] = []
+    total = 0
+    for i, text in enumerate(pages_text, start=1):
+        snippet = f"[PAGE {i}]\n{text}" if text else f"[PAGE {i}]"
+        total += len(snippet)
+        parts.append(snippet)
+        if total >= max_chars:
+            _log.warning("classifier: document truncated at page %d (>%d chars)", i, max_chars)
             break
-        start_parts.append(s)
-        used += len(s)
-    start_end_idx = len(start_parts)  # first page NOT included in start
-
-    # --- end ---
-    end_parts: list[str] = []
-    used = 0
-    for i in range(n - 1, start_end_idx - 1, -1):
-        s = _page_snippet(i)
-        if used + len(s) > budget_end:
-            break
-        end_parts.insert(0, s)
-        used += len(s)
-    end_start_idx = n - len(end_parts)  # first page included in end
-
-    # --- middle ---
-    mid_start = start_end_idx
-    mid_end   = end_start_idx
-    mid_parts: list[str] = []
-    used = 0
-    if mid_start < mid_end:
-        mid_centre = (mid_start + mid_end) // 2
-        # walk out from centre
-        radius = 0
-        indices: list[int] = []
-        while True:
-            candidates = []
-            if mid_centre - radius >= mid_start:
-                candidates.append(mid_centre - radius)
-            if radius > 0 and mid_centre + radius < mid_end:
-                candidates.append(mid_centre + radius)
-            if not candidates:
-                break
-            added = False
-            for idx in sorted(candidates):
-                s = _page_snippet(idx)
-                if used + len(s) > budget_mid:
-                    break
-                indices.append(idx)
-                used += len(s)
-                added = True
-            if not added:
-                break
-            radius += 1
-        for idx in sorted(indices):
-            mid_parts.append(_page_snippet(idx))
-
-    sections: list[str] = []
-    if start_parts:
-        sections.append("\n\n".join(start_parts))
-    if mid_parts:
-        sections.append(f"[... middle of document ...]\n\n" + "\n\n".join(mid_parts))
-    if end_parts:
-        sections.append(f"[... end of document ...]\n\n" + "\n\n".join(end_parts))
-
-    return "\n\n".join(sections)
+    return "\n\n".join(parts)
 
 
 def _find_pages_for_topic(pages_text: list[str], keywords: list[str]) -> str:
