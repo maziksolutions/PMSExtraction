@@ -352,7 +352,7 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
         prompt = _build_classification_prompt(filename, page_count, marked_text)
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-1.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+            f"gemini-2.0-flash-lite:generateContent?key={settings.GEMINI_API_KEY}"
         )
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
@@ -378,7 +378,8 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
         return parsed
 
     except Exception as exc:
-        _log.warning("classifier: Gemini call failed for %s: %s", filename, exc)
+        # Redact API key from error message before logging
+        _log.warning("classifier: Gemini call failed for %s: %s", filename, str(exc).replace(settings.GEMINI_API_KEY, "***") if settings.GEMINI_API_KEY else exc)
         return None
 
 
