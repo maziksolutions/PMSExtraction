@@ -42,19 +42,17 @@ const SparesReview: React.FC = () => {
   const [filterQC, setFilterQC] = useState('')
   const [filterMethod, setFilterMethod] = useState('')
   const [filterCritical, setFilterCritical] = useState('')
-  const [filterPartName, setFilterPartName] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedSpare, setSelectedSpare] = useState<Spare | null>(null)
   const [pageImageUrl, setPageImageUrl] = useState<string | null>(null)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['spares', vesselId, filterQC, filterMethod, filterCritical, filterPartName],
+    queryKey: ['spares', vesselId, filterQC, filterMethod, filterCritical],
     queryFn: () => {
       const params: Record<string, string> = {}
       if (filterQC) params.qc_status = filterQC
       if (filterMethod) params.extraction_method = filterMethod
       if (filterCritical) params.is_critical = filterCritical
-      if (filterPartName) params.search = filterPartName
       return apiClient.get(`/vessels/${vesselId}/spares`, { params }).then((r) => r.data)
     },
     enabled: !!vesselId,
@@ -146,18 +144,46 @@ const SparesReview: React.FC = () => {
           </div>
         </div>
 
-        {/* Active filter indicator */}
-        {(filterQC || filterMethod || filterCritical || filterPartName) && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-500">Filters active</span>
+        {/* Filter bar */}
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={filterMethod}
+            onChange={(e) => setFilterMethod(e.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          >
+            <option value="">All Methods</option>
+            <option value="table">Table</option>
+            <option value="text">Text</option>
+            <option value="drawing">Drawing</option>
+          </select>
+          <select
+            value={filterCritical}
+            onChange={(e) => setFilterCritical(e.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          >
+            <option value="">All Criticality</option>
+            <option value="true">Critical</option>
+            <option value="false">Non-Critical</option>
+          </select>
+          <select
+            value={filterQC}
+            onChange={(e) => setFilterQC(e.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          >
+            <option value="">All QC</option>
+            <option value="pending">Pending</option>
+            <option value="accepted">Accepted</option>
+            <option value="rejected">Rejected</option>
+          </select>
+          {(filterQC || filterMethod || filterCritical) && (
             <button
-              onClick={() => { setFilterQC(''); setFilterMethod(''); setFilterCritical(''); setFilterPartName('') }}
-              className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:text-slate-200"
+              onClick={() => { setFilterQC(''); setFilterMethod(''); setFilterCritical('') }}
+              className="rounded-lg border border-slate-700 px-2 py-1.5 text-xs text-slate-400 hover:text-slate-200"
             >
-              Clear all
+              Clear filters
             </button>
-          </div>
-        )}
+          )}
+        </div>
 
         <div className="flex-1 overflow-auto rounded-xl border border-slate-800 bg-slate-900">
           {isLoading ? (
@@ -193,61 +219,6 @@ const SparesReview: React.FC = () => {
                   <th className="px-4 py-3">Conf</th>
                   <th className="px-4 py-3">QC</th>
                   <th className="px-4 py-3">View</th>
-                </tr>
-                {/* Column filter row */}
-                <tr className="border-b border-slate-800 bg-slate-950">
-                  <td className="px-4 py-1.5" />
-                  <td className="px-4 py-1.5">
-                    <input
-                      type="text"
-                      value={filterPartName}
-                      onChange={(e) => setFilterPartName(e.target.value)}
-                      placeholder="Search..."
-                      className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                    />
-                  </td>
-                  <td className="px-4 py-1.5" />
-                  <td className="px-4 py-1.5" />
-                  <td className="px-4 py-1.5" />
-                  <td className="px-4 py-1.5" />
-                  <td className="px-4 py-1.5" />
-                  <td className="px-4 py-1.5">
-                    <select
-                      value={filterMethod}
-                      onChange={(e) => setFilterMethod(e.target.value)}
-                      className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
-                    >
-                      <option value="">All</option>
-                      <option value="table">Table</option>
-                      <option value="text">Text</option>
-                      <option value="drawing">Drawing</option>
-                    </select>
-                  </td>
-                  <td className="px-4 py-1.5">
-                    <select
-                      value={filterCritical}
-                      onChange={(e) => setFilterCritical(e.target.value)}
-                      className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
-                    >
-                      <option value="">All</option>
-                      <option value="true">Critical</option>
-                      <option value="false">Non-Critical</option>
-                    </select>
-                  </td>
-                  <td className="px-4 py-1.5" />
-                  <td className="px-4 py-1.5">
-                    <select
-                      value={filterQC}
-                      onChange={(e) => setFilterQC(e.target.value)}
-                      className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
-                    >
-                      <option value="">All</option>
-                      <option value="pending">Pending</option>
-                      <option value="accepted">Accepted</option>
-                      <option value="rejected">Rejected</option>
-                    </select>
-                  </td>
-                  <td className="px-4 py-1.5" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">

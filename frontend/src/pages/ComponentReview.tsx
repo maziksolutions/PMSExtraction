@@ -216,9 +216,6 @@ const ComponentReview: React.FC = () => {
   const [expandedG2, setExpandedG2] = useState<Set<string>>(new Set())
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [filterQC, setFilterQC] = useState('')
-  const [filterCompName, setFilterCompName] = useState('')
-  const [filterMaker, setFilterMaker] = useState('')
-  const [filterModel, setFilterModel] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
   const [showAddModal, setShowAddModal] = useState(false)
@@ -233,7 +230,7 @@ const ComponentReview: React.FC = () => {
   const hasAutoLoaded = React.useRef(false)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, page, pageSize, filterCompName, filterMaker, filterModel],
+    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, page, pageSize],
     queryFn: () => {
       const params: Record<string, string | number> = { page, page_size: pageSize }
       if (selectedGroup1) params.group1 = selectedGroup1
@@ -241,9 +238,6 @@ const ComponentReview: React.FC = () => {
       if (selectedMachinery) params.main_machinery = selectedMachinery
       if (filterQC) params.qc_status = filterQC
       if (showUnmapped) params.is_unmapped = 'true'
-      if (filterCompName) params.search = filterCompName
-      if (filterMaker) params.maker_filter = filterMaker
-      if (filterModel) params.model_filter = filterModel
       return apiClient.get(`/vessels/${vesselId}/components`, { params }).then((r) => r.data)
     },
     enabled: !!vesselId,
@@ -292,7 +286,7 @@ const ComponentReview: React.FC = () => {
   })
 
   // Reset to page 1 when any filter changes
-  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, pageSize, filterCompName, filterMaker, filterModel])
+  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, pageSize])
 
   React.useEffect(() => {
     if (!allComponentsQuery.isLoading && allComponentsQuery.isFetched) {
@@ -583,6 +577,19 @@ const ComponentReview: React.FC = () => {
           </button>
 
           <div className="ml-auto flex items-center gap-2">
+            {/* QC filter */}
+            <select
+              value={filterQC}
+              onChange={(e) => setFilterQC(e.target.value)}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+            >
+              <option value="">All QC</option>
+              <option value="pending">Pending</option>
+              <option value="accepted">Accepted</option>
+              <option value="rejected">Rejected</option>
+              <option value="modified">Modified</option>
+            </select>
+
             {/* Bulk actions */}
             {selectedIds.size > 0 && (
               <>
@@ -689,54 +696,6 @@ const ComponentReview: React.FC = () => {
                     <th className="px-3 py-3">PDF Reference</th>
                     <th className="px-3 py-3">Critical</th>
                     <th className="px-3 py-3">QC</th>
-                  </tr>
-                  {/* Column filter row */}
-                  <tr className="border-b border-slate-800 bg-slate-950">
-                    <td className="px-3 py-1.5" />
-                    <td className="px-3 py-1.5">
-                      <input
-                        type="text"
-                        value={filterCompName}
-                        onChange={(e) => setFilterCompName(e.target.value)}
-                        placeholder="Search..."
-                        className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                      />
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <input
-                        type="text"
-                        value={filterMaker}
-                        onChange={(e) => setFilterMaker(e.target.value)}
-                        placeholder="Filter..."
-                        className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                      />
-                    </td>
-                    <td className="px-3 py-1.5">
-                      <input
-                        type="text"
-                        value={filterModel}
-                        onChange={(e) => setFilterModel(e.target.value)}
-                        placeholder="Filter..."
-                        className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                      />
-                    </td>
-                    <td className="px-3 py-1.5" />
-                    <td className="px-3 py-1.5" />
-                    <td className="px-3 py-1.5" />
-                    <td className="px-3 py-1.5" />
-                    <td className="px-3 py-1.5">
-                      <select
-                        value={filterQC}
-                        onChange={(e) => setFilterQC(e.target.value)}
-                        className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
-                      >
-                        <option value="">All</option>
-                        <option value="pending">Pending</option>
-                        <option value="accepted">Accepted</option>
-                        <option value="rejected">Rejected</option>
-                        <option value="modified">Modified</option>
-                      </select>
-                    </td>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">

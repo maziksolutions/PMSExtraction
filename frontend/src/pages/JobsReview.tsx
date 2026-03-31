@@ -40,18 +40,16 @@ const JobsReview: React.FC = () => {
   const [filterUnmapped, setFilterUnmapped] = useState(false)
   const [filterFreqType, setFilterFreqType] = useState('')
   const [filterNoCMS, setFilterNoCMS] = useState(false)
-  const [filterJobName, setFilterJobName] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const { data, isLoading } = useQuery({
-    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, filterJobName],
+    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS],
     queryFn: () => {
       const params: Record<string, string> = {}
       if (filterQC) params.qc_status = filterQC
       if (filterCritical) params.is_critical = filterCritical
       if (filterUnmapped) params.is_unmapped = 'true'
       if (filterFreqType) params.frequency_type = filterFreqType
-      if (filterJobName) params.search = filterJobName
       return apiClient.get(`/vessels/${vesselId}/jobs`, { params }).then((r) => r.data)
     },
     enabled: !!vesselId,
@@ -149,7 +147,7 @@ const JobsReview: React.FC = () => {
         </div>
       </div>
 
-      {/* Quick toggle filters */}
+      {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => setFilterUnmapped(!filterUnmapped)}
@@ -168,12 +166,44 @@ const JobsReview: React.FC = () => {
         >
           CMS Codes Pending
         </button>
-        {(filterQC || filterCritical || filterFreqType || filterJobName) && (
+        <select
+          value={filterFreqType}
+          onChange={(e) => setFilterFreqType(e.target.value)}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+        >
+          <option value="">All Frequency</option>
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+          <option value="quarterly">Quarterly</option>
+          <option value="yearly">Yearly</option>
+          <option value="running_hours">Running Hours</option>
+        </select>
+        <select
+          value={filterCritical}
+          onChange={(e) => setFilterCritical(e.target.value)}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+        >
+          <option value="">All Criticality</option>
+          <option value="true">Critical</option>
+          <option value="false">Non-Critical</option>
+        </select>
+        <select
+          value={filterQC}
+          onChange={(e) => setFilterQC(e.target.value)}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+        >
+          <option value="">All QC</option>
+          <option value="pending">Pending</option>
+          <option value="accepted">Accepted</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        {(filterQC || filterCritical || filterFreqType) && (
           <button
-            onClick={() => { setFilterQC(''); setFilterCritical(''); setFilterFreqType(''); setFilterJobName('') }}
+            onClick={() => { setFilterQC(''); setFilterCritical(''); setFilterFreqType('') }}
             className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200"
           >
-            Clear column filters
+            Clear filters
           </button>
         )}
       </div>
@@ -210,63 +240,6 @@ const JobsReview: React.FC = () => {
                 <th className="px-4 py-3">Confidence</th>
                 <th className="px-4 py-3">Source</th>
                 <th className="px-4 py-3">QC Status</th>
-              </tr>
-              {/* Column filter row */}
-              <tr className="border-b border-slate-800 bg-slate-950">
-                <td className="px-4 py-1.5" />
-                <td className="px-4 py-1.5">
-                  <input
-                    type="text"
-                    value={filterJobName}
-                    onChange={(e) => setFilterJobName(e.target.value)}
-                    placeholder="Search..."
-                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 placeholder-slate-600 focus:border-sky-500 focus:outline-none"
-                  />
-                </td>
-                <td className="px-4 py-1.5" />
-                <td className="px-4 py-1.5" />
-                <td className="px-4 py-1.5">
-                  <select
-                    value={filterFreqType}
-                    onChange={(e) => setFilterFreqType(e.target.value)}
-                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
-                  >
-                    <option value="">All</option>
-                    <option value="daily">Daily</option>
-                    <option value="weekly">Weekly</option>
-                    <option value="monthly">Monthly</option>
-                    <option value="quarterly">Quarterly</option>
-                    <option value="yearly">Yearly</option>
-                    <option value="running_hours">Running Hours</option>
-                  </select>
-                </td>
-                <td className="px-4 py-1.5" />
-                <td className="px-4 py-1.5" />
-                <td className="px-4 py-1.5">
-                  <select
-                    value={filterCritical}
-                    onChange={(e) => setFilterCritical(e.target.value)}
-                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
-                  >
-                    <option value="">All</option>
-                    <option value="true">Critical</option>
-                    <option value="false">Non-Critical</option>
-                  </select>
-                </td>
-                <td className="px-4 py-1.5" />
-                <td className="px-4 py-1.5" />
-                <td className="px-4 py-1.5">
-                  <select
-                    value={filterQC}
-                    onChange={(e) => setFilterQC(e.target.value)}
-                    className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 focus:border-sky-500 focus:outline-none"
-                  >
-                    <option value="">All</option>
-                    <option value="pending">Pending</option>
-                    <option value="accepted">Accepted</option>
-                    <option value="rejected">Rejected</option>
-                  </select>
-                </td>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
