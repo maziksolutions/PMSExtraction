@@ -17,6 +17,139 @@ from app.models.vessel import VesselProject
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
+# Standard major machinery list per vessel type
+# Each entry is: (machinery_name, [keywords_for_matching])
+# Keywords are matched against Instruction Manual filenames and component pages.
+# ---------------------------------------------------------------------------
+
+_COMMON_MACHINERY: list[tuple[str, list[str]]] = [
+    ("Main Engine",                  ["main", "engine", "me", "propulsion", "diesel"]),
+    ("Auxiliary Engine / Generator", ["auxiliary", "generator", "genset", "aux", "diesel", "alternator"]),
+    ("Main Air Compressor",          ["air", "compressor", "starting", "main", "compress"]),
+    ("Fuel Oil Purifier",            ["fuel", "oil", "purifier", "separator", "fo", "centrifuge"]),
+    ("Lube Oil Purifier",            ["lube", "lubricating", "oil", "purifier", "lo", "centrifuge"]),
+    ("Steering Gear",                ["steering", "gear", "rudder", "helm"]),
+    ("Oily Water Separator",         ["oily", "water", "separator", "ows", "bilge"]),
+    ("Sewage Treatment Plant",       ["sewage", "treatment", "plant", "stp", "biological"]),
+    ("Incinerator",                  ["incinerator", "incinerate", "waste"]),
+    ("Fresh Water Generator",        ["fresh", "water", "generator", "fwg", "evaporator", "distiller"]),
+    ("Boiler / Exhaust Gas Economizer", ["boiler", "exhaust", "economizer", "steam", "ege"]),
+    ("Bilge Pump",                   ["bilge", "pump"]),
+    ("Fire Pump",                    ["fire", "pump", "firefighting"]),
+    ("Emergency Fire Pump",          ["emergency", "fire", "pump", "efp"]),
+    ("Lifeboat Engine",              ["lifeboat", "rescue", "boat", "engine"]),
+    ("Air Conditioning / Refrigeration", ["air", "conditioning", "refrigeration", "hvac", "ac", "fridge"]),
+    ("Windlass",                     ["windlass", "anchor", "mooring"]),
+    ("Mooring Winch",                ["mooring", "winch", "capstan"]),
+    ("Main Engine Turbocharger",     ["turbocharger", "turbocharg", "tc", "blower"]),
+    ("Ballast Water Treatment System", ["ballast", "water", "treatment", "bwts", "bwt"]),
+]
+
+_VESSEL_EXTRA_MACHINERY: dict[str, list[tuple[str, list[str]]]] = {
+    "Bulk Carrier": [
+        ("Cargo Hatch Cover",    ["hatch", "cover", "cargo", "hold"]),
+        ("Cargo Crane",          ["crane", "derrick", "cargo", "gear"]),
+        ("Ballast Pump",         ["ballast", "pump"]),
+    ],
+    "Tanker": [
+        ("Cargo Pump",           ["cargo", "pump", "transfer"]),
+        ("Inert Gas System",     ["inert", "gas", "igs", "ig"]),
+        ("Ballast Pump",         ["ballast", "pump"]),
+        ("Vapour Emission Control System", ["vapour", "vapor", "vecs", "emission"]),
+    ],
+    "Chemical Tanker": [
+        ("Cargo Pump",           ["cargo", "pump", "transfer"]),
+        ("Inert Gas System",     ["inert", "gas", "igs"]),
+        ("Ballast Pump",         ["ballast", "pump"]),
+        ("Cargo Heating System", ["cargo", "heating", "coil", "heat"]),
+    ],
+    "Container Ship": [
+        ("Reefer Monitoring System", ["reefer", "refrigerated", "container", "monitoring"]),
+        ("Cargo Crane",          ["crane", "cargo", "gear"]),
+        ("Ballast Pump",         ["ballast", "pump"]),
+    ],
+    "General Cargo": [
+        ("Cargo Crane / Derrick", ["crane", "derrick", "cargo", "gear"]),
+        ("Hatch Cover",          ["hatch", "cover"]),
+        ("Ballast Pump",         ["ballast", "pump"]),
+    ],
+    "LNG Carrier": [
+        ("Cargo Compressor",     ["cargo", "compressor", "gas", "lng"]),
+        ("Cargo Pump",           ["cargo", "pump", "submersible"]),
+        ("Gas Detection System", ["gas", "detection", "detector"]),
+        ("Reliquefaction Plant", ["reliquefaction", "reliq", "nitrogen"]),
+        ("Ballast Pump",         ["ballast", "pump"]),
+    ],
+    "LPG Carrier": [
+        ("Cargo Compressor",     ["cargo", "compressor", "lpg"]),
+        ("Cargo Pump",           ["cargo", "pump"]),
+        ("Gas Detection System", ["gas", "detection", "detector"]),
+        ("Ballast Pump",         ["ballast", "pump"]),
+    ],
+    "Passenger Ship": [
+        ("Bow Thruster",         ["bow", "thruster", "tunnel"]),
+        ("Stabilizer",           ["stabilizer", "fin", "anti-roll"]),
+        ("Stern Thruster",       ["stern", "thruster"]),
+    ],
+    "Ro-Ro": [
+        ("Car Ramp / Ramp Door", ["ramp", "door", "visor"]),
+        ("Bow Thruster",         ["bow", "thruster"]),
+        ("Cargo Ventilation",    ["cargo", "ventilation", "fan"]),
+    ],
+}
+
+
+def _standard_machinery_for_vessel(vessel_type: str) -> list[tuple[str, list[str]]]:
+    """Return the full machinery list (common + vessel-type-specific)."""
+    extra = _VESSEL_EXTRA_MACHINERY.get(vessel_type, [])
+    return _COMMON_MACHINERY + extra
+
+
+# ---------------------------------------------------------------------------
+# Matching helpers
+# ---------------------------------------------------------------------------
+
+
+def _filename_keywords(filename: str) -> list[str]:
+    import re
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    tokens = re.split(r"[_\-\.\s]+", stem)
+    return [t.lower() for t in tokens if len(t) >= 2]
+
+
+def _keyword_overlap_score(need_kws: list[str], manual_tokens: list[str]) -> float:
+    if not need_kws:
+        return 0.0
+    hits = sum(1 for kw in need_kws if any(kw in tok for tok in manual_tokens))
+    return hits / len(need_kws)
+
+
+def _fuzzy_score(a: str, b: str) -> float:
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def _compute_match_score(need_kws: list[str], manual: Manual) -> int:
+    """
+    Score how well an Instruction Manual covers a required machinery item.
+    Checks filename tokens and original_filename fuzzy match.
+    """
+    manual_tokens = _filename_keywords(manual.original_filename)
+    overlap = _keyword_overlap_score(need_kws, manual_tokens)
+    seq_sim = _fuzzy_score(" ".join(need_kws), " ".join(manual_tokens))
+    raw = 0.65 * overlap + 0.35 * seq_sim
+    return min(100, int(round(raw * 100)))
+
+
+def _precheck_status(score: int) -> str:
+    if score >= 75:
+        return "found"
+    elif score >= 55:
+        return "low_confidence"
+    else:
+        return "missing"
+
+
+# ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
 
@@ -35,64 +168,13 @@ async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselPr
 
 
 # ---------------------------------------------------------------------------
-# Utility: extract keywords from a filename
-# ---------------------------------------------------------------------------
-
-
-def _filename_keywords(filename: str) -> list[str]:
-    """
-    Split a filename on underscores, hyphens, dots and spaces to produce
-    a list of lowercase keyword tokens (min length 2).
-    """
-    import re
-    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
-    tokens = re.split(r"[_\-\.\s]+", stem)
-    return [t.lower() for t in tokens if len(t) >= 2]
-
-
-def _keyword_overlap_score(name_tokens: list[str], manual_tokens: list[str]) -> float:
-    """
-    Compute a simple overlap score: fraction of name_tokens found in manual_tokens.
-    """
-    if not name_tokens:
-        return 0.0
-    hits = sum(1 for t in name_tokens if t in manual_tokens)
-    return hits / len(name_tokens)
-
-
-def _fuzzy_score(a: str, b: str) -> float:
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
-
-
-def _compute_match_score(machinery_tokens: list[str], manual_tokens: list[str]) -> int:
-    """
-    Compute a 0-100 integer match score combining keyword overlap and
-    sequence similarity of the joined token strings.
-    """
-    overlap = _keyword_overlap_score(machinery_tokens, manual_tokens)
-    seq_sim = _fuzzy_score(" ".join(machinery_tokens), " ".join(manual_tokens))
-    # Weighted average: 60% keyword overlap, 40% sequence similarity
-    raw = 0.60 * overlap + 0.40 * seq_sim
-    return min(100, int(round(raw * 100)))
-
-
-def _precheck_status(score: int) -> str:
-    if score >= 80:
-        return "found"
-    elif score >= 65:
-        return "low_confidence"
-    else:
-        return "missing"
-
-
-# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 
 @router.post(
     "/{vessel_id}/precheck/run",
-    summary="F-10: Run instruction manual pre-check for a vessel",
+    summary="F-10: Run instruction manual pre-check against standard major machinery list",
 )
 async def run_precheck(
     vessel_id: uuid.UUID,
@@ -100,40 +182,16 @@ async def run_precheck(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
     """
-    1. Find all Machinery Particulars manuals for the vessel.
-    2. Extract machinery keywords from each filename.
-    3. Match against Instruction Manuals using keyword overlap + fuzzy scoring.
-    4. Upsert rows in instruction_manual_precheck.
-    5. Return the list of precheck items.
+    Check whether Instruction Manuals exist for all standard major machinery
+    required on this vessel type.  Upserts results into instruction_manual_precheck.
     """
-    await _get_vessel_or_404(vessel_id, db)
+    vessel = await _get_vessel_or_404(vessel_id, db)
+    vessel_type: str = getattr(vessel, "vessel_type", "") or ""
 
-    # ------------------------------------------------------------------
-    # Load Machinery Particulars manuals
-    # ------------------------------------------------------------------
-    mp_result = await db.execute(
-        select(Manual).where(
-            Manual.vessel_id == vessel_id,
-            Manual.tenant_id == current_user.tenant_id,
-            Manual.category == "Machinery Particulars",
-            Manual.is_deleted == False,
-        )
-    )
-    mp_manuals = mp_result.scalars().all()
+    # Build required machinery list for this vessel type
+    required = _standard_machinery_for_vessel(vessel_type)
 
-    if not mp_manuals:
-        return {
-            "status": "no_machinery_particulars",
-            "message": (
-                "No Machinery Particulars manuals found for this vessel. "
-                "Upload and classify manuals before running pre-check."
-            ),
-            "items": [],
-        }
-
-    # ------------------------------------------------------------------
-    # Load Instruction Manuals for the vessel
-    # ------------------------------------------------------------------
+    # Load all Instruction Manuals for the vessel
     im_result = await db.execute(
         select(Manual).where(
             Manual.vessel_id == vessel_id,
@@ -144,34 +202,23 @@ async def run_precheck(
     )
     instruction_manuals = im_result.scalars().all()
 
-    # ------------------------------------------------------------------
-    # Run matching for each Machinery Particulars entry
-    # ------------------------------------------------------------------
     precheck_items: list[dict] = []
 
-    for mp in mp_manuals:
-        machinery_tokens = _filename_keywords(mp.original_filename)
-        # Infer machinery_name from filename (join first few tokens)
-        machinery_name = " ".join(machinery_tokens[:5]).title() if machinery_tokens else mp.original_filename
-
+    for machinery_name, need_kws in required:
         best_score = 0
         best_manual: Optional[Manual] = None
 
         for im in instruction_manuals:
-            im_tokens = _filename_keywords(im.original_filename)
-            score = _compute_match_score(machinery_tokens, im_tokens)
+            score = _compute_match_score(need_kws, im)
             if score > best_score:
                 best_score = score
                 best_manual = im
 
         item_status = _precheck_status(best_score)
         matched_manual_id = str(best_manual.id) if best_manual else None
-
         new_id = uuid.uuid4()
 
-        # Upsert into instruction_manual_precheck
         try:
-            # Try to find an existing row for this vessel + machinery_name combo
             existing = await db.execute(
                 text(
                     "SELECT id FROM instruction_manual_precheck "
@@ -179,16 +226,11 @@ async def run_precheck(
                     "  AND machinery_name = :mn AND is_deleted = false "
                     "LIMIT 1"
                 ),
-                {
-                    "vid": str(vessel_id),
-                    "tid": str(current_user.tenant_id),
-                    "mn": machinery_name,
-                },
+                {"vid": str(vessel_id), "tid": str(current_user.tenant_id), "mn": machinery_name},
             )
             existing_row = existing.mappings().one_or_none()
 
             if existing_row:
-                existing_id = existing_row["id"]
                 await db.execute(
                     text(
                         "UPDATE instruction_manual_precheck "
@@ -200,10 +242,10 @@ async def run_precheck(
                         "st": item_status,
                         "score": best_score,
                         "mmid": matched_manual_id,
-                        "id": str(existing_id),
+                        "id": str(existing_row["id"]),
                     },
                 )
-                row_id = str(existing_id)
+                row_id = str(existing_row["id"])
             else:
                 await db.execute(
                     text(
@@ -218,8 +260,8 @@ async def run_precheck(
                         "tid": str(current_user.tenant_id),
                         "vid": str(vessel_id),
                         "mn": machinery_name,
-                        "mm": None,  # machinery_maker — not available from filename
-                        "mo": None,  # machinery_model — not available from filename
+                        "mm": None,
+                        "mo": None,
                         "st": item_status,
                         "mmid": matched_manual_id,
                         "score": best_score,
@@ -228,7 +270,7 @@ async def run_precheck(
                 row_id = str(new_id)
 
         except Exception:
-            row_id = str(new_id)  # gracefully continue if table doesn't exist
+            row_id = str(new_id)
 
         precheck_items.append(
             {
@@ -238,7 +280,7 @@ async def run_precheck(
                 "status": item_status,
                 "match_score": best_score,
                 "matched_manual_id": matched_manual_id,
-                "matched_manual_name": best_manual.original_filename if best_manual else None,
+                "matched_manual": best_manual.original_filename if best_manual else None,
                 "user_acknowledgement": None,
             }
         )
@@ -248,7 +290,17 @@ async def run_precheck(
     except Exception:
         pass
 
-    return {"status": "completed", "items": precheck_items, "total": len(precheck_items)}
+    missing = sum(1 for i in precheck_items if i["status"] == "missing")
+    found = sum(1 for i in precheck_items if i["status"] == "found")
+    return {
+        "status": "completed",
+        "vessel_type": vessel_type,
+        "total": len(precheck_items),
+        "found": found,
+        "missing": missing,
+        "items": precheck_items,
+        "run_at": __import__("datetime").datetime.utcnow().isoformat(),
+    }
 
 
 @router.get(
@@ -287,10 +339,16 @@ async def list_precheck(
             },
         )
         rows = result.mappings().all()
+        items = [dict(r) for r in rows]
     except Exception:
-        rows = []
+        items = []
 
-    return {"items": [dict(r) for r in rows], "page": page, "page_size": page_size}
+    return {
+        "items": items,
+        "page": page,
+        "page_size": page_size,
+        "run_at": items[0]["updated_at"].isoformat() if items and items[0].get("updated_at") else None,
+    }
 
 
 @router.patch(
@@ -304,12 +362,7 @@ async def acknowledge_precheck_item(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
-    """
-    Record the user's acknowledgement for a pre-check item.
-
-    Valid user_acknowledgement values:
-      upload_pending | genuinely_absent | not_applicable | confirmed
-    """
+    """Record the user's acknowledgement for a pre-check item."""
     await _get_vessel_or_404(vessel_id, db)
 
     valid_acks = {"upload_pending", "genuinely_absent", "not_applicable", "confirmed"}
@@ -317,10 +370,7 @@ async def acknowledge_precheck_item(
     if ack not in valid_acks:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Invalid user_acknowledgement '{ack}'. "
-                f"Must be one of: {sorted(valid_acks)}"
-            ),
+            detail=f"Invalid user_acknowledgement '{ack}'. Must be one of: {sorted(valid_acks)}",
         )
 
     reason = body.get("acknowledgement_reason", "")
@@ -329,37 +379,22 @@ async def acknowledge_precheck_item(
         check = await db.execute(
             text(
                 "SELECT id FROM instruction_manual_precheck "
-                "WHERE id = :id AND vessel_id = :vid AND tenant_id = :tid "
-                "  AND is_deleted = false"
+                "WHERE id = :id AND vessel_id = :vid AND tenant_id = :tid AND is_deleted = false"
             ),
-            {
-                "id": str(item_id),
-                "vid": str(vessel_id),
-                "tid": str(current_user.tenant_id),
-            },
+            {"id": str(item_id), "vid": str(vessel_id), "tid": str(current_user.tenant_id)},
         )
         if check.one_or_none() is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Pre-check item not found",
-            )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pre-check item not found")
 
         await db.execute(
             text(
                 "UPDATE instruction_manual_precheck "
-                "SET user_acknowledgement = :ack, "
-                "    acknowledgement_reason = :reason, "
-                "    acknowledged_by = :uid, "
-                "    updated_at = NOW() "
+                "SET user_acknowledgement = :ack, acknowledgement_reason = :reason, "
+                "    acknowledged_by = :uid, updated_at = NOW() "
                 "WHERE id = :id AND tenant_id = :tid"
             ),
-            {
-                "ack": ack,
-                "reason": reason,
-                "uid": str(current_user.id),
-                "id": str(item_id),
-                "tid": str(current_user.tenant_id),
-            },
+            {"ack": ack, "reason": reason, "uid": str(current_user.id),
+             "id": str(item_id), "tid": str(current_user.tenant_id)},
         )
         await db.commit()
 
@@ -372,8 +407,7 @@ async def acknowledge_precheck_item(
             ),
             {"id": str(item_id)},
         )
-        row = row_result.mappings().one()
-        return dict(row)
+        return dict(row_result.mappings().one())
 
     except HTTPException:
         raise

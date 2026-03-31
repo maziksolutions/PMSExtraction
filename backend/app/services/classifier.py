@@ -162,21 +162,33 @@ def _make_marked_text(pages_text: list[str], max_chars: int = 400_000) -> tuple[
     """
     Build a single string with [PAGE N, doc_page=X] markers.
     - N       : physical PDF page position (1-indexed)
-    - doc_page: the page number actually printed in the document,
-                or 'none' if the page carries no printed number.
+    - doc_page: printed page number found in the document text, or physical
+                page number N when no printed numbers exist in the document.
 
     Returns (marked_text, valid_doc_pages) where valid_doc_pages is the set
-    of printed page numbers found in the document — used to validate AI output.
+    of reference page numbers to validate AI output against.
     """
+    # First pass — detect printed page numbers for every page
+    printed_nums: list[Optional[int]] = [
+        _detect_printed_page_num(text) for text in pages_text
+    ]
+    detected = {n for n in printed_nums if n is not None}
+
+    # If the document has no printed page numbers at all, fall back to physical
+    # page positions so the AI can still reference pages meaningfully.
+    if not detected:
+        _log.info("classifier: no printed page numbers detected — using physical page positions")
+        printed_nums = list(range(1, len(pages_text) + 1))
+        detected = set(printed_nums)
+
     parts: list[str] = []
     total = 0
     valid_doc_pages: set[int] = set()
-    for i, text in enumerate(pages_text, start=1):
+    for i, (text, dp) in enumerate(zip(pages_text, printed_nums), start=1):
         truncated = text[:800] if text else ""
-        printed = _detect_printed_page_num(text)
-        if printed is not None:
-            valid_doc_pages.add(printed)
-            marker = f"[PAGE {i}, doc_page={printed}]"
+        if dp is not None:
+            valid_doc_pages.add(dp)
+            marker = f"[PAGE {i}, doc_page={dp}]"
         else:
             marker = f"[PAGE {i}, doc_page=none]"
         snippet = f"{marker}\n{truncated}" if truncated else marker
@@ -279,15 +291,15 @@ Document text:
 
 Classify this document into EXACTLY ONE of the following categories:
 
-- **Instruction Manual**: Manufacturer's technical/operation/maintenance manual for a specific piece of equipment (contains operating procedures, maintenance schedules, overhaul instructions, spare parts lists, or equipment specifications). Even a short specification sheet for one piece of equipment (e.g. "SEWAGE TREATMENT PLANT SPECIFICATION") counts as Instruction Manual if it describes a single equipment item in detail.
-- **Machinery Particulars**: A list/register/inventory of ALL equipment on the vessel — tabular format with many rows, columns like No. | Equipment | Maker | Model | Serial No. titled "Machinery List", "Equipment Register", "Maker List", or similar.
-- **General Arrangement**: Deck plans, layout drawings showing spatial arrangement of the vessel. Mostly drawings with minimal text.
+- **Instruction Manual**: OEM manufacturer's manual for a SINGLE piece of equipment — has sequential written chapters covering operation, maintenance, troubleshooting, overhaul. Written by the equipment maker (e.g. TAIKO KIKAI, MAN, Wärtsilä). Contains prose/paragraph text describing how to operate and service the equipment.
+- **Machinery Particulars**: Vessel-level tabular register of ALL equipment — many rows with columns like No. | Equipment Name | Maker | Model | Serial No. | Capacity. Not focused on one machine.
+- **General Arrangement**: Deck plans and layout drawings showing spatial arrangement of the vessel. Mostly drawings with minimal text.
 - **Pipeline Diagrams/P&ID**: Piping & Instrumentation Diagrams, system flow diagrams, hydraulic schematics.
 - **LSA/FFA Plans**: Life Saving Appliance plans, Fire Fighting Appliance plans, fire safety plans, muster lists.
 - **Tank Capacity Plan**: Tank tables, sounding tables, ullage tables, stability booklets, capacity plans.
-- **Electrical Diagrams**: Single-line diagrams, wiring diagrams, cable lists, switchboard diagrams.
-- **Yard/Finished Drawings**: Shipyard construction drawings, as-built drawings, structural drawings.
-- **Class Certificates/Surveys**: Classification certificates, survey reports, safety certificates.
+- **Electrical Diagrams**: Single-line diagrams, wiring diagrams, cable lists, switchboard schematics.
+- **Yard/Finished Drawings**: Shipyard delivery package — assembly drawings, outfit drawings, final construction drawings. Key signs: engineering drawing format (title block, drawing number, revision table), assembly views with item-numbered parts tables (Item No. | Description | Qty | Material), multiple equipment types bundled, hull/vessel name reference, spare parts lists attached to drawings. Does NOT need written operational procedures. A document of assembly drawings with parts/spares lists from the shipyard is Yard/Finished Drawings even if it mentions equipment names.
+- **Class Certificates/Surveys**: Classification certificates, survey reports, safety certificates issued by DNV, Lloyd's, BV, ABS, etc.
 - **Unknown/Unclassifiable**: Cannot determine category with reasonable confidence.
 
 For each field below, list the EXACT page numbers (from [PAGE N] markers) where that content appears.
@@ -445,15 +457,15 @@ Document text:
 
 Classify this document into EXACTLY ONE of the following categories:
 
-- **Instruction Manual**: Manufacturer's technical/operation/maintenance manual for a specific piece of equipment (contains operating procedures, maintenance schedules, overhaul instructions, spare parts lists, or equipment specifications). Even a short specification sheet for one piece of equipment counts as Instruction Manual if it describes a single equipment item in detail.
-- **Machinery Particulars**: A list/register/inventory of ALL equipment on the vessel — tabular format with many rows, columns like No. | Equipment | Maker | Model | Serial No.
-- **General Arrangement**: Deck plans, layout drawings showing spatial arrangement of the vessel.
+- **Instruction Manual**: OEM manufacturer's manual for a SINGLE piece of equipment — has sequential written chapters covering operation, maintenance, troubleshooting, overhaul. Written by the equipment maker (e.g. TAIKO KIKAI, MAN, Wärtsilä). Contains prose/paragraph text describing how to operate and service the equipment.
+- **Machinery Particulars**: Vessel-level tabular register of ALL equipment — many rows with columns like No. | Equipment Name | Maker | Model | Serial No. | Capacity. Not focused on one machine.
+- **General Arrangement**: Deck plans and layout drawings showing spatial arrangement. Mostly drawings with minimal text.
 - **Pipeline Diagrams/P&ID**: Piping & Instrumentation Diagrams, system flow diagrams, hydraulic schematics.
-- **LSA/FFA Plans**: Life Saving Appliance plans, Fire Fighting Appliance plans, fire safety plans.
-- **Tank Capacity Plan**: Tank tables, sounding tables, ullage tables, stability booklets.
-- **Electrical Diagrams**: Single-line diagrams, wiring diagrams, cable lists.
-- **Yard/Finished Drawings**: Shipyard construction drawings, as-built drawings.
-- **Class Certificates/Surveys**: Classification certificates, survey reports, safety certificates.
+- **LSA/FFA Plans**: Life Saving Appliance plans, Fire Fighting Appliance plans, fire safety plans, muster lists.
+- **Tank Capacity Plan**: Tank tables, sounding tables, ullage tables, stability booklets, capacity plans.
+- **Electrical Diagrams**: Single-line diagrams, wiring diagrams, cable lists, switchboard schematics.
+- **Yard/Finished Drawings**: Shipyard delivery package — assembly drawings, outfit drawings, final construction drawings. Key signs: engineering drawing format (title block, drawing number, revision table, scale), assembly views with item-numbered parts tables (Item No. | Description | Qty | Material), multiple equipment types bundled together, hull/vessel name reference, spare parts lists attached to drawings. Does NOT need to contain written operational procedures. A document of assembly drawings with attached parts/spares lists from the shipyard is Yard/Finished Drawings even if it mentions equipment names.
+- **Class Certificates/Surveys**: Classification certificates, survey reports, safety certificates issued by DNV, Lloyd's, BV, ABS, etc.
 - **Unknown/Unclassifiable**: Cannot determine category with reasonable confidence.
 
 For each field below, list the EXACT page numbers (from [PAGE N] markers) where that content appears.
