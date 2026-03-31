@@ -347,12 +347,18 @@ const ManualReview: React.FC = () => {
     queryKey: ['screening-status', vesselId],
     queryFn: () =>
       apiClient.get(`/vessels/${vesselId}/manuals/screening-status`).then((r) => r.data),
-    enabled: !!vesselId && screeningPolling,
+    // Always fetch once on mount so we can detect if screening is already running
+    enabled: !!vesselId,
     refetchInterval: screeningPolling ? 1500 : false,
   })
 
   useEffect(() => {
-    if (screeningData?.status === 'completed' || screeningData?.status === 'failed') {
+    if (!screeningData) return
+    if (screeningData.status === 'running') {
+      // Auto-start polling if the server is already screening (e.g. after page reload)
+      setScreeningPolling(true)
+    }
+    if (screeningData.status === 'completed' || screeningData.status === 'failed') {
       setScreeningPolling(false)
       queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
     }
@@ -587,6 +593,14 @@ const ManualReview: React.FC = () => {
         <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-slate-300">
           <span>{screenMessage}</span>
           <button onClick={() => setScreenMessage(null)} className="text-slate-500 hover:text-slate-300 text-xs">✕</button>
+        </div>
+      )}
+
+      {/* Screening complete banner */}
+      {!isScreening && screeningData?.status === 'completed' && (
+        <div className="flex items-center gap-2 rounded-xl border border-violet-700 bg-violet-900/20 px-4 py-3 text-sm text-violet-300">
+          <CheckCircle2 className="h-5 w-5 shrink-0" />
+          Screening complete — {screeningData.total} manual{screeningData.total !== 1 ? 's' : ''} classified. Review the categories below, then run Extract Selected on instruction manuals.
         </div>
       )}
 
