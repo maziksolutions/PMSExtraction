@@ -95,18 +95,48 @@ VALID_CATEGORIES = [
 # PDF text extraction helper
 # ---------------------------------------------------------------------------
 
-def _extract_pdf_text(content: bytes, max_pages: int = 30) -> tuple[list[str], int]:
-    """Extract text per page from PDF bytes. Returns (pages_text, total_pages)."""
+def _extract_pdf_text(content: bytes, max_pages: int = 9999) -> tuple[list[str], int]:
+    """Extract text per page from PDF bytes. Returns (pages_text, total_pages).
+    pages_text[i] is the text for page (i+1); tables are included inline."""
     try:
         import pdfplumber  # type: ignore
         pages_text: list[str] = []
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             total = len(pdf.pages)
             for page in pdf.pages[:max_pages]:
-                pages_text.append(page.extract_text() or "")
+                parts: list[str] = []
+                t = page.extract_text()
+                if t and t.strip():
+                    parts.append(t)
+                try:
+                    for tbl in (page.extract_tables() or []):
+                        if not tbl:
+                            continue
+                        rows = [
+                            " | ".join(str(c).strip() if c else "" for c in row)
+                            for row in tbl if row and any(c for c in row if c)
+                        ]
+                        if rows:
+                            parts.append("[TABLE] " + " // ".join(rows[:5]))  # first 5 rows for brevity
+                except Exception:
+                    pass
+                pages_text.append("\n".join(parts).strip())
         return pages_text, total
     except Exception:
         return [], 0
+
+
+def _make_marked_text(pages_text: list[str], max_chars: int = 80_000) -> str:
+    """Build a single string with [PAGE N] markers, capped at max_chars."""
+    parts: list[str] = []
+    total = 0
+    for i, text in enumerate(pages_text, start=1):
+        snippet = f"[PAGE {i}]\n{text}" if text else f"[PAGE {i}]"
+        total += len(snippet)
+        parts.append(snippet)
+        if total >= max_chars:
+            break
+    return "\n\n".join(parts)
 
 
 def _find_pages_for_topic(pages_text: list[str], keywords: list[str]) -> str:
@@ -132,7 +162,7 @@ def _find_pages_for_topic(pages_text: list[str], keywords: list[str]) -> str:
 # Claude AI classifier
 # ---------------------------------------------------------------------------
 
-def _classify_with_claude(text_sample: str, filename: str, page_count: int) -> Optional[dict]:
+def _classify_with_claude(pages_text: list[str], filename: str, page_count: int) -> Optional[dict]:
     """Call Claude API to classify the manual. Returns parsed JSON or None on failure."""
     try:
         import anthropic
@@ -143,64 +173,82 @@ def _classify_with_claude(text_sample: str, filename: str, page_count: int) -> O
 
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
+        # Build marked text for Claude — include [PAGE N] markers so page ranges are precise
+        marked_text = _make_marked_text(pages_text, max_chars=80_000)
+
         prompt = f"""You are an expert maritime document classifier specialising in ship technical documentation and PMS (Planned Maintenance System) data.
 
 Filename: {filename}
-Page count: {page_count}
-Full document text (all pages):
+Total pages: {page_count}
+
+The document text below includes [PAGE N] markers. Use these exact page numbers when reporting page ranges.
+
+Document text:
 ---
-{text_sample}
+{marked_text}
 ---
 
 Classify this document into EXACTLY ONE of the following categories:
 
-- **Instruction Manual**: Manufacturer's technical/operation/maintenance manual for a specific piece of equipment (contains operating procedures, maintenance schedules, overhaul instructions, spare parts lists). Examples: engine manuals, pump manuals, compressor manuals, crane manuals.
-- **Machinery Particulars**: A list/register/inventory of all equipment on the vessel — tabular format with columns like No., Equipment Name, Maker, Model, Serial No., Capacity. May be titled "Machinery List", "Equipment Register", "Maker List", or similar.
-- **General Arrangement**: Deck plans, layout drawings, accommodation plans showing spatial arrangement of the vessel. Little or no text — mostly drawings.
-- **Pipeline Diagrams/P&ID**: Piping & Instrumentation Diagrams, system flow diagrams, schematic diagrams for piping/hydraulic/pneumatic systems.
-- **LSA/FFA Plans**: Life Saving Appliance plans, Fire Fighting Appliance plans, fire safety plans, muster lists, evacuation diagrams.
+- **Instruction Manual**: Manufacturer's technical/operation/maintenance manual for a specific piece of equipment (contains operating procedures, maintenance schedules, overhaul instructions, spare parts lists, or equipment specifications). Even a short specification sheet for one piece of equipment (e.g. "SEWAGE TREATMENT PLANT SPECIFICATION") counts as Instruction Manual if it describes a single equipment item in detail.
+- **Machinery Particulars**: A list/register/inventory of ALL equipment on the vessel — tabular format with many rows, columns like No. | Equipment | Maker | Model | Serial No. titled "Machinery List", "Equipment Register", "Maker List", or similar.
+- **General Arrangement**: Deck plans, layout drawings showing spatial arrangement of the vessel. Mostly drawings with minimal text.
+- **Pipeline Diagrams/P&ID**: Piping & Instrumentation Diagrams, system flow diagrams, hydraulic schematics.
+- **LSA/FFA Plans**: Life Saving Appliance plans, Fire Fighting Appliance plans, fire safety plans, muster lists.
 - **Tank Capacity Plan**: Tank tables, sounding tables, ullage tables, stability booklets, capacity plans.
-- **Electrical Diagrams**: Single-line diagrams, wiring diagrams, cable lists, switchboard diagrams, load lists.
-- **Yard/Finished Drawings**: Shipyard construction drawings, as-built drawings, structural drawings, hull drawings.
-- **Class Certificates/Surveys**: Classification certificates, survey reports, DOC/SMC/IOPP certificates, flag state certificates.
+- **Electrical Diagrams**: Single-line diagrams, wiring diagrams, cable lists, switchboard diagrams.
+- **Yard/Finished Drawings**: Shipyard construction drawings, as-built drawings, structural drawings.
+- **Class Certificates/Surveys**: Classification certificates, survey reports, safety certificates.
 - **Unknown/Unclassifiable**: Cannot determine category with reasonable confidence.
+
+For page ranges, look for:
+- **pages_with_components**: Pages showing equipment specs, general description, name plate data, or component lists.
+  Look for: specification tables, "General Description", "Technical Data", maker/model rows, capacity tables.
+- **pages_with_jobs**: Pages containing maintenance schedules, service intervals, or inspection procedures.
+  Look for: section headings like "Maintenance", "Service Schedule", "Inspection", "Periodic Maintenance",
+  tables with columns "Interval | Description", "Every day / Weekly / Monthly" rows.
+- **pages_with_spares**: Pages containing spare parts lists or recommended spares.
+  Look for: "Spare Parts", "Parts List", "Recommended Spares", "Spare Part Catalogue",
+  tables with columns NO. | NAME | PART NUMBER | QTY.
 
 Return ONLY valid JSON in this exact format:
 {{
   "category": "<category name exactly as listed above>",
   "confidence": <integer 0-100>,
   "useful_for_extraction": "<yes | partial | no>",
-  "pages_with_components": "<page range like '1-20, 35-40' or empty string>",
-  "pages_with_jobs": "<page range like '21-50' or empty string>",
-  "pages_with_spares": "<page range like '51-80' or empty string>",
+  "pages_with_components": "<exact page range from [PAGE N] markers e.g. '1-15' or '1-5, 22-30', or empty string if none>",
+  "pages_with_jobs": "<exact page range from [PAGE N] markers e.g. '40-65', or empty string if no maintenance section>",
+  "pages_with_spares": "<exact page range from [PAGE N] markers e.g. '66-90', or empty string if no spare parts section>",
   "reasoning": "<one sentence explanation>"
 }}
 
 Rules:
-- useful_for_extraction = "yes" if: Instruction Manual OR Machinery Particulars (contains extractable PMS data)
-- useful_for_extraction = "partial" if: document has some components/jobs/spares mixed with drawings or certificates
-- useful_for_extraction = "no" if: certificates, drawings, plans, diagrams with no equipment data to extract
-- Page ranges: estimate based on document structure (e.g. machinery lists usually start page 1; spare parts often in final third)
-- If page_count is 0 or unknown, leave page range fields as empty strings
-- confidence 85-98: very clear match; 65-84: probable match; 40-64: uncertain; below 40: use Unknown/Unclassifiable
-- Machinery Particulars vs Instruction Manual: if the document covers ONE piece of equipment in depth → Instruction Manual; if it lists MANY different equipment items → Machinery Particulars"""
+- Use [PAGE N] markers in the text to determine EXACT page ranges — do NOT guess or estimate
+- useful_for_extraction = "yes" if Instruction Manual OR Machinery Particulars
+- useful_for_extraction = "partial" if spec sheet or drawing with some equipment data (e.g. a spec sheet with maker/model but no maintenance section)
+- useful_for_extraction = "no" if purely drawings, plans, certificates, P&IDs with no equipment data
+- An equipment specification sheet (one equipment, with maker/model/capacity) → category="Instruction Manual", useful="partial"
+- confidence 85-98: very clear; 65-84: probable; 40-64: uncertain; <40: use Unknown/Unclassifiable
+- Machinery Particulars vs Instruction Manual: one equipment in depth → Instruction Manual; many equipment rows → Machinery Particulars
+- If page ranges for jobs or spares are genuinely absent, return empty string — do NOT invent ranges"""
 
         model_id = getattr(settings, "CLAUDE_MODEL_ID", "claude-sonnet-4-6")
         message = client.messages.create(
             model=model_id,
-            max_tokens=512,
+            max_tokens=768,
             messages=[{"role": "user", "content": prompt}],
         )
 
         raw = message.content[0].text.strip()
-        # Extract JSON from response (handles markdown code blocks)
         if "```" in raw:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
         return json.loads(raw.strip())
 
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("classifier: Claude call failed: %s", exc)
         return None
 
 
@@ -213,11 +261,10 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
     Classify a PDF manual.
     Uses Claude AI if ANTHROPIC_API_KEY is set, otherwise falls back to keyword matching.
     """
-    pages_text, total_pages = _extract_pdf_text(content, max_pages=9999)  # all pages
-    text_sample = "\n\n".join(pages_text)
+    pages_text, total_pages = _extract_pdf_text(content)
 
-    # Try Claude first
-    ai_result = _classify_with_claude(text_sample, filename, total_pages)
+    # Try Claude first — passes pages_text so [PAGE N] markers give precise ranges
+    ai_result = _classify_with_claude(pages_text, filename, total_pages)
     if ai_result:
         category = ai_result.get("category", "Unknown/Unclassifiable")
         if category not in VALID_CATEGORIES:
