@@ -357,10 +357,10 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
         import time
-        for attempt in range(4):
+        for attempt in range(3):
             response = httpx.post(url, json=payload, timeout=120)
             if response.status_code == 429:
-                wait = 15 * (attempt + 1)  # 15s, 30s, 45s, 60s
+                wait = 30 * (attempt + 1)  # 30s, 60s, 90s
                 _log.warning("classifier[gemini]: 429 rate limit for %s — retrying in %ds", filename, wait)
                 time.sleep(wait)
                 continue

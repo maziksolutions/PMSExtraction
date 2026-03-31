@@ -683,6 +683,8 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                         manual.original_filename, exc,
                     )
                 _screening_state[vessel_id_str]["done"] += 1
+                # Pause between manuals so Gemini free-tier rate limit (RPM) can reset
+                await asyncio.sleep(20)
 
         _screening_state[vessel_id_str]["status"] = "completed"
     except Exception:
