@@ -608,8 +608,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                 category = ai.get("category", "Unknown/Unclassifiable")
                                 if category not in VALID_CATEGORIES:
                                     category = "Unknown/Unclassifiable"
-                                raw_supply = ai.get("supply_type", "OEM")
-                                supply_type = raw_supply if raw_supply in ("OEM", "yard_supply") else "OEM"
+                                # supply_type is set by _sanitise_result based on category rule
                                 cr = _sanitise_result(ClassificationResult(
                                     category=category,
                                     confidence=max(0, min(100, int(ai.get("confidence", 60)))),
@@ -618,7 +617,6 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                     pages_with_jobs=ai.get("pages_with_jobs", ""),
                                     pages_with_spares=ai.get("pages_with_spares", ""),
                                     page_count=page_count,
-                                    supply_type=supply_type,
                                 ))
                             else:
                                 cr = _sanitise_result(_kw_cls(pages_text, manual.original_filename, page_count))

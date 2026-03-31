@@ -293,24 +293,19 @@ Classify this document into EXACTLY ONE of the following categories:
 For each field below, list the EXACT page numbers (from [PAGE N] markers) where that content appears.
 Use comma-separated individual page numbers — NOT ranges. E.g. "5, 6, 7, 12, 13" not "5-7, 12-13".
 
-- **pages_with_components**: Pages that contain ALL THREE of the following together for at least one piece of equipment: (1) equipment/component NAME, (2) MAKER/MANUFACTURER name, and (3) MODEL number or type designation. Typically found on cover/specification pages with name plate data or "Technical Data" tables. A page with procedures, general descriptions, or diagrams without maker+model does NOT qualify. For Machinery Particulars: pages with rows showing Name + Maker + Model columns. For Tank Capacity Plans: pages with tank name + capacity + sounding data.
-- **pages_with_jobs**: Pages containing maintenance schedules, service intervals, or inspection procedures.
-  Look for: section headings like "Maintenance", "Service Schedule", "Inspection", "Periodic Maintenance",
-  tables with columns "Interval | Description", "Every day / Weekly / Monthly" rows.
-- **pages_with_spares**: Pages containing spare parts lists or recommended spares.
-  Look for: "Spare Parts", "Parts List", "Recommended Spares", "Spare Part Catalogue",
-  tables with columns NO. | NAME | PART NUMBER | QTY.
-
-Determine the supply type:
-- **OEM**: Original Equipment Manufacturer manual — issued by the equipment maker. Contains the maker's name/logo on the cover, model numbers, operation/maintenance procedures written by the manufacturer.
-- **yard_supply**: Shipyard delivery package — drawings, spare parts lists, or documentation assembled by the yard. Signs: hull number, ship name header, "SUPPLY"/"OUTFIT" columns, multiple equipment assemblies, final drawings with item/qty/material tables.
+- **pages_with_components**:
+  - If category is **Instruction Manual** or **Machinery Particulars**: only pages that have ALL THREE — (1) equipment NAME, (2) MAKER/MANUFACTURER, and (3) MODEL number. Cover pages, name-plate data, "Technical Data" / "Specifications" tables.
+  - If category is **Yard/Finished Drawings**: pages where any component or equipment name is visible — assembly drawings, parts lists with item numbers. No maker/model requirement.
+  - If category is **Tank Capacity Plan**: pages with tank names + capacity or sounding data.
+  - All other categories: leave empty.
+- **pages_with_jobs**: Only for **Instruction Manuals**. Pages with maintenance schedules, service intervals, inspection checklists, lubrication — "Maintenance", "Service Schedule", "Periodic Inspection" headings, tables with "Interval | Task" or "Running Hours" columns. Leave empty for ALL other types.
+- **pages_with_spares**: Only for **Instruction Manuals** and **Yard/Finished Drawings**. Pages with spare parts lists, recommended spares, consumables — "Spare Parts", "Parts List", "Recommended Spares", tables with "Part No. | Description | Qty". Leave empty for all other types.
 
 Return ONLY valid JSON in this exact format:
 {{
   "category": "<category name exactly as listed above>",
   "confidence": <integer 0-100>,
   "useful_for_extraction": "<yes | partial | no>",
-  "supply_type": "<OEM | yard_supply>",
   "pages_with_components": "<comma-separated doc_page numbers e.g. '1, 2, 9' — only pages with a printed doc_page number, empty string if none>",
   "pages_with_jobs": "<comma-separated doc_page numbers e.g. '9, 12, 13' — only pages with a printed doc_page number, empty string if none>",
   "pages_with_spares": "<comma-separated doc_page numbers e.g. '15, 16' — only pages with a printed doc_page number, empty string if none>",
@@ -321,11 +316,11 @@ Rules:
 - CRITICAL: Use ONLY doc_page values from the markers — never use PDF position N. Never invent a number not seen as a doc_page value.
 - CRITICAL: Skip pages marked doc_page=none — they have no printed page reference and must NOT appear in your output.
 - List every individual doc_page number where the content appears — do NOT use ranges or hyphens
-- pages_with_components STRICT RULE: only include a page if it has name + maker + model all present together on that page. Do NOT include pages that only have the equipment name. Do NOT include procedure, description, or drawing pages just because they reference equipment.
+- pages_with_jobs must be empty for everything except Instruction Manual
+- pages_with_spares must be empty for everything except Instruction Manual and Yard/Finished Drawings
 - useful_for_extraction = "yes" if Instruction Manual OR Machinery Particulars
-- useful_for_extraction = "partial" if spec sheet or drawing with some equipment data (e.g. a spec sheet with maker/model but no maintenance section)
+- useful_for_extraction = "partial" if spec sheet or drawing with some equipment data
 - useful_for_extraction = "no" if purely drawings, plans, certificates, P&IDs with no equipment data
-- supply_type = "OEM" for manufacturer-issued manuals; "yard_supply" for shipyard-assembled bundles, outfit drawings, or delivery documentation with hull/ship references
 - An equipment specification sheet (one equipment, with maker/model/capacity) → category="Instruction Manual", useful="partial"
 - confidence 85-98: very clear; 65-84: probable; 40-64: uncertain; <40: use Unknown/Unclassifiable
 - Machinery Particulars vs Instruction Manual: one equipment in depth → Instruction Manual; many equipment rows → Machinery Particulars
@@ -464,20 +459,19 @@ Classify this document into EXACTLY ONE of the following categories:
 For each field below, list the EXACT page numbers (from [PAGE N] markers) where that content appears.
 Use comma-separated individual page numbers — NOT ranges. E.g. "5, 6, 7, 12, 13" not "5-7, 12-13".
 
-- **pages_with_components**: Pages that contain ALL THREE of the following together for at least one piece of equipment: (1) equipment/component NAME, (2) MAKER/MANUFACTURER name, and (3) MODEL number or type designation. Typically found on cover pages, name plate data pages, specification tables, or "Technical Data" sections. A page with just a description or just a table of procedures does NOT qualify — all three fields must be present on the same page. For Machinery Particulars, include pages that have rows with Name + Maker + Model columns. For Tank Capacity Plans, include pages with tank name + capacity + sounding data.
-- **pages_with_jobs**: Pages containing maintenance schedules, service intervals, overhaul procedures, inspection checklists, lubrication schedules, or any periodic maintenance table. Look for headings: "Maintenance", "Service Schedule", "Periodic Inspection", "Overhaul", "Lubrication", tables with columns like "Interval | Task" or "Running Hours | Description".
-- **pages_with_spares**: Pages containing spare parts lists, recommended spares, parts catalogues, or consumables lists. Look for headings: "Spare Parts", "Parts List", "Recommended Spares", tables with columns like "Part No. | Description | Qty" or drawing-based parts tables with item numbers.
-
-Determine the supply type:
-- **OEM**: The document is an Original Equipment Manufacturer manual — issued by the equipment maker (e.g. TAIKO KIKAI, Alfa Laval, MAN, Wärtsilä). Contains the maker's name/logo on the cover, model numbers, operation/maintenance procedures written by the manufacturer.
-- **yard_supply**: The document comes from the shipyard's delivery package — a bundle of drawings, spare parts lists, or documentation assembled by the yard for the vessel build. Signs: hull number, ship name header, "SUPPLY" or "OUTFIT" columns (e.g. "Working Per Pump / Spare Per Ship"), multiple different equipment assemblies in one file, final drawings with part tables (item no. | description | qty | material), or Japanese/Korean shipyard format.
+- **pages_with_components**:
+  - If category is **Instruction Manual** or **Machinery Particulars**: only include a page if it has ALL THREE together — (1) equipment NAME, (2) MAKER/MANUFACTURER, and (3) MODEL number. Typically cover pages, name-plate data pages, "Technical Data" or "Specifications" tables.
+  - If category is **Yard/Finished Drawings**: include pages where any component or equipment name is visible — assembly drawings, parts lists with item numbers, outfit lists. No maker/model requirement.
+  - If category is **Tank Capacity Plan**: include pages with tank names + capacity or sounding data.
+  - All other categories: leave empty.
+- **pages_with_jobs**: Only populate for **Instruction Manuals**. Pages with maintenance schedules, service intervals, inspection checklists, lubrication schedules — headings like "Maintenance", "Service Schedule", "Periodic Inspection", tables with "Interval | Task" or "Running Hours | Description" columns. Leave empty for ALL other document types.
+- **pages_with_spares**: Only populate for **Instruction Manuals** and **Yard/Finished Drawings**. Pages with spare parts lists, recommended spares, consumables — headings "Spare Parts", "Parts List", "Recommended Spares", tables with "Part No. | Description | Qty". Leave empty for all other document types.
 
 Return ONLY valid JSON in this exact format:
 {{
   "category": "<category name exactly as listed above>",
   "confidence": <integer 0-100>,
   "useful_for_extraction": "<yes | partial | no>",
-  "supply_type": "<OEM | yard_supply>",
   "pages_with_components": "<comma-separated doc_page numbers e.g. '1, 2, 9' — only pages with a printed doc_page number, empty string if none>",
   "pages_with_jobs": "<comma-separated doc_page numbers e.g. '9, 12, 13' — only pages with a printed doc_page number, empty string if none>",
   "pages_with_spares": "<comma-separated doc_page numbers e.g. '15, 16' — only pages with a printed doc_page number, empty string if none>",
@@ -488,11 +482,11 @@ Rules:
 - CRITICAL: Use ONLY doc_page values from the markers — never use the PDF position N. Never invent a number not seen in a doc_page marker.
 - CRITICAL: Skip pages marked doc_page=none — they carry no printed page reference and must NOT appear in your output.
 - List every individual doc_page number where that content appears — do NOT use ranges or hyphens
-- pages_with_components STRICT RULE: only include a page if it has name + maker + model all present together. Do NOT include pages that only mention the equipment name without maker/model. Do NOT include procedure pages, general description pages, or drawing pages just because they reference equipment.
+- pages_with_jobs must be empty for everything except Instruction Manual
+- pages_with_spares must be empty for everything except Instruction Manual and Yard/Finished Drawings
 - useful_for_extraction = "yes" if Instruction Manual, Machinery Particulars, OR Tank Capacity Plan
 - useful_for_extraction = "partial" if spec sheet with maker/model but no maintenance section
 - useful_for_extraction = "no" if purely drawings, certificates, P&IDs, or LSA/FFA plans
-- supply_type = "OEM" for manufacturer-issued manuals; "yard_supply" for shipyard-assembled bundles, outfit drawings, or delivery documentation with hull/ship references
 - confidence 85-98: very clear; 65-84: probable; 40-64: uncertain; <40: use Unknown/Unclassifiable
 - Machinery Particulars vs Instruction Manual: one equipment in depth → Instruction Manual; many equipment rows → Machinery Particulars
 - Be thorough — scan ALL pages. Maintenance schedules are often in the middle or later chapters. Spare parts are often in the last chapter or appendix.
@@ -567,22 +561,30 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
 # Public interface
 # ---------------------------------------------------------------------------
 
-# Categories that cannot contain maintenance jobs or spare parts
-_NO_JOB_SPARE_CATEGORIES = {
-    "General Arrangement",
-    "Pipeline Diagrams/P&ID",
-    "LSA/FFA Plans",
-    "Electrical Diagrams",
-    "Yard/Finished Drawings",
-    "Class Certificates/Surveys",
-    "Unknown/Unclassifiable",
+# Only Instruction Manuals have maintenance jobs
+_HAS_JOBS_CATEGORIES = {
+    "Instruction Manual",
 }
 
-# Categories that CAN have component pages (tanks, equipment lists etc.)
+# Instruction Manuals and Yard/Finished Drawings can reference spare parts
+_HAS_SPARES_CATEGORIES = {
+    "Instruction Manual",
+    "Yard/Finished Drawings",
+}
+
+# Categories that CAN have component pages
 _HAS_COMPONENTS_CATEGORIES = {
     "Instruction Manual",
     "Machinery Particulars",
-    "Tank Capacity Plan",  # tanks listed in capacity plan are components
+    "Tank Capacity Plan",
+    "Yard/Finished Drawings",  # assembly drawings reference equipment/components
+}
+
+# supply_type is rule-based — not AI-determined
+# Instruction Manuals are issued by the OEM; Class Certificates by the class society (not yard)
+_OEM_CATEGORIES = {
+    "Instruction Manual",
+    "Class Certificates/Surveys",
 }
 
 
@@ -610,21 +612,28 @@ def _clamp_pages(page_str: str, max_page: int) -> str:
 
 
 def _sanitise_result(result: ClassificationResult) -> ClassificationResult:
-    """Force page ranges to empty string where they cannot logically exist,
-    and clamp page numbers to the actual document length."""
-    if result.category in _NO_JOB_SPARE_CATEGORIES:
+    """Apply category-based rules to page fields and supply_type."""
+    # Jobs exist only in Instruction Manuals
+    if result.category not in _HAS_JOBS_CATEGORIES:
         result.pages_with_jobs = ""
+
+    # Spares exist only in Instruction Manuals and Yard/Finished Drawings
+    if result.category not in _HAS_SPARES_CATEGORIES:
         result.pages_with_spares = ""
+
+    # Components only in relevant categories
     if result.category not in _HAS_COMPONENTS_CATEGORIES:
         result.pages_with_components = ""
-    # Tank Capacity Plan never has jobs or spares
+
+    # Tank Capacity Plan: tanks are components, force useful=yes
     if result.category == "Tank Capacity Plan":
-        result.pages_with_jobs = ""
-        result.pages_with_spares = ""
-        # Tanks ARE components — override AI if it said no
         result.useful_for_extraction = "yes"
-    # _clamp_pages is a last-resort safety net for the keyword fallback path
-    # (AI paths already filter via _filter_to_valid_pages inside each classifier)
+
+    # supply_type is determined by category rule, never left to AI guessing
+    result.supply_type = "OEM" if result.category in _OEM_CATEGORIES else "yard_supply"
+
+    # _clamp_pages: last-resort safety for keyword fallback path
+    # (AI paths already filtered via _filter_to_valid_pages inside each classifier)
     if result.page_count:
         result.pages_with_components = _clamp_pages(result.pages_with_components, result.page_count)
         result.pages_with_jobs = _clamp_pages(result.pages_with_jobs, result.page_count)
