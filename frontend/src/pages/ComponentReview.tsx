@@ -19,6 +19,7 @@ import {
   Layers,
   FileDown,
   GitMerge,
+  Search,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
@@ -221,6 +222,8 @@ const ComponentReview: React.FC = () => {
   const [expandedG2, setExpandedG2] = useState<Set<string>>(new Set())
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [filterQC, setFilterQC] = useState('')
+  const [searchTable, setSearchTable] = useState('')
+  const [searchTree, setSearchTree] = useState('')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
   const [showAddModal, setShowAddModal] = useState(false)
@@ -237,7 +240,7 @@ const ComponentReview: React.FC = () => {
   const hasAutoLoaded = React.useRef(false)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, page, pageSize],
+    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, page, pageSize],
     queryFn: () => {
       const params: Record<string, string | number> = { page, page_size: pageSize }
       if (selectedGroup1) params.group1 = selectedGroup1
@@ -245,6 +248,7 @@ const ComponentReview: React.FC = () => {
       if (selectedMachinery) params.main_machinery = selectedMachinery
       if (filterQC) params.qc_status = filterQC
       if (showUnmapped) params.is_unmapped = 'true'
+      if (searchTable) params.search = searchTable
       return apiClient.get(`/vessels/${vesselId}/components`, { params }).then((r) => r.data)
     },
     enabled: !!vesselId,
@@ -305,7 +309,7 @@ const ComponentReview: React.FC = () => {
   })
 
   // Reset to page 1 when any filter changes
-  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, pageSize])
+  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, pageSize])
 
   React.useEffect(() => {
     if (!allComponentsQuery.isLoading && allComponentsQuery.isFetched) {
@@ -419,7 +423,7 @@ const ComponentReview: React.FC = () => {
 
       {/* Left Panel: 3-level Tree */}
       <aside className="w-64 shrink-0 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-3">
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-2 flex items-center justify-between">
           <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Component Hierarchy</p>
           <button
             onClick={() => { setAddContext({}); setShowAddModal(true) }}
@@ -428,6 +432,22 @@ const ComponentReview: React.FC = () => {
           >
             <Plus className="h-3.5 w-3.5" />
           </button>
+        </div>
+
+        {/* Tree search */}
+        <div className="relative mb-2">
+          <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-500" />
+          <input
+            value={searchTree}
+            onChange={e => setSearchTree(e.target.value)}
+            placeholder="Search hierarchy..."
+            className="w-full rounded-lg border border-slate-700 bg-slate-800 pl-6 pr-2 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+          />
+          {searchTree && (
+            <button onClick={() => setSearchTree('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
+              <X className="h-3 w-3" />
+            </button>
+          )}
         </div>
 
         {/* All Components */}
@@ -441,7 +461,15 @@ const ComponentReview: React.FC = () => {
           </span>
         </button>
 
-        {tree.map((node) => (
+        {tree.filter(node =>
+          !searchTree || node.group1.toLowerCase().includes(searchTree.toLowerCase()) ||
+          Object.keys(node.group2s).some(g2 =>
+            g2.toLowerCase().includes(searchTree.toLowerCase()) ||
+            Object.keys(node.group2s[g2].mainMachineries).some(mm =>
+              mm.toLowerCase().includes(searchTree.toLowerCase())
+            )
+          )
+        ).map((node) => (
           <div key={node.group1}>
             {/* Group 1 */}
             <div className="flex items-center gap-1">
@@ -647,6 +675,22 @@ const ComponentReview: React.FC = () => {
           </button>
 
           <div className="ml-auto flex items-center gap-2">
+            {/* Table search */}
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+              <input
+                value={searchTable}
+                onChange={e => setSearchTable(e.target.value)}
+                placeholder="Search components..."
+                className="w-48 rounded-lg border border-slate-700 bg-slate-800 pl-7 pr-6 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+              />
+              {searchTable && (
+                <button onClick={() => setSearchTable('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+
             {/* QC filter */}
             <select
               value={filterQC}
