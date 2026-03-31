@@ -211,7 +211,9 @@ Classify this document into EXACTLY ONE of the following categories:
 - **Class Certificates/Surveys**: Classification certificates, survey reports, safety certificates.
 - **Unknown/Unclassifiable**: Cannot determine category with reasonable confidence.
 
-For page ranges, look for:
+For each field below, list the EXACT page numbers (from [PAGE N] markers) where that content appears.
+Use comma-separated individual page numbers — NOT ranges. E.g. "5, 6, 7, 12, 13" not "5-7, 12-13".
+
 - **pages_with_components**: Pages showing equipment specs, general description, name plate data, or component lists.
   Look for: specification tables, "General Description", "Technical Data", maker/model rows, capacity tables.
 - **pages_with_jobs**: Pages containing maintenance schedules, service intervals, or inspection procedures.
@@ -226,21 +228,22 @@ Return ONLY valid JSON in this exact format:
   "category": "<category name exactly as listed above>",
   "confidence": <integer 0-100>,
   "useful_for_extraction": "<yes | partial | no>",
-  "pages_with_components": "<exact page range from [PAGE N] markers e.g. '1-15' or '1-5, 22-30', or empty string if none>",
-  "pages_with_jobs": "<exact page range from [PAGE N] markers e.g. '40-65', or empty string if no maintenance section>",
-  "pages_with_spares": "<exact page range from [PAGE N] markers e.g. '66-90', or empty string if no spare parts section>",
+  "pages_with_components": "<comma-separated page numbers from [PAGE N] markers e.g. '1, 2, 3, 15' or empty string if none>",
+  "pages_with_jobs": "<comma-separated page numbers from [PAGE N] markers e.g. '40, 41, 42, 55, 56' or empty string if none>",
+  "pages_with_spares": "<comma-separated page numbers from [PAGE N] markers e.g. '66, 67, 68' or empty string if none>",
   "reasoning": "<one sentence explanation>"
 }}
 
 Rules:
-- Use [PAGE N] markers in the text to determine EXACT page ranges — do NOT guess or estimate
+- Use [PAGE N] markers to identify EXACT page numbers — do NOT guess or estimate
+- List every individual page number where the content appears — do NOT use ranges or hyphens
 - useful_for_extraction = "yes" if Instruction Manual OR Machinery Particulars
 - useful_for_extraction = "partial" if spec sheet or drawing with some equipment data (e.g. a spec sheet with maker/model but no maintenance section)
 - useful_for_extraction = "no" if purely drawings, plans, certificates, P&IDs with no equipment data
 - An equipment specification sheet (one equipment, with maker/model/capacity) → category="Instruction Manual", useful="partial"
 - confidence 85-98: very clear; 65-84: probable; 40-64: uncertain; <40: use Unknown/Unclassifiable
 - Machinery Particulars vs Instruction Manual: one equipment in depth → Instruction Manual; many equipment rows → Machinery Particulars
-- If page ranges for jobs or spares are genuinely absent, return empty string — do NOT invent ranges"""
+- If a section is genuinely absent, return empty string — do NOT invent page numbers"""
 
         model_id = getattr(settings, "CLAUDE_MODEL_ID", "claude-sonnet-4-6")
         message = client.messages.create(
