@@ -877,38 +877,28 @@ async def view_manual(
     ext = (manual.file_extension or "").lower().lstrip(".")
     media_type = mime_map.get(ext, "application/octet-stream")
 
-    # Local file path (starts with / on Linux or drive letter on Windows)
-    is_local_path = blob_key.startswith("/") or (len(blob_key) > 1 and blob_key[1] == ":")
+    _log.info("view_manual: manual_id=%s blob_key=%s", manual_id, blob_key)
 
-    _log.info("view_manual: manual_id=%s blob_key=%s is_local=%s", manual_id, blob_key, is_local_path)
-
-    if is_local_path:
-        if not os.path.exists(blob_key):
-            _log.warning("view_manual: local file missing at path=%s", blob_key)
-            raise HTTPException(
-                status_code=404,
-                detail=f"File was stored on an ephemeral local disk that no longer exists (path: {blob_key}). Please delete and re-upload this manual.",
-            )
+    # Try local disk first (fast path for dev / same-container uploads)
+    if os.path.exists(blob_key):
         with open(blob_key, "rb") as fh:
             file_bytes = fh.read()
+        _log.info("view_manual: served %d bytes from local disk", len(file_bytes))
         return Response(
             content=file_bytes,
             media_type=media_type,
             headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
         )
 
-    # Blob storage key
+    # Not on local disk — download from blob storage (R2 / MinIO / Azure)
     blob_service = BlobStorageService()
 
-    # Azure SAS URLs are publicly accessible from the browser — use presigned URL redirect.
-    # MinIO presigned URLs contain the internal Railway hostname and are NOT browser-accessible,
-    # so always stream the bytes directly for MinIO.
     if blob_service._use_azure:
         try:
             presigned_url = await blob_service.get_download_url(blob_key, expires_in=3600)
             return JSONResponse({"url": presigned_url}, status_code=200)
         except Exception as exc:
-            _log.warning("view_manual: Azure presigned URL failed for key=%s: %s — falling back to stream", blob_key, exc)
+            _log.warning("view_manual: Azure presigned URL failed key=%s: %s — streaming", blob_key, exc)
 
     try:
         _log.info("view_manual: downloading from blob storage key=%s", blob_key)
