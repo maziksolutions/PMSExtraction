@@ -334,16 +334,13 @@ Rules:
 
 
 def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int) -> Optional[dict]:
-    """Call Gemini API (free tier) to classify the manual. Returns parsed JSON or None on failure."""
+    """Call Gemini API (free tier) via HTTP. Returns parsed JSON or None on failure."""
     try:
-        import google.generativeai as genai
+        import httpx
         from app.core.config import settings
 
         if not settings.GEMINI_API_KEY:
             return None
-
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-flash")
 
         marked_text = _make_marked_text(pages_text, max_chars=80_000)
         non_empty = sum(1 for p in pages_text if p.strip())
@@ -353,8 +350,16 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
         )
 
         prompt = _build_classification_prompt(filename, page_count, marked_text)
-        response = model.generate_content(prompt)
-        raw = response.text.strip()
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-1.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
+        )
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
+        response = httpx.post(url, json=payload, timeout=120)
+        response.raise_for_status()
+        data = response.json()
+        raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
         _log.info("classifier[gemini]: raw response for %s: %s", filename, raw[:300])
         if "```" in raw:
