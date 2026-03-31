@@ -367,9 +367,9 @@ Classify this document into EXACTLY ONE of the following categories:
 For each field below, list the EXACT page numbers (from [PAGE N] markers) where that content appears.
 Use comma-separated individual page numbers — NOT ranges. E.g. "5, 6, 7, 12, 13" not "5-7, 12-13".
 
-- **pages_with_components**: Pages showing equipment specs, general description, name plate data, or component lists.
-- **pages_with_jobs**: Pages containing maintenance schedules, service intervals, or inspection procedures.
-- **pages_with_spares**: Pages containing spare parts lists or recommended spares.
+- **pages_with_components**: Pages showing equipment/tank specs, name plate data, technical data tables, maker/model information, or lists of equipment. For Tank Capacity Plans this includes every page with tank names, capacities, or sounding tables.
+- **pages_with_jobs**: Pages containing maintenance schedules, service intervals, overhaul procedures, inspection checklists, lubrication schedules, or any periodic maintenance table. Look for headings: "Maintenance", "Service Schedule", "Periodic Inspection", "Overhaul", "Lubrication", tables with columns like "Interval | Task" or "Running Hours | Description".
+- **pages_with_spares**: Pages containing spare parts lists, recommended spares, parts catalogues, or consumables lists. Look for headings: "Spare Parts", "Parts List", "Recommended Spares", tables with columns like "Part No. | Description | Qty" or drawing-based parts tables with item numbers.
 
 Return ONLY valid JSON in this exact format:
 {{
@@ -384,12 +384,13 @@ Return ONLY valid JSON in this exact format:
 
 Rules:
 - Use [PAGE N] markers to identify EXACT page numbers — do NOT guess or estimate
-- List every individual page number — do NOT use ranges or hyphens
-- useful_for_extraction = "yes" if Instruction Manual OR Machinery Particulars
+- List every individual page number where that content appears — do NOT use ranges or hyphens
+- useful_for_extraction = "yes" if Instruction Manual, Machinery Particulars, OR Tank Capacity Plan
 - useful_for_extraction = "partial" if spec sheet with maker/model but no maintenance section
-- useful_for_extraction = "no" if purely drawings, plans, certificates, or P&IDs
+- useful_for_extraction = "no" if purely drawings, certificates, P&IDs, or LSA/FFA plans
 - confidence 85-98: very clear; 65-84: probable; 40-64: uncertain; <40: use Unknown/Unclassifiable
 - Machinery Particulars vs Instruction Manual: one equipment in depth → Instruction Manual; many equipment rows → Machinery Particulars
+- Be thorough — scan ALL pages. Maintenance schedules are often in the middle or later chapters. Spare parts are often in the last chapter or appendix.
 - If a section is genuinely absent, return empty string — do NOT invent page numbers"""
 
 
@@ -487,6 +488,8 @@ def _sanitise_result(result: ClassificationResult) -> ClassificationResult:
     if result.category == "Tank Capacity Plan":
         result.pages_with_jobs = ""
         result.pages_with_spares = ""
+        # Tanks ARE components — override AI if it said no
+        result.useful_for_extraction = "yes"
     return result
 
 
