@@ -59,6 +59,7 @@ class ManualResponse(BaseModel):
     pages_with_jobs: Optional[str]
     pages_with_spares: Optional[str]
     reviewer_comments: Optional[str]
+    supply_type: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
@@ -76,6 +77,7 @@ class ManualUpdate(BaseModel):
     pages_with_jobs: Optional[str] = None
     pages_with_spares: Optional[str] = None
     reviewer_comments: Optional[str] = None
+    supply_type: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +164,7 @@ class ManualOut(BaseModel):
     pages_with_jobs: Optional[str] = None
     pages_with_spares: Optional[str] = None
     reviewer_comments: Optional[str] = None
+    supply_type: Optional[str] = None
     # F-09 duplicate detection
     sha256_hash: Optional[str] = None
     is_duplicate: bool = False

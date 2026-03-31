@@ -156,6 +156,12 @@ class Manual(TenantBase):
     extracted_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Supply type — OEM instruction manual vs yard-supply/final-drawing package
+    supply_type: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+
     # F-09: duplicate detection
     sha256_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     is_duplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

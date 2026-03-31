@@ -33,6 +33,7 @@ interface Manual {
   pages_with_jobs: string | null
   pages_with_spares: string | null
   reviewer_comments: string | null
+  supply_type: string | null
   is_duplicate: boolean
   duplicate_of_id: string | null
   blob_storage_key?: string | null
@@ -744,6 +745,7 @@ const ManualReview: React.FC = () => {
                 <th className="px-3 py-3">Comp. Pages</th>
                 <th className="px-3 py-3">Job Pages</th>
                 <th className="px-3 py-3">Spare Pages</th>
+                <th className="px-3 py-3">Source</th>
                 <th className="px-3 py-3">Confidence</th>
                 <th className="px-3 py-3">Comments</th>
                 <th className="px-3 py-3">Actions</th>
@@ -865,6 +867,22 @@ const ManualReview: React.FC = () => {
                         className="w-20 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                         placeholder="81-120"
                       />
+                    </td>
+                    <td className="px-3 py-3">
+                      {(() => {
+                        const supplyVal = edit.supply_type ?? m.supply_type ?? 'OEM'
+                        return (
+                          <select
+                            value={supplyVal}
+                            onChange={(e) => handleEdit(m.id, 'supply_type', e.target.value)}
+                            className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs focus:border-sky-500 focus:outline-none"
+                            style={{ color: supplyVal === 'yard_supply' ? '#fbbf24' : '#86efac' }}
+                          >
+                            <option value="OEM">OEM</option>
+                            <option value="yard_supply">Yard Supply</option>
+                          </select>
+                        )
+                      })()}
                     </td>
                     <td className="px-3 py-3">
                       <ConfidenceBadge value={m.classification_confidence} />

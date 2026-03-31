@@ -357,12 +357,13 @@ async def _process_uploaded_file(
                 pages_with_components=result.pages_with_components,
                 pages_with_jobs=result.pages_with_jobs,
                 pages_with_spares=result.pages_with_spares,
+                supply_type=getattr(result, "supply_type", "OEM"),
                 page_count=page_count_val or result.page_count or None,
                 extracted_text=extracted_text or None,
             )
         )
         await db.commit()
-        logger.info("_process_uploaded_file: classified %s → %s (%d%%)", filename, result.category, result.confidence)
+        logger.info("_process_uploaded_file: classified %s → %s (%d%%) supply=%s", filename, result.category, result.confidence, getattr(result, "supply_type", "OEM"))
 
 
 @router.post(
@@ -607,6 +608,8 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                 category = ai.get("category", "Unknown/Unclassifiable")
                                 if category not in VALID_CATEGORIES:
                                     category = "Unknown/Unclassifiable"
+                                raw_supply = ai.get("supply_type", "OEM")
+                                supply_type = raw_supply if raw_supply in ("OEM", "yard_supply") else "OEM"
                                 cr = _sanitise_result(ClassificationResult(
                                     category=category,
                                     confidence=max(0, min(100, int(ai.get("confidence", 60)))),
@@ -615,6 +618,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                     pages_with_jobs=ai.get("pages_with_jobs", ""),
                                     pages_with_spares=ai.get("pages_with_spares", ""),
                                     page_count=page_count,
+                                    supply_type=supply_type,
                                 ))
                             else:
                                 cr = _sanitise_result(_kw_cls(pages_text, manual.original_filename, page_count))
@@ -672,6 +676,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                         pages_with_components=cr.pages_with_components,
                         pages_with_jobs=cr.pages_with_jobs,
                         pages_with_spares=cr.pages_with_spares,
+                        supply_type=getattr(cr, "supply_type", "OEM"),
                         status=ManualStatus.classified,
                     )
                     if new_extracted_text:

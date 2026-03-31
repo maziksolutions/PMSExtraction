@@ -30,6 +30,7 @@ class ManualOut(BaseModel):
     pages_with_jobs: Optional[str] = None
     pages_with_spares: Optional[str] = None
     reviewer_comments: Optional[str] = None
+    supply_type: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -43,4 +44,5 @@ class ManualUpdate(BaseModel):
     pages_with_jobs: Optional[str] = None
     pages_with_spares: Optional[str] = None
     reviewer_comments: Optional[str] = None
+    supply_type: Optional[str] = None
     classification_confidence: Optional[int] = None
