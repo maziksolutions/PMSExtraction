@@ -574,7 +574,44 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                     if content and ext == "pdf":
                         cr = await asyncio.to_thread(classify_pdf, content, manual.original_filename)
                     else:
-                        cr = _keyword_classify([], manual.original_filename, 0)
+                        # No PDF bytes — fall back to stored extracted_text in DB
+                        stored_text = getattr(manual, "extracted_text", None) or ""
+                        if stored_text:
+                            logger.info(
+                                "_run_screening_task: using stored extracted_text (%d chars) for %s",
+                                len(stored_text), manual.original_filename,
+                            )
+                            from app.services.classifier import _classify_with_claude, _sanitise_result, _keyword_classify as _kw_cls
+                            # Parse stored text into per-page list by [PAGE N] markers
+                            import re as _re
+                            parts = _re.split(r'\[PAGE \d+\]\n?', stored_text)
+                            pages_text = [p.strip() for p in parts if p.strip()]
+                            page_count = manual.page_count or len(pages_text)
+                            ai = await asyncio.to_thread(
+                                _classify_with_claude, pages_text, manual.original_filename, page_count
+                            )
+                            if ai:
+                                from app.services.classifier import VALID_CATEGORIES, ClassificationResult
+                                category = ai.get("category", "Unknown/Unclassifiable")
+                                if category not in VALID_CATEGORIES:
+                                    category = "Unknown/Unclassifiable"
+                                cr = _sanitise_result(ClassificationResult(
+                                    category=category,
+                                    confidence=max(0, min(100, int(ai.get("confidence", 60)))),
+                                    useful_for_extraction=ai.get("useful_for_extraction", "partial"),
+                                    pages_with_components=ai.get("pages_with_components", ""),
+                                    pages_with_jobs=ai.get("pages_with_jobs", ""),
+                                    pages_with_spares=ai.get("pages_with_spares", ""),
+                                    page_count=page_count,
+                                ))
+                            else:
+                                cr = _sanitise_result(_kw_cls(pages_text, manual.original_filename, page_count))
+                        else:
+                            logger.warning(
+                                "_run_screening_task: no PDF and no extracted_text for %s — using keyword fallback",
+                                manual.original_filename,
+                            )
+                            cr = _keyword_classify([], manual.original_filename, 0)
 
                     # Also re-extract text with [PAGE N] markers if the stored text lacks them
                     new_extracted_text: str | None = None
