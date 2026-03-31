@@ -56,13 +56,22 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             '  "machinery_particulars": "machinery particulars document reference or list number — from MP No. or similar column; null if absent",\n'
             '  "specification": "key ratings: power (kW), capacity (m³/h), pressure (bar), rpm, etc. — be specific; null if absent",\n'
             '  "is_critical": true if propulsion/steering/power generation/fire/safety/sewage treatment equipment,\n'
-            '  "job_pages": null,\n'
-            '  "spare_pages": null,\n'
+            '  "job_pages": "page range in THIS document containing maintenance jobs/schedules for this component '
+            '(e.g. \'45-67\'). Scan for sections titled Maintenance, Service Schedule, Inspection Intervals, '
+            'Periodic Maintenance. If the whole document is a maintenance manual, give the full page range. '
+            'null only if no maintenance section exists in this document",\n'
+            '  "spare_pages": "page range in THIS document containing spare parts for this component '
+            '(e.g. \'81-120\'). Scan for sections titled Spare Parts, Recommended Spares, Parts List, '
+            'Spare Part Catalogue. null only if no spare parts section exists in this document",\n'
             '  "source_page_number": integer — the [PAGE N] number where this component appears,\n'
             '  "confidence_score": integer 70-98\n'
             "}\n\n"
             "STRICT RULES:\n"
             "- source_page_number MUST come from the [PAGE N] marker in the text — do not guess\n"
+            "- job_pages / spare_pages: scan the document headings and identify where maintenance and spare-parts\n"
+            "  sections begin and end; express as 'start-end' page range (e.g. '45-67'). ALL components from the\n"
+            "  same document share the same job_pages and spare_pages if the document is for one equipment.\n"
+            "  Set null ONLY if the document contains no such section at all (e.g. a pure machinery register).\n"
             "- For specification sheets: maker comes from the TITLE / HEADER (e.g. 'TAIKO Ship-Clean' → maker='Taiko')\n"
             "- For specification sheets: model comes from Type row (e.g. 'Type: SBH-25' → model='SBH-25')\n"
             "- Fill maker and model whenever those columns or rows exist\n"
@@ -77,6 +86,12 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "If this is a specification sheet for one equipment, extract the main equipment (maker from the title) "
             "and any named sub-assemblies (motors, blowers, pumps, etc.).\n"
             "If this is a machinery list, extract every table row including location and machinery particulars reference if present.\n\n"
+            "IMPORTANT — for job_pages and spare_pages:\n"
+            "Scan the document for sections containing maintenance schedules or spare parts lists.\n"
+            "If you find a maintenance/service section, record its page range as job_pages (e.g. '45-67').\n"
+            "If you find a spare parts/recommended spares section, record its page range as spare_pages (e.g. '81-120').\n"
+            "All components from the same single-equipment document share the same job_pages and spare_pages.\n"
+            "Only set null if that section genuinely does not exist in this document.\n\n"
             "{text}"
         ),
     },
@@ -624,3 +639,64 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             )
         except Exception as merge_exc:
             logger.warning("auto_extract_from_manual: auto-merge failed: %s", merge_exc)
+
+        # Auto-link: populate job_pages / spare_pages / pdf_reference on components
+        # that have a source_manual_id but empty page fields.
+        try:
+            from sqlalchemy import select as _select
+            from app.models.ingestion import Manual as _Manual
+            from app.models.component import Component as _Component
+
+            # Get classified manuals with page data for this vessel
+            man_res = await db.execute(
+                _select(_Manual).where(
+                    _Manual.vessel_id == vessel_id,
+                    _Manual.tenant_id == tenant_id,
+                    _Manual.is_deleted == False,
+                    _Manual.category != None,
+                )
+            )
+            all_manuals = man_res.scalars().all()
+            manual_by_id_link = {
+                m.id: {
+                    "job_pages": m.pages_with_jobs or "",
+                    "spare_pages": m.pages_with_spares or "",
+                    "pdf_ref": m.original_filename,
+                    "name": m.original_filename,
+                }
+                for m in all_manuals
+                if m.pages_with_jobs or m.pages_with_spares
+            }
+
+            if manual_by_id_link:
+                comp_res = await db.execute(
+                    _select(_Component).where(
+                        _Component.vessel_id == vessel_id,
+                        _Component.tenant_id == tenant_id,
+                        _Component.is_deleted == False,
+                    )
+                )
+                all_comps = comp_res.scalars().all()
+                link_updated = 0
+                for comp in all_comps:
+                    if comp.job_pages and comp.spare_pages and comp.pdf_reference:
+                        continue
+                    matched = None
+                    if comp.source_manual_id and comp.source_manual_id in manual_by_id_link:
+                        matched = manual_by_id_link[comp.source_manual_id]
+                    if matched:
+                        if not comp.job_pages and matched["job_pages"]:
+                            comp.job_pages = matched["job_pages"]
+                        if not comp.spare_pages and matched["spare_pages"]:
+                            comp.spare_pages = matched["spare_pages"]
+                        if not comp.pdf_reference:
+                            comp.pdf_reference = matched["pdf_ref"]
+                        db.add(comp)
+                        link_updated += 1
+                await db.commit()
+                logger.info(
+                    "auto_extract_from_manual: auto-link vessel=%s updated=%d",
+                    vessel_id_str, link_updated,
+                )
+        except Exception as link_exc:
+            logger.warning("auto_extract_from_manual: auto-link failed: %s", link_exc)
