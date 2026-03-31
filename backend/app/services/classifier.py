@@ -162,6 +162,9 @@ def _find_pages_for_topic(pages_text: list[str], keywords: list[str]) -> str:
 # Claude AI classifier
 # ---------------------------------------------------------------------------
 
+_log = __import__("logging").getLogger(__name__)
+
+
 def _classify_with_claude(pages_text: list[str], filename: str, page_count: int) -> Optional[dict]:
     """Call Claude API to classify the manual. Returns parsed JSON or None on failure."""
     try:
@@ -169,12 +172,19 @@ def _classify_with_claude(pages_text: list[str], filename: str, page_count: int)
         from app.core.config import settings
 
         if not settings.ANTHROPIC_API_KEY:
+            _log.warning("classifier: ANTHROPIC_API_KEY not set — falling back to keyword classifier")
             return None
 
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
         # Build marked text for Claude — include [PAGE N] markers so page ranges are precise
         marked_text = _make_marked_text(pages_text, max_chars=80_000)
+
+        non_empty = sum(1 for p in pages_text if p.strip())
+        _log.info(
+            "classifier: %s — pages=%d non_empty=%d text_chars=%d",
+            filename, page_count, non_empty, len(marked_text),
+        )
 
         prompt = f"""You are an expert maritime document classifier specialising in ship technical documentation and PMS (Planned Maintenance System) data.
 
@@ -240,15 +250,24 @@ Rules:
         )
 
         raw = message.content[0].text.strip()
+        _log.info("classifier: Claude raw response for %s: %s", filename, raw[:300])
         if "```" in raw:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        return json.loads(raw.strip())
+        parsed = json.loads(raw.strip())
+        _log.info(
+            "classifier: %s → category=%s confidence=%s jobs=%s spares=%s",
+            filename,
+            parsed.get("category"),
+            parsed.get("confidence"),
+            parsed.get("pages_with_jobs"),
+            parsed.get("pages_with_spares"),
+        )
+        return parsed
 
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("classifier: Claude call failed: %s", exc)
+        _log.warning("classifier: Claude call failed for %s: %s", filename, exc)
         return None
 
 
@@ -286,6 +305,7 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
     Uses Claude AI if ANTHROPIC_API_KEY is set, otherwise falls back to keyword matching.
     """
     pages_text, total_pages = _extract_pdf_text(content)
+    _log.info("classifier: extracted %d pages from %s (%d bytes)", total_pages, filename, len(content))
 
     # Try Claude first — passes pages_text so [PAGE N] markers give precise ranges
     ai_result = _classify_with_claude(pages_text, filename, total_pages)
@@ -302,7 +322,12 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
             pages_with_spares=ai_result.get("pages_with_spares", ""),
             page_count=total_pages,
         )
-        return _sanitise_result(result)
+        final = _sanitise_result(result)
+        _log.info(
+            "classifier: FINAL %s → cat=%s jobs=%r spares=%r components=%r",
+            filename, final.category, final.pages_with_jobs, final.pages_with_spares, final.pages_with_components,
+        )
+        return final
 
     # Fallback: keyword matching
     return _sanitise_result(_keyword_classify(pages_text, filename, total_pages))
