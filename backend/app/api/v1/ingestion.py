@@ -556,7 +556,6 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                             pages_with_components="",
                             pages_with_jobs="",
                             pages_with_spares="",
-                            status=ManualStatus.uploaded,
                         )
                     )
                     await db.commit()
