@@ -21,6 +21,7 @@ import {
   GitMerge,
 } from 'lucide-react'
 import apiClient from '@/api/client'
+import { useAuthStore } from '@/store/authStore'
 
 interface Component {
   id: string
@@ -572,14 +573,27 @@ const ComponentReview: React.FC = () => {
           </button>
 
           {/* Export Accepted */}
-          <a
-            href={`${apiClient.defaults.baseURL}/vessels/${vesselId}/components/export?qc_status=accepted`}
-            download={`components_export.xlsx`}
+          <button
+            onClick={async () => {
+              const token = useAuthStore.getState().accessToken
+              const base = (apiClient.defaults.baseURL ?? '/api/v1').replace(/\/$/, '')
+              const url = `${base}/vessels/${vesselId}/components/export?qc_status=accepted`
+              try {
+                const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+                if (!resp.ok) { alert('Export failed: ' + resp.status); return }
+                const blob = await resp.blob()
+                const a = document.createElement('a')
+                a.href = URL.createObjectURL(blob)
+                a.download = `components_export.xlsx`
+                a.click()
+                setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
+              } catch (e: any) { alert('Export failed: ' + e?.message) }
+            }}
             className="flex items-center gap-1.5 rounded-lg border border-green-700 bg-green-900/30 px-3 py-1.5 text-xs font-medium text-green-300 hover:bg-green-800/40 hover:text-white"
           >
             <FileDown className="h-3.5 w-3.5" />
             Export Accepted
-          </a>
+          </button>
 
           {/* Add Component */}
           <button
