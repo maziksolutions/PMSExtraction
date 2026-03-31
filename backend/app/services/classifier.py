@@ -310,7 +310,7 @@ def _classify_with_groq(pages_text: list[str], filename: str, page_count: int) -
 
         prompt = _build_classification_prompt(filename, page_count, marked_text)
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",  # 20k TPM free tier vs 1k for 70b
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1024,
             temperature=0,
