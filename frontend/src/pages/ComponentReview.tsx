@@ -200,6 +200,8 @@ interface InlineEdit {
   pdf_reference?: string
   maker?: string
   model?: string
+  location?: string
+  machinery_particulars?: string
   criticality?: string
   qc_status?: string
 }
@@ -775,11 +777,21 @@ const ComponentReview: React.FC = () => {
                             placeholder="filename"
                           />
                         </td>
-                        <td className="px-3 py-2.5 text-xs text-slate-400">
-                          {comp.location || '—'}
+                        <td className="px-3 py-2.5">
+                          <input
+                            value={edit.location ?? comp.location ?? ''}
+                            onChange={e => setEdit(comp.id, 'location', e.target.value)}
+                            className="w-28 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                            placeholder="—"
+                          />
                         </td>
-                        <td className="px-3 py-2.5 text-xs text-slate-400 max-w-[140px] truncate" title={comp.machinery_particulars || ''}>
-                          {comp.machinery_particulars || '—'}
+                        <td className="px-3 py-2.5">
+                          <input
+                            value={edit.machinery_particulars ?? comp.machinery_particulars ?? ''}
+                            onChange={e => setEdit(comp.id, 'machinery_particulars', e.target.value)}
+                            className="w-32 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                            placeholder="—"
+                          />
                         </td>
                         <td className="px-3 py-2.5">
                           <select
