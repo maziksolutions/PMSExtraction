@@ -582,7 +582,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                 len(stored_text), manual.original_filename,
                             )
                             from app.services.classifier import (
-                                _classify_with_gemini, _classify_with_claude,
+                                _classify_with_groq, _classify_with_gemini, _classify_with_claude,
                                 _sanitise_result, _keyword_classify as _kw_cls,
                                 VALID_CATEGORIES, ClassificationResult,
                             )
@@ -591,10 +591,14 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                             parts = _re.split(r'\[PAGE \d+\]\n?', stored_text)
                             pages_text = [p.strip() for p in parts if p.strip()]
                             page_count = manual.page_count or len(pages_text)
-                            # Try Gemini (free) first, then Claude, then keywords
+                            # Try Groq (free, 30 RPM) → Gemini → Claude → keywords
                             ai = await asyncio.to_thread(
-                                _classify_with_gemini, pages_text, manual.original_filename, page_count
+                                _classify_with_groq, pages_text, manual.original_filename, page_count
                             )
+                            if not ai:
+                                ai = await asyncio.to_thread(
+                                    _classify_with_gemini, pages_text, manual.original_filename, page_count
+                                )
                             if not ai:
                                 ai = await asyncio.to_thread(
                                     _classify_with_claude, pages_text, manual.original_filename, page_count

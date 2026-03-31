@@ -275,6 +275,61 @@ Rules:
 
 
 # ---------------------------------------------------------------------------
+# Groq AI classifier (free tier — 30 RPM, uses llama-3.3-70b)
+# ---------------------------------------------------------------------------
+
+def _classify_with_groq(pages_text: list[str], filename: str, page_count: int) -> Optional[dict]:
+    """Call Groq API (free tier) via OpenAI-compatible SDK. Returns parsed JSON or None."""
+    try:
+        from openai import OpenAI
+        from app.core.config import settings
+
+        if not settings.GROQ_API_KEY:
+            return None
+
+        client = OpenAI(
+            api_key=settings.GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1",
+        )
+
+        marked_text = _make_marked_text(pages_text, max_chars=80_000)
+        non_empty = sum(1 for p in pages_text if p.strip())
+        _log.info(
+            "classifier[groq]: %s — pages=%d non_empty=%d text_chars=%d",
+            filename, page_count, non_empty, len(marked_text),
+        )
+
+        prompt = _build_classification_prompt(filename, page_count, marked_text)
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
+            temperature=0,
+        )
+        raw = response.choices[0].message.content.strip()
+
+        _log.info("classifier[groq]: raw response for %s: %s", filename, raw[:300])
+        if "```" in raw:
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw.strip())
+        _log.info(
+            "classifier[groq]: %s → category=%s confidence=%s jobs=%s spares=%s",
+            filename,
+            parsed.get("category"),
+            parsed.get("confidence"),
+            parsed.get("pages_with_jobs"),
+            parsed.get("pages_with_spares"),
+        )
+        return parsed
+
+    except Exception as exc:
+        _log.warning("classifier: Groq call failed for %s: %s", filename, exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Gemini AI classifier (free tier)
 # ---------------------------------------------------------------------------
 
@@ -429,10 +484,10 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
     pages_text, total_pages = _extract_pdf_text(content)
     _log.info("classifier: extracted %d pages from %s (%d bytes)", total_pages, filename, len(content))
 
-    # Try Gemini first (free tier)
-    ai_result = _classify_with_gemini(pages_text, filename, total_pages)
-
-    # Fall back to Claude if Gemini not configured or failed
+    # Try Groq first (free, 30 RPM) → Gemini → Claude → keyword fallback
+    ai_result = _classify_with_groq(pages_text, filename, total_pages)
+    if not ai_result:
+        ai_result = _classify_with_gemini(pages_text, filename, total_pages)
     if not ai_result:
         ai_result = _classify_with_claude(pages_text, filename, total_pages)
     if ai_result:
