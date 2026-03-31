@@ -662,6 +662,47 @@ async def auto_link_pages(
     return {"updated": updated}
 
 
+@router.post(
+    "/{vessel_id}/components/clear-extraction-links",
+    summary="Clear extraction-linked fields (pdf_reference, source_manual_id, job_pages, spare_pages, page_reference) from all components",
+)
+async def clear_extraction_links(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    component_ids: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """
+    Resets pdf_reference, source_manual_id, page_reference, job_pages, and spare_pages
+    to NULL for all components on the vessel (or a specific subset if component_ids provided).
+    Use this to undo an incorrect auto-merge or auto-link-pages run.
+    """
+    from sqlalchemy import update as _update
+    await _get_vessel_or_404(vessel_id, db)
+
+    base_where = [
+        Component.vessel_id == vessel_id,
+        Component.tenant_id == current_user.tenant_id,
+        Component.is_deleted == False,
+    ]
+    if component_ids:
+        base_where.append(Component.id.in_([uuid.UUID(i) for i in component_ids]))
+
+    result = await db.execute(
+        _update(Component)
+        .where(*base_where)
+        .values(
+            pdf_reference=None,
+            source_manual_id=None,
+            page_reference=None,
+            job_pages=None,
+            spare_pages=None,
+        )
+    )
+    await db.commit()
+    return {"cleared": result.rowcount}
+
+
 @router.post("/{vessel_id}/components/trigger-extraction", summary="Trigger component extraction")
 async def trigger_extraction(
     vessel_id: uuid.UUID,

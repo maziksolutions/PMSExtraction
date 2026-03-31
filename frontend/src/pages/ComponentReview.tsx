@@ -572,6 +572,22 @@ const ComponentReview: React.FC = () => {
             Auto-Merge
           </button>
 
+          {/* Clear Extraction Links */}
+          <button
+            onClick={async () => {
+              if (!window.confirm('This will clear PDF Reference, Job Pages, Spare Pages and manual links from ALL components. Use this to undo incorrect auto-merge or auto-link results. Continue?')) return
+              try {
+                const res = await apiClient.post(`/vessels/${vesselId}/components/clear-extraction-links`)
+                setImportResult(`Cleared extraction links from ${res.data.cleared} components.`)
+                queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
+              } catch { setImportResult('Clear failed.') }
+            }}
+            className="flex items-center gap-1.5 rounded-lg border border-red-800 bg-red-900/20 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-900/40 hover:text-white"
+          >
+            <X className="h-3.5 w-3.5" />
+            Clear Links
+          </button>
+
           {/* Export Accepted */}
           <button
             onClick={async () => {

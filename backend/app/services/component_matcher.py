@@ -22,7 +22,7 @@ from app.models.ingestion import Manual
 
 logger = logging.getLogger(__name__)
 
-MATCH_THRESHOLD = 0.55  # lowered — normalization handles most variation now
+MATCH_THRESHOLD = 0.80  # high threshold to avoid false positives across unrelated equipment
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +162,7 @@ async def auto_merge_extracted_components(
                 best_match = lib_comp
 
         if best_match and best_score >= MATCH_THRESHOLD:
-            # Merge: enrich library component with extracted data (only fill nulls)
+            # Merge: only fill nulls — never overwrite data already on the library component
             if not best_match.maker and ext_comp.maker:
                 best_match.maker = ext_comp.maker
             if not best_match.model and ext_comp.model:
@@ -171,18 +171,22 @@ async def auto_merge_extracted_components(
                 best_match.specification = ext_comp.specification
             if not best_match.serial_number and ext_comp.serial_number:
                 best_match.serial_number = ext_comp.serial_number
-            # Always update reference fields from the extracted component
-            if ext_comp.source_manual_id:
+            if not best_match.location and ext_comp.location:
+                best_match.location = ext_comp.location
+            if not best_match.machinery_particulars and ext_comp.machinery_particulars:
+                best_match.machinery_particulars = ext_comp.machinery_particulars
+            # Reference fields: only set if null on the library component
+            if not best_match.source_manual_id and ext_comp.source_manual_id:
                 best_match.source_manual_id = ext_comp.source_manual_id
-            if ext_comp.page_reference:
+            if not best_match.page_reference and ext_comp.page_reference:
                 best_match.page_reference = ext_comp.page_reference
-            if ext_comp.pdf_reference:
+            if not best_match.pdf_reference and ext_comp.pdf_reference:
                 best_match.pdf_reference = ext_comp.pdf_reference
-            if ext_comp.job_pages:
+            if not best_match.job_pages and ext_comp.job_pages:
                 best_match.job_pages = ext_comp.job_pages
-            if ext_comp.spare_pages:
+            if not best_match.spare_pages and ext_comp.spare_pages:
                 best_match.spare_pages = ext_comp.spare_pages
-            if ext_comp.confidence_score:
+            if not best_match.confidence_score and ext_comp.confidence_score:
                 best_match.confidence_score = ext_comp.confidence_score
             best_match.qc_status = QCStatus.modified
 
