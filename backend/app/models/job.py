@@ -20,10 +20,12 @@ if TYPE_CHECKING:
 class FrequencyType(str, enum.Enum):
     daily = "daily"
     weekly = "weekly"
+    biweekly = "biweekly"       # every 2 weeks (fortnightly)
     monthly = "monthly"
     quarterly = "quarterly"
     half_yearly = "half_yearly"
     yearly = "yearly"
+    biannual = "biannual"       # every 2 years
     running_hours = "running_hours"
 
 

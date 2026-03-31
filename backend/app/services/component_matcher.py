@@ -175,17 +175,35 @@ async def auto_merge_extracted_components(
                 best_match.location = ext_comp.location
             if not best_match.machinery_particulars and ext_comp.machinery_particulars:
                 best_match.machinery_particulars = ext_comp.machinery_particulars
-            # Reference fields: only set if null on the library component
+            # Reference fields: set if null; append if a DIFFERENT manual is found
             if not best_match.source_manual_id and ext_comp.source_manual_id:
                 best_match.source_manual_id = ext_comp.source_manual_id
             if not best_match.page_reference and ext_comp.page_reference:
                 best_match.page_reference = ext_comp.page_reference
-            if not best_match.pdf_reference and ext_comp.pdf_reference:
-                best_match.pdf_reference = ext_comp.pdf_reference
-            if not best_match.job_pages and ext_comp.job_pages:
-                best_match.job_pages = ext_comp.job_pages
-            if not best_match.spare_pages and ext_comp.spare_pages:
-                best_match.spare_pages = ext_comp.spare_pages
+            # pdf_reference: if different file, append "File1.pdf (pp.X-Y); File2.pdf (pp.A-B)"
+            if ext_comp.pdf_reference:
+                if not best_match.pdf_reference:
+                    ref = ext_comp.pdf_reference
+                    if ext_comp.page_reference:
+                        ref = f"{ref} (p.{ext_comp.page_reference})"
+                    best_match.pdf_reference = ref
+                elif ext_comp.pdf_reference not in best_match.pdf_reference:
+                    # Append new source
+                    ref = ext_comp.pdf_reference
+                    if ext_comp.page_reference:
+                        ref = f"{ref} (p.{ext_comp.page_reference})"
+                    best_match.pdf_reference = f"{best_match.pdf_reference}; {ref}"
+            # job_pages / spare_pages: append ranges from different manuals
+            if ext_comp.job_pages:
+                if not best_match.job_pages:
+                    best_match.job_pages = ext_comp.job_pages
+                elif ext_comp.job_pages not in best_match.job_pages:
+                    best_match.job_pages = f"{best_match.job_pages}; {ext_comp.job_pages}"
+            if ext_comp.spare_pages:
+                if not best_match.spare_pages:
+                    best_match.spare_pages = ext_comp.spare_pages
+                elif ext_comp.spare_pages not in best_match.spare_pages:
+                    best_match.spare_pages = f"{best_match.spare_pages}; {ext_comp.spare_pages}"
             if not best_match.confidence_score and ext_comp.confidence_score:
                 best_match.confidence_score = ext_comp.confidence_score
             best_match.qc_status = QCStatus.modified

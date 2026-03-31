@@ -27,13 +27,18 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "   Columns: No. | Equipment | Maker | Model/Type | Serial No. | Capacity | Location\n"
             "   → Extract EVERY row. Use table section headers for group1/group2.\n\n"
             "2. SINGLE-EQUIPMENT SPECIFICATION SHEET (title names ONE main piece of equipment)\n"
-            "   The maker and model are usually in the document TITLE or first heading.\n"
-            "   → Extract the MAIN EQUIPMENT as one component (take maker from the title/heading).\n"
-            "   → Extract each explicitly named SUB-ASSEMBLY or sub-component as a separate component\n"
-            "     (e.g. Blower, Motor, Pump, Compressor, Valve, Controller, Heat Exchanger — if named).\n"
-            "   → Do NOT create a component for every spec row (Type, Capacity, Source, etc.) —\n"
-            "     only create components for physical equipment/assemblies.\n"
-            "   → Use the specification field to capture the key ratings (kW, rpm, capacity, m³, bar).\n\n"
+            "   These have a title like 'TAIKO SHIP-CLEAN SEWAGE TREATMENT PLANT SPECIFICATION'\n"
+            "   and rows like: Type | SBH-25 | Quantity | 1 set/ship\n"
+            "   EXTRACTION RULES for spec sheets:\n"
+            "   → MAIN EQUIPMENT: extract as one component.\n"
+            "     - maker = company name from the title or footer (e.g. 'TAIKO KIKAI INDUSTRIES CO.,LTD.' → 'Taiko Kikai')\n"
+            "     - model = Type value (e.g. 'SBH-25')\n"
+            "     - specification = key ratings: capacity (m³/h or persons/day), power (kW), pressure (bar), BOD/TSS limits\n"
+            "   → SUB-ASSEMBLIES: for each named sub-system with its own Type number, extract a separate component:\n"
+            "     e.g. 'Discharge Pump' → component_name='Discharge Pump', model='CF-50S', spec='4m³/h×20m, 1.5kW'\n"
+            "          'Aeration Blower' → component_name='Aeration Blower', model='TSS-25', spec='2550/min×0.015MPa, 0.4kW'\n"
+            "   → Do NOT create a component for spec rows that are just ratings (BOD Volume, Capacity, Pressure).\n"
+            "   → Use the specification field for numeric ratings (kW, rpm, capacity, m³, bar, persons/day).\n\n"
             "3. TANK CAPACITY PLAN (each row is one tank)\n"
             "   → component_name = tank name, specification = capacity in m³ or tonnes,\n"
             "     group1 = 'Tanks & Capacities', group2 = tank category.\n\n"
@@ -99,74 +104,96 @@ DEFAULT_PROMPTS: dict[str, dict] = {
         "system": (
             "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist.\n\n"
             "The text contains [PAGE N] markers — use these numbers for source_page_number.\n\n"
-            "Extract ALL maintenance jobs, service intervals, and inspection tasks. "
-            "Maintenance schedules appear as tables (Job | Interval | Running Hours | Remarks) "
-            "or as numbered procedure lists with frequencies.\n\n"
-            "FREQUENCY TYPE MAPPING:\n"
-            "  Daily / 24h → 'daily'\n"
-            "  Weekly / 7 days → 'weekly'\n"
-            "  Monthly / 30 days → 'monthly'\n"
-            "  3 months / quarterly → 'quarterly'\n"
-            "  6 months / half yearly → 'half_yearly'\n"
-            "  12 months / annually → 'yearly'\n"
-            "  Running hours (e.g. every 500 h, 1000 h) → 'running_hours', frequency = the hour value\n\n"
+            "Extract ALL maintenance jobs, service intervals, and inspection tasks.\n"
+            "Maintenance schedules appear as:\n"
+            "  - Tables with columns: Interval | Description/Job (e.g. 'Every day', 'Weekly', 'Monthly')\n"
+            "  - Numbered procedure lists under headings like '8. Maintenance', 'Service Schedule'\n"
+            "  - Section headings like '8.3 Check V-Belt', '9.4 Maintenance of UV Sterilizer'\n\n"
+            "FREQUENCY TYPE MAPPING (use exact values shown):\n"
+            "  Every day / Daily / 24h → frequency_type='daily', frequency=1\n"
+            "  Weekly / Every week / 7 days → frequency_type='weekly', frequency=1\n"
+            "  Biweekly / Fortnightly / Every 2 weeks → frequency_type='biweekly', frequency=2\n"
+            "  Monthly / Every month / 30 days → frequency_type='monthly', frequency=1\n"
+            "  3 months / Quarterly → frequency_type='quarterly', frequency=3\n"
+            "  6 months / Half yearly / Bi-annual → frequency_type='half_yearly', frequency=6\n"
+            "  12 months / Yearly / Annually / Once a year → frequency_type='yearly', frequency=12\n"
+            "  Biyearly / Every 2 years / Every 24 months → frequency_type='biannual', frequency=24\n"
+            "  Running hours (e.g. every 500h, 1000h) → frequency_type='running_hours', frequency=<hour value>\n\n"
+            "IMPORTANT — job_name formatting:\n"
+            "  - Be specific: 'Replace UV lamp' not 'Replace lamp'\n"
+            "  - Include equipment context: 'Check aeration blower air filter'\n"
+            "  - Preserve numbered items from tables as separate jobs\n\n"
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
-            '  "job_name": "concise name (e.g. \'Replace lube oil filter\', \'Inspect anode\')",\n'
-            '  "job_code": "job code/number from manual or null",\n'
-            '  "job_description": "procedure detail or null",\n'
-            '  "safety_precaution": "safety warnings or null",\n'
-            '  "frequency": integer or null,\n'
-            '  "frequency_type": "daily|weekly|monthly|quarterly|half_yearly|yearly|running_hours or null",\n'
-            '  "is_critical": true if propulsion/steering/safety/regulatory,\n'
+            '  "job_name": "concise specific name (e.g. \'Replace UV lamp\', \'Check V-belt tension\')",\n'
+            '  "job_code": "section/item number from manual (e.g. \'8.3.2\', \'Item 4\') or null",\n'
+            '  "job_description": "full procedure text from the manual or null",\n'
+            '  "safety_precaution": "WARNING/CAUTION/NOTICE text relevant to this job or null",\n'
+            '  "frequency": integer representing the interval value (1 for daily, 2 for biweekly, 12 for yearly, etc.) or null,\n'
+            '  "frequency_type": "daily|weekly|biweekly|monthly|quarterly|half_yearly|yearly|biannual|running_hours or null",\n'
+            '  "is_critical": true if this job is for safety/regulatory equipment or has a WARNING label,\n'
             '  "source_page_number": integer from [PAGE N] marker or null,\n'
             '  "confidence_score": integer 70-98\n'
             "}\n\n"
             "RULES:\n"
             "- source_page_number from [PAGE N] markers — do not guess\n"
-            "- Extract every distinct job — do not merge different tasks\n"
-            "- If no maintenance jobs exist, return []\n"
+            "- Extract EVERY distinct job item — do not merge different tasks into one\n"
+            "- For maintenance schedule tables: each row/item = one job record\n"
+            "- For procedure sections (e.g. '8.3 Check V-belt'): extract as a job with description\n"
+            "- Safety precaution: copy the WARNING/CAUTION text shown near the job if any\n"
+            "- If no maintenance jobs exist in this document, return []\n"
             "- Return ONLY the JSON array, no markdown fences"
         ),
         "user_template": (
             "Document: {filename}\n\n"
             "Extract all maintenance jobs, service intervals, and inspection tasks. "
-            "Use [PAGE N] markers for source_page_number.\n\n{text}"
+            "Use [PAGE N] markers for source_page_number.\n"
+            "Look for: maintenance schedule tables (Interval | Description), numbered procedure sections, "
+            "and section headings describing service tasks.\n\n{text}"
         ),
     },
     "spare": {
         "system": (
             "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist.\n\n"
             "The text contains [PAGE N] markers — use these numbers for source_page_number.\n\n"
-            "Extract ALL spare parts, recommended spares, and consumables. "
-            "Spare parts lists appear as tables with columns like:\n"
-            "  Item No. | Part Name | Part Number | Drawing No. | Qty | Remarks\n"
-            "They may also appear as numbered lists under headings like 'Recommended Spare Parts' or 'Spare Parts List'.\n\n"
+            "Extract ALL spare parts, recommended spares, and consumables.\n"
+            "Spare parts lists appear as:\n"
+            "  1. Tables: NO. | NAME | MATERIAL | QTY | REMARKS  (or similar columns)\n"
+            "  2. Drawing parts lists: numbered items callout on a technical drawing\n"
+            "  3. Sections titled: 'Spare Parts', 'Parts List', 'Recommended Spares', 'Spare Part Catalogue'\n"
+            "  4. Chapter 13 or similar appendix listing parts by sub-assembly\n\n"
+            "Drawing-based parts tables look like:\n"
+            "  NO. | NAME | MATERIAL | QTY   (e.g. 1 | UV LAMP | QUARTZ GLASS | 1)\n"
+            "  Extract EVERY row. The drawing_position is the NO. column.\n"
+            "  The drawing_number is the figure/drawing reference (e.g. 'Fig.7', 'UV STERILIZER drawing').\n\n"
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
-            '  "part_name": "exact part name from the document",\n'
-            '  "part_number": "part/catalog number exactly as printed or null",\n'
-            '  "drawing_number": "drawing or diagram reference number or null",\n'
-            '  "drawing_position": "item/position number on the drawing or null",\n'
-            '  "specification": "size, material, quantity, standard (e.g. JIS, ISO), or rating — or null",\n'
-            '  "spare_maker": "manufacturer — infer from document maker if not explicit (e.g. if doc is a Taiko manual, spare_maker=Taiko); null only if truly unknown",\n'
-            '  "spare_model": "model or equipment type this spare fits or null",\n'
+            '  "part_name": "exact part name from the document (e.g. \'UV LAMP\', \'O-RING\')",\n'
+            '  "part_number": "catalog/part number exactly as printed or null",\n'
+            '  "drawing_number": "figure or drawing reference (e.g. \'Fig.7\', \'SBH-65055\') or null",\n'
+            '  "drawing_position": "item/position number from the parts table (e.g. \'1\', \'11\') or null",\n'
+            '  "specification": "material, size, standard, quantity note (e.g. \'QUARTZ GLASS\', \'RUBBER\', \'STAINLESS STEEL\') or null",\n'
+            '  "spare_maker": "manufacturer — if manual is for a specific maker (e.g. TAIKO KIKAI), set that maker for all parts; null only if truly unknown",\n'
+            '  "spare_model": "model or sub-assembly this spare belongs to (e.g. \'UV Sterilizer SBH-25\', \'Aeration Blower TSS-25\') or null",\n'
             '  "source_page_number": integer from [PAGE N] marker or null,\n'
             '  "confidence_score": integer 70-98\n'
             "}\n\n"
             "RULES:\n"
             "- source_page_number from [PAGE N] markers only\n"
-            "- Extract EVERY row from spare parts tables — never skip rows\n"
+            "- Extract EVERY row from parts tables — never skip rows\n"
+            "- For drawing parts tables (NO./NAME/MATERIAL): drawing_position=NO., specification=MATERIAL\n"
             "- Part numbers: include exactly as printed (do not reformat)\n"
-            "- spare_maker: if the manual is for one specific maker (e.g. 'TAIKO Ship-Clean'), "
-            "  set spare_maker to that maker for all parts unless a different maker is stated\n"
+            "- spare_maker: infer from document title/header (e.g. 'TAIKO KIKAI INDUSTRIES' → 'Taiko Kikai')\n"
+            "- spare_model: identify which sub-assembly the spare belongs to from context (section heading)\n"
             "- If no spare parts found, return []\n"
             "- Return ONLY the JSON array, no markdown fences"
         ),
         "user_template": (
             "Document: {filename}\n\n"
             "Extract all spare parts, recommended spares, and consumables. "
-            "Use [PAGE N] markers for source_page_number.\n\n{text}"
+            "Use [PAGE N] markers for source_page_number.\n"
+            "Look for: parts tables (NO./NAME/MATERIAL/QTY), drawing parts lists, "
+            "sections titled 'Spare Parts', 'Parts List', 'Recommended Spares'.\n\n{text}"
         ),
     },
 }
@@ -679,18 +706,37 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 all_comps = comp_res.scalars().all()
                 link_updated = 0
                 for comp in all_comps:
-                    if comp.job_pages and comp.spare_pages and comp.pdf_reference:
-                        continue
                     matched = None
                     if comp.source_manual_id and comp.source_manual_id in manual_by_id_link:
                         matched = manual_by_id_link[comp.source_manual_id]
-                    if matched:
-                        if not comp.job_pages and matched["job_pages"]:
+                    if not matched:
+                        continue
+                    changed = False
+                    # job_pages: set or append if from different source
+                    if matched["job_pages"]:
+                        if not comp.job_pages:
                             comp.job_pages = matched["job_pages"]
-                        if not comp.spare_pages and matched["spare_pages"]:
+                            changed = True
+                        elif matched["job_pages"] not in comp.job_pages:
+                            comp.job_pages = f"{comp.job_pages}; {matched['job_pages']}"
+                            changed = True
+                    # spare_pages: set or append
+                    if matched["spare_pages"]:
+                        if not comp.spare_pages:
                             comp.spare_pages = matched["spare_pages"]
+                            changed = True
+                        elif matched["spare_pages"] not in comp.spare_pages:
+                            comp.spare_pages = f"{comp.spare_pages}; {matched['spare_pages']}"
+                            changed = True
+                    # pdf_reference: set or append if different file
+                    if matched["pdf_ref"]:
                         if not comp.pdf_reference:
                             comp.pdf_reference = matched["pdf_ref"]
+                            changed = True
+                        elif matched["pdf_ref"] not in comp.pdf_reference:
+                            comp.pdf_reference = f"{comp.pdf_reference}; {matched['pdf_ref']}"
+                            changed = True
+                    if changed:
                         db.add(comp)
                         link_updated += 1
                 await db.commit()

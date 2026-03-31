@@ -174,9 +174,12 @@ const JobsReview: React.FC = () => {
           <option value="">All Frequency</option>
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
+          <option value="biweekly">Biweekly (2 weeks)</option>
           <option value="monthly">Monthly</option>
           <option value="quarterly">Quarterly</option>
+          <option value="half_yearly">Half Yearly</option>
           <option value="yearly">Yearly</option>
+          <option value="biannual">Biannual (2 years)</option>
           <option value="running_hours">Running Hours</option>
         </select>
         <select
