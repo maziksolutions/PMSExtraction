@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react'
+import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -13,7 +13,9 @@ import {
   Trash2,
   ChevronDown,
   ChevronRight,
+  Download,
   XCircle,
+  Upload,
   Zap,
 } from 'lucide-react'
 import apiClient from '@/api/client'
@@ -116,6 +118,23 @@ function ConfidenceBadge({ value }: { value: number | null }) {
 function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function parseDownloadFilename(contentDisposition: string | undefined, fallback: string): string {
+  if (!contentDisposition) return fallback
+  const match = contentDisposition.match(/filename="?([^"]+)"?/)
+  return match?.[1] ?? fallback
+}
+
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const url = window.URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.URL.revokeObjectURL(url)
 }
 
 type PageReasonKind = 'components' | 'jobs' | 'spares'
@@ -428,6 +447,7 @@ const PreCheckPanel: React.FC<{ vesselId: string }> = ({ vesselId }) => {
 const ManualReview: React.FC = () => {
   const { vesselId } = useParams<{ vesselId: string }>()
   const queryClient = useQueryClient()
+  const importFileInputRef = useRef<HTMLInputElement>(null)
 
   const [filterCategory, setFilterCategory] = useState('')
   const [filterConfidence, setFilterConfidence] = useState('')
@@ -441,6 +461,8 @@ const ManualReview: React.FC = () => {
   const [screeningPolling, setScreeningPolling] = useState(false)
   const [extractionPolling, setExtractionPolling] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [importMessage, setImportMessage] = useState<string | null>(null)
+  const [importError, setImportError] = useState<string | null>(null)
 
   // ── Data queries ──────────────────────────────────────────────────────────
 
@@ -572,6 +594,73 @@ const ManualReview: React.FC = () => {
     },
   })
 
+  const exportScreeningMutation = useMutation({
+    mutationFn: () =>
+      apiClient.get(`/vessels/${vesselId}/manuals/export-screening`, {
+        params: {
+          ...(filterCategory ? { category: filterCategory } : {}),
+          ...(filterConfidence ? { min_confidence: Number(filterConfidence) } : {}),
+          ...(filterFilename ? { search: filterFilename } : {}),
+          ...(filterUseful ? { useful_for_extraction: filterUseful } : {}),
+          sort_by: sortBy,
+          sort_order: sortOrder,
+        },
+        responseType: 'blob',
+      }),
+    onSuccess: (response) => {
+      const filename = parseDownloadFilename(
+        response.headers['content-disposition'],
+        'manual_review_export.xlsx',
+      )
+      triggerBlobDownload(response.data, filename)
+      setImportError(null)
+    },
+    onError: () => {
+      setImportError('Export failed. Please try again or check server logs.')
+    },
+  })
+
+  const downloadTemplateMutation = useMutation({
+    mutationFn: () =>
+      apiClient.get(`/vessels/${vesselId}/manuals/screening-template`, {
+        responseType: 'blob',
+      }),
+    onSuccess: (response) => {
+      const filename = parseDownloadFilename(
+        response.headers['content-disposition'],
+        'manual_review_template.xlsx',
+      )
+      triggerBlobDownload(response.data, filename)
+      setImportError(null)
+    },
+    onError: () => {
+      setImportError('Template download failed. Please try again.')
+    },
+  })
+
+  const importScreeningMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      const response = await apiClient.post(`/vessels/${vesselId}/manuals/import-screening`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      return response.data as { message: string; updated: number; skipped: number; errors?: string[] }
+    },
+    onSuccess: (data) => {
+      setImportMessage(data.message)
+      setImportError(data.errors?.length ? data.errors.join(' | ') : null)
+      setEdits({})
+      setSelectedIds(new Set())
+      queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
+    },
+    onError: (error: any) => {
+      const detail = error?.response?.data?.detail
+      setImportError(detail ?? 'Import failed. Please check the Excel format and try again.')
+      setImportMessage(null)
+    },
+  })
+
   const triggerClassificationMutation = useMutation({
     mutationFn: (manualId: string) =>
       apiClient.post(`/vessels/${vesselId}/manuals/${manualId}/trigger-classification`).then((r) => r.data),
@@ -606,6 +695,18 @@ const ManualReview: React.FC = () => {
       saveMutation.mutate({ manualId, data: changes })
     })
   }, [edits, saveMutation])
+
+  const handleImportExcel = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    if (!window.confirm('Import this screening Excel and overwrite the current screening values for matched manuals?')) {
+      return
+    }
+    setImportMessage(null)
+    setImportError(null)
+    importScreeningMutation.mutate(file)
+  }, [importScreeningMutation])
 
   // ── Selection ─────────────────────────────────────────────────────────────
 
@@ -671,6 +772,37 @@ const ManualReview: React.FC = () => {
               Save {Object.keys(edits).length}
             </button>
           )}
+          <input
+            ref={importFileInputRef}
+            type="file"
+            accept=".xlsx"
+            className="hidden"
+            onChange={handleImportExcel}
+          />
+          <button
+            onClick={() => exportScreeningMutation.mutate()}
+            disabled={exportScreeningMutation.isPending}
+            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+          >
+            <Download className="h-4 w-4" />
+            {exportScreeningMutation.isPending ? 'Exporting...' : 'Export Screening'}
+          </button>
+          <button
+            onClick={() => downloadTemplateMutation.mutate()}
+            disabled={downloadTemplateMutation.isPending}
+            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+          >
+            <FileText className="h-4 w-4" />
+            {downloadTemplateMutation.isPending ? 'Preparing...' : 'Template'}
+          </button>
+          <button
+            onClick={() => importFileInputRef.current?.click()}
+            disabled={importScreeningMutation.isPending}
+            className="flex items-center gap-2 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+          >
+            <Upload className="h-4 w-4" />
+            {importScreeningMutation.isPending ? 'Importing...' : 'Import Screening'}
+          </button>
           {selectedIds.size > 0 && (
             <button
               onClick={handleDeleteSelected}
@@ -719,6 +851,22 @@ const ManualReview: React.FC = () => {
           )}
         </div>
       </div>
+
+      <div className="rounded-xl border border-amber-700 bg-amber-900/20 px-4 py-3 text-sm text-amber-200">
+        Export the current review list to Excel, update it offline, then import it back. Import overwrites the current screening values for matched manuals, so the imported refs take priority over auto-screening.
+      </div>
+
+      {importMessage && (
+        <div className="rounded-xl border border-emerald-700 bg-emerald-900/20 px-4 py-3 text-sm text-emerald-300">
+          {importMessage}
+        </div>
+      )}
+
+      {importError && (
+        <div className="rounded-xl border border-red-700 bg-red-900/20 px-4 py-3 text-sm text-red-300">
+          {importError}
+        </div>
+      )}
 
       {/* Pre-Check panel — inline */}
       <PreCheckPanel vesselId={vesselId!} />
