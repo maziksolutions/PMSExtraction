@@ -350,28 +350,41 @@ async def _process_uploaded_file(
             )
 
         # Update the manual record
+        # Use only columns that really exist in current DB schema to avoid 500 on mismatched migrations
+        from sqlalchemy import inspect
+        manual_cols = {c.name for c in inspect(Manual).columns}
+
+        update_vals = {
+            "status": ManualStatus.classified,
+            "category": result.category,
+            "classification_confidence": result.confidence,
+            "useful_for_extraction": result.useful_for_extraction,
+            "pages_with_components": result.pages_with_components,
+            "pages_with_jobs": result.pages_with_jobs,
+            "pages_with_spares": result.pages_with_spares,
+        }
+
+        extras = {
+            "pages_with_components_printed": getattr(result, "pages_with_components_printed", ""),
+            "pages_with_jobs_printed": getattr(result, "pages_with_jobs_printed", ""),
+            "pages_with_spares_printed": getattr(result, "pages_with_spares_printed", ""),
+            "pages_with_components_physical": getattr(result, "pages_with_components_physical", ""),
+            "pages_with_jobs_physical": getattr(result, "pages_with_jobs_physical", ""),
+            "pages_with_spares_physical": getattr(result, "pages_with_spares_physical", ""),
+            "page_explanations": getattr(result, "page_explanations", ""),
+        }
+
+        if "supply_type" in manual_cols:
+            update_vals["supply_type"] = getattr(result, "supply_type", "OEM")
+        if "page_count" in manual_cols:
+            update_vals["page_count"] = page_count_val or result.page_count or None
+        if "extracted_text" in manual_cols:
+            update_vals["extracted_text"] = extracted_text or None
+
         await db.execute(
             _update(Manual)
             .where(Manual.id == uuid.UUID(manual_id))
-            .values(
-                status=ManualStatus.classified,
-                category=result.category,
-                classification_confidence=result.confidence,
-                useful_for_extraction=result.useful_for_extraction,
-                pages_with_components=result.pages_with_components,
-                pages_with_jobs=result.pages_with_jobs,
-                pages_with_spares=result.pages_with_spares,
-                pages_with_components_printed=getattr(result, "pages_with_components_printed", ""),
-                pages_with_jobs_printed=getattr(result, "pages_with_jobs_printed", ""),
-                pages_with_spares_printed=getattr(result, "pages_with_spares_printed", ""),
-                pages_with_components_physical=getattr(result, "pages_with_components_physical", ""),
-                pages_with_jobs_physical=getattr(result, "pages_with_jobs_physical", ""),
-                pages_with_spares_physical=getattr(result, "pages_with_spares_physical", ""),
-                page_explanations=getattr(result, "page_explanations", ""),
-                supply_type=getattr(result, "supply_type", "OEM"),
-                page_count=page_count_val or result.page_count or None,
-                extracted_text=extracted_text or None,
-            )
+            .values(**update_vals)
         )
         await db.commit()
         logger.info("_process_uploaded_file: classified %s → %s (%d%%) supply=%s", filename, result.category, result.confidence, getattr(result, "supply_type", "OEM"))
@@ -711,23 +724,31 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                     manual.original_filename, re_err,
                                 )
 
-                    update_vals: dict = dict(
-                        category=cr.category,
-                        classification_confidence=cr.confidence,
-                        useful_for_extraction=cr.useful_for_extraction,
-                        pages_with_components=cr.pages_with_components,
-                        pages_with_jobs=cr.pages_with_jobs,
-                        pages_with_spares=cr.pages_with_spares,
-                        pages_with_components_printed=getattr(cr, "pages_with_components_printed", ""),
-                        pages_with_jobs_printed=getattr(cr, "pages_with_jobs_printed", ""),
-                        pages_with_spares_printed=getattr(cr, "pages_with_spares_printed", ""),
-                        pages_with_components_physical=getattr(cr, "pages_with_components_physical", ""),
-                        pages_with_jobs_physical=getattr(cr, "pages_with_jobs_physical", ""),
-                        pages_with_spares_physical=getattr(cr, "pages_with_spares_physical", ""),
-                        page_explanations=getattr(cr, "page_explanations", ""),
-                        supply_type=getattr(cr, "supply_type", "OEM"),
-                        status=ManualStatus.classified,
-                    )
+                    update_vals: dict = {
+                        "category": cr.category,
+                        "classification_confidence": cr.confidence,
+                        "useful_for_extraction": cr.useful_for_extraction,
+                        "pages_with_components": cr.pages_with_components,
+                        "pages_with_jobs": cr.pages_with_jobs,
+                        "pages_with_spares": cr.pages_with_spares,
+                        "supply_type": getattr(cr, "supply_type", "OEM"),
+                        "status": ManualStatus.classified,
+                    }
+
+                    extras = {
+                        "pages_with_components_printed": getattr(cr, "pages_with_components_printed", ""),
+                        "pages_with_jobs_printed": getattr(cr, "pages_with_jobs_printed", ""),
+                        "pages_with_spares_printed": getattr(cr, "pages_with_spares_printed", ""),
+                        "pages_with_components_physical": getattr(cr, "pages_with_components_physical", ""),
+                        "pages_with_jobs_physical": getattr(cr, "pages_with_jobs_physical", ""),
+                        "pages_with_spares_physical": getattr(cr, "pages_with_spares_physical", ""),
+                        "page_explanations": getattr(cr, "page_explanations", ""),
+                    }
+                    from sqlalchemy import inspect
+                    manual_cols = {c.name for c in inspect(Manual).columns}
+                    for k, v in extras.items():
+                        if k in manual_cols:
+                            update_vals[k] = v
                     if new_extracted_text:
                         update_vals["extracted_text"] = new_extracted_text
 
