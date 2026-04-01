@@ -23,6 +23,13 @@ class ClassificationResult:
     pages_with_components: str
     pages_with_jobs: str
     pages_with_spares: str
+    pages_with_components_printed: str
+    pages_with_jobs_printed: str
+    pages_with_spares_printed: str
+    pages_with_components_physical: str
+    pages_with_jobs_physical: str
+    pages_with_spares_physical: str
+    page_explanations: str
     page_count: int
     supply_type: str = "OEM"  # "OEM" | "yard_supply"
 
@@ -299,78 +306,142 @@ def _resolve_pages(pages_text: list[str]) -> list[int]:
 
 def _scan_pages(
     pages_text: list[str], resolved_pages: list[int], category: str
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str, str, str, str]:
     """
     Programmatically detect pages_with_components, pages_with_jobs, pages_with_spares
     using regex patterns appropriate for the document category.
 
-    Returns (components, jobs, spares) as comma-separated doc_page number strings.
+    Returns tuple:
+      (components, jobs, spares,
+       components_physical, jobs_physical, spares_physical,
+       page_explanation_json)
     """
     comp_pages: list[str] = []
     job_pages: list[str] = []
     spare_pages: list[str] = []
 
-    for text, doc_page in zip(pages_text, resolved_pages):
+    comp_phys: list[str] = []
+    job_phys: list[str] = []
+    spare_phys: list[str] = []
+
+    page_reasons: dict[int, list[str]] = {}
+
+    for physical_num, (text, doc_page) in enumerate(zip(pages_text, resolved_pages), start=1):
         if not text:
             continue
 
+        printed_page = _detect_printed_page_num(text)
+        reason_list: list[str] = []
+
         # --- Components ---
+        comp_detected = False
         if category in ("Instruction Manual", "Machinery Particulars"):
-            # Require maker AND model co-present on the same page
             if _MAKER_RE.search(text) and _MODEL_CODE_RE.search(text):
-                comp_pages.append(str(doc_page))
+                comp_detected = True
+                reason_list.append("Maker + model text detected")
         elif category == "Yard/Finished Drawings":
             if _YARD_PARTS_RE.search(text):
-                comp_pages.append(str(doc_page))
+                comp_detected = True
+                reason_list.append("Drawing parts table layout detected")
         elif category == "Tank Capacity Plan":
             tl = text.lower()
             if "tank" in tl and any(kw in tl for kw in ("capacity", "sounding", "ullage", "volume", "m³", "m3", "liters", "ltr", "tonnes", "tons")):
-                comp_pages.append(str(doc_page))
+                comp_detected = True
+                reason_list.append("Tank capacity terminology detected")
+
+        if comp_detected:
+            comp_pages.append(str(doc_page))
+            comp_phys.append(str(physical_num))
 
         # --- Jobs (Instruction Manual only) ---
+        job_detected = False
         if category == "Instruction Manual" and _JOB_RE.search(text):
+            job_detected = True
+            reason_list.append("Maintenance/job interval text detected")
             job_pages.append(str(doc_page))
+            job_phys.append(str(physical_num))
 
         # --- Spares (Instruction Manual + Yard/Finished Drawings) ---
+        spare_detected = False
         if category in ("Instruction Manual", "Yard/Finished Drawings") and _SPARE_RE.search(text):
+            spare_detected = True
+            reason_list.append("Spare parts section text detected")
             spare_pages.append(str(doc_page))
+            spare_phys.append(str(physical_num))
+
+        if reason_list:
+            page_reasons[physical_num] = reason_list
 
     # Fallback: if no explicit pages found, use broader keyword scan by page.
     if not comp_pages and category in ("Instruction Manual", "Machinery Particulars", "Tank Capacity Plan", "Yard/Finished Drawings"):
-        comp_pages = _find_pages_for_topic(
+        candidate_pages = _find_pages_for_topic(
             pages_text,
             EXTRACTION_KEYWORDS["components"] + ["specification", "table", "parts", "item no", "model", "type"]
         )
-        if comp_pages:
-            comp_pages = comp_pages.split(", ") if isinstance(comp_pages, str) else comp_pages
+        if candidate_pages:
+            if isinstance(candidate_pages, str):
+                candidates = [int(p.strip()) for p in candidate_pages.split(",") if p.strip()]
+            else:
+                candidates = candidate_pages
+            for dp in candidates:
+                comp_pages.append(str(dp))
+                # For physical fallback, use doc_page as physical when no printed detected.
+                comp_phys.append(str(dp))
+                page_reasons.setdefault(dp, []).append("Fallback component keyword match")
 
     if category == "Instruction Manual" and not job_pages:
-        job_pages = _find_pages_for_topic(
+        candidate_pages = _find_pages_for_topic(
             pages_text,
             EXTRACTION_KEYWORDS["jobs"] + ["schedule", "interval", "inspection", "maintenance", "service"]
         )
-        if job_pages:
-            job_pages = job_pages.split(", ") if isinstance(job_pages, str) else job_pages
+        if candidate_pages:
+            if isinstance(candidate_pages, str):
+                candidates = [int(p.strip()) for p in candidate_pages.split(",") if p.strip()]
+            else:
+                candidates = candidate_pages
+            for dp in candidates:
+                job_pages.append(str(dp))
+                job_phys.append(str(dp))
+                page_reasons.setdefault(dp, []).append("Fallback job keyword match")
 
     if category in ("Instruction Manual", "Yard/Finished Drawings") and not spare_pages:
-        spare_pages = _find_pages_for_topic(
+        candidate_pages = _find_pages_for_topic(
             pages_text,
             EXTRACTION_KEYWORDS["spares"] + ["parts list", "bom", "bill of materials", "catalog", "recommended spares"]
         )
-        if spare_pages:
-            spare_pages = spare_pages.split(", ") if isinstance(spare_pages, str) else spare_pages
+        if candidate_pages:
+            if isinstance(candidate_pages, str):
+                candidates = [int(p.strip()) for p in candidate_pages.split(",") if p.strip()]
+            else:
+                candidates = candidate_pages
+            for dp in candidates:
+                spare_pages.append(str(dp))
+                spare_phys.append(str(dp))
+                page_reasons.setdefault(dp, []).append("Fallback spare keyword match")
 
     _log.info(
-        "classifier[scan]: category=%s comp=%s jobs=%s spares=%s",
-        category, comp_pages[:10] if isinstance(comp_pages, list) else comp_pages,
-        job_pages[:10] if isinstance(job_pages, list) else job_pages,
-        spare_pages[:10] if isinstance(spare_pages, list) else spare_pages,
+        "classifier[scan]: category=%s comps=%s jobs=%s spares=%s comp_phys=%s jobs_phys=%s spares_phys=%s",
+        category, comp_pages, job_pages, spare_pages, comp_phys, job_phys, spare_phys,
     )
 
-    comp_pages_str = ", ".join(comp_pages) if isinstance(comp_pages, list) else comp_pages
-    job_pages_str = ", ".join(job_pages) if isinstance(job_pages, list) else job_pages
-    spare_pages_str = ", ".join(spare_pages) if isinstance(spare_pages, list) else spare_pages
-    return comp_pages_str, job_pages_str, spare_pages_str
+    comp_pages_str = ", ".join(sorted(set(comp_pages), key=lambda x:int(x))) if comp_pages else ""
+    job_pages_str = ", ".join(sorted(set(job_pages), key=lambda x:int(x))) if job_pages else ""
+    spare_pages_str = ", ".join(sorted(set(spare_pages), key=lambda x:int(x))) if spare_pages else ""
+
+    comp_phys_str = ", ".join(sorted(set(comp_phys), key=lambda x:int(x))) if comp_phys else ""
+    job_phys_str = ", ".join(sorted(set(job_phys), key=lambda x:int(x))) if job_phys else ""
+    spare_phys_str = ", ".join(sorted(set(spare_phys), key=lambda x:int(x))) if spare_phys else ""
+
+    reasons_json = json.dumps({str(k): v for k, v in page_reasons.items()}, ensure_ascii=False)
+    return (
+        comp_pages_str,
+        job_pages_str,
+        spare_pages_str,
+        comp_phys_str,
+        job_phys_str,
+        spare_phys_str,
+        reasons_json,
+    )
 
 
 def _find_pages_for_topic(pages_text: list[str], keywords: list[str]) -> str:
@@ -694,6 +765,12 @@ def _sanitise_result(result: ClassificationResult) -> ClassificationResult:
         result.pages_with_components = _clamp_pages(result.pages_with_components, result.page_count)
         result.pages_with_jobs = _clamp_pages(result.pages_with_jobs, result.page_count)
         result.pages_with_spares = _clamp_pages(result.pages_with_spares, result.page_count)
+        result.pages_with_components_printed = _clamp_pages(result.pages_with_components_printed, result.page_count)
+        result.pages_with_jobs_printed = _clamp_pages(result.pages_with_jobs_printed, result.page_count)
+        result.pages_with_spares_printed = _clamp_pages(result.pages_with_spares_printed, result.page_count)
+        result.pages_with_components_physical = _clamp_pages(result.pages_with_components_physical, result.page_count)
+        result.pages_with_jobs_physical = _clamp_pages(result.pages_with_jobs_physical, result.page_count)
+        result.pages_with_spares_physical = _clamp_pages(result.pages_with_spares_physical, result.page_count)
     return result
 
 
@@ -733,22 +810,25 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
                 kw.pages_with_spares = spares
                 return _sanitise_result(kw)
 
-        # Use AI-provided pages if available, otherwise programmatic scan
+        # Programmatic page scanning for printed/physical and explanations (always available)
+        resolved = _resolve_pages(pages_text)
+        scanned_comp, scanned_jobs, scanned_spares, scanned_comp_phys, scanned_jobs_phys, scanned_spares_phys, scanned_reasons = _scan_pages(pages_text, resolved, category)
+
+        # Use AI-provided pages if available; fallback to programmatic results.
         marked_text, valid_doc_pages = _make_marked_text(pages_text, max_chars=80_000)
         ai_components = ai_result.get("pages_with_components", "").strip()
         ai_jobs = ai_result.get("pages_with_jobs", "").strip()
         ai_spares = ai_result.get("pages_with_spares", "").strip()
-        
+
         if ai_components or ai_jobs or ai_spares:
-            # Filter AI-provided pages to valid ones
             components = _filter_to_valid_pages(ai_components, valid_doc_pages)
             jobs = _filter_to_valid_pages(ai_jobs, valid_doc_pages)
             spares = _filter_to_valid_pages(ai_spares, valid_doc_pages)
             _log.info("classifier: using AI-identified pages: comp=%s jobs=%s spares=%s", components, jobs, spares)
         else:
-            # Programmatic page scanning — deterministic, no AI hallucination possible
-            resolved = _resolve_pages(pages_text)
-            components, jobs, spares = _scan_pages(pages_text, resolved, category)
+            components = scanned_comp
+            jobs = scanned_jobs
+            spares = scanned_spares
             _log.info("classifier: using programmatic scan: comp=%s jobs=%s spares=%s", components, jobs, spares)
 
         result = ClassificationResult(
@@ -758,6 +838,13 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
             pages_with_components=components,
             pages_with_jobs=jobs,
             pages_with_spares=spares,
+            pages_with_components_printed=scanned_comp if scanned_comp else "",
+            pages_with_jobs_printed=scanned_jobs if scanned_jobs else "",
+            pages_with_spares_printed=scanned_spares if scanned_spares else "",
+            pages_with_components_physical=scanned_comp_phys,
+            pages_with_jobs_physical=scanned_jobs_phys,
+            pages_with_spares_physical=scanned_spares_phys,
+            page_explanations=scanned_reasons,
             page_count=total_pages,
         )
         final = _sanitise_result(result)
@@ -771,10 +858,17 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
     # Fallback: keyword matching + programmatic page scan
     kw = _keyword_classify(pages_text, filename, total_pages)
     resolved = _resolve_pages(pages_text)
-    components, jobs, spares = _scan_pages(pages_text, resolved, kw.category)
+    components, jobs, spares, comp_phys, jobs_phys, spares_phys, reasons = _scan_pages(pages_text, resolved, kw.category)
     kw.pages_with_components = components
     kw.pages_with_jobs = jobs
     kw.pages_with_spares = spares
+    kw.pages_with_components_printed = components
+    kw.pages_with_jobs_printed = jobs
+    kw.pages_with_spares_printed = spares
+    kw.pages_with_components_physical = comp_phys
+    kw.pages_with_jobs_physical = jobs_phys
+    kw.pages_with_spares_physical = spares_phys
+    kw.page_explanations = reasons
     return _sanitise_result(kw)
 
 
@@ -825,5 +919,12 @@ def _keyword_classify(pages_text: list[str], filename: str, total_pages: int) ->
         pages_with_components=pages_components,
         pages_with_jobs=pages_jobs,
         pages_with_spares=pages_spares,
+        pages_with_components_printed=pages_components,
+        pages_with_jobs_printed=pages_jobs,
+        pages_with_spares_printed=pages_spares,
+        pages_with_components_physical=pages_components,
+        pages_with_jobs_physical=pages_jobs,
+        pages_with_spares_physical=pages_spares,
+        page_explanations="",
         page_count=total_pages,
     )

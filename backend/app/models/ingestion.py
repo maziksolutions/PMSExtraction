@@ -147,6 +147,41 @@ class Manual(TenantBase):
         nullable=True,
     )
 
+    pages_with_components_printed: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    pages_with_jobs_printed: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    pages_with_spares_printed: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    pages_with_components_physical: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    pages_with_jobs_physical: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    pages_with_spares_physical: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    page_explanations: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     reviewer_comments: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True,

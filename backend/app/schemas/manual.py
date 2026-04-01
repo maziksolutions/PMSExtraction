@@ -29,6 +29,13 @@ class ManualOut(BaseModel):
     pages_with_components: Optional[str] = None
     pages_with_jobs: Optional[str] = None
     pages_with_spares: Optional[str] = None
+    pages_with_components_printed: Optional[str] = None
+    pages_with_jobs_printed: Optional[str] = None
+    pages_with_spares_printed: Optional[str] = None
+    pages_with_components_physical: Optional[str] = None
+    pages_with_jobs_physical: Optional[str] = None
+    pages_with_spares_physical: Optional[str] = None
+    page_explanations: Optional[str] = None
     reviewer_comments: Optional[str] = None
     supply_type: Optional[str] = None
     created_at: datetime
@@ -43,6 +50,13 @@ class ManualUpdate(BaseModel):
     pages_with_components: Optional[str] = None
     pages_with_jobs: Optional[str] = None
     pages_with_spares: Optional[str] = None
+    pages_with_components_printed: Optional[str] = None
+    pages_with_jobs_printed: Optional[str] = None
+    pages_with_spares_printed: Optional[str] = None
+    pages_with_components_physical: Optional[str] = None
+    pages_with_jobs_physical: Optional[str] = None
+    pages_with_spares_physical: Optional[str] = None
+    page_explanations: Optional[str] = None
     reviewer_comments: Optional[str] = None
     supply_type: Optional[str] = None
     classification_confidence: Optional[int] = None

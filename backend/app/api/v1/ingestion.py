@@ -361,6 +361,13 @@ async def _process_uploaded_file(
                 pages_with_components=result.pages_with_components,
                 pages_with_jobs=result.pages_with_jobs,
                 pages_with_spares=result.pages_with_spares,
+                pages_with_components_printed=getattr(result, "pages_with_components_printed", ""),
+                pages_with_jobs_printed=getattr(result, "pages_with_jobs_printed", ""),
+                pages_with_spares_printed=getattr(result, "pages_with_spares_printed", ""),
+                pages_with_components_physical=getattr(result, "pages_with_components_physical", ""),
+                pages_with_jobs_physical=getattr(result, "pages_with_jobs_physical", ""),
+                pages_with_spares_physical=getattr(result, "pages_with_spares_physical", ""),
+                page_explanations=getattr(result, "page_explanations", ""),
                 supply_type=getattr(result, "supply_type", "OEM"),
                 page_count=page_count_val or result.page_count or None,
                 extracted_text=extracted_text or None,
@@ -642,10 +649,17 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                             else:
                                 kw_result = _kw_cls(pages_text, manual.original_filename, page_count)
                                 resolved = _resolve_pages(pages_text)
-                                components, jobs, spares = _scan_pages(pages_text, resolved, kw_result.category)
+                                components, jobs, spares, comp_phys, job_phys, spare_phys, reasons = _scan_pages(pages_text, resolved, kw_result.category)
                                 kw_result.pages_with_components = components
                                 kw_result.pages_with_jobs = jobs
                                 kw_result.pages_with_spares = spares
+                                kw_result.pages_with_components_printed = components
+                                kw_result.pages_with_jobs_printed = jobs
+                                kw_result.pages_with_spares_printed = spares
+                                kw_result.pages_with_components_physical = comp_phys
+                                kw_result.pages_with_jobs_physical = job_phys
+                                kw_result.pages_with_spares_physical = spare_phys
+                                kw_result.page_explanations = reasons
                                 cr = _sanitise_result(kw_result)
                         else:
                             logger.warning(
@@ -704,6 +718,13 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                         pages_with_components=cr.pages_with_components,
                         pages_with_jobs=cr.pages_with_jobs,
                         pages_with_spares=cr.pages_with_spares,
+                        pages_with_components_printed=getattr(cr, "pages_with_components_printed", ""),
+                        pages_with_jobs_printed=getattr(cr, "pages_with_jobs_printed", ""),
+                        pages_with_spares_printed=getattr(cr, "pages_with_spares_printed", ""),
+                        pages_with_components_physical=getattr(cr, "pages_with_components_physical", ""),
+                        pages_with_jobs_physical=getattr(cr, "pages_with_jobs_physical", ""),
+                        pages_with_spares_physical=getattr(cr, "pages_with_spares_physical", ""),
+                        page_explanations=getattr(cr, "page_explanations", ""),
                         supply_type=getattr(cr, "supply_type", "OEM"),
                         status=ManualStatus.classified,
                     )
