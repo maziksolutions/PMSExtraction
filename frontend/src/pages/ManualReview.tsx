@@ -32,6 +32,13 @@ interface Manual {
   pages_with_components: string | null
   pages_with_jobs: string | null
   pages_with_spares: string | null
+  pages_with_components_printed: string | null
+  pages_with_jobs_printed: string | null
+  pages_with_spares_printed: string | null
+  pages_with_components_physical: string | null
+  pages_with_jobs_physical: string | null
+  pages_with_spares_physical: string | null
+  page_explanations: string | null
   reviewer_comments: string | null
   supply_type: string | null
   is_duplicate: boolean
@@ -110,6 +117,133 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
+
+type PageReasonKind = 'components' | 'jobs' | 'spares'
+
+interface PageExplanationEntry {
+  printed_page?: number | null
+  reference?: string[]
+  components?: string[]
+  jobs?: string[]
+  spares?: string[]
+}
+
+function expandPageTokens(value: string | null | undefined): number[] {
+  if (!value) return []
+  const pages = new Set<number>()
+  value.split(',').forEach((token) => {
+    const cleaned = token.trim()
+    if (!cleaned) return
+    if (cleaned.includes('-')) {
+      const [startRaw, endRaw] = cleaned.split('-', 2)
+      const start = Number(startRaw.trim())
+      const end = Number(endRaw.trim())
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return
+      const from = Math.min(start, end)
+      const to = Math.max(start, end)
+      for (let page = from; page <= to; page += 1) pages.add(page)
+      return
+    }
+    const page = Number(cleaned)
+    if (Number.isFinite(page)) pages.add(page)
+  })
+  return Array.from(pages).sort((a, b) => a - b)
+}
+
+function parsePageExplanations(raw: string | null | undefined): Record<string, PageExplanationEntry> {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw) as Record<string, PageExplanationEntry>
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function buildExplanationRows(
+  raw: string | null | undefined,
+  physicalRefs: string | null | undefined,
+  kind: PageReasonKind,
+) {
+  const explanationMap = parsePageExplanations(raw)
+  return expandPageTokens(physicalRefs)
+    .map((physicalPage) => {
+      const entry = explanationMap[String(physicalPage)] ?? {}
+      const reasons = [
+        ...(entry.reference ?? []),
+        ...(entry[kind] ?? []),
+      ]
+      return {
+        physicalPage,
+        printedPage: entry.printed_page ?? null,
+        reasons,
+      }
+    })
+    .filter((row) => row.reasons.length > 0)
+}
+
+interface PageReferenceEditorProps {
+  printedValue: string | null | undefined
+  physicalValue: string | null | undefined
+  onPrintedChange: (value: string) => void
+  onPhysicalChange: (value: string) => void
+  explanationRows: Array<{ physicalPage: number; printedPage: number | null; reasons: string[] }>
+  printedPlaceholder: string
+  physicalPlaceholder: string
+}
+
+const PageReferenceEditor: React.FC<PageReferenceEditorProps> = ({
+  printedValue,
+  physicalValue,
+  onPrintedChange,
+  onPhysicalChange,
+  explanationRows,
+  printedPlaceholder,
+  physicalPlaceholder,
+}) => (
+  <div className="min-w-[160px] space-y-1">
+    <div>
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Printed</div>
+      <input
+        type="text"
+        value={printedValue ?? ''}
+        onChange={(e) => onPrintedChange(e.target.value)}
+        className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+        placeholder={printedPlaceholder}
+      />
+    </div>
+    <div>
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Physical</div>
+      <input
+        type="text"
+        value={physicalValue ?? ''}
+        onChange={(e) => onPhysicalChange(e.target.value)}
+        className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+        placeholder={physicalPlaceholder}
+      />
+    </div>
+    {explanationRows.length > 0 && (
+      <details className="rounded border border-slate-800 bg-slate-950/60 px-2 py-1.5 text-xs text-slate-300">
+        <summary className="cursor-pointer select-none text-sky-400">Why selected?</summary>
+        <div className="mt-2 space-y-2">
+          {explanationRows.map((row) => (
+            <div key={row.physicalPage} className="rounded bg-slate-900/80 px-2 py-1.5">
+              <div className="font-medium text-slate-200">
+                Physical {row.physicalPage}
+                {row.printedPage !== null ? ` • Printed ${row.printedPage}` : ' • No printed page'}
+              </div>
+              <div className="mt-1 space-y-1 text-slate-400">
+                {row.reasons.map((reason, index) => (
+                  <p key={`${row.physicalPage}-${index}`}>{reason}</p>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </details>
+    )}
+  </div>
+)
 
 // ─── Pre-Check Panel ─────────────────────────────────────────────────────────
 
@@ -742,9 +876,9 @@ const ManualReview: React.FC = () => {
                 <th className="px-3 py-3">Size</th>
                 <th className="px-3 py-3">Category</th>
                 <th className="px-3 py-3">Useful</th>
-                <th className="px-3 py-3">Comp. Pages</th>
-                <th className="px-3 py-3">Job Pages</th>
-                <th className="px-3 py-3">Spare Pages</th>
+                <th className="px-3 py-3">Comp. Ref</th>
+                <th className="px-3 py-3">Job Ref</th>
+                <th className="px-3 py-3">Spare Ref</th>
                 <th className="px-3 py-3">Source</th>
                 <th className="px-3 py-3">Confidence</th>
                 <th className="px-3 py-3">Comments</th>
@@ -756,6 +890,21 @@ const ManualReview: React.FC = () => {
                 const edit = edits[m.id] ?? {}
                 const changed = Object.keys(edit).length > 0
                 const isSelected = selectedIds.has(m.id)
+                const componentExplanationRows = buildExplanationRows(
+                  m.page_explanations,
+                  (edit.pages_with_components_physical as string | undefined) ?? m.pages_with_components_physical,
+                  'components',
+                )
+                const jobExplanationRows = buildExplanationRows(
+                  m.page_explanations,
+                  (edit.pages_with_jobs_physical as string | undefined) ?? m.pages_with_jobs_physical,
+                  'jobs',
+                )
+                const spareExplanationRows = buildExplanationRows(
+                  m.page_explanations,
+                  (edit.pages_with_spares_physical as string | undefined) ?? m.pages_with_spares_physical,
+                  'spares',
+                )
                 return (
                   <tr
                     key={m.id}
@@ -842,30 +991,36 @@ const ManualReview: React.FC = () => {
                       </select>
                     </td>
                     <td className="px-3 py-3">
-                      <input
-                        type="text"
-                        value={edit.pages_with_components ?? m.pages_with_components ?? ''}
-                        onChange={(e) => handleEdit(m.id, 'pages_with_components', e.target.value)}
-                        className="w-20 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                        placeholder="1-50"
+                      <PageReferenceEditor
+                        printedValue={(edit.pages_with_components_printed as string | undefined) ?? m.pages_with_components_printed}
+                        physicalValue={(edit.pages_with_components_physical as string | undefined) ?? m.pages_with_components_physical}
+                        onPrintedChange={(value) => handleEdit(m.id, 'pages_with_components_printed', value)}
+                        onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_components_physical', value)}
+                        explanationRows={componentExplanationRows}
+                        printedPlaceholder="1, 9-14"
+                        physicalPlaceholder="1, 10-15"
                       />
                     </td>
                     <td className="px-3 py-3">
-                      <input
-                        type="text"
-                        value={edit.pages_with_jobs ?? m.pages_with_jobs ?? ''}
-                        onChange={(e) => handleEdit(m.id, 'pages_with_jobs', e.target.value)}
-                        className="w-20 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                        placeholder="51-80"
+                      <PageReferenceEditor
+                        printedValue={(edit.pages_with_jobs_printed as string | undefined) ?? m.pages_with_jobs_printed}
+                        physicalValue={(edit.pages_with_jobs_physical as string | undefined) ?? m.pages_with_jobs_physical}
+                        onPrintedChange={(value) => handleEdit(m.id, 'pages_with_jobs_printed', value)}
+                        onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_jobs_physical', value)}
+                        explanationRows={jobExplanationRows}
+                        printedPlaceholder="9-14"
+                        physicalPlaceholder="10-15"
                       />
                     </td>
                     <td className="px-3 py-3">
-                      <input
-                        type="text"
-                        value={edit.pages_with_spares ?? m.pages_with_spares ?? ''}
-                        onChange={(e) => handleEdit(m.id, 'pages_with_spares', e.target.value)}
-                        className="w-20 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                        placeholder="81-120"
+                      <PageReferenceEditor
+                        printedValue={(edit.pages_with_spares_printed as string | undefined) ?? m.pages_with_spares_printed}
+                        physicalValue={(edit.pages_with_spares_physical as string | undefined) ?? m.pages_with_spares_physical}
+                        onPrintedChange={(value) => handleEdit(m.id, 'pages_with_spares_printed', value)}
+                        onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_spares_physical', value)}
+                        explanationRows={spareExplanationRows}
+                        printedPlaceholder="2-12"
+                        physicalPlaceholder="3-13"
                       />
                     </td>
                     <td className="px-3 py-3">

@@ -158,9 +158,33 @@ async def update_manual(
         "category": manual.category,
         "useful_for_extraction": manual.useful_for_extraction,
         "classification_confidence": manual.classification_confidence,
+        "pages_with_components": manual.pages_with_components,
+        "pages_with_jobs": manual.pages_with_jobs,
+        "pages_with_spares": manual.pages_with_spares,
+        "pages_with_components_printed": manual.pages_with_components_printed,
+        "pages_with_jobs_printed": manual.pages_with_jobs_printed,
+        "pages_with_spares_printed": manual.pages_with_spares_printed,
+        "pages_with_components_physical": manual.pages_with_components_physical,
+        "pages_with_jobs_physical": manual.pages_with_jobs_physical,
+        "pages_with_spares_physical": manual.pages_with_spares_physical,
+        "page_explanations": manual.page_explanations,
     }
 
     update_data = body.model_dump(exclude_unset=True)
+    page_field_groups = [
+        ("pages_with_components", "pages_with_components_printed", "pages_with_components_physical"),
+        ("pages_with_jobs", "pages_with_jobs_printed", "pages_with_jobs_physical"),
+        ("pages_with_spares", "pages_with_spares_printed", "pages_with_spares_physical"),
+    ]
+    for canonical_field, printed_field, physical_field in page_field_groups:
+        if printed_field in update_data or physical_field in update_data:
+            printed_value = update_data.get(printed_field, getattr(manual, printed_field))
+            physical_value = update_data.get(physical_field, getattr(manual, physical_field))
+            update_data[canonical_field] = printed_value or physical_value or ""
+        elif canonical_field in update_data:
+            canonical_value = update_data[canonical_field]
+            update_data.setdefault(printed_field, canonical_value)
+
     for field, value in update_data.items():
         setattr(manual, field, value)
 

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import uuid
 from typing import Annotated, Any
@@ -113,7 +113,7 @@ async def list_sharepoint_files(
         sp_service = SharePointService()
         files = await sp_service.list_folder_contents(folder_url)
     except ValueError as exc:
-        # Missing Azure credentials — surface a clear error
+        # Missing Azure credentials â€” surface a clear error
         raise HTTPException(
             status_code=503,
             detail=f"SharePoint not configured: {exc}. Ensure AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET are set in Railway environment variables.",
@@ -387,7 +387,7 @@ async def _process_uploaded_file(
             .values(**update_vals)
         )
         await db.commit()
-        logger.info("_process_uploaded_file: classified %s → %s (%d%%) supply=%s", filename, result.category, result.confidence, getattr(result, "supply_type", "OEM"))
+        logger.info("_process_uploaded_file: classified %s â†’ %s (%d%%) supply=%s", filename, result.category, result.confidence, getattr(result, "supply_type", "OEM"))
 
 
 @router.post(
@@ -496,7 +496,7 @@ async def upload_manuals(
             )
             await db.commit()
         except Exception:
-            # Blob storage unavailable — fall back to local disk
+            # Blob storage unavailable â€” fall back to local disk
             try:
                 upload_dir = os.path.join(settings.UPLOAD_DIR, vid)
                 os.makedirs(upload_dir, exist_ok=True)
@@ -565,8 +565,8 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                             content = f.read()
                         logger.info("_run_screening_task: loaded from disk %d bytes", len(content))
                     else:
-                        # Not on local disk — try blob storage (MinIO / Azure).
-                        # NOTE: do NOT skip paths that start with "/" — on Railway the
+                        # Not on local disk â€” try blob storage (MinIO / Azure).
+                        # NOTE: do NOT skip paths that start with "/" â€” on Railway the
                         # blob_storage_key may look like an absolute path but the file
                         # no longer exists on local disk after a container restart.
                         if file_path:
@@ -599,84 +599,28 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                     if content and ext == "pdf":
                         cr = await asyncio.to_thread(classify_pdf, content, manual.original_filename)
                     else:
-                        # No PDF bytes — fall back to stored extracted_text in DB
+                        # No PDF bytes â€” fall back to stored extracted_text in DB
                         stored_text = getattr(manual, "extracted_text", None) or ""
                         if stored_text:
                             logger.info(
                                 "_run_screening_task: using stored extracted_text (%d chars) for %s",
                                 len(stored_text), manual.original_filename,
                             )
-                            from app.services.classifier import (
-                                _classify_with_groq, _classify_with_gemini, _classify_with_claude,
-                                _sanitise_result, _keyword_classify as _kw_cls,
-                                _resolve_pages, _scan_pages,
-                                VALID_CATEGORIES, ClassificationResult,
-                            )
-                            # Parse stored text into per-page list by [PAGE N] or [PAGE N, doc_page=X] markers
+                            from app.services.classifier import classify_pages_text
+                            # Parse stored text into per-page list by [PAGE N] or [PAGE N, printed_page=X] markers
                             import re as _re
-                            parts = _re.split(r'\[PAGE \d+(?:, doc_page=[^\]]+)?\]\n?', stored_text)
+                            parts = _re.split(r'\[PAGE \d+(?:, printed_page=[^\]]+)?\]\n?', stored_text)
                             pages_text = [p.strip() for p in parts if p.strip()]
                             page_count = manual.page_count or len(pages_text)
-                            # Try Groq (free, 30 RPM) → Gemini → Claude → keywords for CATEGORY only
-                            ai = await asyncio.to_thread(
-                                _classify_with_groq, pages_text, manual.original_filename, page_count
+                            cr = await asyncio.to_thread(
+                                classify_pages_text,
+                                pages_text,
+                                manual.original_filename,
+                                page_count,
                             )
-                            if not ai:
-                                ai = await asyncio.to_thread(
-                                    _classify_with_gemini, pages_text, manual.original_filename, page_count
-                                )
-                            if not ai:
-                                ai = await asyncio.to_thread(
-                                    _classify_with_claude, pages_text, manual.original_filename, page_count
-                                )
-                            if ai:
-                                category = ai.get("category", "Unknown/Unclassifiable")
-                                if category not in VALID_CATEGORIES:
-                                    category = "Unknown/Unclassifiable"
-                                
-                                # Use AI-provided pages if available
-                                from app.services.classifier import _make_marked_text, _filter_to_valid_pages
-                                marked_text, valid_doc_pages = _make_marked_text(pages_text, max_chars=80_000)
-                                ai_components = ai.get("pages_with_components", "").strip()
-                                ai_jobs = ai.get("pages_with_jobs", "").strip()
-                                ai_spares = ai.get("pages_with_spares", "").strip()
-                                
-                                if ai_components or ai_jobs or ai_spares:
-                                    components = _filter_to_valid_pages(ai_components, valid_doc_pages)
-                                    jobs = _filter_to_valid_pages(ai_jobs, valid_doc_pages)
-                                    spares = _filter_to_valid_pages(ai_spares, valid_doc_pages)
-                                else:
-                                    # Programmatic page scan
-                                    resolved = _resolve_pages(pages_text)
-                                    components, jobs, spares = _scan_pages(pages_text, resolved, category)
-                                
-                                cr = _sanitise_result(ClassificationResult(
-                                    category=category,
-                                    confidence=max(0, min(100, int(ai.get("confidence", 60)))),
-                                    useful_for_extraction=ai.get("useful_for_extraction", "partial"),
-                                    pages_with_components=components,
-                                    pages_with_jobs=jobs,
-                                    pages_with_spares=spares,
-                                    page_count=page_count,
-                                ))
-                            else:
-                                kw_result = _kw_cls(pages_text, manual.original_filename, page_count)
-                                resolved = _resolve_pages(pages_text)
-                                components, jobs, spares, comp_phys, job_phys, spare_phys, reasons = _scan_pages(pages_text, resolved, kw_result.category)
-                                kw_result.pages_with_components = components
-                                kw_result.pages_with_jobs = jobs
-                                kw_result.pages_with_spares = spares
-                                kw_result.pages_with_components_printed = components
-                                kw_result.pages_with_jobs_printed = jobs
-                                kw_result.pages_with_spares_printed = spares
-                                kw_result.pages_with_components_physical = comp_phys
-                                kw_result.pages_with_jobs_physical = job_phys
-                                kw_result.pages_with_spares_physical = spare_phys
-                                kw_result.page_explanations = reasons
-                                cr = _sanitise_result(kw_result)
                         else:
                             logger.warning(
-                                "_run_screening_task: no PDF and no extracted_text for %s — using keyword fallback",
+                                "_run_screening_task: no PDF and no extracted_text for %s â€” using keyword fallback",
                                 manual.original_filename,
                             )
                             cr = _keyword_classify([], manual.original_filename, 0)
@@ -936,7 +880,7 @@ async def view_manual(
     blob_key = manual.blob_storage_key
     if not blob_key:
         _log.warning("view_manual: manual_id=%s has no blob_storage_key", manual_id)
-        raise HTTPException(status_code=404, detail="File not available — this manual has no stored file. Please delete and re-upload it.")
+        raise HTTPException(status_code=404, detail="File not available â€” this manual has no stored file. Please delete and re-upload it.")
 
     mime_map = {
         "pdf": "application/pdf",
@@ -965,7 +909,7 @@ async def view_manual(
             headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
         )
 
-    # Not on local disk — download from blob storage (R2 / MinIO / Azure)
+    # Not on local disk â€” download from blob storage (R2 / MinIO / Azure)
     blob_service = BlobStorageService()
 
     if blob_service._use_azure:
@@ -973,7 +917,7 @@ async def view_manual(
             presigned_url = await blob_service.get_download_url(blob_key, expires_in=3600)
             return JSONResponse({"url": presigned_url}, status_code=200)
         except Exception as exc:
-            _log.warning("view_manual: Azure presigned URL failed key=%s: %s — streaming", blob_key, exc)
+            _log.warning("view_manual: Azure presigned URL failed key=%s: %s â€” streaming", blob_key, exc)
 
     try:
         _log.info("view_manual: downloading from blob storage key=%s", blob_key)
