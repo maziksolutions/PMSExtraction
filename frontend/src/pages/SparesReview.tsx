@@ -257,7 +257,7 @@ const SparesReview: React.FC = () => {
                         <div className="min-w-[180px]">
                           <p className="text-slate-200">{spare.component_name}</p>
                           <p className="text-xs text-slate-500">
-                            {[spare.component_maker, spare.component_model].filter(Boolean).join(' • ') || 'Linked'}
+                            {[spare.component_maker, spare.component_model].filter(Boolean).join(' - ') || 'Linked'}
                           </p>
                         </div>
                       ) : (
