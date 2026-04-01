@@ -316,11 +316,42 @@ def _scan_pages(
         if category in ("Instruction Manual", "Yard/Finished Drawings") and _SPARE_RE.search(text):
             spare_pages.append(str(doc_page))
 
+    # Fallback: if no explicit pages found, use broader keyword scan by page.
+    if not comp_pages and category in ("Instruction Manual", "Machinery Particulars", "Tank Capacity Plan", "Yard/Finished Drawings"):
+        comp_pages = _find_pages_for_topic(
+            pages_text,
+            EXTRACTION_KEYWORDS["components"] + ["specification", "table", "parts", "item no", "model", "type"]
+        )
+        if comp_pages:
+            comp_pages = comp_pages.split(", ") if isinstance(comp_pages, str) else comp_pages
+
+    if category == "Instruction Manual" and not job_pages:
+        job_pages = _find_pages_for_topic(
+            pages_text,
+            EXTRACTION_KEYWORDS["jobs"] + ["schedule", "interval", "inspection", "maintenance", "service"]
+        )
+        if job_pages:
+            job_pages = job_pages.split(", ") if isinstance(job_pages, str) else job_pages
+
+    if category in ("Instruction Manual", "Yard/Finished Drawings") and not spare_pages:
+        spare_pages = _find_pages_for_topic(
+            pages_text,
+            EXTRACTION_KEYWORDS["spares"] + ["parts list", "bom", "bill of materials", "catalog", "recommended spares"]
+        )
+        if spare_pages:
+            spare_pages = spare_pages.split(", ") if isinstance(spare_pages, str) else spare_pages
+
     _log.info(
         "classifier[scan]: category=%s comp=%s jobs=%s spares=%s",
-        category, comp_pages[:10], job_pages[:10], spare_pages[:10],
+        category, comp_pages[:10] if isinstance(comp_pages, list) else comp_pages,
+        job_pages[:10] if isinstance(job_pages, list) else job_pages,
+        spare_pages[:10] if isinstance(spare_pages, list) else spare_pages,
     )
-    return ", ".join(comp_pages), ", ".join(job_pages), ", ".join(spare_pages)
+
+    comp_pages_str = ", ".join(comp_pages) if isinstance(comp_pages, list) else comp_pages
+    job_pages_str = ", ".join(job_pages) if isinstance(job_pages, list) else job_pages
+    spare_pages_str = ", ".join(spare_pages) if isinstance(spare_pages, list) else spare_pages
+    return comp_pages_str, job_pages_str, spare_pages_str
 
 
 def _find_pages_for_topic(pages_text: list[str], keywords: list[str]) -> str:
