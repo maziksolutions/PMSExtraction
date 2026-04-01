@@ -267,7 +267,7 @@ _SPARE_RE = re.compile(
 _YARD_PARTS_RE = re.compile(
     r'\b(?:item\s+no\.?|drawing\s+no\.?|dwg\.?\s*no\.?'
     r'|parts?\s+list|bill\s+of\s+materials?|assembly\s+(?:drawing|list)'
-    r'|outfit\s+(?:list|drawing)|spare\s+per)\b',
+    r'|outfit\s+(?:list|drawing)|spare\s+per|part\s+number|description|qty|quantity)\b',
     re.IGNORECASE,
 )
 
@@ -305,7 +305,7 @@ def _scan_pages(
                 comp_pages.append(str(doc_page))
         elif category == "Tank Capacity Plan":
             tl = text.lower()
-            if "tank" in tl and any(kw in tl for kw in ("capacity", "sounding", "ullage", "volume")):
+            if "tank" in tl and any(kw in tl for kw in ("capacity", "sounding", "ullage", "volume", "m³", "m3", "liters", "ltr", "tonnes", "tons")):
                 comp_pages.append(str(doc_page))
 
         # --- Jobs (Instruction Manual only) ---
@@ -476,14 +476,14 @@ Classify this document into EXACTLY ONE of the following categories:
 - **LSA/FFA Plans**: Life Saving Appliance plans, Fire Fighting Appliance plans, fire safety plans, muster lists.
 - **Tank Capacity Plan**: Tank tables, sounding tables, ullage tables, stability booklets, capacity plans.
 - **Electrical Diagrams**: Single-line diagrams, wiring diagrams, cable lists, switchboard schematics.
-- **Yard/Finished Drawings**: Shipyard delivery package — assembly drawings, outfit drawings, final construction drawings. Signs: engineering drawing format (title block, drawing number, revision table), item-numbered parts tables (Item No. | Description | Qty | Material), multiple equipment types bundled, hull/vessel name reference, spare parts lists attached to drawings. Does NOT require written operational procedures.
+- **Yard/Finished Drawings**: Shipyard delivery package — assembly drawings, outfit drawings, final construction drawings. Signs: engineering drawing format (title block, drawing number, revision table), item-numbered parts tables (Item No. | Description | Qty | Material), multiple equipment types bundled, hull/vessel name reference, spare parts lists attached to drawings. Keywords: "yard drawing", "final drawing", "construction drawing", "as-built", "outfit drawing", "spare per". Does NOT require written operational procedures. If the document is a "final drawing" or "yard drawing" for equipment like sewage treatment plant, classify here even if it has equipment details.
 - **Class Certificates/Surveys**: Classification certificates, survey reports, safety certificates issued by DNV, Lloyd's, BV, ABS, etc.
 - **Unknown/Unclassifiable**: Cannot determine category with reasonable confidence.
 
 Additionally, identify pages containing:
-- Components/Equipment: Pages with machinery, equipment lists, maker/model info, or component specifications.
-- Jobs/Maintenance: Pages with maintenance schedules, service intervals, inspection checklists, or overhaul procedures.
-- Spares/Parts: Pages with spare parts lists, recommended spares, parts catalogs, or consumables.
+- Components/Equipment: Pages with machinery, equipment lists, maker/model info, or component specifications. For Tank Capacity Plans, look for tank names and capacities. For Yard/Finished Drawings, look for parts tables with item numbers, descriptions, quantities.
+- Jobs/Maintenance: Pages with maintenance schedules, service intervals, inspection checklists, or overhaul procedures. Typically in Instruction Manuals.
+- Spares/Parts: Pages with spare parts lists, recommended spares, parts catalogs, or consumables. Can be in Instruction Manuals or Yard/Finished Drawings.
 
 Return ONLY valid JSON in this exact format:
 {{
@@ -502,7 +502,7 @@ Rules:
 - useful_for_extraction = "partial" if spec sheet or drawing with some equipment data
 - useful_for_extraction = "no" if purely drawings, certificates, P&IDs, or LSA/FFA plans
 - Machinery Particulars vs Instruction Manual: one equipment in depth → Instruction Manual; many equipment rows → Machinery Particulars
-- Yard/Finished Drawings: assembly/outfit drawings with parts tables from shipyard delivery — even if equipment names are present
+- Yard/Finished Drawings: assembly/outfit drawings with parts tables from shipyard delivery — even if equipment names are present. Prioritize if filename contains "final drawing", "yard", "construction", or "as-built".. Prioritize if filename contains "final drawing", "yard", "construction", or "as-built".
 - For pages: use the doc_page numbers from the [PAGE N, doc_page=X] markers. Only include pages that actually exist in the document. If no such pages, use empty string "".
 - Page ranges can be expressed as 'start-end' (e.g. '45-67') or individual numbers separated by commas."""
 
