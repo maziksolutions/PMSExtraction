@@ -9,6 +9,9 @@ interface Job {
   job_name: string
   job_code: string | null
   component_id: string | null
+  component_name?: string | null
+  component_maker?: string | null
+  component_model?: string | null
   job_description: string | null
   frequency: number | null
   frequency_type: string | null
@@ -19,6 +22,7 @@ interface Job {
   qc_status: string
   is_unmapped: boolean
   source_manual_id: string | null
+  source_manual_name?: string | null
   page_reference: number | null
   source_page_number: number | null
   pdf_reference: string | null
@@ -234,6 +238,7 @@ const JobsReview: React.FC = () => {
                   />
                 </th>
                 <th className="px-4 py-3">Job Name</th>
+                <th className="px-4 py-3">Component</th>
                 <th className="px-4 py-3">Code</th>
                 <th className="px-4 py-3">Description</th>
                 <th className="px-4 py-3">Frequency</th>
@@ -262,6 +267,18 @@ const JobsReview: React.FC = () => {
                     />
                   </td>
                   <td className="px-4 py-2.5 text-slate-200 font-medium">{job.job_name}</td>
+                  <td className="px-4 py-2.5">
+                    {job.component_name ? (
+                      <div className="min-w-[180px]">
+                        <p className="text-slate-200">{job.component_name}</p>
+                        <p className="text-xs text-slate-500">
+                          {[job.component_maker, job.component_model].filter(Boolean).join(' • ') || 'Linked'}
+                        </p>
+                      </div>
+                    ) : (
+                      <span className="rounded-full bg-amber-900/40 px-2 py-0.5 text-xs text-amber-300">Unmapped</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 text-slate-400 font-mono text-xs">{job.job_code ?? '—'}</td>
                   <td className="px-4 py-2.5 text-slate-400 max-w-xs truncate text-xs">
                     {job.job_description?.slice(0, 80) ?? '—'}
@@ -305,13 +322,16 @@ const JobsReview: React.FC = () => {
                   </td>
                   <td className="px-4 py-2.5">
                     {(job.source_page_number ?? job.page_reference) != null ? (
-                      <span
-                        title={`${job.pdf_reference ?? 'Manual'} — page ${job.source_page_number ?? job.page_reference}`}
-                        className="inline-flex items-center gap-1 text-xs text-sky-400"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                        p.{job.source_page_number ?? job.page_reference}
-                      </span>
+                      <div className="min-w-[170px] text-xs">
+                        <div
+                          title={`${job.pdf_reference ?? job.source_manual_name ?? 'Manual'} — page ${job.source_page_number ?? job.page_reference}`}
+                          className="inline-flex items-center gap-1 text-sky-400"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          p.{job.source_page_number ?? job.page_reference}
+                        </div>
+                        <p className="mt-1 truncate text-slate-500">{job.source_manual_name ?? job.pdf_reference ?? 'Manual'}</p>
+                      </div>
                     ) : (
                       <span className="text-slate-600">—</span>
                     )}

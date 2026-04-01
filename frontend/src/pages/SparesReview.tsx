@@ -13,7 +13,12 @@ interface Spare {
   specification: string | null
   spare_maker: string | null
   component_id: string | null
+  component_name?: string | null
+  component_maker?: string | null
+  component_model?: string | null
   source_manual_id: string | null
+  source_manual_name?: string | null
+  pdf_reference?: string | null
   page_reference: number | null
   extraction_method: string
   is_critical: boolean
@@ -213,6 +218,7 @@ const SparesReview: React.FC = () => {
                   <th className="px-4 py-3">Drawing #</th>
                   <th className="px-4 py-3">Pos</th>
                   <th className="px-4 py-3">Maker</th>
+                  <th className="px-4 py-3">Component</th>
                   <th className="px-4 py-3">Source</th>
                   <th className="px-4 py-3">Method</th>
                   <th className="px-4 py-3">Critical</th>
@@ -247,11 +253,26 @@ const SparesReview: React.FC = () => {
                     <td className="px-4 py-2.5 text-slate-400">{spare.drawing_position ?? 'â€”'}</td>
                     <td className="px-4 py-2.5 text-slate-300">{spare.spare_maker ?? 'â€”'}</td>
                     <td className="px-4 py-2.5">
+                      {spare.component_name ? (
+                        <div className="min-w-[180px]">
+                          <p className="text-slate-200">{spare.component_name}</p>
+                          <p className="text-xs text-slate-500">
+                            {[spare.component_maker, spare.component_model].filter(Boolean).join(' • ') || 'Linked'}
+                          </p>
+                        </div>
+                      ) : (
+                        <span className="rounded-full bg-amber-900/40 px-2 py-0.5 text-xs text-amber-300">Unmapped</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5">
                       {spare.page_reference != null ? (
-                        <span className="inline-flex items-center gap-1 text-xs text-sky-400" title={`Manual page ${spare.page_reference}`}>
-                          <ExternalLink className="h-3 w-3" />
-                          p.{spare.page_reference}
-                        </span>
+                        <div className="min-w-[170px] text-xs">
+                          <div className="inline-flex items-center gap-1 text-sky-400" title={`${spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'} — page ${spare.page_reference}`}>
+                            <ExternalLink className="h-3 w-3" />
+                            p.{spare.page_reference}
+                          </div>
+                          <p className="mt-1 truncate text-slate-500">{spare.source_manual_name ?? spare.pdf_reference ?? 'Manual'}</p>
+                        </div>
                       ) : <span className="text-slate-600">â€”</span>}
                     </td>
                     <td className="px-4 py-2.5">

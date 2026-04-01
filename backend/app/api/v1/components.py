@@ -700,12 +700,17 @@ async def auto_link_pages(
                 matched_manual = None  # no genuine match — skip this component
 
         if matched_manual:
-            if not comp.job_pages:
-                comp.job_pages = matched_manual["job_pages"]
-            if not comp.spare_pages:
-                comp.spare_pages = matched_manual["spare_pages"]
-            if not comp.pdf_reference:
-                comp.pdf_reference = matched_manual["pdf_ref"]
+            if comp.source_manual_id and matched_manual["id"] == comp.source_manual_id:
+                comp.job_pages = matched_manual["job_pages"] or None
+                comp.spare_pages = matched_manual["spare_pages"] or None
+                comp.pdf_reference = matched_manual["pdf_ref"] or None
+            else:
+                if not comp.job_pages:
+                    comp.job_pages = matched_manual["job_pages"]
+                if not comp.spare_pages:
+                    comp.spare_pages = matched_manual["spare_pages"]
+                if not comp.pdf_reference:
+                    comp.pdf_reference = matched_manual["pdf_ref"]
             if not comp.source_manual_id:
                 comp.source_manual_id = matched_manual["id"]
             db.add(comp)

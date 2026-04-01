@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import uuid
+from difflib import SequenceMatcher
 from typing import Any, Optional
 
 import anthropic
@@ -198,6 +200,112 @@ DEFAULT_PROMPTS: dict[str, dict] = {
     },
 }
 
+
+_PAGE_BLOCK_RE = re.compile(r"\[PAGE\s+(\d+)\]\s*\n?(.*?)(?=(?:\n\[PAGE\s+\d+\])|\Z)", re.S)
+
+
+def _parse_page_tokens(value: str | None) -> list[int]:
+    if not value:
+        return []
+    pages: set[int] = set()
+    for token in value.split(","):
+        cleaned = token.strip()
+        if not cleaned:
+            continue
+        if "-" in cleaned:
+            start_raw, end_raw = cleaned.split("-", 1)
+            try:
+                start = int(start_raw.strip())
+                end = int(end_raw.strip())
+            except ValueError:
+                continue
+            for page in range(min(start, end), max(start, end) + 1):
+                pages.add(page)
+            continue
+        try:
+            pages.add(int(cleaned))
+        except ValueError:
+            continue
+    return sorted(pages)
+
+
+def _split_marked_pages(text: str) -> list[tuple[int, str]]:
+    pages: list[tuple[int, str]] = []
+    for match in _PAGE_BLOCK_RE.finditer(text):
+        page_no = int(match.group(1))
+        page_body = match.group(2).strip()
+        pages.append((page_no, page_body))
+    return pages
+
+
+def _filter_text_to_pages(text: str, selected_pages: list[int]) -> str:
+    if not selected_pages or "[PAGE " not in text:
+        return text
+    page_set = set(selected_pages)
+    selected_blocks = [
+        f"[PAGE {page_no}]\n{page_body}".strip()
+        for page_no, page_body in _split_marked_pages(text)
+        if page_no in page_set
+    ]
+    return "\n\n".join(selected_blocks).strip() or text
+
+
+def _selected_manual_pages(manual: Any, entity_type: str) -> list[int]:
+    physical_attr = {
+        "component": "pages_with_components_physical",
+        "job": "pages_with_jobs_physical",
+        "spare": "pages_with_spares_physical",
+    }[entity_type]
+    canonical_attr = {
+        "component": "pages_with_components",
+        "job": "pages_with_jobs",
+        "spare": "pages_with_spares",
+    }[entity_type]
+    return _parse_page_tokens(
+        getattr(manual, physical_attr, None) or getattr(manual, canonical_attr, None)
+    )
+
+
+def _normalise_text(value: str | None) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", (value or "").lower())).strip()
+
+
+def _component_match_score(search_text: str, component: Any, page_reference: int | None) -> float:
+    haystack = _normalise_text(search_text)
+    component_text = _normalise_text(
+        " ".join(
+            filter(
+                None,
+                [
+                    getattr(component, "component_name", None),
+                    getattr(component, "main_machinery", None),
+                    getattr(component, "maker", None),
+                    getattr(component, "model", None),
+                ],
+            )
+        )
+    )
+    if not haystack or not component_text:
+        return 0.0
+
+    hay_tokens = set(haystack.split())
+    comp_tokens = set(component_text.split())
+    overlap = len(hay_tokens & comp_tokens) / max(len(comp_tokens), 1)
+    ratio = SequenceMatcher(None, haystack, component_text).ratio()
+    score = max(overlap, ratio)
+
+    component_page = getattr(component, "page_reference", None)
+    if page_reference and component_page:
+        distance = abs(page_reference - component_page)
+        if distance == 0:
+            score += 0.15
+        elif distance <= 3:
+            score += 0.08
+        elif distance <= 6:
+            score += 0.03
+
+    return score
+
 # ---------------------------------------------------------------------------
 # Core extraction function
 # ---------------------------------------------------------------------------
@@ -270,6 +378,175 @@ async def extract_entities(
             exc,
         )
         return []
+
+
+# ---------------------------------------------------------------------------
+# Post-processing helpers
+# ---------------------------------------------------------------------------
+
+
+async def _overwrite_component_manual_refs(
+    *,
+    db: Any,
+    manual: Any,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> int:
+    from sqlalchemy import select
+    from app.models.component import Component, QCStatus
+
+    result = await db.execute(
+        select(Component).where(
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == tenant_id,
+            Component.is_deleted == False,
+            Component.source_manual_id == manual.id,
+            Component.qc_status != QCStatus.rejected,
+        )
+    )
+    components = result.scalars().all()
+
+    updated = 0
+    job_pages = getattr(manual, "pages_with_jobs", None) or None
+    spare_pages = getattr(manual, "pages_with_spares", None) or None
+    pdf_ref = manual.original_filename
+    for comp in components:
+        changed = False
+        if comp.job_pages != job_pages:
+            comp.job_pages = job_pages
+            changed = True
+        if comp.spare_pages != spare_pages:
+            comp.spare_pages = spare_pages
+            changed = True
+        if comp.pdf_reference != pdf_ref:
+            comp.pdf_reference = pdf_ref
+            changed = True
+        if changed:
+            db.add(comp)
+            updated += 1
+    return updated
+
+
+async def _link_records_to_components(
+    *,
+    db: Any,
+    manual: Any,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> tuple[int, int]:
+    from sqlalchemy import select
+    from app.models.component import Component, QCStatus
+    from app.models.job import Job
+    from app.models.spare import Spare
+
+    comp_result = await db.execute(
+        select(Component).where(
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == tenant_id,
+            Component.is_deleted == False,
+            Component.qc_status != QCStatus.rejected,
+        )
+    )
+    all_components = comp_result.scalars().all()
+    same_manual_components = [comp for comp in all_components if comp.source_manual_id == manual.id]
+    fallback_components = same_manual_components or all_components
+
+    def pick_component(search_text: str, page_reference: int | None):
+        if not fallback_components:
+            return None
+        if len(same_manual_components) == 1:
+            return same_manual_components[0]
+        ranked = sorted(
+            (
+                (_component_match_score(search_text, component, page_reference), component)
+                for component in fallback_components
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        best_score, best_component = ranked[0]
+        return best_component if best_score >= 0.28 else None
+
+    jobs_result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == tenant_id,
+            Job.is_deleted == False,
+            Job.source_manual_id == manual.id,
+        )
+    )
+    jobs = jobs_result.scalars().all()
+    jobs_linked = 0
+    for job in jobs:
+        match = pick_component(
+            " ".join(filter(None, [job.job_name, job.job_code, job.job_description])),
+            job.page_reference,
+        )
+        if match:
+            changed = False
+            if job.component_id != match.id:
+                job.component_id = match.id
+                changed = True
+            if job.is_unmapped:
+                job.is_unmapped = False
+                changed = True
+            if job.pdf_reference != manual.original_filename:
+                job.pdf_reference = manual.original_filename
+                changed = True
+            source_ref = (
+                f"{manual.original_filename} (p.{job.page_reference})"
+                if job.page_reference
+                else manual.original_filename
+            )
+            if job.source_reference != source_ref:
+                job.source_reference = source_ref
+                changed = True
+            if changed:
+                db.add(job)
+                jobs_linked += 1
+
+    spares_result = await db.execute(
+        select(Spare).where(
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == tenant_id,
+            Spare.is_deleted == False,
+            Spare.source_manual_id == manual.id,
+        )
+    )
+    spares = spares_result.scalars().all()
+    spares_linked = 0
+    for spare in spares:
+        match = pick_component(
+            " ".join(
+                filter(
+                    None,
+                    [
+                        spare.part_name,
+                        spare.part_number,
+                        spare.spare_model,
+                        spare.specification,
+                        spare.drawing_number,
+                    ],
+                )
+            ),
+            spare.page_reference,
+        )
+        if match:
+            changed = False
+            if spare.component_id != match.id:
+                spare.component_id = match.id
+                changed = True
+            if spare.machinery_maker != match.maker:
+                spare.machinery_maker = match.maker
+                changed = True
+            if spare.machinery_model != match.model:
+                spare.machinery_model = match.model
+                changed = True
+            if changed:
+                db.add(spare)
+                spares_linked += 1
+
+    return jobs_linked, spares_linked
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +744,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         # Determine which entity types to extract based on category and
         # classifier signals (pages_with_spares / pages_with_jobs)
         # ------------------------------------------------------------------
-        norm_category = category.strip()
+        norm_category = (category or "").strip()
         extraction_types: list[str] = ["component"]  # always extract components
 
         has_spares_signal = bool(getattr(manual, "pages_with_spares", None))
@@ -482,6 +759,40 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 extraction_types.append("spare")
         elif has_spares_signal:
             extraction_types.append("spare")
+
+        type_to_text: dict[str, str] = {}
+        for entity_type in extraction_types:
+            selected_pages = _selected_manual_pages(manual, entity_type)
+            filtered_text = _filter_text_to_pages(full_text, selected_pages)
+            type_to_text[entity_type] = filtered_text
+            logger.info(
+                "auto_extract_from_manual: %s using %s pages=%s chars=%d",
+                filename,
+                entity_type,
+                selected_pages or "all",
+                len(filtered_text),
+            )
+
+        await db.execute(
+            update(Job)
+            .where(Job.source_manual_id == manual.id, Job.is_deleted == False)
+            .values(is_deleted=True)
+        )
+        await db.execute(
+            update(Spare)
+            .where(Spare.source_manual_id == manual.id, Spare.is_deleted == False)
+            .values(is_deleted=True)
+        )
+        await db.execute(
+            update(Component)
+            .where(
+                Component.source_manual_id == manual.id,
+                Component.is_deleted == False,
+                Component.is_unmapped == True,
+            )
+            .values(is_deleted=True)
+        )
+        await db.commit()
 
         # ------------------------------------------------------------------
         # Chunk the full text so every page is processed.
@@ -517,6 +828,15 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         spares_to_add: list[Spare] = []
 
         for etype in extraction_types:
+            source_text = type_to_text.get(etype) or full_text
+            text_chunks = _chunk_text(source_text)
+            logger.info(
+                "auto_extract_from_manual: %s -> %s chars=%d chunks=%d",
+                filename,
+                etype,
+                len(source_text),
+                len(text_chunks),
+            )
             all_records: list[dict] = []
             for chunk_idx, chunk in enumerate(text_chunks):
                 chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
@@ -606,6 +926,12 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                         frequency_type=freq_type,
                         is_critical=bool(record.get("is_critical", False)),
                         page_reference=int(source_page) if source_page is not None else None,
+                        pdf_reference=filename,
+                        source_reference=(
+                            f"{filename} (p.{int(source_page)})"
+                            if source_page is not None
+                            else filename
+                        ),
                     )
                     jobs_to_add.append(job)
 
@@ -667,82 +993,26 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         except Exception as merge_exc:
             logger.warning("auto_extract_from_manual: auto-merge failed: %s", merge_exc)
 
-        # Auto-link: populate job_pages / spare_pages / pdf_reference on components
-        # that have a source_manual_id but empty page fields.
         try:
-            from sqlalchemy import select as _select
-            from app.models.ingestion import Manual as _Manual
-            from app.models.component import Component as _Component
-
-            # Get classified manuals with page data for this vessel
-            man_res = await db.execute(
-                _select(_Manual).where(
-                    _Manual.vessel_id == vessel_id,
-                    _Manual.tenant_id == tenant_id,
-                    _Manual.is_deleted == False,
-                    _Manual.category != None,
-                )
+            component_ref_updates = await _overwrite_component_manual_refs(
+                db=db,
+                manual=manual,
+                vessel_id=vessel_id,
+                tenant_id=tenant_id,
             )
-            all_manuals = man_res.scalars().all()
-            manual_by_id_link = {
-                m.id: {
-                    "job_pages": m.pages_with_jobs or "",
-                    "spare_pages": m.pages_with_spares or "",
-                    "pdf_ref": m.original_filename,
-                    "name": m.original_filename,
-                }
-                for m in all_manuals
-                if m.pages_with_jobs or m.pages_with_spares
-            }
-
-            if manual_by_id_link:
-                comp_res = await db.execute(
-                    _select(_Component).where(
-                        _Component.vessel_id == vessel_id,
-                        _Component.tenant_id == tenant_id,
-                        _Component.is_deleted == False,
-                    )
-                )
-                all_comps = comp_res.scalars().all()
-                link_updated = 0
-                for comp in all_comps:
-                    matched = None
-                    if comp.source_manual_id and comp.source_manual_id in manual_by_id_link:
-                        matched = manual_by_id_link[comp.source_manual_id]
-                    if not matched:
-                        continue
-                    changed = False
-                    # job_pages: set or append if from different source
-                    if matched["job_pages"]:
-                        if not comp.job_pages:
-                            comp.job_pages = matched["job_pages"]
-                            changed = True
-                        elif matched["job_pages"] not in comp.job_pages:
-                            comp.job_pages = f"{comp.job_pages}; {matched['job_pages']}"
-                            changed = True
-                    # spare_pages: set or append
-                    if matched["spare_pages"]:
-                        if not comp.spare_pages:
-                            comp.spare_pages = matched["spare_pages"]
-                            changed = True
-                        elif matched["spare_pages"] not in comp.spare_pages:
-                            comp.spare_pages = f"{comp.spare_pages}; {matched['spare_pages']}"
-                            changed = True
-                    # pdf_reference: set or append if different file
-                    if matched["pdf_ref"]:
-                        if not comp.pdf_reference:
-                            comp.pdf_reference = matched["pdf_ref"]
-                            changed = True
-                        elif matched["pdf_ref"] not in comp.pdf_reference:
-                            comp.pdf_reference = f"{comp.pdf_reference}; {matched['pdf_ref']}"
-                            changed = True
-                    if changed:
-                        db.add(comp)
-                        link_updated += 1
-                await db.commit()
-                logger.info(
-                    "auto_extract_from_manual: auto-link vessel=%s updated=%d",
-                    vessel_id_str, link_updated,
-                )
+            jobs_linked, spares_linked = await _link_records_to_components(
+                db=db,
+                manual=manual,
+                vessel_id=vessel_id,
+                tenant_id=tenant_id,
+            )
+            await db.commit()
+            logger.info(
+                "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d",
+                vessel_id_str,
+                component_ref_updates,
+                jobs_linked,
+                spares_linked,
+            )
         except Exception as link_exc:
-            logger.warning("auto_extract_from_manual: auto-link failed: %s", link_exc)
+            logger.warning("auto_extract_from_manual: manual sync failed: %s", link_exc)

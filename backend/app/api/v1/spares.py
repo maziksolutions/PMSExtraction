@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,16 @@ async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselPr
     return vessel
 
 
+async def _rerun_manual_extraction(manual_ids: list[str]) -> None:
+    from app.services.extractor import auto_extract_from_manual
+
+    for manual_id in manual_ids:
+        try:
+            await auto_extract_from_manual(manual_id)
+        except Exception:
+            continue
+
+
 @router.get("/{vessel_id}/spares", summary="List spares with filters")
 async def list_spares(
     vessel_id: uuid.UUID,
@@ -45,6 +55,8 @@ async def list_spares(
     page_size: int = Query(100, ge=1, le=1000),
 ) -> dict[str, Any]:
     from sqlalchemy import func as _func, or_
+    from app.models.component import Component
+    from app.models.ingestion import Manual
     await _get_vessel_or_404(vessel_id, db)
     base_where = [
         Spare.vessel_id == vessel_id,
@@ -80,7 +92,37 @@ async def list_spares(
     query = select(Spare).where(*base_where).order_by(Spare.part_name).offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     spares = result.scalars().all()
-    return {"items": [SpareOut.model_validate(s) for s in spares], "page": page, "page_size": page_size, "total": total}
+
+    component_ids = {spare.component_id for spare in spares if spare.component_id}
+    manual_ids = {spare.source_manual_id for spare in spares if spare.source_manual_id}
+
+    component_lookup: dict[uuid.UUID, Component] = {}
+    manual_lookup: dict[uuid.UUID, Manual] = {}
+
+    if component_ids:
+        component_result = await db.execute(select(Component).where(Component.id.in_(component_ids)))
+        component_lookup = {component.id: component for component in component_result.scalars().all()}
+    if manual_ids:
+        manual_result = await db.execute(select(Manual).where(Manual.id.in_(manual_ids)))
+        manual_lookup = {manual.id: manual for manual in manual_result.scalars().all()}
+
+    items = []
+    for spare in spares:
+        payload = SpareOut.model_validate(spare).model_dump()
+        component = component_lookup.get(spare.component_id) if spare.component_id else None
+        manual = manual_lookup.get(spare.source_manual_id) if spare.source_manual_id else None
+        payload.update(
+            {
+                "component_name": component.component_name if component else None,
+                "component_maker": component.maker if component else None,
+                "component_model": component.model if component else None,
+                "source_manual_name": manual.original_filename if manual else None,
+                "pdf_reference": manual.original_filename if manual else None,
+            }
+        )
+        items.append(payload)
+
+    return {"items": items, "page": page, "page_size": page_size, "total": total}
 
 
 @router.post(
@@ -252,17 +294,29 @@ async def reassign_component(
 @router.post("/{vessel_id}/spares/trigger-extraction")
 async def trigger_spare_extraction(
     vessel_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
     await _get_vessel_or_404(vessel_id, db)
-    try:
-        from app.tasks.extraction import extract_spares_table
+    from app.models.ingestion import Manual
 
-        task = extract_spares_table.delay(str(vessel_id))
-        return {"task_id": task.id, "status": "queued"}
-    except Exception:
-        return {"status": "queued", "task_id": "mock"}
+    result = await db.execute(
+        select(Manual).where(
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+            Manual.pages_with_spares.isnot(None),
+            Manual.pages_with_spares != "",
+        )
+    )
+    manuals = result.scalars().all()
+    manual_ids = [str(manual.id) for manual in manuals]
+    if not manual_ids:
+        return {"started": False, "total": 0, "message": "No manuals with spare page references found."}
+
+    background_tasks.add_task(_rerun_manual_extraction, manual_ids)
+    return {"started": True, "total": len(manual_ids), "message": "Spare extraction started."}
 
 
 @router.get("/{vessel_id}/spares/{spare_id}/page-image")
