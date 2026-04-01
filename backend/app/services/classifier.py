@@ -191,21 +191,22 @@ def _make_marked_text(pages_text: list[str], max_chars: int = 400_000) -> tuple[
     ]
     detected = {n for n in printed_nums if n is not None}
 
-    if not detected:
-        _log.info("classifier: no printed page numbers detected — doc_page mapping will be empty")
-
-    resolved: list[Optional[int]] = [
-        n if n is not None else None
-        for n in printed_nums
+    # If there are no printed page numbers, fall back to physical indices for
+    # mapping so page ranges are not dropped entirely.
+    resolved: list[int] = [
+        n if n is not None else i
+        for i, n in enumerate(printed_nums, start=1)
     ]
+
+    if not detected:
+        _log.info("classifier: no printed page numbers detected — using physical page numbers as fallback")
 
     parts: list[str] = []
     total = 0
-    valid_doc_pages: set[int] = set(detected)
+    valid_doc_pages: set[int] = detected if detected else set(resolved)
     for i, (text, dp) in enumerate(zip(pages_text, resolved), start=1):
         truncated = text[:800] if text else ""
-        marker_value = dp if dp is not None else "None"
-        marker = f"[PAGE {i}, doc_page={marker_value}]"
+        marker = f"[PAGE {i}, doc_page={dp}]"
         snippet = f"{marker}\n{truncated}" if truncated else marker
         total += len(snippet)
         parts.append(snippet)
@@ -219,12 +220,12 @@ def _filter_to_valid_pages(page_str: str, valid_doc_pages: set[int]) -> str:
     """
     Keep only page numbers that were actually printed in the document.
     Drops any number the AI invented that doesn't appear as a doc_page marker.
-    If valid_doc_pages is empty, we cannot map page numbers and return empty.
+    If valid_doc_pages is empty, fall back to returning original numbers so we don't lose all pages.
     """
     if not page_str:
         return ""
     if not valid_doc_pages:
-        return ""
+        return page_str
     kept: list[str] = []
     for token in page_str.split(","):
         token = token.strip()
@@ -235,7 +236,7 @@ def _filter_to_valid_pages(page_str: str, valid_doc_pages: set[int]) -> str:
             if n in valid_doc_pages:
                 kept.append(str(n))
             else:
-                _log.warning("classifier: dropping page %d — not a printed doc page (valid: %s)",
+                _log.warning("classifier: dropping page %d — not a validated doc page (valid: %s)",
                              n, sorted(valid_doc_pages)[:15])
         except ValueError:
             pass
@@ -263,19 +264,21 @@ _MODEL_CODE_RE = re.compile(
 
 # Maintenance-job signals (intervals, schedules)
 _JOB_RE = re.compile(
-    r'\b(?:daily|weekly|monthly|quarterly|annually?'
-    r'|every\s+\d+\s*(?:running\s+)?hours?'
-    r'|\d[\d,]*\s*(?:running\s+)?hours?\s*(?:interval|period)?'
-    r'|maintenance\s+schedule|service\s+interval'
-    r'|periodic\s+(?:maintenance|inspection|service)'
-    r'|check\s+list|inspection\s+(?:list|schedule)|lubrication\s+(?:chart|schedule))\b',
+    r'\b(?:daily|weekly|monthly|quarterly|annually?' 
+    r'|every\s+\d+\s*(?:running\s+)?hours?' 
+    r'|\d[\d,]*\s*(?:running\s+)?hours?\s*(?:interval|period)?' 
+    r'|maintenance\s+schedule|service\s+interval' 
+    r'|periodic\s+(?:maintenance|inspection|service)' 
+    r'|routine\s+maintenance|overhaul|servicing' 
+    r'|check(?:-|\s+)?list|inspection\s+(?:list|schedule)|lubrication\s+(?:chart|schedule))\b',
     re.IGNORECASE,
 )
 
 # Spare-parts list signals
 _SPARE_RE = re.compile(
-    r'\b(?:spare\s+parts?(?:\s+list)?|recommended\s+spares?'
-    r'|parts?\s+(?:list|catalogue|catalog)|spare\s+list|consumables?\s+list)\b',
+    r'\b(?:spare\s+parts?(?:\s+list)?|recommended\s+spares?' 
+    r'|parts?\s+(?:list|catalogue|catalog)|spare\s+list|consumables?\s+list' 
+    r'|replacement\s+parts?|parts?\s+catalog(?:ue)?|service\s+parts?)\b',
     re.IGNORECASE,
 )
 
@@ -295,7 +298,7 @@ def _resolve_pages(pages_text: list[str]) -> list[int]:
 
 
 def _scan_pages(
-    pages_text: list[str], resolved_pages: list[Optional[int]], category: str
+    pages_text: list[str], resolved_pages: list[int], category: str
 ) -> tuple[str, str, str]:
     """
     Programmatically detect pages_with_components, pages_with_jobs, pages_with_spares
@@ -308,7 +311,7 @@ def _scan_pages(
     spare_pages: list[str] = []
 
     for text, doc_page in zip(pages_text, resolved_pages):
-        if not text or doc_page is None:
+        if not text:
             continue
 
         # --- Components ---
