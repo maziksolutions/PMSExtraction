@@ -96,10 +96,18 @@ async def _ensure_vessel_types(tenant_id: str, db: AsyncSession) -> None:
             try:
                 result = await db.execute(
                     text(
+                        "WITH payload AS ("
+                        "  SELECT CAST(:id AS UUID) AS id, "
+                        "         CAST(:tid AS UUID) AS tenant_id, "
+                        "         CAST(:name AS VARCHAR(200)) AS name, "
+                        "         CAST(:sort AS INTEGER) AS sort_order"
+                        ") "
                         "INSERT INTO vessel_types (id, tenant_id, name, is_system, sort_order, is_deleted, created_at, updated_at) "
-                        "SELECT :id, :tid, :name, true, :sort, false, NOW(), NOW() "
+                        "SELECT payload.id, payload.tenant_id, payload.name, true, payload.sort_order, false, NOW(), NOW() "
+                        "FROM payload "
                         "WHERE NOT EXISTS ("
-                        "  SELECT 1 FROM vessel_types WHERE tenant_id = :tid AND name = :name AND is_deleted = false"
+                        "  SELECT 1 FROM vessel_types "
+                        "  WHERE tenant_id = payload.tenant_id AND name = payload.name AND is_deleted = false"
                         ")"
                     ),
                     {"id": str(uuid.uuid4()), "tid": tenant_id, "name": name, "sort": sort_order},

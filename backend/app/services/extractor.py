@@ -204,6 +204,119 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 _PAGE_BLOCK_RE = re.compile(r"\[PAGE\s+(\d+)\]\s*\n?(.*?)(?=(?:\n\[PAGE\s+\d+\])|\Z)", re.S)
 
 
+def _strip_code_fences(raw_text: str) -> str:
+    if raw_text.startswith("```"):
+        lines = raw_text.splitlines()
+        lines = lines[1:] if lines and lines[0].startswith("```") else lines
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        raw_text = "\n".join(lines).strip()
+    return raw_text
+
+
+def _parse_json_records(raw_text: str) -> list[dict]:
+    parsed: Any = json.loads(_strip_code_fences(raw_text).strip())
+    if isinstance(parsed, list):
+        return [r for r in parsed if isinstance(r, dict)]
+    return []
+
+
+def _redact_error_message(exc: Exception) -> str:
+    message = str(exc)
+    for secret in (
+        getattr(settings, "ANTHROPIC_API_KEY", ""),
+        getattr(settings, "GEMINI_API_KEY", ""),
+        getattr(settings, "GROQ_API_KEY", ""),
+    ):
+        if secret:
+            message = message.replace(secret, "***")
+    return message
+
+
+async def _extract_with_claude(
+    *,
+    system_prompt: str,
+    user_message: str,
+    filename: str,
+    extraction_type: str,
+) -> list[dict]:
+    if not settings.ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+
+    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    max_tokens = getattr(settings, "EXTRACTION_MAX_TOKENS", 8192)
+    model_id: str = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
+    message = await client.messages.create(
+        model=model_id,
+        max_tokens=max_tokens,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    raw_text: str = message.content[0].text.strip()
+    logger.info("extract_entities[claude]: %s/%s responded", filename, extraction_type)
+    return _parse_json_records(raw_text)
+
+
+async def _extract_with_groq(
+    *,
+    system_prompt: str,
+    user_message: str,
+    filename: str,
+    extraction_type: str,
+) -> list[dict]:
+    if not settings.GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY is not configured")
+
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(
+        api_key=settings.GROQ_API_KEY,
+        base_url="https://api.groq.com/openai/v1",
+    )
+    max_tokens = min(getattr(settings, "EXTRACTION_MAX_TOKENS", 8192), 8192)
+    response = await client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        max_tokens=max_tokens,
+        temperature=0,
+    )
+    raw_text = (response.choices[0].message.content or "").strip()
+    if not raw_text:
+        raise RuntimeError("Groq returned an empty response")
+    logger.info("extract_entities[groq]: %s/%s responded", filename, extraction_type)
+    return _parse_json_records(raw_text)
+
+
+async def _extract_with_gemini(
+    *,
+    system_prompt: str,
+    user_message: str,
+    filename: str,
+    extraction_type: str,
+) -> list[dict]:
+    if not settings.GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    import httpx
+
+    prompt = f"{system_prompt}\n\n{user_message}"
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.0-flash-lite:generateContent?key={settings.GEMINI_API_KEY}"
+    )
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    async with httpx.AsyncClient(timeout=180) as client:
+        response = await client.post(url, json=payload)
+        response.raise_for_status()
+    data = response.json()
+    raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    logger.info("extract_entities[gemini]: %s/%s responded", filename, extraction_type)
+    return _parse_json_records(raw_text)
+
+
 def _parse_page_tokens(value: str | None) -> list[int]:
     if not value:
         return []
@@ -318,7 +431,7 @@ async def extract_entities(
     custom_prompt: str | None = None,
 ) -> list[dict]:
     """
-    Call Claude to extract structured entities from a text chunk.
+    Call the configured AI providers to extract structured entities from a text chunk.
 
     Args:
         text_chunk: The manual text to process.
@@ -329,55 +442,59 @@ async def extract_entities(
     Returns:
         List of dicts parsed from Claude's JSON response, or [] on error.
     """
-    model_id: str = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
-
     prompt_config = DEFAULT_PROMPTS.get(extraction_type, DEFAULT_PROMPTS["component"])
     system_prompt = custom_prompt or prompt_config["system"]
     user_message = prompt_config["user_template"].format(text=text_chunk, filename=filename)
+    providers: list[tuple[str, Any]] = [
+        ("claude", _extract_with_claude),
+        ("gemini", _extract_with_gemini),
+        ("groq", _extract_with_groq),
+    ]
+    last_error: Exception | None = None
 
-    try:
-        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-        max_tokens = getattr(settings, "EXTRACTION_MAX_TOKENS", 8192)
-        message = await client.messages.create(
-            model=model_id,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
-        )
+    for provider_name, provider in providers:
+        try:
+            records = await provider(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                filename=filename,
+                extraction_type=extraction_type,
+            )
+            logger.info(
+                "extract_entities: provider=%s %s/%s records=%d",
+                provider_name,
+                filename,
+                extraction_type,
+                len(records),
+            )
+            return records
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            logger.warning(
+                "extract_entities: provider=%s JSON parse error for %s/%s: %s",
+                provider_name,
+                filename,
+                extraction_type,
+                exc,
+            )
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "extract_entities: provider=%s failed for %s/%s: %s",
+                provider_name,
+                filename,
+                extraction_type,
+                _redact_error_message(exc),
+            )
 
-        raw_text: str = message.content[0].text.strip()
-
-        # Strip markdown code fences if present
-        if raw_text.startswith("```"):
-            lines = raw_text.splitlines()
-            # Remove opening fence (```json or ```)
-            lines = lines[1:] if lines[0].startswith("```") else lines
-            # Remove closing fence
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            raw_text = "\n".join(lines).strip()
-
-        parsed: Any = json.loads(raw_text)
-        if isinstance(parsed, list):
-            return [r for r in parsed if isinstance(r, dict)]
-        return []
-
-    except json.JSONDecodeError as exc:
-        logger.warning(
-            "extract_entities: JSON parse error for %s/%s: %s",
-            filename,
-            extraction_type,
-            exc,
-        )
-        return []
-    except Exception as exc:
+    if last_error is not None:
         logger.error(
-            "extract_entities: unexpected error for %s/%s: %s",
+            "extract_entities: all providers failed for %s/%s: %s",
             filename,
             extraction_type,
-            exc,
+            _redact_error_message(last_error),
         )
-        return []
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +704,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
 
         vessel_id = manual.vessel_id
         tenant_id = manual.tenant_id
+        vessel_id_str = str(vessel_id)
 
         # Load vessel for shipyard fallback
         from app.models.vessel import VesselProject
