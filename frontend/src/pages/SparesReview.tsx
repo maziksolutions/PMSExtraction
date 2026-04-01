@@ -245,13 +245,13 @@ const SparesReview: React.FC = () => {
                     </td>
                     <td className="px-4 py-2.5 text-slate-200 font-medium">{spare.part_name}</td>
                     <td className="px-4 py-2.5 font-mono text-xs text-slate-400">
-                      {spare.part_number ?? '—'}
+                      {spare.part_number ?? '-'}
                     </td>
                     <td className="px-4 py-2.5 font-mono text-xs text-slate-400">
-                      {spare.drawing_number ?? '—'}
+                      {spare.drawing_number ?? '-'}
                     </td>
-                    <td className="px-4 py-2.5 text-slate-400">{spare.drawing_position ?? '—'}</td>
-                    <td className="px-4 py-2.5 text-slate-300">{spare.spare_maker ?? '—'}</td>
+                    <td className="px-4 py-2.5 text-slate-400">{spare.drawing_position ?? '-'}</td>
+                    <td className="px-4 py-2.5 text-slate-300">{spare.spare_maker ?? '-'}</td>
                     <td className="px-4 py-2.5">
                       {spare.component_name ? (
                         <div className="min-w-[180px]">
@@ -267,13 +267,13 @@ const SparesReview: React.FC = () => {
                     <td className="px-4 py-2.5">
                       {spare.page_reference != null ? (
                         <div className="min-w-[170px] text-xs">
-                          <div className="inline-flex items-center gap-1 text-sky-400" title={`${spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'} � page ${spare.page_reference}`}>
+                          <div className="inline-flex items-center gap-1 text-sky-400" title={`${spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'} - page ${spare.page_reference}`}>
                             <ExternalLink className="h-3 w-3" />
                             p.{spare.page_reference}
                           </div>
                           <p className="mt-1 truncate text-slate-500">{spare.source_manual_name ?? spare.pdf_reference ?? 'Manual'}</p>
                         </div>
-                      ) : <span className="text-slate-600">—</span>}
+                      ) : <span className="text-slate-600">-</span>}
                     </td>
                     <td className="px-4 py-2.5">
                       <span
@@ -290,7 +290,7 @@ const SparesReview: React.FC = () => {
                           Critical
                         </span>
                       ) : (
-                        <span className="text-slate-600">—</span>
+                        <span className="text-slate-600">-</span>
                       )}
                     </td>
                     <td className="px-4 py-2.5">
@@ -307,7 +307,7 @@ const SparesReview: React.FC = () => {
                           {spare.confidence_score}%
                         </span>
                       ) : (
-                        '—'
+                        '-'
                       )}
                     </td>
                     <td className="px-4 py-2.5">
@@ -353,10 +353,10 @@ const SparesReview: React.FC = () => {
               <span className="text-slate-500">Part:</span> {selectedSpare.part_name}
             </p>
             <p>
-              <span className="text-slate-500">Part #:</span> {selectedSpare.part_number ?? '—'}
+              <span className="text-slate-500">Part #:</span> {selectedSpare.part_number ?? '-'}
             </p>
             <p>
-              <span className="text-slate-500">Page:</span> {selectedSpare.page_reference ?? '—'}
+              <span className="text-slate-500">Page:</span> {selectedSpare.page_reference ?? '-'}
             </p>
           </div>
           <div className="rounded-lg border border-slate-700 bg-slate-800 min-h-64 flex items-center justify-center">
