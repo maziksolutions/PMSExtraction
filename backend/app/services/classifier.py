@@ -110,6 +110,7 @@ def _extract_pdf_text(content: bytes, max_pages: int = 9999) -> tuple[list[str],
                 t = page.extract_text()
                 if t and t.strip():
                     parts.append(t)
+
                 try:
                     for tbl in (page.extract_tables() or []):
                         if not tbl:
@@ -122,6 +123,22 @@ def _extract_pdf_text(content: bytes, max_pages: int = 9999) -> tuple[list[str],
                             parts.append("[TABLE] " + " // ".join(rows[:5]))  # first 5 rows for brevity
                 except Exception:
                     pass
+
+                # If no searchable text is extracted, try OCR on the footer to capture page numbers.
+                if not parts:
+                    try:
+                        import pytesseract  # type: ignore
+                        from PIL import Image  # type: ignore
+
+                        page_image = page.to_image(resolution=200).original
+                        w, h = page_image.size
+                        footer_crop = page_image.crop((0, int(h * 0.7), w, h))
+                        ocr_text = pytesseract.image_to_string(footer_crop, config='--psm 6').strip()
+                        if ocr_text:
+                            parts.append(ocr_text)
+                    except Exception:
+                        pass
+
                 pages_text.append("\n".join(parts).strip())
         return pages_text, total
     except Exception:
@@ -174,23 +191,21 @@ def _make_marked_text(pages_text: list[str], max_chars: int = 400_000) -> tuple[
     ]
     detected = {n for n in printed_nums if n is not None}
 
-    # For pages with no detected printed number, fall back to physical page
-    # position so that no page is ever skipped — cover pages, unnumbered
-    # drawings etc. still need to be checked for maker/model information.
     if not detected:
-        _log.info("classifier: no printed page numbers detected — using physical page positions")
-    resolved: list[int] = [
-        n if n is not None else i
-        for i, n in enumerate(printed_nums, start=1)
+        _log.info("classifier: no printed page numbers detected — doc_page mapping will be empty")
+
+    resolved: list[Optional[int]] = [
+        n if n is not None else None
+        for n in printed_nums
     ]
 
     parts: list[str] = []
     total = 0
-    valid_doc_pages: set[int] = set()
+    valid_doc_pages: set[int] = set(detected)
     for i, (text, dp) in enumerate(zip(pages_text, resolved), start=1):
         truncated = text[:800] if text else ""
-        valid_doc_pages.add(dp)
-        marker = f"[PAGE {i}, doc_page={dp}]"
+        marker_value = dp if dp is not None else "None"
+        marker = f"[PAGE {i}, doc_page={marker_value}]"
         snippet = f"{marker}\n{truncated}" if truncated else marker
         total += len(snippet)
         parts.append(snippet)
@@ -204,11 +219,12 @@ def _filter_to_valid_pages(page_str: str, valid_doc_pages: set[int]) -> str:
     """
     Keep only page numbers that were actually printed in the document.
     Drops any number the AI invented that doesn't appear as a doc_page marker.
-    Falls back to returning page_str unchanged if valid_doc_pages is empty
-    (document has no printed page numbers at all).
+    If valid_doc_pages is empty, we cannot map page numbers and return empty.
     """
-    if not page_str or not valid_doc_pages:
-        return page_str
+    if not page_str:
+        return ""
+    if not valid_doc_pages:
+        return ""
     kept: list[str] = []
     for token in page_str.split(","):
         token = token.strip()
@@ -279,7 +295,7 @@ def _resolve_pages(pages_text: list[str]) -> list[int]:
 
 
 def _scan_pages(
-    pages_text: list[str], resolved_pages: list[int], category: str
+    pages_text: list[str], resolved_pages: list[Optional[int]], category: str
 ) -> tuple[str, str, str]:
     """
     Programmatically detect pages_with_components, pages_with_jobs, pages_with_spares
@@ -292,7 +308,7 @@ def _scan_pages(
     spare_pages: list[str] = []
 
     for text, doc_page in zip(pages_text, resolved_pages):
-        if not text:
+        if not text or doc_page is None:
             continue
 
         # --- Components ---

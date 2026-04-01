@@ -307,9 +307,13 @@ async def _process_uploaded_file(
                                         page_parts.append("[TABLE]\n" + "\n".join(rows))
                             except Exception:
                                 pass
+
+                            # Ensure every physical page gets a marker even when no text is extracted.
+                            # This prevents page numbering and mapping from dropping unmarked pages.
                             if page_parts:
-                                # Page marker on every page so Claude reports accurate page numbers
                                 parts.append(f"[PAGE {page_num}]\n" + "\n".join(page_parts))
+                            else:
+                                parts.append(f"[PAGE {page_num}]\n")
                     return "\n\n".join(parts), total
 
                 extracted_text, page_count_val = await asyncio.to_thread(_read_pdf, file_bytes)
@@ -679,8 +683,11 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                                         pparts.append("[TABLE]\n" + "\n".join(rows))
                                             except Exception:
                                                 pass
+
                                             if pparts:
                                                 parts.append(f"[PAGE {pnum}]\n" + "\n".join(pparts))
+                                            else:
+                                                parts.append(f"[PAGE {pnum}]\n")
                                     return "\n\n".join(parts)
 
                                 new_extracted_text = await asyncio.to_thread(_reextract, content)
