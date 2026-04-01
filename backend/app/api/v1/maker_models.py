@@ -84,18 +84,28 @@ async def list_makers(
     search: Optional[str] = Query(None),
 ) -> dict[str, Any]:
     await _bootstrap(db)
-    query = text("""
-        SELECT DISTINCT maker FROM maker_models
-        WHERE tenant_id = :tid AND is_deleted = false
-        AND (:search IS NULL OR maker ILIKE :search_pat)
-        ORDER BY maker
-        LIMIT 200
-    """)
-    result = await db.execute(query, {
-        "tid": str(current_user.tenant_id),
-        "search": search,
-        "search_pat": f"%{search}%" if search else None,
-    })
+    if search:
+        query = text("""
+            SELECT DISTINCT maker FROM maker_models
+            WHERE tenant_id = :tid AND is_deleted = false
+            AND maker ILIKE :search_pat
+            ORDER BY maker
+            LIMIT 200
+        """)
+        result = await db.execute(query, {
+            "tid": str(current_user.tenant_id),
+            "search_pat": f"%{search}%",
+        })
+    else:
+        query = text("""
+            SELECT DISTINCT maker FROM maker_models
+            WHERE tenant_id = :tid AND is_deleted = false
+            ORDER BY maker
+            LIMIT 200
+        """)
+        result = await db.execute(query, {
+            "tid": str(current_user.tenant_id),
+        })
     makers = [row[0] for row in result.fetchall()]
     return {"items": makers, "total": len(makers)}
 
@@ -112,22 +122,25 @@ async def list_models(
     search: Optional[str] = Query(None),
 ) -> dict[str, Any]:
     await _bootstrap(db)
-    query = text("""
+    # Build query dynamically to avoid None parameter issues
+    base_where = "WHERE tenant_id = :tid AND is_deleted = false AND model IS NOT NULL"
+    params = {"tid": str(current_user.tenant_id)}
+    
+    if maker:
+        base_where += " AND maker ILIKE :maker_pat"
+        params["maker_pat"] = f"%{maker}%"
+    
+    if search:
+        base_where += " AND model ILIKE :search_pat"
+        params["search_pat"] = f"%{search}%"
+    
+    query = text(f"""
         SELECT DISTINCT model FROM maker_models
-        WHERE tenant_id = :tid AND is_deleted = false
-        AND model IS NOT NULL
-        AND (:maker IS NULL OR maker ILIKE :maker_pat)
-        AND (:search IS NULL OR model ILIKE :search_pat)
+        {base_where}
         ORDER BY model
         LIMIT 200
     """)
-    result = await db.execute(query, {
-        "tid": str(current_user.tenant_id),
-        "maker": maker,
-        "maker_pat": f"%{maker}%" if maker else None,
-        "search": search,
-        "search_pat": f"%{search}%" if search else None,
-    })
+    result = await db.execute(query, params)
     models = [row[0] for row in result.fetchall()]
     return {"items": models, "total": len(models)}
 
