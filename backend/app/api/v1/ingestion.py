@@ -585,6 +585,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                             from app.services.classifier import (
                                 _classify_with_groq, _classify_with_gemini, _classify_with_claude,
                                 _sanitise_result, _keyword_classify as _kw_cls,
+                                _resolve_pages, _scan_pages,
                                 VALID_CATEGORIES, ClassificationResult,
                             )
                             # Parse stored text into per-page list by [PAGE N] or [PAGE N, doc_page=X] markers
@@ -592,7 +593,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                             parts = _re.split(r'\[PAGE \d+(?:, doc_page=[^\]]+)?\]\n?', stored_text)
                             pages_text = [p.strip() for p in parts if p.strip()]
                             page_count = manual.page_count or len(pages_text)
-                            # Try Groq (free, 30 RPM) → Gemini → Claude → keywords
+                            # Try Groq (free, 30 RPM) → Gemini → Claude → keywords for CATEGORY only
                             ai = await asyncio.to_thread(
                                 _classify_with_groq, pages_text, manual.original_filename, page_count
                             )
@@ -608,18 +609,40 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                 category = ai.get("category", "Unknown/Unclassifiable")
                                 if category not in VALID_CATEGORIES:
                                     category = "Unknown/Unclassifiable"
-                                # supply_type is set by _sanitise_result based on category rule
+                                
+                                # Use AI-provided pages if available
+                                from app.services.classifier import _make_marked_text, _filter_to_valid_pages
+                                marked_text, valid_doc_pages = _make_marked_text(pages_text, max_chars=80_000)
+                                ai_components = ai.get("pages_with_components", "").strip()
+                                ai_jobs = ai.get("pages_with_jobs", "").strip()
+                                ai_spares = ai.get("pages_with_spares", "").strip()
+                                
+                                if ai_components or ai_jobs or ai_spares:
+                                    components = _filter_to_valid_pages(ai_components, valid_doc_pages)
+                                    jobs = _filter_to_valid_pages(ai_jobs, valid_doc_pages)
+                                    spares = _filter_to_valid_pages(ai_spares, valid_doc_pages)
+                                else:
+                                    # Programmatic page scan
+                                    resolved = _resolve_pages(pages_text)
+                                    components, jobs, spares = _scan_pages(pages_text, resolved, category)
+                                
                                 cr = _sanitise_result(ClassificationResult(
                                     category=category,
                                     confidence=max(0, min(100, int(ai.get("confidence", 60)))),
                                     useful_for_extraction=ai.get("useful_for_extraction", "partial"),
-                                    pages_with_components=ai.get("pages_with_components", ""),
-                                    pages_with_jobs=ai.get("pages_with_jobs", ""),
-                                    pages_with_spares=ai.get("pages_with_spares", ""),
+                                    pages_with_components=components,
+                                    pages_with_jobs=jobs,
+                                    pages_with_spares=spares,
                                     page_count=page_count,
                                 ))
                             else:
-                                cr = _sanitise_result(_kw_cls(pages_text, manual.original_filename, page_count))
+                                kw_result = _kw_cls(pages_text, manual.original_filename, page_count)
+                                resolved = _resolve_pages(pages_text)
+                                components, jobs, spares = _scan_pages(pages_text, resolved, kw_result.category)
+                                kw_result.pages_with_components = components
+                                kw_result.pages_with_jobs = jobs
+                                kw_result.pages_with_spares = spares
+                                cr = _sanitise_result(kw_result)
                         else:
                             logger.warning(
                                 "_run_screening_task: no PDF and no extracted_text for %s — using keyword fallback",

@@ -226,6 +226,103 @@ def _filter_to_valid_pages(page_str: str, valid_doc_pages: set[int]) -> str:
     return ", ".join(kept)
 
 
+# ---------------------------------------------------------------------------
+# Programmatic page-scanning patterns (hybrid approach)
+# AI determines category; these patterns scan page text for page fields.
+# ---------------------------------------------------------------------------
+
+# Maker / manufacturer signals on a page
+_MAKER_RE = re.compile(
+    r'(?:maker|manufacturer|manufactured\s+by|mfr\.?|made\s+by)\s*[:\-]'
+    r'|\b(?:CO\.\s*,?\s*LTD\.?|INDUSTRIES|ENGINEERING|MARINE|CORPORATION|CORP\.?|INC\.?|GmbH|A/S)\b',
+    re.IGNORECASE,
+)
+
+# Model / type code signals on a page
+_MODEL_CODE_RE = re.compile(
+    r'\b(?:model|type|model\s*no\.?|type\s*no\.?|series)\s*[:\-]?\s*[A-Z0-9]'
+    r'|\b[A-Z]{1,5}[-]\d{2,6}[A-Za-z]{0,3}\b',
+    re.IGNORECASE,
+)
+
+# Maintenance-job signals (intervals, schedules)
+_JOB_RE = re.compile(
+    r'\b(?:daily|weekly|monthly|quarterly|annually?'
+    r'|every\s+\d+\s*(?:running\s+)?hours?'
+    r'|\d[\d,]*\s*(?:running\s+)?hours?\s*(?:interval|period)?'
+    r'|maintenance\s+schedule|service\s+interval'
+    r'|periodic\s+(?:maintenance|inspection|service)'
+    r'|check\s+list|inspection\s+(?:list|schedule)|lubrication\s+(?:chart|schedule))\b',
+    re.IGNORECASE,
+)
+
+# Spare-parts list signals
+_SPARE_RE = re.compile(
+    r'\b(?:spare\s+parts?(?:\s+list)?|recommended\s+spares?'
+    r'|parts?\s+(?:list|catalogue|catalog)|spare\s+list|consumables?\s+list)\b',
+    re.IGNORECASE,
+)
+
+# Yard-drawing parts-table signals (item numbers, bill of materials, etc.)
+_YARD_PARTS_RE = re.compile(
+    r'\b(?:item\s+no\.?|drawing\s+no\.?|dwg\.?\s*no\.?'
+    r'|parts?\s+list|bill\s+of\s+materials?|assembly\s+(?:drawing|list)'
+    r'|outfit\s+(?:list|drawing)|spare\s+per)\b',
+    re.IGNORECASE,
+)
+
+
+def _resolve_pages(pages_text: list[str]) -> list[int]:
+    """Return the resolved doc_page number (printed or physical fallback) for each page."""
+    printed = [_detect_printed_page_num(text) for text in pages_text]
+    return [n if n is not None else i for i, n in enumerate(printed, start=1)]
+
+
+def _scan_pages(
+    pages_text: list[str], resolved_pages: list[int], category: str
+) -> tuple[str, str, str]:
+    """
+    Programmatically detect pages_with_components, pages_with_jobs, pages_with_spares
+    using regex patterns appropriate for the document category.
+
+    Returns (components, jobs, spares) as comma-separated doc_page number strings.
+    """
+    comp_pages: list[str] = []
+    job_pages: list[str] = []
+    spare_pages: list[str] = []
+
+    for text, doc_page in zip(pages_text, resolved_pages):
+        if not text:
+            continue
+
+        # --- Components ---
+        if category in ("Instruction Manual", "Machinery Particulars"):
+            # Require maker AND model co-present on the same page
+            if _MAKER_RE.search(text) and _MODEL_CODE_RE.search(text):
+                comp_pages.append(str(doc_page))
+        elif category == "Yard/Finished Drawings":
+            if _YARD_PARTS_RE.search(text):
+                comp_pages.append(str(doc_page))
+        elif category == "Tank Capacity Plan":
+            tl = text.lower()
+            if "tank" in tl and any(kw in tl for kw in ("capacity", "sounding", "ullage", "volume")):
+                comp_pages.append(str(doc_page))
+
+        # --- Jobs (Instruction Manual only) ---
+        if category == "Instruction Manual" and _JOB_RE.search(text):
+            job_pages.append(str(doc_page))
+
+        # --- Spares (Instruction Manual + Yard/Finished Drawings) ---
+        if category in ("Instruction Manual", "Yard/Finished Drawings") and _SPARE_RE.search(text):
+            spare_pages.append(str(doc_page))
+
+    _log.info(
+        "classifier[scan]: category=%s comp=%s jobs=%s spares=%s",
+        category, comp_pages[:10], job_pages[:10], spare_pages[:10],
+    )
+    return ", ".join(comp_pages), ", ".join(job_pages), ", ".join(spare_pages)
+
+
 def _find_pages_for_topic(pages_text: list[str], keywords: list[str]) -> str:
     matching: list[int] = []
     for i, text in enumerate(pages_text):
@@ -264,107 +361,34 @@ def _classify_with_claude(pages_text: list[str], filename: str, page_count: int)
 
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-        # Build marked text for Claude — include [PAGE N, doc_page=X] markers
-        marked_text, valid_doc_pages = _make_marked_text(pages_text, max_chars=80_000)
+        # Build marked text for Claude (category classification only — pages handled programmatically)
+        marked_text, _ = _make_marked_text(pages_text, max_chars=80_000)
 
         non_empty = sum(1 for p in pages_text if p.strip())
         _log.info(
-            "classifier: %s — pages=%d non_empty=%d text_chars=%d printed_pages=%s",
-            filename, page_count, non_empty, len(marked_text), sorted(valid_doc_pages),
+            "classifier[claude]: %s — pages=%d non_empty=%d text_chars=%d",
+            filename, page_count, non_empty, len(marked_text),
         )
 
-        prompt = f"""You are an expert maritime document classifier specialising in ship technical documentation and PMS (Planned Maintenance System) data.
-
-Filename: {filename}
-Total pages: {page_count}
-
-The document text below includes [PAGE N, doc_page=X] markers where:
-- N       = physical PDF page position (do NOT use this in your answer)
-- doc_page = the page number printed in the document if visible, otherwise the physical PDF page position
-
-IMPORTANT: Always use the doc_page value when reporting page numbers, never use N.
-Every page has a valid doc_page — do NOT skip any page. Even unnumbered cover pages or drawing pages may contain maker name and model number that must be captured.
-
-Document text:
----
-{marked_text}
----
-
-Classify this document into EXACTLY ONE of the following categories:
-
-- **Instruction Manual**: OEM manufacturer's manual for a SINGLE piece of equipment — has sequential written chapters covering operation, maintenance, troubleshooting, overhaul. Written by the equipment maker (e.g. TAIKO KIKAI, MAN, Wärtsilä). Contains prose/paragraph text describing how to operate and service the equipment.
-- **Machinery Particulars**: Vessel-level tabular register of ALL equipment — many rows with columns like No. | Equipment Name | Maker | Model | Serial No. | Capacity. Not focused on one machine.
-- **General Arrangement**: Deck plans and layout drawings showing spatial arrangement of the vessel. Mostly drawings with minimal text.
-- **Pipeline Diagrams/P&ID**: Piping & Instrumentation Diagrams, system flow diagrams, hydraulic schematics.
-- **LSA/FFA Plans**: Life Saving Appliance plans, Fire Fighting Appliance plans, fire safety plans, muster lists.
-- **Tank Capacity Plan**: Tank tables, sounding tables, ullage tables, stability booklets, capacity plans.
-- **Electrical Diagrams**: Single-line diagrams, wiring diagrams, cable lists, switchboard schematics.
-- **Yard/Finished Drawings**: Shipyard delivery package — assembly drawings, outfit drawings, final construction drawings. Key signs: engineering drawing format (title block, drawing number, revision table), assembly views with item-numbered parts tables (Item No. | Description | Qty | Material), multiple equipment types bundled, hull/vessel name reference, spare parts lists attached to drawings. Does NOT need written operational procedures. A document of assembly drawings with parts/spares lists from the shipyard is Yard/Finished Drawings even if it mentions equipment names.
-- **Class Certificates/Surveys**: Classification certificates, survey reports, safety certificates issued by DNV, Lloyd's, BV, ABS, etc.
-- **Unknown/Unclassifiable**: Cannot determine category with reasonable confidence.
-
-For each field below, list the EXACT page numbers (from [PAGE N] markers) where that content appears.
-Use comma-separated individual page numbers — NOT ranges. E.g. "5, 6, 7, 12, 13" not "5-7, 12-13".
-
-- **pages_with_components**:
-  - If category is **Instruction Manual** or **Machinery Particulars**: only pages that have ALL THREE — (1) equipment NAME, (2) MAKER/MANUFACTURER, and (3) MODEL number. Cover pages, name-plate data, "Technical Data" / "Specifications" tables.
-  - If category is **Yard/Finished Drawings**: pages where any component or equipment name is visible — assembly drawings, parts lists with item numbers. No maker/model requirement.
-  - If category is **Tank Capacity Plan**: pages with tank names + capacity or sounding data.
-  - All other categories: leave empty.
-- **pages_with_jobs**: Only for **Instruction Manuals**. Pages with maintenance schedules, service intervals, inspection checklists, lubrication — "Maintenance", "Service Schedule", "Periodic Inspection" headings, tables with "Interval | Task" or "Running Hours" columns. Leave empty for ALL other types.
-- **pages_with_spares**: Only for **Instruction Manuals** and **Yard/Finished Drawings**. Pages with spare parts lists, recommended spares, consumables — "Spare Parts", "Parts List", "Recommended Spares", tables with "Part No. | Description | Qty". Leave empty for all other types.
-
-Return ONLY valid JSON in this exact format:
-{{
-  "category": "<category name exactly as listed above>",
-  "confidence": <integer 0-100>,
-  "useful_for_extraction": "<yes | partial | no>",
-  "pages_with_components": "<comma-separated doc_page numbers e.g. '1, 2, 9' — only pages with a printed doc_page number, empty string if none>",
-  "pages_with_jobs": "<comma-separated doc_page numbers e.g. '9, 12, 13' — only pages with a printed doc_page number, empty string if none>",
-  "pages_with_spares": "<comma-separated doc_page numbers e.g. '15, 16' — only pages with a printed doc_page number, empty string if none>",
-  "reasoning": "<one sentence explanation>"
-}}
-
-Rules:
-- CRITICAL: Use ONLY doc_page values from the markers — never use PDF position N. Never invent a number not seen as a doc_page value.
-- Every page has a doc_page value — include any page where the content is found, including unnumbered cover/title pages.
-- List every individual doc_page number where the content appears — do NOT use ranges or hyphens
-- pages_with_components for Instruction Manual: expect only 1-3 pages total. If you are listing more than 5 pages you are marking the wrong pages — keep only pages where maker name AND model number appear side by side in a table or header on that specific page.
-- pages_with_jobs must be empty for everything except Instruction Manual
-- pages_with_spares must be empty for everything except Instruction Manual and Yard/Finished Drawings
-- useful_for_extraction = "yes" if Instruction Manual OR Machinery Particulars
-- useful_for_extraction = "partial" if spec sheet or drawing with some equipment data
-- useful_for_extraction = "no" if purely drawings, plans, certificates, P&IDs with no equipment data
-- An equipment specification sheet (one equipment, with maker/model/capacity) → category="Instruction Manual", useful="partial"
-- confidence 85-98: very clear; 65-84: probable; 40-64: uncertain; <40: use Unknown/Unclassifiable
-- Machinery Particulars vs Instruction Manual: one equipment in depth → Instruction Manual; many equipment rows → Machinery Particulars
-- If a section is genuinely absent, return empty string — do NOT invent page numbers"""
+        prompt = _build_classification_prompt(filename, page_count, marked_text)
 
         model_id = getattr(settings, "CLAUDE_MODEL_ID", "claude-sonnet-4-6")
         message = client.messages.create(
             model=model_id,
-            max_tokens=768,
+            max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
 
         raw = message.content[0].text.strip()
-        _log.info("classifier: Claude raw response for %s: %s", filename, raw[:300])
+        _log.info("classifier[claude]: raw response for %s: %s", filename, raw[:300])
         if "```" in raw:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
         parsed = json.loads(raw.strip())
-        # Filter page fields to only printed page numbers seen in the document
-        if valid_doc_pages:
-            for field in ("pages_with_components", "pages_with_jobs", "pages_with_spares"):
-                parsed[field] = _filter_to_valid_pages(parsed.get(field, ""), valid_doc_pages)
         _log.info(
-            "classifier: %s → category=%s confidence=%s jobs=%s spares=%s",
-            filename,
-            parsed.get("category"),
-            parsed.get("confidence"),
-            parsed.get("pages_with_jobs"),
-            parsed.get("pages_with_spares"),
+            "classifier[claude]: %s → category=%s confidence=%s",
+            filename, parsed.get("category"), parsed.get("confidence"),
         )
         return parsed
 
@@ -391,11 +415,11 @@ def _classify_with_groq(pages_text: list[str], filename: str, page_count: int) -
             base_url="https://api.groq.com/openai/v1",
         )
 
-        marked_text, valid_doc_pages = _make_marked_text(pages_text, max_chars=80_000)
+        marked_text, _ = _make_marked_text(pages_text, max_chars=80_000)
         non_empty = sum(1 for p in pages_text if p.strip())
         _log.info(
-            "classifier[groq]: %s — pages=%d non_empty=%d text_chars=%d printed_pages=%s",
-            filename, page_count, non_empty, len(marked_text), sorted(valid_doc_pages),
+            "classifier[groq]: %s — pages=%d non_empty=%d text_chars=%d",
+            filename, page_count, non_empty, len(marked_text),
         )
 
         prompt = _build_classification_prompt(filename, page_count, marked_text)
@@ -416,17 +440,9 @@ def _classify_with_groq(pages_text: list[str], filename: str, page_count: int) -
             if raw.startswith("json"):
                 raw = raw[4:]
         parsed = json.loads(raw.strip())
-        # Filter page fields to only printed page numbers seen in the document
-        if valid_doc_pages:
-            for field in ("pages_with_components", "pages_with_jobs", "pages_with_spares"):
-                parsed[field] = _filter_to_valid_pages(parsed.get(field, ""), valid_doc_pages)
         _log.info(
-            "classifier[groq]: %s → category=%s confidence=%s jobs=%s spares=%s",
-            filename,
-            parsed.get("category"),
-            parsed.get("confidence"),
-            parsed.get("pages_with_jobs"),
-            parsed.get("pages_with_spares"),
+            "classifier[groq]: %s → category=%s confidence=%s",
+            filename, parsed.get("category"), parsed.get("confidence"),
         )
         return parsed
 
@@ -440,72 +456,55 @@ def _classify_with_groq(pages_text: list[str], filename: str, page_count: int) -
 # ---------------------------------------------------------------------------
 
 def _build_classification_prompt(filename: str, page_count: int, marked_text: str) -> str:
+    """Build a category and page identification prompt."""
     return f"""You are an expert maritime document classifier specialising in ship technical documentation and PMS (Planned Maintenance System) data.
 
 Filename: {filename}
 Total pages: {page_count}
 
-The document text below includes [PAGE N, doc_page=X] markers where:
-- N       = physical PDF page position (do NOT use this in your answer)
-- doc_page = the page number printed in the document if visible, otherwise the physical PDF page position
-
-IMPORTANT: Always use the doc_page value when reporting page numbers, never use N.
-Every page has a valid doc_page — do NOT skip any page. Even unnumbered cover pages or drawing pages may contain maker name and model number that must be captured.
-
-Document text:
+Document text (page markers for context only):
 ---
 {marked_text}
 ---
 
 Classify this document into EXACTLY ONE of the following categories:
 
-- **Instruction Manual**: OEM manufacturer's manual for a SINGLE piece of equipment — has sequential written chapters covering operation, maintenance, troubleshooting, overhaul. Written by the equipment maker (e.g. TAIKO KIKAI, MAN, Wärtsilä). Contains prose/paragraph text describing how to operate and service the equipment.
-- **Machinery Particulars**: Vessel-level tabular register of ALL equipment — many rows with columns like No. | Equipment Name | Maker | Model | Serial No. | Capacity. Not focused on one machine.
-- **General Arrangement**: Deck plans and layout drawings showing spatial arrangement. Mostly drawings with minimal text.
+- **Instruction Manual**: OEM manufacturer's manual for a SINGLE piece of equipment — sequential written chapters covering operation, maintenance, troubleshooting, overhaul. Written by the equipment maker (e.g. TAIKO KIKAI, MAN, Wärtsilä). Contains prose/paragraph text.
+- **Machinery Particulars**: Vessel-level tabular register of ALL equipment — many rows with columns: Equipment Name | Maker | Model | Serial No. | Capacity. Not focused on one machine.
+- **General Arrangement**: Deck plans and layout drawings showing spatial arrangement of the vessel.
 - **Pipeline Diagrams/P&ID**: Piping & Instrumentation Diagrams, system flow diagrams, hydraulic schematics.
 - **LSA/FFA Plans**: Life Saving Appliance plans, Fire Fighting Appliance plans, fire safety plans, muster lists.
 - **Tank Capacity Plan**: Tank tables, sounding tables, ullage tables, stability booklets, capacity plans.
 - **Electrical Diagrams**: Single-line diagrams, wiring diagrams, cable lists, switchboard schematics.
-- **Yard/Finished Drawings**: Shipyard delivery package — assembly drawings, outfit drawings, final construction drawings. Key signs: engineering drawing format (title block, drawing number, revision table, scale), assembly views with item-numbered parts tables (Item No. | Description | Qty | Material), multiple equipment types bundled together, hull/vessel name reference, spare parts lists attached to drawings. Does NOT need to contain written operational procedures. A document of assembly drawings with attached parts/spares lists from the shipyard is Yard/Finished Drawings even if it mentions equipment names.
+- **Yard/Finished Drawings**: Shipyard delivery package — assembly drawings, outfit drawings, final construction drawings. Signs: engineering drawing format (title block, drawing number, revision table), item-numbered parts tables (Item No. | Description | Qty | Material), multiple equipment types bundled, hull/vessel name reference, spare parts lists attached to drawings. Does NOT require written operational procedures.
 - **Class Certificates/Surveys**: Classification certificates, survey reports, safety certificates issued by DNV, Lloyd's, BV, ABS, etc.
 - **Unknown/Unclassifiable**: Cannot determine category with reasonable confidence.
 
-For each field below, list the EXACT page numbers (from [PAGE N] markers) where that content appears.
-Use comma-separated individual page numbers — NOT ranges. E.g. "5, 6, 7, 12, 13" not "5-7, 12-13".
-
-- **pages_with_components**:
-  - If category is **Instruction Manual** or **Machinery Particulars**: VERY FEW pages qualify — typically just 1 to 3 pages. Only include a page where ALL THREE appear together on the SAME page: (1) the equipment NAME, (2) the MAKER/MANUFACTURER name, AND (3) the MODEL number or type code. This combination is found ONLY on cover pages, title pages, nameplate/specification tables, or "Technical Data" sections. Every other page (procedures, maintenance steps, drawings, tables of contents) does NOT qualify even if the equipment is mentioned. Do not list pages just because they contain the equipment name.
-  - If category is **Yard/Finished Drawings**: include pages where component or equipment names appear with item numbers in parts tables — assembly drawing pages with numbered parts lists qualify. No maker/model requirement.
-  - If category is **Tank Capacity Plan**: include pages with tank names + capacity or sounding data.
-  - All other categories: leave empty.
-- **pages_with_jobs**: Only populate for **Instruction Manuals**. Pages with maintenance schedules, service intervals, inspection checklists, lubrication schedules — headings like "Maintenance", "Service Schedule", "Periodic Inspection", tables with "Interval | Task" or "Running Hours | Description" columns. Leave empty for ALL other document types.
-- **pages_with_spares**: Only populate for **Instruction Manuals** and **Yard/Finished Drawings**. Pages with spare parts lists, recommended spares, consumables — headings "Spare Parts", "Parts List", "Recommended Spares", tables with "Part No. | Description | Qty". Leave empty for all other document types.
+Additionally, identify pages containing:
+- Components/Equipment: Pages with machinery, equipment lists, maker/model info, or component specifications.
+- Jobs/Maintenance: Pages with maintenance schedules, service intervals, inspection checklists, or overhaul procedures.
+- Spares/Parts: Pages with spare parts lists, recommended spares, parts catalogs, or consumables.
 
 Return ONLY valid JSON in this exact format:
 {{
   "category": "<category name exactly as listed above>",
   "confidence": <integer 0-100>,
   "useful_for_extraction": "<yes | partial | no>",
-  "pages_with_components": "<comma-separated doc_page numbers e.g. '1, 2, 9' — only pages with a printed doc_page number, empty string if none>",
-  "pages_with_jobs": "<comma-separated doc_page numbers e.g. '9, 12, 13' — only pages with a printed doc_page number, empty string if none>",
-  "pages_with_spares": "<comma-separated doc_page numbers e.g. '15, 16' — only pages with a printed doc_page number, empty string if none>",
+  "pages_with_components": "<comma-separated list of doc_page numbers, e.g. '1,3,5-7'>",
+  "pages_with_jobs": "<comma-separated list of doc_page numbers>",
+  "pages_with_spares": "<comma-separated list of doc_page numbers>",
   "reasoning": "<one sentence explanation>"
 }}
 
 Rules:
-- CRITICAL: Use ONLY doc_page values from the markers — never use the PDF position N. Never invent a number not seen in any doc_page marker.
-- Every page has a doc_page value — include any page where the content is found, including unnumbered cover/title pages.
-- List every individual doc_page number where that content appears — do NOT use ranges or hyphens
-- pages_with_components for Instruction Manual: expect only 1-3 pages total. If you are listing more than 5 pages, you are marking the wrong pages — review and keep only those where maker name AND model number appear side by side in a table or header on that specific page.
-- pages_with_jobs must be empty for everything except Instruction Manual
-- pages_with_spares must be empty for everything except Instruction Manual and Yard/Finished Drawings
-- useful_for_extraction = "yes" if Instruction Manual, Machinery Particulars, OR Tank Capacity Plan
-- useful_for_extraction = "partial" if spec sheet with maker/model but no maintenance section
+- confidence 85-98: very clear; 65-84: probable; 40-64: uncertain; <40 → Unknown/Unclassifiable
+- useful_for_extraction = "yes" if Instruction Manual, Machinery Particulars, or Tank Capacity Plan
+- useful_for_extraction = "partial" if spec sheet or drawing with some equipment data
 - useful_for_extraction = "no" if purely drawings, certificates, P&IDs, or LSA/FFA plans
-- confidence 85-98: very clear; 65-84: probable; 40-64: uncertain; <40: use Unknown/Unclassifiable
 - Machinery Particulars vs Instruction Manual: one equipment in depth → Instruction Manual; many equipment rows → Machinery Particulars
-- Be thorough — scan ALL pages. Maintenance schedules are often in the middle or later chapters. Spare parts are often in the last chapter or appendix.
-- If a section is genuinely absent, return empty string — do NOT invent page numbers"""
+- Yard/Finished Drawings: assembly/outfit drawings with parts tables from shipyard delivery — even if equipment names are present
+- For pages: use the doc_page numbers from the [PAGE N, doc_page=X] markers. Only include pages that actually exist in the document. If no such pages, use empty string "".
+- Page ranges can be expressed as 'start-end' (e.g. '45-67') or individual numbers separated by commas."""
 
 
 def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int) -> Optional[dict]:
@@ -517,11 +516,11 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
         if not settings.GEMINI_API_KEY:
             return None
 
-        marked_text, valid_doc_pages = _make_marked_text(pages_text, max_chars=80_000)
+        marked_text, _ = _make_marked_text(pages_text, max_chars=80_000)
         non_empty = sum(1 for p in pages_text if p.strip())
         _log.info(
-            "classifier[gemini]: %s — pages=%d non_empty=%d text_chars=%d printed_pages=%s",
-            filename, page_count, non_empty, len(marked_text), sorted(valid_doc_pages),
+            "classifier[gemini]: %s — pages=%d non_empty=%d text_chars=%d",
+            filename, page_count, non_empty, len(marked_text),
         )
 
         prompt = _build_classification_prompt(filename, page_count, marked_text)
@@ -552,17 +551,9 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
             if raw.startswith("json"):
                 raw = raw[4:]
         parsed = json.loads(raw.strip())
-        # Filter page fields to only printed page numbers seen in the document
-        if valid_doc_pages:
-            for field in ("pages_with_components", "pages_with_jobs", "pages_with_spares"):
-                parsed[field] = _filter_to_valid_pages(parsed.get(field, ""), valid_doc_pages)
         _log.info(
-            "classifier[gemini]: %s → category=%s confidence=%s jobs=%s spares=%s",
-            filename,
-            parsed.get("category"),
-            parsed.get("confidence"),
-            parsed.get("pages_with_jobs"),
-            parsed.get("pages_with_spares"),
+            "classifier[gemini]: %s → category=%s confidence=%s",
+            filename, parsed.get("category"), parsed.get("confidence"),
         )
         return parsed
 
@@ -684,29 +675,57 @@ def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
                     "classifier: AI returned %s (%d%%) — keyword classifier wins with %s (%d%%)",
                     category, ai_confidence, kw.category, kw.confidence,
                 )
+                # Still use programmatic scan for keyword-fallback category
+                resolved = _resolve_pages(pages_text)
+                components, jobs, spares = _scan_pages(pages_text, resolved, kw.category)
+                kw.pages_with_components = components
+                kw.pages_with_jobs = jobs
+                kw.pages_with_spares = spares
                 return _sanitise_result(kw)
 
-        raw_supply = ai_result.get("supply_type", "OEM")
-        supply_type = raw_supply if raw_supply in ("OEM", "yard_supply") else "OEM"
+        # Use AI-provided pages if available, otherwise programmatic scan
+        marked_text, valid_doc_pages = _make_marked_text(pages_text, max_chars=80_000)
+        ai_components = ai_result.get("pages_with_components", "").strip()
+        ai_jobs = ai_result.get("pages_with_jobs", "").strip()
+        ai_spares = ai_result.get("pages_with_spares", "").strip()
+        
+        if ai_components or ai_jobs or ai_spares:
+            # Filter AI-provided pages to valid ones
+            components = _filter_to_valid_pages(ai_components, valid_doc_pages)
+            jobs = _filter_to_valid_pages(ai_jobs, valid_doc_pages)
+            spares = _filter_to_valid_pages(ai_spares, valid_doc_pages)
+            _log.info("classifier: using AI-identified pages: comp=%s jobs=%s spares=%s", components, jobs, spares)
+        else:
+            # Programmatic page scanning — deterministic, no AI hallucination possible
+            resolved = _resolve_pages(pages_text)
+            components, jobs, spares = _scan_pages(pages_text, resolved, category)
+            _log.info("classifier: using programmatic scan: comp=%s jobs=%s spares=%s", components, jobs, spares)
+
         result = ClassificationResult(
             category=category,
             confidence=ai_confidence,
             useful_for_extraction=ai_result.get("useful_for_extraction", "partial"),
-            pages_with_components=ai_result.get("pages_with_components", ""),
-            pages_with_jobs=ai_result.get("pages_with_jobs", ""),
-            pages_with_spares=ai_result.get("pages_with_spares", ""),
+            pages_with_components=components,
+            pages_with_jobs=jobs,
+            pages_with_spares=spares,
             page_count=total_pages,
-            supply_type=supply_type,
         )
         final = _sanitise_result(result)
         _log.info(
-            "classifier: FINAL %s → cat=%s jobs=%r spares=%r components=%r",
-            filename, final.category, final.pages_with_jobs, final.pages_with_spares, final.pages_with_components,
+            "classifier: FINAL %s → cat=%s conf=%d components=%r jobs=%r spares=%r",
+            filename, final.category, final.confidence,
+            final.pages_with_components, final.pages_with_jobs, final.pages_with_spares,
         )
         return final
 
-    # Fallback: keyword matching
-    return _sanitise_result(_keyword_classify(pages_text, filename, total_pages))
+    # Fallback: keyword matching + programmatic page scan
+    kw = _keyword_classify(pages_text, filename, total_pages)
+    resolved = _resolve_pages(pages_text)
+    components, jobs, spares = _scan_pages(pages_text, resolved, kw.category)
+    kw.pages_with_components = components
+    kw.pages_with_jobs = jobs
+    kw.pages_with_spares = spares
+    return _sanitise_result(kw)
 
 
 def _keyword_classify(pages_text: list[str], filename: str, total_pages: int) -> ClassificationResult:
