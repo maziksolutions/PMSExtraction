@@ -1145,8 +1145,8 @@ const ManualReview: React.FC = () => {
                         onPrintedChange={(value) => handleEdit(m.id, 'pages_with_components_printed', value)}
                         onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_components_physical', value)}
                         explanationRows={componentExplanationRows}
-                        printedPlaceholder="1, 9-14"
-                        physicalPlaceholder="1, 10-15"
+                        printedPlaceholder=""
+                        physicalPlaceholder=""
                       />
                     </td>
                     <td className="px-3 py-3">
@@ -1156,8 +1156,8 @@ const ManualReview: React.FC = () => {
                         onPrintedChange={(value) => handleEdit(m.id, 'pages_with_jobs_printed', value)}
                         onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_jobs_physical', value)}
                         explanationRows={jobExplanationRows}
-                        printedPlaceholder="9-14"
-                        physicalPlaceholder="10-15"
+                        printedPlaceholder=""
+                        physicalPlaceholder=""
                       />
                     </td>
                     <td className="px-3 py-3">
@@ -1167,8 +1167,8 @@ const ManualReview: React.FC = () => {
                         onPrintedChange={(value) => handleEdit(m.id, 'pages_with_spares_printed', value)}
                         onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_spares_physical', value)}
                         explanationRows={spareExplanationRows}
-                        printedPlaceholder="2-12"
-                        physicalPlaceholder="3-13"
+                        printedPlaceholder=""
+                        physicalPlaceholder=""
                       />
                     </td>
                     <td className="px-3 py-3">

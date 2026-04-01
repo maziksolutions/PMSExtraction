@@ -400,6 +400,108 @@ _SPARE_CONTINUATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_PROCEDURE_STEP_RE = re.compile(
+    r"(?:^\s*\d+[.)]\s+\w+|\bstep\s+\d+\b|\bprocedure\b|\bwork\s+sequence\b)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+_PARTS_TABLE_RE = re.compile(
+    r"\b(?:item\s+no\.?|part\s+no\.?|description|qty|quantity|material|remarks?|catalog(?:ue)?|drawing\s+no\.?)\b",
+    re.IGNORECASE,
+)
+
+_TANK_NAME_TERMS = (
+    "tank",
+    "ballast tank",
+    "fuel oil tank",
+    "diesel oil tank",
+    "fresh water tank",
+    "freshwater tank",
+    "sludge tank",
+    "bilge tank",
+    "lube oil tank",
+    "lubricating oil tank",
+    "settling tank",
+    "service tank",
+    "cargo tank",
+    "dirty oil tank",
+    "overflow tank",
+)
+
+_TANK_CAPACITY_TERMS = (
+    "capacity",
+    "sounding",
+    "ullage",
+    "volume",
+    "m3",
+    "m^3",
+    "cu.m",
+    "cubic metre",
+    "cubic meter",
+    "litre",
+    "liter",
+    "ltr",
+    "tonne",
+    "tonnes",
+    "tons",
+)
+
+
+def _keyword_hit_count(lower_text: str, keywords: tuple[str, ...] | list[str]) -> int:
+    return sum(1 for keyword in keywords if keyword in lower_text)
+
+
+def _is_table_like_page(text: str) -> bool:
+    lower = text.lower()
+    return text.count("|") >= 4 or "[table]" in lower
+
+
+def _looks_like_instruction_component_page(text: str, physical_num: int) -> bool:
+    lower = text.lower()
+    title_hits = _keyword_hit_count(
+        lower,
+        (
+            "instruction manual",
+            "operation manual",
+            "service manual",
+            "technical data",
+            "specification",
+            "equipment",
+            "machinery",
+            "model",
+            "maker",
+            "manufacturer",
+        ),
+    )
+    return (
+        (_MAKER_RE.search(text) and _MODEL_CODE_RE.search(text))
+        or (physical_num <= 4 and title_hits >= 2)
+        or (physical_num <= 2 and _is_table_like_page(text) and _COMPONENT_SPEC_RE.search(text))
+    )
+
+
+def _looks_like_tank_component_page(text: str, physical_num: int) -> bool:
+    lower = text.lower()
+    tank_hits = _keyword_hit_count(lower, _TANK_NAME_TERMS)
+    capacity_hits = _keyword_hit_count(lower, _TANK_CAPACITY_TERMS)
+    title_hits = _keyword_hit_count(lower, ("tank capacity", "capacity plan", "sounding table", "ullage table"))
+    return (
+        (tank_hits >= 1 and capacity_hits >= 2)
+        or (_is_table_like_page(text) and tank_hits >= 1 and capacity_hits >= 1)
+        or (physical_num <= 2 and title_hits >= 1 and tank_hits >= 1)
+    )
+
+
+def _looks_like_spare_seed_page(text: str) -> bool:
+    lower = text.lower()
+    table_keyword_hits = _keyword_hit_count(
+        lower,
+        ("item no", "part no", "description", "qty", "quantity", "material", "catalog", "remarks"),
+    )
+    return bool(_SPARE_RE.search(text) or _SPARE_SECTION_RE.search(text)) or (
+        _is_table_like_page(text) and table_keyword_hits >= 3
+    )
+
 
 def _looks_like_job_continuation(text: str) -> bool:
     lower = text.lower()
@@ -407,7 +509,7 @@ def _looks_like_job_continuation(text: str) -> bool:
         1 for kw in ("maintenance", "service", "inspection", "procedure", "step", "running hour", "lubrication")
         if kw in lower
     )
-    return keyword_hits >= 1 or bool(_JOB_CONTINUATION_RE.search(text)) or text.count("|") >= 2
+    return keyword_hits >= 1 or bool(_JOB_CONTINUATION_RE.search(text)) or bool(_PROCEDURE_STEP_RE.search(text))
 
 
 def _looks_like_spare_continuation(text: str) -> bool:
@@ -416,7 +518,55 @@ def _looks_like_spare_continuation(text: str) -> bool:
         1 for kw in ("spare", "part", "item", "qty", "quantity", "material", "catalog")
         if kw in lower
     )
-    return keyword_hits >= 2 or bool(_SPARE_CONTINUATION_RE.search(text)) or text.count("|") >= 2
+    table_keyword_hits = _keyword_hit_count(
+        lower,
+        ("item no", "part no", "description", "qty", "quantity", "material", "catalog", "remarks"),
+    )
+    return (
+        keyword_hits >= 2
+        or bool(_SPARE_CONTINUATION_RE.search(text))
+        or (_is_table_like_page(text) and table_keyword_hits >= 2)
+    )
+
+
+def _selected_physical_pages_from_ai(ai_result: Optional[dict], key: str, page_count: int) -> list[int]:
+    if not ai_result:
+        return []
+    raw_pages = str(ai_result.get(key, "") or "").strip()
+    filtered = _filter_to_valid_pages(raw_pages, set(range(1, page_count + 1)))
+    return _parse_page_tokens(filtered)
+
+
+def _merge_page_explanations(
+    scanned_reasons: str,
+    page_refs: list[PageReference],
+    ai_pages_by_section: dict[str, list[int]],
+) -> str:
+    try:
+        merged: dict[int, dict[str, object]] = {
+            int(key): value
+            for key, value in (json.loads(scanned_reasons or "{}") or {}).items()
+            if str(key).isdigit()
+        }
+    except Exception:
+        merged = {}
+
+    for section, selected_pages in ai_pages_by_section.items():
+        if not selected_pages:
+            continue
+        for physical_page in selected_pages:
+            if physical_page < 1 or physical_page > len(page_refs):
+                continue
+            ref = page_refs[physical_page - 1]
+            _upsert_page_reason(
+                merged,
+                physical_page,
+                ref.printed,
+                section,
+                "AI screening selected this page from the document context and page markers.",
+            )
+
+    return json.dumps({str(key): value for key, value in sorted(merged.items())}, ensure_ascii=False)
 
 
 def _expand_contiguous_section(
@@ -459,25 +609,26 @@ def _scan_pages(
         lower_text = text.lower()
 
         if category in ("Instruction Manual", "Machinery Particulars"):
-            if _MAKER_RE.search(text) and _MODEL_CODE_RE.search(text):
+            if _looks_like_instruction_component_page(text, physical_num):
                 comp_phys_pages.add(physical_num)
-                _upsert_page_reason(page_reasons, physical_num, printed_page, "components", "Maker and model text detected together on this page.")
-            elif physical_num <= 4 and (_COMPONENT_SPEC_RE.search(text) or "instruction manual" in lower_text):
-                comp_phys_pages.add(physical_num)
-                _upsert_page_reason(page_reasons, physical_num, printed_page, "components", "Front-section specification/manual title content suggests component details.")
+                _upsert_page_reason(page_reasons, physical_num, printed_page, "components", "Equipment identification, maker/model, or front-section specification details detected.")
         elif category == "Yard/Finished Drawings" and _YARD_PARTS_RE.search(text):
             comp_phys_pages.add(physical_num)
             _upsert_page_reason(page_reasons, physical_num, printed_page, "components", "Drawing parts table or bill-of-materials layout detected.")
         elif category == "Tank Capacity Plan":
-            if "tank" in lower_text and any(kw in lower_text for kw in ("capacity", "sounding", "ullage", "volume", "mÃ‚Â³", "m3", "liters", "ltr", "tonnes", "tons")):
+            if _looks_like_tank_component_page(text, physical_num):
                 comp_phys_pages.add(physical_num)
-                _upsert_page_reason(page_reasons, physical_num, printed_page, "components", "Tank capacity terminology detected.")
+                _upsert_page_reason(page_reasons, physical_num, printed_page, "components", "Tank table, sounding, ullage, or capacity terminology detected.")
 
-        if category == "Instruction Manual" and (_JOB_RE.search(text) or _JOB_SECTION_RE.search(text)):
+        if category == "Instruction Manual" and (
+            _JOB_RE.search(text)
+            or _JOB_SECTION_RE.search(text)
+            or (_PROCEDURE_STEP_RE.search(text) and physical_num > 1)
+        ):
             job_phys_pages.add(physical_num)
             _upsert_page_reason(page_reasons, physical_num, printed_page, "jobs", "Maintenance schedule, inspection, service, or overhaul text detected.")
 
-        if category in ("Instruction Manual", "Yard/Finished Drawings") and (_SPARE_RE.search(text) or _SPARE_SECTION_RE.search(text)):
+        if category in ("Instruction Manual", "Yard/Finished Drawings") and _looks_like_spare_seed_page(text):
             spare_phys_pages.add(physical_num)
             _upsert_page_reason(page_reasons, physical_num, printed_page, "spares", "Spare-parts heading, parts list, or bill-of-materials text detected.")
 
@@ -819,9 +970,9 @@ Return ONLY valid JSON in this exact format:
   "category": "<category name exactly as listed above>",
   "confidence": <integer 0-100>,
   "useful_for_extraction": "<yes | partial | no>",
-  "pages_with_components": "<comma-separated list of doc_page numbers, e.g. '1,3,5-7'>",
-  "pages_with_jobs": "<comma-separated list of doc_page numbers>",
-  "pages_with_spares": "<comma-separated list of doc_page numbers>",
+  "pages_with_components": "<comma-separated list of physical PDF page numbers, e.g. '1,3,5-7'>",
+  "pages_with_jobs": "<comma-separated list of physical PDF page numbers>",
+  "pages_with_spares": "<comma-separated list of physical PDF page numbers>",
   "reasoning": "<one sentence explanation>"
 }}
 
@@ -832,7 +983,11 @@ Rules:
 - useful_for_extraction = "no" if purely drawings, certificates, P&IDs, or LSA/FFA plans
 - Machinery Particulars vs Instruction Manual: one equipment in depth â†’ Instruction Manual; many equipment rows â†’ Machinery Particulars
 - Yard/Finished Drawings: assembly/outfit drawings with parts tables from shipyard delivery â€” even if equipment names are present. Prioritize if filename contains "final drawing", "yard", "construction", or "as-built".. Prioritize if filename contains "final drawing", "yard", "construction", or "as-built".
-- For pages: use the doc_page numbers from the [PAGE N, doc_page=X] markers. Only include pages that actually exist in the document. If no such pages, use empty string "".
+- For pages: use the PHYSICAL PDF page numbers from the [PAGE N, printed_page=X] markers. N is the real PDF page position. Do not return the printed footer page number.
+- Example: if the marker says [PAGE 10, printed_page=9], return page 10, not 9.
+- For Tank Capacity Plans, include tank title and table pages when they identify tank names, sounding, ullage, or capacities, even if no printed footer page is present.
+- For Instruction Manuals, include the equipment identification/specification page as a component page when it identifies the machinery, and include contiguous job or spare pages only when the section content clearly continues.
+- Only include pages that actually exist in the document. If no such pages, use empty string "".
 - Page ranges can be expressed as 'start-end' (e.g. '45-67') or individual numbers separated by commas."""
 
 
@@ -1009,20 +1164,42 @@ def classify_pages_text(
         category,
     )
 
+    ai_comp_phys = _selected_physical_pages_from_ai(ai_result, "pages_with_components", total_pages)
+    ai_job_phys = _selected_physical_pages_from_ai(ai_result, "pages_with_jobs", total_pages)
+    ai_spare_phys = _selected_physical_pages_from_ai(ai_result, "pages_with_spares", total_pages)
+
+    selected_comp_phys = ai_comp_phys or _parse_page_tokens(scanned_comp_phys)
+    selected_job_phys = ai_job_phys or _parse_page_tokens(scanned_job_phys)
+    selected_spare_phys = ai_spare_phys or _parse_page_tokens(scanned_spare_phys)
+
+    final_comp_printed, final_comp_phys = _refs_from_physical_pages(selected_comp_phys, page_refs)
+    final_job_printed, final_job_phys = _refs_from_physical_pages(selected_job_phys, page_refs)
+    final_spare_printed, final_spare_phys = _refs_from_physical_pages(selected_spare_phys, page_refs)
+
+    merged_reasons = _merge_page_explanations(
+        scanned_reasons,
+        page_refs,
+        {
+            "components": ai_comp_phys,
+            "jobs": ai_job_phys,
+            "spares": ai_spare_phys,
+        },
+    )
+
     result = ClassificationResult(
         category=category,
         confidence=confidence,
         useful_for_extraction=useful_for_extraction,
-        pages_with_components=scanned_comp_printed or scanned_comp_phys,
-        pages_with_jobs=scanned_job_printed or scanned_job_phys,
-        pages_with_spares=scanned_spare_printed or scanned_spare_phys,
-        pages_with_components_printed=scanned_comp_printed,
-        pages_with_jobs_printed=scanned_job_printed,
-        pages_with_spares_printed=scanned_spare_printed,
-        pages_with_components_physical=scanned_comp_phys,
-        pages_with_jobs_physical=scanned_job_phys,
-        pages_with_spares_physical=scanned_spare_phys,
-        page_explanations=scanned_reasons,
+        pages_with_components=final_comp_printed or final_comp_phys,
+        pages_with_jobs=final_job_printed or final_job_phys,
+        pages_with_spares=final_spare_printed or final_spare_phys,
+        pages_with_components_printed=final_comp_printed,
+        pages_with_jobs_printed=final_job_printed,
+        pages_with_spares_printed=final_spare_printed,
+        pages_with_components_physical=final_comp_phys,
+        pages_with_jobs_physical=final_job_phys,
+        pages_with_spares_physical=final_spare_phys,
+        page_explanations=merged_reasons,
         page_count=total_pages,
     )
     return _sanitise_result(result)
