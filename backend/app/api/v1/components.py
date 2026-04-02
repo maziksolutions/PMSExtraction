@@ -40,21 +40,35 @@ async def _normalize_pending_extracted_components(
     tenant_id: uuid.UUID,
     db: AsyncSession,
 ) -> None:
-    result = await db.execute(
-        update(Component)
-        .where(
+    manual_result = await db.execute(
+        select(Manual.id).where(
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == tenant_id,
+            Manual.is_deleted == False,
+        )
+    )
+    current_vessel_manual_ids = {manual_id for manual_id in manual_result.scalars().all()}
+
+    comp_result = await db.execute(
+        select(Component).where(
             Component.vessel_id == vessel_id,
             Component.tenant_id == tenant_id,
             Component.is_deleted == False,
-            Component.source_manual_id.is_not(None),
             Component.qc_status == QCStatus.pending,
-            Component.is_unmapped == False,
+            Component.source_manual_id.is_not(None),
         )
-        .values(is_unmapped=True)
-        .returning(Component.id)
     )
-    normalized_ids = result.scalars().all()
-    if normalized_ids:
+    components = comp_result.scalars().all()
+
+    changed = False
+    for comp in components:
+        should_be_unmapped = comp.source_manual_id in current_vessel_manual_ids
+        if comp.is_unmapped != should_be_unmapped:
+            comp.is_unmapped = should_be_unmapped
+            db.add(comp)
+            changed = True
+
+    if changed:
         await db.commit()
 
 
