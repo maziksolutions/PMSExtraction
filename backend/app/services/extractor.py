@@ -37,6 +37,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "   → Extract EVERY row. Use table section headers for group1/group2.\n\n"
             "2. SINGLE-EQUIPMENT SPECIFICATION SHEET (title names ONE main piece of equipment)\n"
             "   These have a title like 'TAIKO SHIP-CLEAN SEWAGE TREATMENT PLANT SPECIFICATION'\n"
+            "   or an instruction manual cover page showing the equipment name, maker logo, and model table.\n"
             "   and rows like: Type | SBH-25 | Quantity | 1 set/ship\n"
             "   EXTRACTION RULES for spec sheets:\n"
             "   → MAIN EQUIPMENT: extract as one component.\n"
@@ -88,6 +89,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "  Set null ONLY if the document contains no such section at all (e.g. a pure machinery register).\n"
             "- For specification sheets: maker comes from the TITLE / HEADER (e.g. 'TAIKO Ship-Clean' → maker='Taiko')\n"
             "- For specification sheets: model comes from Type row (e.g. 'Type: SBH-25' → model='SBH-25')\n"
+            "- For instruction manual cover pages: extract the main equipment shown on the page even if there is only a title, logo, product image, and model/certificate table\n"
             "- Fill maker and model whenever those columns or rows exist\n"
             "- specification must capture numeric ratings not generic text\n"
             "- Do not invent data — null when genuinely absent\n"
@@ -475,7 +477,7 @@ async def _ocr_page_with_openai(image_bytes: bytes, filename: str, page_no: int)
 
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
-        model_id = getattr(settings, "OPENAI_VISION_MODEL_ID", None) or "gpt-4o-mini"
+        model_id = getattr(settings, "OPENAI_VISION_MODEL_ID", None) or "gpt-4.1"
         response = await client.chat.completions.create(
             model=model_id,
             messages=[
@@ -508,6 +510,102 @@ async def _ocr_page_with_openai(image_bytes: bytes, filename: str, page_no: int)
             _redact_error_message(exc),
         )
         return ""
+
+
+async def _extract_entities_from_page_image_with_openai(
+    *,
+    image_bytes: bytes,
+    filename: str,
+    page_no: int,
+    extraction_type: str,
+    context_note: str | None = None,
+) -> list[dict]:
+    if not settings.OPENAI_API_KEY:
+        return []
+
+    prompt_cfg = DEFAULT_PROMPTS[extraction_type]
+    try:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+        model_id = getattr(settings, "OPENAI_VISION_MODEL_ID", None) or "gpt-4.1"
+        text_instructions = (
+            f"You are looking at a rendered image of physical PDF page {page_no} from '{filename}'. "
+            f"Return ONLY a valid JSON array for {extraction_type} extraction. "
+            f"Use source_page_number={page_no} for every record found on this page. "
+            "Use visible titles, maker logos, model tables, captions, callout tables, and drawing parts lists."
+        )
+        if context_note:
+            text_instructions += f"\n\nAdditional known context:\n{context_note}"
+
+        response = await client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {"role": "system", "content": prompt_cfg["system"]},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": text_instructions},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+            temperature=0,
+            max_tokens=4000,
+        )
+        raw_text = (response.choices[0].message.content or "").strip()
+        records = _parse_json_records(raw_text)
+        for record in records:
+            if record.get("source_page_number") in (None, "", 0):
+                record["source_page_number"] = page_no
+        logger.info(
+            "extract_entities[openai-vision]: %s/%s page=%d records=%d",
+            filename,
+            extraction_type,
+            page_no,
+            len(records),
+        )
+        return records
+    except Exception as exc:
+        logger.warning(
+            "extract_entities[openai-vision]: failed for %s/%s page=%d: %s",
+            filename,
+            extraction_type,
+            page_no,
+            _redact_error_message(exc),
+        )
+        return []
+
+
+async def _render_selected_pdf_page_images(
+    *,
+    file_bytes: bytes,
+    selected_pages: list[int],
+    resolution: int = 250,
+) -> dict[int, bytes]:
+    rendered: dict[int, bytes] = {}
+    try:
+        import pdfplumber
+    except Exception:
+        return rendered
+
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page_no in selected_pages:
+                if page_no < 1 or page_no > len(pdf.pages):
+                    continue
+                try:
+                    page_image = pdf.pages[page_no - 1].to_image(resolution=resolution).original
+                    image_buffer = io.BytesIO()
+                    page_image.save(image_buffer, format="PNG")
+                    rendered[page_no] = image_buffer.getvalue()
+                except Exception as exc:
+                    logger.warning("extractor page render failed: page=%d error=%s", page_no, exc)
+    except Exception as exc:
+        logger.warning("extractor page render failed for selected pages: %s", exc)
+
+    return rendered
 
 
 async def _enrich_pdf_text_for_selected_pages(
@@ -569,15 +667,18 @@ async def _enrich_pdf_text_for_selected_pages(
                 combined = "\n".join(part for part in page_parts if part).strip()
                 if len(combined) < 120:
                     try:
-                        page_image = page.to_image(resolution=180).original
+                        page_image = page.to_image(resolution=250).original
                     except Exception:
                         page_image = None
 
                     if page_image is not None and pytesseract is not None:
                         try:
-                            ocr_text = pytesseract.image_to_string(page_image, config="--psm 6").strip()
-                            if len(ocr_text) > len(combined):
-                                combined = ocr_text
+                            best_ocr = combined
+                            for config in ("--psm 6", "--psm 11", "--psm 12"):
+                                ocr_text = pytesseract.image_to_string(page_image, config=config).strip()
+                                if len(ocr_text) > len(best_ocr):
+                                    best_ocr = ocr_text
+                            combined = best_ocr
                         except Exception:
                             pass
 
@@ -1393,6 +1494,31 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                     context_note = _build_component_context_text(extracted_component_context, manual)
                 records = await extract_entities(chunk, etype, chunk_label, context_note=context_note)
                 all_records.extend(records)
+
+            if ext == "pdf" and file_bytes is not None and etype in {"component", "spare"}:
+                selected_pages = entity_pages.get(etype) or []
+                rendered_pages = await _render_selected_pdf_page_images(
+                    file_bytes=file_bytes,
+                    selected_pages=selected_pages,
+                    resolution=250,
+                )
+                if rendered_pages:
+                    context_note = None
+                    if etype in {"job", "spare"} and extracted_component_context:
+                        context_note = _build_component_context_text(extracted_component_context, manual)
+                    for page_no in selected_pages:
+                        image_bytes = rendered_pages.get(page_no)
+                        if not image_bytes:
+                            continue
+                        vision_records = await _extract_entities_from_page_image_with_openai(
+                            image_bytes=image_bytes,
+                            filename=filename,
+                            page_no=page_no,
+                            extraction_type=etype,
+                            context_note=context_note,
+                        )
+                        all_records.extend(vision_records)
+
             records = _dedupe_records(all_records, etype)
 
             for record in records:

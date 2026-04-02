@@ -75,7 +75,8 @@ class Settings(BaseSettings):
 
     # OpenAI / AI
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL_ID: str = "gpt-4.1-mini"
+    OPENAI_MODEL_ID: str = "gpt-4.1"
+    OPENAI_VISION_MODEL_ID: str = "gpt-4.1"
     ANTHROPIC_API_KEY: str = ""
     CLAUDE_MODEL_ID: str = "claude-sonnet-4-6"
     GEMINI_API_KEY: str = ""
