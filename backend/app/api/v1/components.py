@@ -18,6 +18,7 @@ from app.models.ingestion import Manual
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.component import ComponentCreate, ComponentOut, ComponentUpdate
+from app.services.vessel_library import ensure_vessel_library_baseline
 
 router = APIRouter()
 
@@ -89,7 +90,13 @@ async def list_components(
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=5000),
 ) -> dict[str, Any]:
-    await _get_vessel_or_404(vessel_id, db)
+    vessel = await _get_vessel_or_404(vessel_id, db)
+    await ensure_vessel_library_baseline(
+        db=db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        vessel_type_name=vessel.vessel_type,
+    )
     await _normalize_pending_extracted_components(
         vessel_id=vessel_id,
         tenant_id=current_user.tenant_id,

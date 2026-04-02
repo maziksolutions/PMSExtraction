@@ -13,6 +13,7 @@ from app.deps import get_current_user, require_role
 from app.models.user import User, UserRole
 from app.models.vessel import VesselProject, VesselProjectUser
 from app.schemas.vessel import VesselCreate, VesselListResponse, VesselResponse, VesselUpdate
+from app.services.vessel_library import ensure_vessel_library_baseline
 
 router = APIRouter()
 
@@ -104,6 +105,12 @@ async def create_vessel(
     db.add(vessel)
     await db.commit()
     await db.refresh(vessel)
+    await ensure_vessel_library_baseline(
+        db=db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel.id,
+        vessel_type_name=vessel.vessel_type,
+    )
     return VesselResponse.model_validate(vessel)
 
 
@@ -148,6 +155,13 @@ async def update_vessel(
     db.add(vessel)
     await db.commit()
     await db.refresh(vessel)
+    if vessel_data.vessel_type:
+        await ensure_vessel_library_baseline(
+            db=db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel.id,
+            vessel_type_name=vessel.vessel_type,
+        )
     return VesselResponse.model_validate(vessel)
 
 

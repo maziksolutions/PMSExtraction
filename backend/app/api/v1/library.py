@@ -23,6 +23,7 @@ from app.models.spare import Spare
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.services.deduplication import is_duplicate_component, is_duplicate_job, is_duplicate_spare
+from app.services.vessel_library import load_library_components_for_vessel
 
 router = APIRouter()
 
@@ -646,89 +647,18 @@ async def push_library_to_vessel(
     await _get_vessel_or_404(vessel_id, db)
 
     vessel_type_id = body.get("vessel_type_id")
-
-    # Load active library nodes, filtered by vessel type if specified
-    lib_where = "tenant_id = :tid AND status = 'active' AND is_deleted = false"
-    lib_params: dict[str, Any] = {"tid": str(current_user.tenant_id)}
-    if vessel_type_id:
-        lib_where += " AND vessel_type_id = :vtid"
-        lib_params["vtid"] = vessel_type_id
-
-    lib_result = await db.execute(
-        text(
-            "SELECT group1_name, group2_name, machinery_name, component_name, "
-            f"component_type, criticality FROM component_structure_library "
-            f"WHERE {lib_where} "
-            "ORDER BY group1_name, group2_name, machinery_name, component_name"
-        ),
-        lib_params,
+    result = await load_library_components_for_vessel(
+        db=db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        vessel_type_id=vessel_type_id,
     )
-    lib_nodes = lib_result.mappings().all()
-
-    if not lib_nodes:
-        return {"added": 0, "skipped": 0, "message": "No active library nodes found"}
-
-    # Load existing component names for this vessel (for dedup)
-    existing_result = await db.execute(
-        text(
-            "SELECT group1, group2, main_machinery, component_name "
-            "FROM components "
-            "WHERE vessel_id = :vid AND tenant_id = :tid AND is_deleted = false"
-        ),
-        {"vid": str(vessel_id), "tid": str(current_user.tenant_id)},
-    )
-    existing_keys: set[tuple] = {
-        (
-            (r["group1"] or "").lower().strip(),
-            (r["group2"] or "").lower().strip(),
-            (r["main_machinery"] or "").lower().strip(),
-            (r["component_name"] or "").lower().strip(),
-        )
-        for r in existing_result.mappings().all()
-    }
-
-    added = 0
-    skipped = 0
-    for node in lib_nodes:
-        g1 = (node["group1_name"] or "Uncategorised").strip()
-        g2 = (node["group2_name"] or "Uncategorised").strip()
-        mm = (node["machinery_name"] or "Unknown").strip()
-        cn = (node["component_name"] or "").strip()
-        if not cn:
-            skipped += 1
-            continue
-
-        key = (g1.lower(), g2.lower(), mm.lower(), cn.lower())
-        if key in existing_keys:
-            skipped += 1
-            continue
-
-        node_criticality = str(node.get("criticality") or "non_critical")
-        await db.execute(
-            text(
-                "INSERT INTO components "
-                "(id, tenant_id, vessel_id, group1, group2, main_machinery, component_name, "
-                "is_critical, criticality, qc_status, is_unmapped, confidence_score, is_deleted, "
-                "created_at, updated_at) "
-                "VALUES (:id, :tid, :vid, :g1, :g2, :mm, :cn, "
-                "false, :crit, 'accepted', false, 100, false, NOW(), NOW())"
-            ),
-            {
-                "id": str(uuid.uuid4()),
-                "tid": str(current_user.tenant_id),
-                "vid": str(vessel_id),
-                "g1": g1,
-                "g2": g2,
-                "mm": mm,
-                "cn": cn,
-                "crit": node_criticality,
-            },
-        )
-        existing_keys.add(key)
-        added += 1
-
     await db.commit()
-    return {"added": added, "skipped": skipped}
+    return {
+        "added": result.get("added", 0),
+        "skipped": result.get("skipped", 0),
+        "message": result.get("message"),
+    }
 
 
 @router.post(
