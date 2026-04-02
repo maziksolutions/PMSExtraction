@@ -450,15 +450,6 @@ def _filter_text_to_pages(text: str, selected_pages: list[int]) -> str:
 
 
 def _selected_manual_pages(manual: Any, entity_type: str) -> list[int]:
-    if entity_type == "component":
-        return sorted(
-            {
-                *(_parse_page_tokens(getattr(manual, "pages_with_components_physical", None) or getattr(manual, "pages_with_components", None))),
-                *(_parse_page_tokens(getattr(manual, "pages_with_jobs_physical", None) or getattr(manual, "pages_with_jobs", None))),
-                *(_parse_page_tokens(getattr(manual, "pages_with_spares_physical", None) or getattr(manual, "pages_with_spares", None))),
-            }
-        )
-
     physical_attr = {
         "component": "pages_with_components_physical",
         "job": "pages_with_jobs_physical",
@@ -1073,35 +1064,38 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             return
 
         # ------------------------------------------------------------------
-        # Determine which entity types to extract based on category and
-        # classifier signals (pages_with_spares / pages_with_jobs)
+        # Determine which entity types to extract strictly from screened page refs.
+        # This keeps extraction cost aligned to what reviewers selected.
         # ------------------------------------------------------------------
-        norm_category = (category or "").strip()
-        extraction_types: list[str] = ["component"]  # always extract components
+        entity_pages = {
+            entity_type: _selected_manual_pages(manual, entity_type)
+            for entity_type in ("component", "job", "spare")
+        }
+        extraction_types = [entity_type for entity_type, pages in entity_pages.items() if pages]
 
-        has_spares_signal = bool(getattr(manual, "pages_with_spares", None))
-        has_jobs_signal = bool(getattr(manual, "pages_with_jobs", None))
-
-        if norm_category == "Instruction Manual":
-            # Full instruction manuals always contain jobs + spares
-            extraction_types = ["component", "job", "spare"]
-        elif has_jobs_signal:
-            extraction_types.append("job")
-            if has_spares_signal:
-                extraction_types.append("spare")
-        elif has_spares_signal:
-            extraction_types.append("spare")
+        if not extraction_types:
+            logger.info(
+                "auto_extract_from_manual: skipping manual %s because no screened extraction pages are set",
+                filename,
+            )
+            await db.execute(
+                update(Manual)
+                .where(Manual.id == manual_id)
+                .values(status=ManualStatus.classified)
+            )
+            await db.commit()
+            return
 
         type_to_text: dict[str, str] = {}
         for entity_type in extraction_types:
-            selected_pages = _selected_manual_pages(manual, entity_type)
+            selected_pages = entity_pages[entity_type]
             filtered_text = _filter_text_to_pages(full_text, selected_pages)
             type_to_text[entity_type] = filtered_text
             logger.info(
-                "auto_extract_from_manual: %s using %s pages=%s chars=%d",
+                "auto_extract_from_manual: %s using %s screened pages=%s chars=%d",
                 filename,
                 entity_type,
-                selected_pages or "all",
+                selected_pages,
                 len(filtered_text),
             )
 
