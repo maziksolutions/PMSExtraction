@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Annotated, Any, List, Optional
 
 import io
@@ -39,6 +40,7 @@ async def _normalize_pending_extracted_components(
     *,
     vessel_id: uuid.UUID,
     tenant_id: uuid.UUID,
+    vessel_updated_at: Optional[datetime],
     db: AsyncSession,
 ) -> None:
     manual_result = await db.execute(
@@ -64,6 +66,16 @@ async def _normalize_pending_extracted_components(
     changed = False
     for comp in components:
         should_be_unmapped = comp.source_manual_id in current_vessel_manual_ids
+        if (
+            should_be_unmapped
+            and vessel_updated_at is not None
+            and comp.created_at is not None
+            and comp.created_at < vessel_updated_at
+        ):
+            comp.is_deleted = True
+            db.add(comp)
+            changed = True
+            continue
         if comp.is_unmapped != should_be_unmapped:
             comp.is_unmapped = should_be_unmapped
             db.add(comp)
@@ -100,6 +112,7 @@ async def list_components(
     await _normalize_pending_extracted_components(
         vessel_id=vessel_id,
         tenant_id=current_user.tenant_id,
+        vessel_updated_at=vessel.updated_at,
         db=db,
     )
     base_where = [
