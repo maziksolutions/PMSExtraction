@@ -56,13 +56,25 @@ class Job(TenantBase):
 
     frequency: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     frequency_type: Mapped[Optional[FrequencyType]] = mapped_column(
-        Enum(FrequencyType, name="frequency_type"),
+        Enum(
+            FrequencyType,
+            name="frequency_type",
+            native_enum=False,
+            create_constraint=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=True,
     )
 
     initial_due: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     initial_frequency_type: Mapped[Optional[FrequencyType]] = mapped_column(
-        Enum(FrequencyType, name="initial_frequency_type", create_constraint=False),
+        Enum(
+            FrequencyType,
+            name="initial_frequency_type",
+            native_enum=False,
+            create_constraint=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=True,
     )
 
@@ -73,7 +85,13 @@ class Job(TenantBase):
 
     is_critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     qc_status: Mapped[QCStatus] = mapped_column(
-        Enum(QCStatus, name="job_qc_status", create_constraint=False),
+        Enum(
+            QCStatus,
+            name="qc_status",
+            native_enum=False,
+            create_constraint=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
         default=QCStatus.pending,
     )

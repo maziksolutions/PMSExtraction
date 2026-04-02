@@ -61,14 +61,26 @@ class Spare(TenantBase):
     page_reference: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     extraction_method: Mapped[ExtractionMethod] = mapped_column(
-        Enum(ExtractionMethod, name="extraction_method"),
+        Enum(
+            ExtractionMethod,
+            name="extraction_method",
+            native_enum=False,
+            create_constraint=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
         default=ExtractionMethod.table,
     )
 
     is_critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     qc_status: Mapped[QCStatus] = mapped_column(
-        Enum(QCStatus, name="spare_qc_status", create_constraint=False),
+        Enum(
+            QCStatus,
+            name="qc_status",
+            native_enum=False,
+            create_constraint=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
         default=QCStatus.pending,
     )
