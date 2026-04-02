@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import os
@@ -444,6 +446,15 @@ def _split_marked_pages(text: str) -> list[tuple[int, str]]:
     return pages
 
 
+def _build_marked_text_from_lookup(page_lookup: dict[int, str], page_count: int) -> str:
+    total = max(page_count, max(page_lookup.keys(), default=0))
+    parts: list[str] = []
+    for page_no in range(1, total + 1):
+        page_body = (page_lookup.get(page_no) or "").strip()
+        parts.append(f"[PAGE {page_no}]\n{page_body}".rstrip())
+    return "\n\n".join(parts).strip()
+
+
 def _filter_text_to_pages(text: str, selected_pages: list[int]) -> str:
     if not selected_pages or "[PAGE " not in text:
         return text
@@ -454,6 +465,148 @@ def _filter_text_to_pages(text: str, selected_pages: list[int]) -> str:
         if page_no in page_set
     ]
     return "\n\n".join(selected_blocks).strip() or text
+
+
+async def _ocr_page_with_openai(image_bytes: bytes, filename: str, page_no: int) -> str:
+    if not settings.OPENAI_API_KEY:
+        return ""
+    try:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+        model_id = getattr(settings, "OPENAI_VISION_MODEL_ID", None) or "gpt-4o-mini"
+        response = await client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are extracting visible text from a maritime manual page image. "
+                        "Return plain text only. Preserve table rows line by line. "
+                        "If you can detect columns, separate them using ' | '. "
+                        "Do not explain anything."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"Extract all readable text from page {page_no} of {filename}."},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+            temperature=0,
+            max_tokens=3000,
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.warning(
+            "extractor OCR[openai]: failed for %s page=%d: %s",
+            filename,
+            page_no,
+            _redact_error_message(exc),
+        )
+        return ""
+
+
+async def _enrich_pdf_text_for_selected_pages(
+    *,
+    file_bytes: bytes,
+    filename: str,
+    full_text: str,
+    selected_pages: list[int],
+    page_count: int,
+) -> str:
+    page_lookup = {page_no: page_body for page_no, page_body in _split_marked_pages(full_text)}
+    target_pages = [
+        page_no
+        for page_no in selected_pages
+        if len((page_lookup.get(page_no) or "").strip()) < 120
+    ]
+    if not target_pages:
+        return full_text
+
+    try:
+        import pdfplumber
+        import pytesseract  # type: ignore
+    except Exception:
+        pdfplumber = None
+        pytesseract = None
+
+    if pdfplumber is None:
+        return full_text
+
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page_no in target_pages:
+                if page_no < 1 or page_no > len(pdf.pages):
+                    continue
+                page = pdf.pages[page_no - 1]
+                page_parts: list[str] = []
+
+                try:
+                    text = (page.extract_text() or "").strip()
+                    if text:
+                        page_parts.append(text)
+                except Exception:
+                    pass
+
+                try:
+                    for table in (page.extract_tables() or []):
+                        if not table:
+                            continue
+                        rows = [
+                            " | ".join(str(c).strip() if c else "" for c in row)
+                            for row in table
+                            if row and any(c for c in row if c)
+                        ]
+                        if rows:
+                            page_parts.append("[TABLE]\n" + "\n".join(rows))
+                except Exception:
+                    pass
+
+                combined = "\n".join(part for part in page_parts if part).strip()
+                if len(combined) < 120:
+                    try:
+                        page_image = page.to_image(resolution=180).original
+                    except Exception:
+                        page_image = None
+
+                    if page_image is not None and pytesseract is not None:
+                        try:
+                            ocr_text = pytesseract.image_to_string(page_image, config="--psm 6").strip()
+                            if len(ocr_text) > len(combined):
+                                combined = ocr_text
+                        except Exception:
+                            pass
+
+                    if len(combined) < 120 and page_image is not None:
+                        try:
+                            image_buffer = io.BytesIO()
+                            page_image.save(image_buffer, format="PNG")
+                            vision_text = await _ocr_page_with_openai(
+                                image_buffer.getvalue(),
+                                filename,
+                                page_no,
+                            )
+                            if len(vision_text) > len(combined):
+                                combined = vision_text
+                        except Exception:
+                            pass
+
+                page_lookup[page_no] = combined.strip()
+                logger.info(
+                    "extractor OCR enrich: %s page=%d chars=%d",
+                    filename,
+                    page_no,
+                    len(page_lookup[page_no]),
+                )
+    except Exception as exc:
+        logger.warning("extractor OCR enrich failed for %s: %s", filename, exc)
+        return full_text
+
+    return _build_marked_text_from_lookup(page_lookup, page_count)
 
 
 def _selected_manual_pages(manual: Any, entity_type: str) -> list[int]:
@@ -970,6 +1123,8 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         filename = manual.original_filename
         file_path = manual.blob_storage_key
         full_text = ""
+        file_bytes: Optional[bytes] = None
+        ext = (manual.file_extension or "").lower()
 
         stored_text = getattr(manual, "extracted_text", None) or ""
         if stored_text and "[PAGE " in stored_text:
@@ -978,9 +1133,6 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             logger.info("auto_extract_from_manual: using stored extracted_text for %s", filename)
         else:
             # Need to (re-)extract: try blob storage first, then local disk
-            file_bytes: Optional[bytes] = None
-            ext = (manual.file_extension or "").lower()
-
             # Try blob storage (MinIO / Azure)
             is_local_path = file_path and (
                 file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
@@ -1033,6 +1185,8 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                                         pass
                                     if page_parts:
                                         parts.append(f"[PAGE {page_num}]\n" + "\n".join(page_parts))
+                                    else:
+                                        parts.append(f"[PAGE {page_num}]\n")
                             return "\n\n".join(parts)
 
                         full_text = await _asyncio.to_thread(_read_pdf_bytes, file_bytes)
@@ -1092,6 +1246,37 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             )
             await db.commit()
             return
+
+        selected_pages_all = sorted({page for pages in entity_pages.values() for page in pages})
+        if ext == "pdf" and selected_pages_all:
+            if file_bytes is None:
+                is_local_path = file_path and (
+                    file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
+                )
+                if file_path and not is_local_path:
+                    try:
+                        from app.services.blob_storage import BlobStorageService
+
+                        blob_svc = BlobStorageService()
+                        file_bytes = await blob_svc.download_bytes(file_path)
+                    except Exception as blob_err:
+                        logger.warning(
+                            "auto_extract_from_manual: blob download failed during OCR enrich for %s: %s",
+                            filename,
+                            blob_err,
+                        )
+                if file_bytes is None and file_path and os.path.exists(file_path):
+                    with open(file_path, "rb") as fh:
+                        file_bytes = fh.read()
+
+            if file_bytes is not None:
+                full_text = await _enrich_pdf_text_for_selected_pages(
+                    file_bytes=file_bytes,
+                    filename=filename,
+                    full_text=full_text,
+                    selected_pages=selected_pages_all,
+                    page_count=getattr(manual, "page_count", 0) or 0,
+                )
 
         type_to_text: dict[str, str] = {}
         for entity_type in extraction_types:
