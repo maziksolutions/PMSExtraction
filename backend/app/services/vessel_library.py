@@ -6,7 +6,7 @@ from typing import Any, Optional
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.component import Component
+from app.models.component import Component, QCStatus
 
 
 async def _single_populated_vessel_type(
@@ -105,26 +105,34 @@ async def load_library_components_for_vessel(
         }
 
     existing_result = await db.execute(
-        select(
-            Component.group1,
-            Component.group2,
-            Component.main_machinery,
-            Component.component_name,
-        ).where(
+        select(Component).where(
             Component.vessel_id == vessel_id,
             Component.tenant_id == tenant_id,
             Component.is_deleted == False,
         )
     )
-    existing_keys = {
+    existing_components = existing_result.scalars().all()
+    mapped_keys = {
         (
-            (group1 or "").lower().strip(),
-            (group2 or "").lower().strip(),
-            (main_machinery or "").lower().strip(),
-            (component_name or "").lower().strip(),
+            (component.group1 or "").lower().strip(),
+            (component.group2 or "").lower().strip(),
+            (component.main_machinery or "").lower().strip(),
+            (component.component_name or "").lower().strip(),
         )
-        for group1, group2, main_machinery, component_name in existing_result.all()
+        for component in existing_components
+        if not component.is_unmapped
     }
+    unmapped_by_key: dict[tuple[str, str, str, str], Component] = {}
+    for component in existing_components:
+        if not component.is_unmapped:
+            continue
+        key = (
+            (component.group1 or "").lower().strip(),
+            (component.group2 or "").lower().strip(),
+            (component.main_machinery or "").lower().strip(),
+            (component.component_name or "").lower().strip(),
+        )
+        unmapped_by_key.setdefault(key, component)
 
     added = 0
     skipped = 0
@@ -138,8 +146,19 @@ async def load_library_components_for_vessel(
             continue
 
         key = (g1.lower(), g2.lower(), mm.lower(), cn.lower())
-        if key in existing_keys:
+        if key in mapped_keys:
             skipped += 1
+            continue
+
+        existing_unmapped = unmapped_by_key.get(key)
+        if existing_unmapped:
+            existing_unmapped.is_unmapped = False
+            existing_unmapped.qc_status = QCStatus.accepted
+            if not existing_unmapped.confidence_score:
+                existing_unmapped.confidence_score = 100
+            db.add(existing_unmapped)
+            mapped_keys.add(key)
+            added += 1
             continue
 
         node_criticality = str(node.get("criticality") or "non_critical")
@@ -163,7 +182,7 @@ async def load_library_components_for_vessel(
                 "crit": node_criticality,
             },
         )
-        existing_keys.add(key)
+        mapped_keys.add(key)
         added += 1
 
     return {
