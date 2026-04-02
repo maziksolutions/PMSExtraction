@@ -14,15 +14,14 @@ import uuid
 from difflib import SequenceMatcher
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.component import Component, QCStatus
-from app.models.ingestion import Manual
 
 logger = logging.getLogger(__name__)
 
-MATCH_THRESHOLD = 0.80  # high threshold to avoid false positives across unrelated equipment
+MATCH_THRESHOLD = 0.68  # allow stronger manual/library reconciliation while still avoiding unrelated matches
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +92,45 @@ def _similarity(a: str, b: str) -> float:
     return max(jaccard, char_sim)
 
 
+def _component_similarity(extracted: Component, library: Component) -> float:
+    name_score = _similarity(extracted.component_name, library.component_name)
+    machinery_score = _similarity(extracted.main_machinery, library.main_machinery)
+    cross_score = max(
+        _similarity(extracted.component_name, library.main_machinery),
+        _similarity(extracted.main_machinery, library.component_name),
+    )
+
+    bonus = 0.0
+    if extracted.group1 and library.group1 and _normalize(extracted.group1) == _normalize(library.group1):
+        bonus += 0.05
+    if extracted.group2 and library.group2 and _normalize(extracted.group2) == _normalize(library.group2):
+        bonus += 0.07
+
+    ext_tokens = set(_normalize(f"{extracted.component_name} {extracted.main_machinery}").split())
+    lib_tokens = set(_normalize(f"{library.component_name} {library.main_machinery}").split())
+    if ext_tokens and lib_tokens:
+        overlap = len(ext_tokens & lib_tokens) / max(min(len(ext_tokens), len(lib_tokens)), 1)
+        if overlap >= 0.75:
+            bonus += 0.08
+
+    return max(name_score, machinery_score, cross_score) + bonus
+
+
+def _is_blankish(value: Optional[str]) -> bool:
+    cleaned = (value or "").strip().lower()
+    return cleaned in {"", "-", "—", "n/a", "na", "unknown", "not available", "none"}
+
+
+def _prefer_extracted(current: Optional[str], incoming: Optional[str]) -> Optional[str]:
+    if _is_blankish(incoming):
+        return current
+    if _is_blankish(current):
+        return incoming
+    if current and incoming and len(incoming.strip()) > len(current.strip()):
+        return incoming
+    return current
+
+
 # ---------------------------------------------------------------------------
 # Main merge function
 # ---------------------------------------------------------------------------
@@ -112,7 +150,11 @@ async def auto_merge_extracted_components(
             Component.vessel_id == vessel_id,
             Component.tenant_id == tenant_id,
             Component.is_deleted == False,
-            Component.source_manual_id == None,
+            Component.is_unmapped == False,
+            or_(
+                Component.source_manual_id == None,
+                Component.qc_status != QCStatus.pending,
+            ),
         )
     )
     library_components = list(lib_result.scalars().all())
@@ -124,6 +166,7 @@ async def auto_merge_extracted_components(
             Component.tenant_id == tenant_id,
             Component.is_deleted == False,
             Component.source_manual_id != None,
+            Component.qc_status == QCStatus.pending,
         )
     )
     extracted_components = list(ext_result.scalars().all())
@@ -144,9 +187,6 @@ async def auto_merge_extracted_components(
         )
         return 0, len(extracted_components)
 
-    # Build name index for library components
-    lib_names = [(c, c.component_name) for c in library_components]
-
     merged = 0
     unmatched = 0
     to_delete: list[uuid.UUID] = []
@@ -155,29 +195,21 @@ async def auto_merge_extracted_components(
         best_match: Optional[Component] = None
         best_score = 0.0
 
-        for lib_comp, lib_name in lib_names:
-            score = _similarity(ext_comp.component_name, lib_name)
+        for lib_comp in library_components:
+            score = _component_similarity(ext_comp, lib_comp)
             if score > best_score:
                 best_score = score
                 best_match = lib_comp
 
         if best_match and best_score >= MATCH_THRESHOLD:
             # Merge: only fill nulls — never overwrite data already on the library component
-            if not best_match.maker and ext_comp.maker:
-                best_match.maker = ext_comp.maker
-            if not best_match.model and ext_comp.model:
-                best_match.model = ext_comp.model
-            if not best_match.specification and ext_comp.specification:
-                best_match.specification = ext_comp.specification
-            if not best_match.serial_number and ext_comp.serial_number:
-                best_match.serial_number = ext_comp.serial_number
-            if not best_match.location and ext_comp.location:
-                best_match.location = ext_comp.location
-            if not best_match.machinery_particulars and ext_comp.machinery_particulars:
-                best_match.machinery_particulars = ext_comp.machinery_particulars
-            # Reference fields: set if null; append if a DIFFERENT manual is found
-            if not best_match.source_manual_id and ext_comp.source_manual_id:
-                best_match.source_manual_id = ext_comp.source_manual_id
+            best_match.maker = _prefer_extracted(best_match.maker, ext_comp.maker)
+            best_match.model = _prefer_extracted(best_match.model, ext_comp.model)
+            best_match.specification = _prefer_extracted(best_match.specification, ext_comp.specification)
+            best_match.serial_number = _prefer_extracted(best_match.serial_number, ext_comp.serial_number)
+            best_match.location = _prefer_extracted(best_match.location, ext_comp.location)
+            best_match.machinery_particulars = _prefer_extracted(best_match.machinery_particulars, ext_comp.machinery_particulars)
+            # Keep the standing vessel component as the canonical row.
             if not best_match.page_reference and ext_comp.page_reference:
                 best_match.page_reference = ext_comp.page_reference
             # pdf_reference: if different file, append "File1.pdf (pp.X-Y); File2.pdf (pp.A-B)"
@@ -195,18 +227,21 @@ async def auto_merge_extracted_components(
                     best_match.pdf_reference = f"{best_match.pdf_reference}; {ref}"
             # job_pages / spare_pages: append ranges from different manuals
             if ext_comp.job_pages:
-                if not best_match.job_pages:
+                if _is_blankish(best_match.job_pages):
                     best_match.job_pages = ext_comp.job_pages
                 elif ext_comp.job_pages not in best_match.job_pages:
                     best_match.job_pages = f"{best_match.job_pages}; {ext_comp.job_pages}"
             if ext_comp.spare_pages:
-                if not best_match.spare_pages:
+                if _is_blankish(best_match.spare_pages):
                     best_match.spare_pages = ext_comp.spare_pages
                 elif ext_comp.spare_pages not in best_match.spare_pages:
                     best_match.spare_pages = f"{best_match.spare_pages}; {ext_comp.spare_pages}"
             if not best_match.confidence_score and ext_comp.confidence_score:
                 best_match.confidence_score = ext_comp.confidence_score
             best_match.qc_status = QCStatus.modified
+            best_match.is_unmapped = False
+            if ext_comp.is_critical and not best_match.is_critical:
+                best_match.is_critical = True
 
             db.add(best_match)
             to_delete.append(ext_comp.id)

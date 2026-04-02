@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -13,6 +14,10 @@ import anthropic
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class ExtractionProvidersFailed(RuntimeError):
+    """Raised when all configured extraction providers fail for a chunk."""
 
 # ---------------------------------------------------------------------------
 # Default system prompts per extraction type
@@ -309,12 +314,61 @@ async def _extract_with_gemini(
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     async with httpx.AsyncClient(timeout=180) as client:
-        response = await client.post(url, json=payload)
-        response.raise_for_status()
+        response = None
+        for attempt, wait_seconds in enumerate((5, 10, 20), start=1):
+            response = await client.post(url, json=payload)
+            if response.status_code != 429:
+                response.raise_for_status()
+                break
+            if attempt == 3:
+                response.raise_for_status()
+            logger.warning(
+                "extract_entities[gemini]: 429 for %s/%s, retrying in %ss",
+                filename,
+                extraction_type,
+                wait_seconds,
+            )
+            await asyncio.sleep(wait_seconds)
     data = response.json()
     raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
     logger.info("extract_entities[gemini]: %s/%s responded", filename, extraction_type)
     return _parse_json_records(raw_text)
+
+
+def _dedupe_records(records: list[dict], extraction_type: str) -> list[dict]:
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for record in records:
+        if extraction_type == "component":
+            key = "|".join(
+                [
+                    (record.get("component_name") or "").strip().lower(),
+                    (record.get("main_machinery") or "").strip().lower(),
+                    str(record.get("source_page_number") or ""),
+                ]
+            )
+        elif extraction_type == "job":
+            key = "|".join(
+                [
+                    (record.get("job_name") or "").strip().lower(),
+                    (record.get("job_code") or "").strip().lower(),
+                    str(record.get("source_page_number") or ""),
+                ]
+            )
+        else:
+            key = "|".join(
+                [
+                    (record.get("part_name") or "").strip().lower(),
+                    (record.get("part_number") or "").strip().lower(),
+                    str(record.get("source_page_number") or ""),
+                ]
+            )
+        if key.strip("|") and key in seen:
+            continue
+        if key.strip("|"):
+            seen.add(key)
+        deduped.append(record)
+    return deduped
 
 
 def _parse_page_tokens(value: str | None) -> list[int]:
@@ -364,6 +418,15 @@ def _filter_text_to_pages(text: str, selected_pages: list[int]) -> str:
 
 
 def _selected_manual_pages(manual: Any, entity_type: str) -> list[int]:
+    if entity_type == "component":
+        return sorted(
+            {
+                *(_parse_page_tokens(getattr(manual, "pages_with_components_physical", None) or getattr(manual, "pages_with_components", None))),
+                *(_parse_page_tokens(getattr(manual, "pages_with_jobs_physical", None) or getattr(manual, "pages_with_jobs", None))),
+                *(_parse_page_tokens(getattr(manual, "pages_with_spares_physical", None) or getattr(manual, "pages_with_spares", None))),
+            }
+        )
+
     physical_attr = {
         "component": "pages_with_components_physical",
         "job": "pages_with_jobs_physical",
@@ -419,6 +482,104 @@ def _component_match_score(search_text: str, component: Any, page_reference: int
 
     return score
 
+
+def _component_has_manual_reference(component: Any, manual: Any) -> bool:
+    manual_id = getattr(manual, "id", None)
+    manual_name = (getattr(manual, "original_filename", None) or "").strip()
+    component_manual_id = getattr(component, "source_manual_id", None)
+    pdf_reference = getattr(component, "pdf_reference", None) or ""
+    return bool(
+        (manual_id and component_manual_id == manual_id)
+        or (manual_name and manual_name.lower() in pdf_reference.lower())
+    )
+
+
+def _page_in_reference(page_reference: int | None, pages_value: str | None) -> bool:
+    if page_reference is None or not pages_value:
+        return False
+    return page_reference in set(_parse_page_tokens(pages_value))
+
+
+def _merge_reference_values(current: str | None, incoming: str | None) -> str | None:
+    current_clean = (current or "").strip()
+    incoming_clean = (incoming or "").strip()
+    if not current_clean:
+        return incoming_clean or None
+    if not incoming_clean:
+        return current_clean or None
+    if incoming_clean in current_clean:
+        return current_clean
+    return f"{current_clean}; {incoming_clean}"
+
+
+def _link_score(
+    *,
+    search_text: str,
+    component: Any,
+    page_reference: int | None,
+    relation: str,
+    manual: Any,
+) -> float:
+    score = _component_match_score(search_text, component, page_reference)
+
+    if _component_has_manual_reference(component, manual):
+        score += 0.16
+
+    if relation == "job" and _page_in_reference(page_reference, getattr(component, "job_pages", None)):
+        score += 0.2
+    if relation == "spare" and _page_in_reference(page_reference, getattr(component, "spare_pages", None)):
+        score += 0.2
+
+    return score
+
+
+def _manual_page_refs_summary(manual: Any) -> str:
+    parts: list[str] = []
+    for label, printed_attr, physical_attr in (
+        ("components", "pages_with_components_printed", "pages_with_components_physical"),
+        ("jobs", "pages_with_jobs_printed", "pages_with_jobs_physical"),
+        ("spares", "pages_with_spares_printed", "pages_with_spares_physical"),
+    ):
+        printed = getattr(manual, printed_attr, None) or ""
+        physical = getattr(manual, physical_attr, None) or ""
+        if printed or physical:
+            parts.append(f"{label}: printed={printed or 'none'}, physical={physical or 'none'}")
+    return "; ".join(parts)
+
+
+def _build_component_context_text(components: list[Any], manual: Any) -> str:
+    if not components:
+        return ""
+    def _value(component: Any, key: str) -> Any:
+        if isinstance(component, dict):
+            return component.get(key)
+        return getattr(component, key, None)
+
+    lines = [
+        "Known component context from this manual:",
+        f"Manual screening refs -> {_manual_page_refs_summary(manual) or 'not set'}",
+    ]
+    for component in components[:40]:
+        lines.append(
+            " - "
+            + " | ".join(
+                filter(
+                    None,
+                    [
+                        f"name={_value(component, 'component_name')}",
+                        f"main={_value(component, 'main_machinery')}",
+                        f"maker={_value(component, 'maker')}",
+                        f"model={_value(component, 'model')}",
+                        f"page={_value(component, 'page_reference') or _value(component, 'source_page_number')}",
+                    ],
+                )
+            )
+        )
+    lines.append(
+        "When extracting jobs or spares, prefer linking each record to one of these components via job_name wording, spare_model, or component context."
+    )
+    return "\n".join(lines)
+
 # ---------------------------------------------------------------------------
 # Core extraction function
 # ---------------------------------------------------------------------------
@@ -429,6 +590,7 @@ async def extract_entities(
     extraction_type: str,
     filename: str,
     custom_prompt: str | None = None,
+    context_note: str | None = None,
 ) -> list[dict]:
     """
     Call the configured AI providers to extract structured entities from a text chunk.
@@ -445,6 +607,8 @@ async def extract_entities(
     prompt_config = DEFAULT_PROMPTS.get(extraction_type, DEFAULT_PROMPTS["component"])
     system_prompt = custom_prompt or prompt_config["system"]
     user_message = prompt_config["user_template"].format(text=text_chunk, filename=filename)
+    if context_note:
+        user_message = f"{user_message}\n\nAdditional extraction context:\n{context_note}"
     providers: list[tuple[str, Any]] = [
         ("claude", _extract_with_claude),
         ("gemini", _extract_with_gemini),
@@ -488,11 +652,15 @@ async def extract_entities(
             )
 
     if last_error is not None:
+        message = _redact_error_message(last_error)
         logger.error(
             "extract_entities: all providers failed for %s/%s: %s",
             filename,
             extraction_type,
-            _redact_error_message(last_error),
+            message,
+        )
+        raise ExtractionProvidersFailed(
+            f"All extraction providers failed for {filename}/{extraction_type}: {message}"
         )
     return []
 
@@ -517,7 +685,6 @@ async def _overwrite_component_manual_refs(
             Component.vessel_id == vessel_id,
             Component.tenant_id == tenant_id,
             Component.is_deleted == False,
-            Component.source_manual_id == manual.id,
             Component.qc_status != QCStatus.rejected,
         )
     )
@@ -528,15 +695,18 @@ async def _overwrite_component_manual_refs(
     spare_pages = getattr(manual, "pages_with_spares", None) or None
     pdf_ref = manual.original_filename
     for comp in components:
+        if not _component_has_manual_reference(comp, manual):
+            continue
         changed = False
-        if comp.job_pages != job_pages:
+        if job_pages and comp.job_pages != job_pages and ";" not in (comp.job_pages or ""):
             comp.job_pages = job_pages
             changed = True
-        if comp.spare_pages != spare_pages:
+        if spare_pages and comp.spare_pages != spare_pages and ";" not in (comp.spare_pages or ""):
             comp.spare_pages = spare_pages
             changed = True
-        if comp.pdf_reference != pdf_ref:
-            comp.pdf_reference = pdf_ref
+        merged_pdf_ref = _merge_reference_values(comp.pdf_reference, pdf_ref)
+        if comp.pdf_reference != merged_pdf_ref:
+            comp.pdf_reference = merged_pdf_ref
             changed = True
         if changed:
             db.add(comp)
@@ -565,17 +735,26 @@ async def _link_records_to_components(
         )
     )
     all_components = comp_result.scalars().all()
-    same_manual_components = [comp for comp in all_components if comp.source_manual_id == manual.id]
+    same_manual_components = [comp for comp in all_components if _component_has_manual_reference(comp, manual)]
     fallback_components = same_manual_components or all_components
 
-    def pick_component(search_text: str, page_reference: int | None):
+    def pick_component(search_text: str, page_reference: int | None, relation: str):
         if not fallback_components:
             return None
         if len(same_manual_components) == 1:
             return same_manual_components[0]
         ranked = sorted(
             (
-                (_component_match_score(search_text, component, page_reference), component)
+                (
+                    _link_score(
+                        search_text=search_text,
+                        component=component,
+                        page_reference=page_reference,
+                        relation=relation,
+                        manual=manual,
+                    ),
+                    component,
+                )
                 for component in fallback_components
             ),
             key=lambda item: item[0],
@@ -598,6 +777,7 @@ async def _link_records_to_components(
         match = pick_component(
             " ".join(filter(None, [job.job_name, job.job_code, job.job_description])),
             job.page_reference,
+            "job",
         )
         if match:
             changed = False
@@ -647,6 +827,7 @@ async def _link_records_to_components(
                 )
             ),
             spare.page_reference,
+            "spare",
         )
         if match:
             changed = False
@@ -944,6 +1125,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         components_to_add: list[Component] = []
         jobs_to_add: list[Job] = []
         spares_to_add: list[Spare] = []
+        extracted_component_context: list[dict[str, Any]] = []
 
         for etype in extraction_types:
             source_text = type_to_text.get(etype) or full_text
@@ -958,24 +1140,12 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             all_records: list[dict] = []
             for chunk_idx, chunk in enumerate(text_chunks):
                 chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
-                records = await extract_entities(chunk, etype, chunk_label)
+                context_note = None
+                if etype in {"job", "spare"} and extracted_component_context:
+                    context_note = _build_component_context_text(extracted_component_context, manual)
+                records = await extract_entities(chunk, etype, chunk_label, context_note=context_note)
                 all_records.extend(records)
-
-            # Deduplicate components by name (case-insensitive) to avoid
-            # duplicates from the overlap region between chunks
-            if etype == "component" and len(text_chunks) > 1:
-                seen: set[str] = set()
-                deduped: list[dict] = []
-                for r in all_records:
-                    key = (r.get("component_name") or "").strip().lower()
-                    if key and key not in seen:
-                        seen.add(key)
-                        deduped.append(r)
-                    elif not key:
-                        deduped.append(r)
-                all_records = deduped
-
-            records = all_records
+            records = _dedupe_records(all_records, etype)
 
             for record in records:
                 confidence = int(record.get("confidence_score", 70))
@@ -1006,12 +1176,21 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                         location=record.get("location") or None,
                         machinery_particulars=record.get("machinery_particulars") or None,
                         is_critical=bool(record.get("is_critical", False)),
-                        job_pages=record.get("job_pages") or None,
-                        spare_pages=record.get("spare_pages") or None,
+                        job_pages=record.get("job_pages") or getattr(manual, "pages_with_jobs", None) or None,
+                        spare_pages=record.get("spare_pages") or getattr(manual, "pages_with_spares", None) or None,
                         page_reference=int(source_page) if source_page is not None else None,
                         pdf_reference=filename,
                     )
                     components_to_add.append(comp)
+                    extracted_component_context.append(
+                        {
+                            "component_name": comp.component_name,
+                            "main_machinery": comp.main_machinery,
+                            "maker": comp.maker,
+                            "model": comp.model,
+                            "source_page_number": comp.page_reference,
+                        }
+                    )
 
                 elif etype == "job":
                     raw_freq_type = record.get("frequency_type")

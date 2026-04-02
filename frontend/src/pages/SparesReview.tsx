@@ -1,8 +1,9 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, CheckCircle, XCircle, Image, ExternalLink } from 'lucide-react'
+import { Play, CheckCircle, XCircle, FileSearch, ExternalLink } from 'lucide-react'
 import apiClient from '@/api/client'
+import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 
 interface Spare {
   id: string
@@ -49,7 +50,6 @@ const SparesReview: React.FC = () => {
   const [filterCritical, setFilterCritical] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedSpare, setSelectedSpare] = useState<Spare | null>(null)
-  const [pageImageUrl, setPageImageUrl] = useState<string | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['spares', vesselId, filterQC, filterMethod, filterCritical],
@@ -85,20 +85,6 @@ const SparesReview: React.FC = () => {
     mutationFn: () =>
       apiClient.post(`/vessels/${vesselId}/spares/trigger-extraction`).then((r) => r.data),
   })
-
-  const loadPageImage = useCallback(
-    async (spare: Spare) => {
-      setSelectedSpare(spare)
-      setPageImageUrl(null)
-      try {
-        const res = await apiClient.get(`/vessels/${vesselId}/spares/${spare.id}/page-image`)
-        setPageImageUrl(res.data.image_url)
-      } catch {
-        setPageImageUrl(null)
-      }
-    },
-    [vesselId]
-  )
 
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -321,11 +307,11 @@ const SparesReview: React.FC = () => {
                     </td>
                     <td className="px-4 py-2.5">
                       <button
-                        onClick={() => loadPageImage(spare)}
+                        onClick={() => setSelectedSpare(spare)}
                         className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600"
-                        title="View page"
+                        title="Preview manual pages"
                       >
-                        <Image className="h-3 w-3" />
+                        <FileSearch className="h-3 w-3" />
                       </button>
                     </td>
                   </tr>
@@ -336,45 +322,26 @@ const SparesReview: React.FC = () => {
         </div>
       </div>
 
-      {/* Right: Page Image Viewer */}
-      {selectedSpare && (
-        <aside className="w-80 shrink-0 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-200">Page Viewer</h3>
-            <button
-              onClick={() => setSelectedSpare(null)}
-              className="text-xs text-slate-500 hover:text-slate-300"
-            >
-              Close
-            </button>
-          </div>
-          <div className="mb-3 rounded-lg bg-slate-800 p-3 text-xs text-slate-300 space-y-1">
-            <p>
-              <span className="text-slate-500">Part:</span> {selectedSpare.part_name}
-            </p>
-            <p>
-              <span className="text-slate-500">Part #:</span> {selectedSpare.part_number ?? '-'}
-            </p>
-            <p>
-              <span className="text-slate-500">Page:</span> {selectedSpare.page_reference ?? '-'}
-            </p>
-          </div>
-          <div className="rounded-lg border border-slate-700 bg-slate-800 min-h-64 flex items-center justify-center">
-            {pageImageUrl ? (
-              <img
-                src={pageImageUrl}
-                alt={`Page ${selectedSpare.page_reference}`}
-                className="max-w-full rounded"
-              />
-            ) : (
-              <div className="text-center text-slate-500 py-12">
-                <Image className="mx-auto mb-2 h-8 w-8 opacity-30" />
-                <p className="text-xs">Page image not available</p>
-              </div>
-            )}
-          </div>
-        </aside>
-      )}
+      <ManualPagePreview
+        vesselId={vesselId ?? ''}
+        manualId={selectedSpare?.source_manual_id}
+        manualName={selectedSpare?.source_manual_name ?? selectedSpare?.pdf_reference}
+        title="Spare Source Preview"
+        subtitle={
+          selectedSpare
+            ? [
+                selectedSpare.part_name,
+                selectedSpare.part_number,
+                selectedSpare.component_name,
+                selectedSpare.component_maker,
+                selectedSpare.component_model,
+              ]
+                .filter(Boolean)
+                .join(' • ')
+            : null
+        }
+        defaultPages={selectedSpare?.page_reference}
+      />
     </div>
   )
 }

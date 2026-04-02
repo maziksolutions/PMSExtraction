@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 import io
+import os
+import re
 import uuid
 from typing import Annotated, Any, Optional
 
@@ -276,6 +279,65 @@ def _manual_import_aliases() -> dict[str, str]:
     }
 
 
+_MANUAL_PAGE_BLOCK_RE = re.compile(r"\[PAGE\s+(\d+)\]\s*\n?(.*?)(?=(?:\n\[PAGE\s+\d+\])|\Z)", re.S)
+
+
+def _parse_preview_pages(value: str) -> list[int]:
+    pages: set[int] = set()
+    for token in value.split(","):
+        cleaned = token.strip()
+        if not cleaned:
+            continue
+        if "-" in cleaned:
+            start_raw, end_raw = cleaned.split("-", 1)
+            try:
+                start = int(start_raw.strip())
+                end = int(end_raw.strip())
+            except ValueError:
+                continue
+            for page in range(min(start, end), max(start, end) + 1):
+                pages.add(page)
+            continue
+        try:
+            pages.add(int(cleaned))
+        except ValueError:
+            continue
+    return sorted(page for page in pages if page > 0)
+
+
+def _manual_text_by_page(manual: Manual) -> dict[int, str]:
+    text = manual.extracted_text or ""
+    if not text:
+        return {}
+    pages: dict[int, str] = {}
+    for match in _MANUAL_PAGE_BLOCK_RE.finditer(text):
+        pages[int(match.group(1))] = match.group(2).strip()
+    if pages:
+        return pages
+    return {1: text.strip()}
+
+
+async def _download_manual_bytes(manual: Manual) -> bytes:
+    from app.services.blob_storage import BlobStorageService
+
+    blob_key = manual.blob_storage_key
+    if not blob_key:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manual file is not available.")
+
+    if os.path.exists(blob_key):
+        with open(blob_key, "rb") as fh:
+            return fh.read()
+
+    blob_service = BlobStorageService()
+    return await blob_service.download_bytes(blob_key)
+
+
+def _encode_png_data_url(image: Any) -> str:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode('ascii')}"
+
+
 def _build_manual_workbook(manuals: list[Manual], *, include_sample_rows: bool) -> StreamingResponse:
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -442,6 +504,94 @@ async def list_manuals(
         "page": page,
         "page_size": page_size,
         "total": total,
+    }
+
+
+@router.get(
+    "/{vessel_id}/manuals/{manual_id}/page-preview",
+    summary="Return rendered manual pages and extracted text for review",
+)
+async def preview_manual_pages(
+    vessel_id: uuid.UUID,
+    manual_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    pages: str = Query(..., description="Comma-separated physical page numbers, e.g. 1,3-5"),
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+
+    result = await db.execute(
+        select(Manual).where(
+            Manual.id == manual_id,
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manual = result.scalar_one_or_none()
+    if manual is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manual not found")
+
+    requested_pages = _parse_preview_pages(pages)
+    if not requested_pages:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please provide at least one valid page number.")
+    if len(requested_pages) > 12:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Preview up to 12 pages at a time.")
+
+    page_text_lookup = _manual_text_by_page(manual)
+    preview_pages: list[dict[str, Any]] = []
+    page_count = manual.page_count
+
+    if (manual.file_extension or "").lower() == "pdf":
+        file_bytes = await _download_manual_bytes(manual)
+        try:
+            import pdfplumber
+
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                page_count = page_count or len(pdf.pages)
+                for page_number in requested_pages:
+                    page_payload: dict[str, Any] = {
+                        "page_number": page_number,
+                        "text_excerpt": (page_text_lookup.get(page_number) or "")[:4000],
+                        "image_data_url": None,
+                    }
+                    if 1 <= page_number <= len(pdf.pages):
+                        page = pdf.pages[page_number - 1]
+                        try:
+                            page_payload["image_data_url"] = _encode_png_data_url(
+                                page.to_image(resolution=140).original
+                            )
+                        except Exception:
+                            page_payload["image_data_url"] = None
+                        if not page_payload["text_excerpt"]:
+                            try:
+                                page_payload["text_excerpt"] = (page.extract_text() or "")[:4000]
+                            except Exception:
+                                page_payload["text_excerpt"] = ""
+                    else:
+                        page_payload["error"] = "Requested page is outside the PDF page count."
+                    preview_pages.append(page_payload)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Could not render preview pages: {exc}",
+            ) from exc
+    else:
+        for page_number in requested_pages:
+            preview_pages.append(
+                {
+                    "page_number": page_number,
+                    "text_excerpt": (page_text_lookup.get(page_number) or "")[:4000],
+                    "image_data_url": None,
+                }
+            )
+
+    return {
+        "manual_id": str(manual.id),
+        "file_name": manual.original_filename,
+        "file_extension": manual.file_extension,
+        "page_count": page_count,
+        "pages": preview_pages,
     }
 
 

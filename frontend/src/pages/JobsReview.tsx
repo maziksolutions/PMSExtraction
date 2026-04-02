@@ -1,8 +1,9 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, CheckCircle, XCircle, Upload, AlertCircle, ExternalLink } from 'lucide-react'
+import { Play, CheckCircle, XCircle, Upload, AlertCircle, ExternalLink, FileSearch } from 'lucide-react'
 import apiClient from '@/api/client'
+import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 
 interface Job {
   id: string
@@ -45,6 +46,7 @@ const JobsReview: React.FC = () => {
   const [filterFreqType, setFilterFreqType] = useState('')
   const [filterNoCMS, setFilterNoCMS] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS],
@@ -110,154 +112,156 @@ const JobsReview: React.FC = () => {
   })
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Jobs Review</h1>
-          <p className="mt-1 text-sm text-slate-400">Review and correct extracted maintenance jobs.</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {selectedIds.size > 0 && (
-            <>
-              <button
-                onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))}
-                className="flex items-center gap-1.5 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600"
-              >
-                <CheckCircle className="h-3.5 w-3.5" />
-                Accept ({selectedIds.size})
-              </button>
-              <button
-                onClick={() => bulkRejectMutation.mutate(Array.from(selectedIds))}
-                className="flex items-center gap-1.5 rounded-lg bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600"
-              >
-                <XCircle className="h-3.5 w-3.5" />
-                Reject ({selectedIds.size})
-              </button>
-            </>
-          )}
-          <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
-            <Upload className="h-3.5 w-3.5" />
-            Upload CMS Mapping
-            <input type="file" accept=".csv" className="hidden" onChange={handleCMSUpload} />
-          </label>
-          <button
-            onClick={() => triggerExtractionMutation.mutate()}
-            disabled={triggerExtractionMutation.isPending}
-            className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
-          >
-            <Play className="h-3.5 w-3.5" />
-            Trigger Extraction
-          </button>
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          onClick={() => setFilterUnmapped(!filterUnmapped)}
-          className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors ${
-            filterUnmapped ? 'border-amber-600 bg-amber-900/20 text-amber-300' : 'border-slate-700 text-slate-400 hover:bg-slate-800'
-          }`}
-        >
-          <AlertCircle className="h-3 w-3" />
-          Unmapped
-        </button>
-        <button
-          onClick={() => setFilterNoCMS(!filterNoCMS)}
-          className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
-            filterNoCMS ? 'border-sky-600 bg-sky-900/20 text-sky-300' : 'border-slate-700 text-slate-400 hover:bg-slate-800'
-          }`}
-        >
-          CMS Codes Pending
-        </button>
-        <select
-          value={filterFreqType}
-          onChange={(e) => setFilterFreqType(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-        >
-          <option value="">All Frequency</option>
-          <option value="daily">Daily</option>
-          <option value="weekly">Weekly</option>
-          <option value="biweekly">Biweekly (2 weeks)</option>
-          <option value="monthly">Monthly</option>
-          <option value="quarterly">Quarterly</option>
-          <option value="half_yearly">Half Yearly</option>
-          <option value="yearly">Yearly</option>
-          <option value="biannual">Biannual (2 years)</option>
-          <option value="running_hours">Running Hours</option>
-        </select>
-        <select
-          value={filterCritical}
-          onChange={(e) => setFilterCritical(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-        >
-          <option value="">All Criticality</option>
-          <option value="true">Critical</option>
-          <option value="false">Non-Critical</option>
-        </select>
-        <select
-          value={filterQC}
-          onChange={(e) => setFilterQC(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-        >
-          <option value="">All QC</option>
-          <option value="pending">Pending</option>
-          <option value="accepted">Accepted</option>
-          <option value="rejected">Rejected</option>
-        </select>
-        {(filterQC || filterCritical || filterFreqType) && (
-          <button
-            onClick={() => { setFilterQC(''); setFilterCritical(''); setFilterFreqType('') }}
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200"
-          >
-            Clear filters
-          </button>
-        )}
-      </div>
-
-      {/* Table */}
-      <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
-        {isLoading ? (
-          <div className="py-16 text-center text-slate-500">Loading jobs...</div>
-        ) : jobs.length === 0 ? (
-          <div className="py-16 text-center text-slate-500">No jobs found. Trigger extraction to begin.</div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-700 text-left text-xs text-slate-500 uppercase">
-                <th className="px-4 py-3 w-8">
-                  <input
-                    type="checkbox"
-                    onChange={(e) =>
-                      e.target.checked
-                        ? setSelectedIds(new Set(jobs.map((j) => j.id)))
-                        : setSelectedIds(new Set())
-                    }
-                    checked={selectedIds.size === jobs.length && jobs.length > 0}
-                    className="h-3.5 w-3.5 rounded"
-                  />
-                </th>
-                <th className="px-4 py-3">Job Name</th>
-                <th className="px-4 py-3">Component</th>
-                <th className="px-4 py-3">Code</th>
-                <th className="px-4 py-3">Description</th>
-                <th className="px-4 py-3">Frequency</th>
-                <th className="px-4 py-3">Rank</th>
-                <th className="px-4 py-3">CMS ID</th>
-                <th className="px-4 py-3">Critical</th>
-                <th className="px-4 py-3">Confidence</th>
-                <th className="px-4 py-3">Source</th>
-                <th className="px-4 py-3">QC Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800">
-              {jobs.map((job) => (
-                <tr
-                  key={job.id}
-                  className={`hover:bg-slate-800/50 transition-colors ${
-                    selectedIds.has(job.id) ? 'bg-sky-900/10' : ''
-                  } ${job.is_unmapped ? 'border-l-2 border-amber-600' : ''}`}
+    <div className="flex h-full gap-4">
+      <div className="flex flex-1 flex-col gap-6 overflow-hidden">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-white">Jobs Review</h1>
+            <p className="mt-1 text-sm text-slate-400">Review and correct extracted maintenance jobs.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            {selectedIds.size > 0 && (
+              <>
+                <button
+                  onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))}
+                  className="flex items-center gap-1.5 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600"
                 >
+                  <CheckCircle className="h-3.5 w-3.5" />
+                  Accept ({selectedIds.size})
+                </button>
+                <button
+                  onClick={() => bulkRejectMutation.mutate(Array.from(selectedIds))}
+                  className="flex items-center gap-1.5 rounded-lg bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600"
+                >
+                  <XCircle className="h-3.5 w-3.5" />
+                  Reject ({selectedIds.size})
+                </button>
+              </>
+            )}
+            <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
+              <Upload className="h-3.5 w-3.5" />
+              Upload CMS Mapping
+              <input type="file" accept=".csv" className="hidden" onChange={handleCMSUpload} />
+            </label>
+            <button
+              onClick={() => triggerExtractionMutation.mutate()}
+              disabled={triggerExtractionMutation.isPending}
+              className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+            >
+              <Play className="h-3.5 w-3.5" />
+              Trigger Extraction
+            </button>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setFilterUnmapped(!filterUnmapped)}
+            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+              filterUnmapped ? 'border-amber-600 bg-amber-900/20 text-amber-300' : 'border-slate-700 text-slate-400 hover:bg-slate-800'
+            }`}
+          >
+            <AlertCircle className="h-3 w-3" />
+            Unmapped
+          </button>
+          <button
+            onClick={() => setFilterNoCMS(!filterNoCMS)}
+            className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+              filterNoCMS ? 'border-sky-600 bg-sky-900/20 text-sky-300' : 'border-slate-700 text-slate-400 hover:bg-slate-800'
+            }`}
+          >
+            CMS Codes Pending
+          </button>
+          <select
+            value={filterFreqType}
+            onChange={(e) => setFilterFreqType(e.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          >
+            <option value="">All Frequency</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="biweekly">Biweekly (2 weeks)</option>
+            <option value="monthly">Monthly</option>
+            <option value="quarterly">Quarterly</option>
+            <option value="half_yearly">Half Yearly</option>
+            <option value="yearly">Yearly</option>
+            <option value="biannual">Biannual (2 years)</option>
+            <option value="running_hours">Running Hours</option>
+          </select>
+          <select
+            value={filterCritical}
+            onChange={(e) => setFilterCritical(e.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          >
+            <option value="">All Criticality</option>
+            <option value="true">Critical</option>
+            <option value="false">Non-Critical</option>
+          </select>
+          <select
+            value={filterQC}
+            onChange={(e) => setFilterQC(e.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          >
+            <option value="">All QC</option>
+            <option value="pending">Pending</option>
+            <option value="accepted">Accepted</option>
+            <option value="rejected">Rejected</option>
+          </select>
+          {(filterQC || filterCritical || filterFreqType) && (
+            <button
+              onClick={() => { setFilterQC(''); setFilterCritical(''); setFilterFreqType('') }}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+
+        {/* Table */}
+        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
+          {isLoading ? (
+            <div className="py-16 text-center text-slate-500">Loading jobs...</div>
+          ) : jobs.length === 0 ? (
+            <div className="py-16 text-center text-slate-500">No jobs found. Trigger extraction to begin.</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-700 text-left text-xs text-slate-500 uppercase">
+                  <th className="px-4 py-3 w-8">
+                    <input
+                      type="checkbox"
+                      onChange={(e) =>
+                        e.target.checked
+                          ? setSelectedIds(new Set(jobs.map((j) => j.id)))
+                          : setSelectedIds(new Set())
+                      }
+                      checked={selectedIds.size === jobs.length && jobs.length > 0}
+                      className="h-3.5 w-3.5 rounded"
+                    />
+                  </th>
+                  <th className="px-4 py-3">Job Name</th>
+                  <th className="px-4 py-3">Component</th>
+                  <th className="px-4 py-3">Code</th>
+                  <th className="px-4 py-3">Description</th>
+                  <th className="px-4 py-3">Frequency</th>
+                  <th className="px-4 py-3">Rank</th>
+                  <th className="px-4 py-3">CMS ID</th>
+                  <th className="px-4 py-3">Critical</th>
+                  <th className="px-4 py-3">Confidence</th>
+                  <th className="px-4 py-3">Source</th>
+                  <th className="px-4 py-3">QC Status</th>
+                  <th className="px-4 py-3">Preview</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {jobs.map((job) => (
+                  <tr
+                    key={job.id}
+                    className={`hover:bg-slate-800/50 transition-colors ${
+                      selectedIds.has(job.id) ? 'bg-sky-900/10' : ''
+                    } ${job.is_unmapped ? 'border-l-2 border-amber-600' : ''}`}
+                  >
                   <td className="px-4 py-2.5">
                     <input
                       type="checkbox"
@@ -345,12 +349,38 @@ const JobsReview: React.FC = () => {
                       {job.qc_status}
                     </span>
                   </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+                  <td className="px-4 py-2.5">
+                    <button
+                      onClick={() => setSelectedJob(job)}
+                      disabled={!job.source_manual_id}
+                      className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+                      title="Preview manual pages"
+                    >
+                      <FileSearch className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
+
+      <ManualPagePreview
+        vesselId={vesselId ?? ''}
+        manualId={selectedJob?.source_manual_id}
+        manualName={selectedJob?.source_manual_name ?? selectedJob?.pdf_reference}
+        title="Job Source Preview"
+        subtitle={
+          selectedJob
+            ? [selectedJob.job_name, selectedJob.component_name, selectedJob.component_maker, selectedJob.component_model]
+                .filter(Boolean)
+                .join(' • ')
+            : null
+        }
+        defaultPages={selectedJob?.source_page_number ?? selectedJob?.page_reference}
+      />
     </div>
   )
 }
