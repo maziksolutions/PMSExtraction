@@ -556,8 +556,10 @@ const ManualReview: React.FC = () => {
   }, [extractionData?.status, vesselId, queryClient])
 
   const extractAllMutation = useMutation({
-    mutationFn: () =>
-      apiClient.post(`/vessels/${vesselId}/extract-all`).then((r) => r.data),
+    mutationFn: async () => {
+      await saveManualEdits()
+      return apiClient.post(`/vessels/${vesselId}/extract-all`).then((r) => r.data)
+    },
     onSuccess: (data) => {
       if (data.started) setExtractionPolling(true)
     },
@@ -574,10 +576,13 @@ const ManualReview: React.FC = () => {
   })
 
   const extractSelectedMutation = useMutation({
-    mutationFn: () =>
-      apiClient
-        .post(`/vessels/${vesselId}/manuals/extract-selected`, { manual_ids: Array.from(selectedIds) })
-        .then((r) => r.data),
+    mutationFn: async () => {
+      const manualIds = Array.from(selectedIds)
+      await saveManualEdits(manualIds)
+      return apiClient
+        .post(`/vessels/${vesselId}/manuals/extract-selected`, { manual_ids: manualIds })
+        .then((r) => r.data)
+    },
     onSuccess: (data) => {
       if (data.started) setExtractionPolling(true)
     },
@@ -593,6 +598,19 @@ const ManualReview: React.FC = () => {
       setEdits({})
     },
   })
+
+  const saveManualEdits = useCallback(async (manualIds?: string[]) => {
+    const targetIds = manualIds ?? Object.keys(edits)
+    const pending = targetIds
+      .map((manualId) => ({ manualId, data: edits[manualId] }))
+      .filter((entry): entry is { manualId: string; data: Partial<Manual> } => !!entry.data && Object.keys(entry.data).length > 0)
+
+    if (pending.length === 0) return
+
+    for (const entry of pending) {
+      await saveMutation.mutateAsync(entry)
+    }
+  }, [edits, saveMutation])
 
   const exportScreeningMutation = useMutation({
     mutationFn: () =>
