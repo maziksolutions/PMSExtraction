@@ -7,7 +7,7 @@ import io
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -34,6 +34,30 @@ async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselPr
     return vessel
 
 
+async def _normalize_pending_extracted_components(
+    *,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    db: AsyncSession,
+) -> None:
+    result = await db.execute(
+        update(Component)
+        .where(
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == tenant_id,
+            Component.is_deleted == False,
+            Component.source_manual_id.is_not(None),
+            Component.qc_status == QCStatus.pending,
+            Component.is_unmapped == False,
+        )
+        .values(is_unmapped=True)
+        .returning(Component.id)
+    )
+    normalized_ids = result.scalars().all()
+    if normalized_ids:
+        await db.commit()
+
+
 @router.get("/{vessel_id}/components", summary="List components with filters")
 async def list_components(
     vessel_id: uuid.UUID,
@@ -52,6 +76,11 @@ async def list_components(
     page_size: int = Query(100, ge=1, le=5000),
 ) -> dict[str, Any]:
     await _get_vessel_or_404(vessel_id, db)
+    await _normalize_pending_extracted_components(
+        vessel_id=vessel_id,
+        tenant_id=current_user.tenant_id,
+        db=db,
+    )
     base_where = [
         Component.vessel_id == vessel_id,
         Component.tenant_id == current_user.tenant_id,
@@ -345,6 +374,8 @@ async def remap_component(
         comp.group2 = body["group2"]
     if "main_machinery" in body:
         comp.main_machinery = body["main_machinery"]
+    if comp.source_manual_id and comp.qc_status == QCStatus.pending:
+        comp.qc_status = QCStatus.modified
     comp.is_unmapped = False
     db.add(comp)
     await db.commit()

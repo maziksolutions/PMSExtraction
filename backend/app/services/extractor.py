@@ -1121,7 +1121,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             .where(
                 Component.source_manual_id == manual.id,
                 Component.is_deleted == False,
-                Component.is_unmapped == True,
+                Component.qc_status == QCStatus.pending,
             )
             .values(is_deleted=True)
         )
@@ -1228,6 +1228,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                         source_manual_id=manual.id,
                         confidence_score=confidence,
                         qc_status=QCStatus.pending,
+                        is_unmapped=True,
                         group1=record.get("group1") or "Uncategorised",
                         group2=record.get("group2") or "Uncategorised",
                         main_machinery=record.get("main_machinery") or "Unknown",
@@ -1337,21 +1338,6 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             len(jobs_to_add),
             len(spares_to_add),
         )
-
-        # Auto-merge extracted components into matching library components
-        try:
-            from app.services.component_matcher import auto_merge_extracted_components
-            merged, unmatched = await auto_merge_extracted_components(
-                db=db,
-                vessel_id=vessel_id,
-                tenant_id=tenant_id,
-            )
-            logger.info(
-                "auto_extract_from_manual: auto-merge vessel=%s merged=%d unmatched=%d",
-                vessel_id_str, merged, unmatched,
-            )
-        except Exception as merge_exc:
-            logger.warning("auto_extract_from_manual: auto-merge failed: %s", merge_exc)
 
         try:
             component_ref_updates = await _overwrite_component_manual_refs(

@@ -242,12 +242,11 @@ const ComponentReview: React.FC = () => {
   const { data, isLoading } = useQuery({
     queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, page, pageSize],
     queryFn: () => {
-      const params: Record<string, string | number> = { page, page_size: pageSize }
+      const params: Record<string, string | number> = { page, page_size: pageSize, is_unmapped: showUnmapped ? 'true' : 'false' }
       if (selectedGroup1) params.group1 = selectedGroup1
       if (selectedGroup2) params.group2 = selectedGroup2
       if (selectedMachinery) params.main_machinery = selectedMachinery
       if (filterQC) params.qc_status = filterQC
-      if (showUnmapped) params.is_unmapped = 'true'
       if (searchTable) params.search = searchTable
       return apiClient.get(`/vessels/${vesselId}/components`, { params }).then((r) => r.data)
     },
@@ -258,7 +257,7 @@ const ComponentReview: React.FC = () => {
   const allComponentsQuery = useQuery({
     queryKey: ['components-all', vesselId],
     queryFn: () =>
-      apiClient.get(`/vessels/${vesselId}/components`, { params: { page_size: 5000 } }).then((r) => r.data),
+      apiClient.get(`/vessels/${vesselId}/components`, { params: { page_size: 5000, is_unmapped: 'false' } }).then((r) => r.data),
     enabled: !!vesselId,
   })
 
