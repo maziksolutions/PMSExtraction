@@ -790,9 +790,10 @@ _extract_state: dict[str, dict] = {}
 
 async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) -> None:
     """Background task: runs auto_extract_from_manual for each selected manual."""
+    from app.api.v1.extraction import set_extraction_state
     from app.services.extractor import auto_extract_from_manual
 
-    _extract_state[vessel_id_str] = {"total": len(manual_ids), "done": 0, "status": "running"}
+    set_extraction_state(vessel_id_str, total=len(manual_ids), done=0, status="running")
     try:
         for manual_id in manual_ids:
             try:
@@ -825,6 +826,9 @@ async def extract_selected_manuals(
         return {"started": False, "message": "No manual_ids provided.", "total": 0}
 
     vessel_id_str = str(vessel_id)
+    from app.api.v1.extraction import set_extraction_state
+
+    set_extraction_state(vessel_id_str, total=len(manual_ids), done=0, status="running")
     background_tasks.add_task(_run_extract_selected_task, vessel_id_str, manual_ids)
     return {"started": True, "total": len(manual_ids)}
 

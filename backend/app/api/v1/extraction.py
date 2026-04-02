@@ -29,6 +29,17 @@ router = APIRouter()
 
 _extract_state: dict[str, dict] = {}
 
+
+def set_extraction_state(vessel_id_str: str, *, total: int, done: int, status: str) -> None:
+    _extract_state[vessel_id_str] = {"total": total, "done": done, "status": status}
+
+
+def get_extraction_state(vessel_id_str: str) -> dict[str, Any]:
+    return _extract_state.get(
+        vessel_id_str,
+        {"total": 0, "done": 0, "status": "idle"},
+    )
+
 # ---------------------------------------------------------------------------
 # Inline SQLAlchemy model for extraction_prompts
 # (Defined here to avoid creating a separate models file)
@@ -82,9 +93,7 @@ async def _run_extract_all(
     manual_ids: list[str],
 ) -> None:
     """Run auto_extract_from_manual for each manual sequentially."""
-    _extract_state[vessel_id_str]["total"] = len(manual_ids)
-    _extract_state[vessel_id_str]["done"] = 0
-    _extract_state[vessel_id_str]["status"] = "running"
+    set_extraction_state(vessel_id_str, total=len(manual_ids), done=0, status="running")
 
     for mid in manual_ids:
         try:
@@ -135,7 +144,7 @@ async def extract_all(
     tenant_id_str = str(current_user.tenant_id)
     manual_ids = [str(m.id) for m in manuals]
 
-    _extract_state[vessel_id_str] = {"total": total, "done": 0, "status": "running"}
+    set_extraction_state(vessel_id_str, total=total, done=0, status="running")
 
     background_tasks.add_task(
         _run_extract_all,
@@ -158,10 +167,7 @@ async def extraction_status(
 ) -> dict[str, Any]:
     """Returns the current in-memory extraction progress for the vessel."""
     await _get_vessel_or_404(vessel_id, db)
-    state = _extract_state.get(
-        str(vessel_id),
-        {"total": 0, "done": 0, "status": "idle"},
-    )
+    state = get_extraction_state(str(vessel_id))
     return state
 
 

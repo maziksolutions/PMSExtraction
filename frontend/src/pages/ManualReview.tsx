@@ -739,7 +739,7 @@ const ManualReview: React.FC = () => {
   // ── Derived state ─────────────────────────────────────────────────────────
 
   const isScreening = screeningPolling || screenAllMutation.isPending
-  const isExtracting = extractionPolling || extractAllMutation.isPending
+  const isExtracting = extractionPolling || extractAllMutation.isPending || extractSelectedMutation.isPending
   const screeningProgress = screeningData && screeningData.total > 0
     ? Math.round((screeningData.done / screeningData.total) * 100) : 0
   const extractionProgress = extractionData && extractionData.total > 0
