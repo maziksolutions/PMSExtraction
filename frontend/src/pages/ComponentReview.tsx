@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react'
+import React, { useState, useCallback, useMemo, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -11,14 +11,11 @@ import {
   Plus,
   Save,
   X,
-  Link2,
   FileText,
   FolderPlus,
   Wrench,
   RefreshCw,
-  Layers,
   FileDown,
-  GitMerge,
   Search,
 } from 'lucide-react'
 import apiClient from '@/api/client'
@@ -232,12 +229,7 @@ const ComponentReview: React.FC = () => {
   const [importResult, setImportResult] = useState<string | null>(null)
   const [showBatchPanel, setShowBatchPanel] = useState(false)
   const [batchFields, setBatchFields] = useState<Record<string, string>>({})
-  const [autoLinkLoading, setAutoLinkLoading] = useState(false)
-  const [libraryLoading, setLibraryLoading] = useState(false)
-  const [showLibraryModal, setShowLibraryModal] = useState(false)
-  const [selectedVesselTypeId, setSelectedVesselTypeId] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const hasAutoLoaded = React.useRef(false)
 
   const { data, isLoading } = useQuery({
     queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, page, pageSize],
@@ -260,12 +252,6 @@ const ComponentReview: React.FC = () => {
       apiClient.get(`/vessels/${vesselId}/components`, { params: { page_size: 5000, is_unmapped: 'false' } }).then((r) => r.data),
     enabled: !!vesselId,
   })
-
-  const vesselTypesQuery = useQuery({
-    queryKey: ['library', 'vessel-types'],
-    queryFn: () => apiClient.get('/library/vessel-types').then(r => r.data),
-  })
-  const vesselTypes: { id: string; name: string; component_count: number }[] = vesselTypesQuery.data?.items ?? []
 
   const makersQuery = useQuery({
     queryKey: ['maker-models', 'makers'],
@@ -309,45 +295,6 @@ const ComponentReview: React.FC = () => {
 
   // Reset to page 1 when any filter changes
   React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, pageSize])
-
-  React.useEffect(() => {
-    if (!allComponentsQuery.isLoading && allComponentsQuery.isFetched) {
-      hasAutoLoaded.current = true
-    }
-  }, [allComponentsQuery.isLoading, allComponentsQuery.isFetched])
-
-  const handleAutoLink = async () => {
-    setAutoLinkLoading(true)
-    try {
-      const res = await apiClient.post(`/vessels/${vesselId}/components/auto-link-pages`)
-      if (res.data.updated === 0) {
-        setImportResult(
-          '⚠ Auto-Link found 0 matches. Make sure manuals are extracted first: go to Manual Review → select manuals → Extract Selected, then retry Auto-Link.'
-        )
-      } else {
-        setImportResult(`Auto-linked page references for ${res.data.updated} components.`)
-      }
-      queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
-      queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
-    } catch { setImportResult('Auto-link failed.') }
-    setAutoLinkLoading(false)
-  }
-
-  const handleLoadFromLibrary = async (vesselTypeId?: string) => {
-    setLibraryLoading(true)
-    setShowLibraryModal(false)
-    try {
-      const body: Record<string, string> = { vessel_id: vesselId! }
-      if (vesselTypeId) body.vessel_type_id = vesselTypeId
-      const res = await apiClient.post('/library/component-structure/push-to-vessel', body)
-      setImportResult(`Loaded ${res.data.added} standard components from library (${res.data.skipped} already existed).`)
-      queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
-      queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
-    } catch (err: any) {
-      setImportResult(`Load from library failed: ${err?.response?.data?.detail ?? err?.message}`)
-    }
-    setLibraryLoading(false)
-  }
 
   const handleExcelImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -579,51 +526,6 @@ const ComponentReview: React.FC = () => {
             <FileDown className="h-3.5 w-3.5" />
             Template
           </a>
-
-          {/* Load from Library */}
-          <button
-            onClick={() => setShowLibraryModal(true)}
-            disabled={libraryLoading}
-            className="flex items-center gap-1.5 rounded-lg border border-sky-700 bg-sky-900/30 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-sky-800/40 hover:text-white disabled:opacity-50"
-          >
-            {libraryLoading ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Layers className="h-3.5 w-3.5" />}
-            Load from Library
-          </button>
-
-          {/* Auto-link pages */}
-          <button
-            onClick={handleAutoLink}
-            disabled={autoLinkLoading}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-50"
-          >
-            {autoLinkLoading ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Link2 className="h-3.5 w-3.5" />}
-            Auto-Link Pages
-          </button>
-
-          {/* Auto-Merge Extracted */}
-          <button
-            onClick={async () => {
-              setAutoLinkLoading(true)
-              try {
-                const res = await apiClient.post(`/vessels/${vesselId}/components/auto-merge-extracted`)
-                if (res.data.merged === 0 && res.data.unmatched === 0) {
-                  setImportResult(
-                    '⚠ Auto-Merge found no extracted components to merge. Go to Manual Review → select instruction manuals → Extract Selected first, then retry Auto-Merge.'
-                  )
-                } else {
-                  setImportResult(`Auto-merged: ${res.data.merged} components linked to library, ${res.data.unmatched} new unmapped.`)
-                }
-                queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
-                queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
-              } catch { setImportResult('Auto-merge failed.') }
-              setAutoLinkLoading(false)
-            }}
-            disabled={autoLinkLoading}
-            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 disabled:opacity-50"
-          >
-            <GitMerge className="h-4 w-4" />
-            Auto-Merge
-          </button>
 
           {/* Clear Extraction Links */}
           <button
@@ -903,18 +805,10 @@ const ComponentReview: React.FC = () => {
             <Upload className="mx-auto h-10 w-10 text-slate-600" />
             <p className="text-slate-300 font-medium">No components yet</p>
             <p className="text-xs text-slate-500 max-w-sm mx-auto">
-              Import an Excel file or add components manually.<br />
+              The vessel baseline should auto-load from the selected vessel type. Use import or manual add only for vessel-specific additions.<br />
               <strong className="text-slate-400">Excel columns:</strong> Group | Sub-Group | Main Machinery | Component Name | Maker | Model | Serial Number | Specification | Critical | Job Pages | Spare Pages | PDF Reference
             </p>
             <div className="flex justify-center gap-3 pt-1 flex-wrap">
-              <button
-                onClick={() => setShowLibraryModal(true)}
-                disabled={libraryLoading}
-                className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
-              >
-                {libraryLoading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Layers className="h-4 w-4" />}
-                Load from Library
-              </button>
               <button
                 onClick={() => fileInputRef.current?.click()}
                 className="flex items-center gap-2 rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
@@ -1112,35 +1006,6 @@ const ComponentReview: React.FC = () => {
             )}
           </div>
         )}
-      {/* Load from Library Modal */}
-      {showLibraryModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-96 space-y-4">
-            <h3 className="text-lg font-semibold text-white">Load Standard Components</h3>
-            <p className="text-sm text-slate-400">Select the vessel type to load its standard component structure onto this vessel.</p>
-            <select
-              value={selectedVesselTypeId}
-              onChange={(e) => setSelectedVesselTypeId(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-sky-500"
-            >
-              <option value="">— Select vessel type —</option>
-              {vesselTypes.map(vt => (
-                <option key={vt.id} value={vt.id}>{vt.name} ({vt.component_count} components)</option>
-              ))}
-            </select>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setShowLibraryModal(false)} className="px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
-              <button
-                onClick={() => handleLoadFromLibrary(selectedVesselTypeId || undefined)}
-                disabled={!selectedVesselTypeId || libraryLoading}
-                className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-sm disabled:opacity-50"
-              >
-                Load Components
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       </div>
     </div>
   )

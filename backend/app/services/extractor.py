@@ -1340,6 +1340,22 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         )
 
         try:
+            if components_to_add:
+                from app.services.component_matcher import auto_merge_extracted_components
+
+                merged, unmatched = await auto_merge_extracted_components(
+                    db=db,
+                    vessel_id=vessel_id,
+                    tenant_id=tenant_id,
+                )
+                await db.commit()
+                logger.warning(
+                    "auto_extract_from_manual: component match vessel=%s merged=%d unmatched=%d",
+                    vessel_id_str,
+                    merged,
+                    unmatched,
+                )
+
             component_ref_updates = await _overwrite_component_manual_refs(
                 db=db,
                 manual=manual,

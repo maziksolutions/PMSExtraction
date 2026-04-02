@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, CheckCircle, XCircle, FileSearch, ExternalLink } from 'lucide-react'
+import { CheckCircle, XCircle, FileSearch, ExternalLink } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 
@@ -81,11 +81,6 @@ const SparesReview: React.FC = () => {
     },
   })
 
-  const triggerExtractionMutation = useMutation({
-    mutationFn: () =>
-      apiClient.post(`/vessels/${vesselId}/spares/trigger-extraction`).then((r) => r.data),
-  })
-
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev)
@@ -124,14 +119,6 @@ const SparesReview: React.FC = () => {
                 </button>
               </>
             )}
-            <button
-              onClick={() => triggerExtractionMutation.mutate()}
-              disabled={triggerExtractionMutation.isPending}
-              className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
-            >
-              <Play className="h-3.5 w-3.5" />
-              Trigger Extraction
-            </button>
           </div>
         </div>
 
@@ -181,7 +168,7 @@ const SparesReview: React.FC = () => {
             <div className="py-16 text-center text-slate-500">Loading...</div>
           ) : spares.length === 0 ? (
             <div className="py-16 text-center text-slate-500">
-              No spares found. Trigger extraction to begin.
+              No spares found yet. Extract from Manual Review after component matching is complete.
             </div>
           ) : (
             <table className="w-full text-sm">
