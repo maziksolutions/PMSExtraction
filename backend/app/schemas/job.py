@@ -42,6 +42,7 @@ class JobOut(BaseModel):
 
 class JobCreate(BaseModel):
     job_name: str
+    job_code: Optional[str] = None
     job_description: Optional[str] = None
     safety_precaution: Optional[str] = None
     tools_required: Optional[str] = None
@@ -49,8 +50,12 @@ class JobCreate(BaseModel):
     verifying_rank: Optional[str] = None
     frequency: Optional[int] = None
     frequency_type: Optional[FrequencyType] = None
+    initial_due: Optional[int] = None
+    initial_frequency_type: Optional[FrequencyType] = None
+    cms_id: Optional[str] = None
     is_critical: bool = False
     component_id: Optional[uuid.UUID] = None
+    qc_status: Optional[QCStatus] = None
 
 
 class JobUpdate(BaseModel):

@@ -131,6 +131,51 @@ def _prefer_extracted(current: Optional[str], incoming: Optional[str]) -> Option
     return current
 
 
+def _append_unique(current: Optional[str], incoming: Optional[str]) -> Optional[str]:
+    if _is_blankish(incoming):
+        return current
+    if _is_blankish(current):
+        return incoming
+    existing_values = [part.strip() for part in (current or "").split(";") if part.strip()]
+    if incoming.strip() in existing_values:
+        return current
+    return f"{current}; {incoming}"
+
+
+def merge_component_into_target(extracted: Component, target: Component) -> None:
+    target.maker = _prefer_extracted(target.maker, extracted.maker)
+    target.model = _prefer_extracted(target.model, extracted.model)
+    target.specification = _prefer_extracted(target.specification, extracted.specification)
+    target.serial_number = _prefer_extracted(target.serial_number, extracted.serial_number)
+    target.location = _prefer_extracted(target.location, extracted.location)
+    target.machinery_particulars = _prefer_extracted(
+        target.machinery_particulars,
+        extracted.machinery_particulars,
+    )
+    target.extraction_notes = _append_unique(target.extraction_notes, extracted.extraction_notes)
+
+    if not target.page_reference and extracted.page_reference:
+        target.page_reference = extracted.page_reference
+
+    if extracted.pdf_reference:
+        ref = extracted.pdf_reference
+        if extracted.page_reference:
+            ref = f"{ref} (p.{extracted.page_reference})"
+        target.pdf_reference = _append_unique(target.pdf_reference, ref)
+
+    if extracted.job_pages:
+        target.job_pages = _append_unique(target.job_pages, extracted.job_pages)
+    if extracted.spare_pages:
+        target.spare_pages = _append_unique(target.spare_pages, extracted.spare_pages)
+    if not target.confidence_score and extracted.confidence_score:
+        target.confidence_score = extracted.confidence_score
+    if extracted.is_critical and not target.is_critical:
+        target.is_critical = True
+
+    target.qc_status = QCStatus.modified
+    target.is_unmapped = False
+
+
 # ---------------------------------------------------------------------------
 # Main merge function
 # ---------------------------------------------------------------------------
@@ -202,47 +247,7 @@ async def auto_merge_extracted_components(
                 best_match = lib_comp
 
         if best_match and best_score >= MATCH_THRESHOLD:
-            # Merge: only fill nulls — never overwrite data already on the library component
-            best_match.maker = _prefer_extracted(best_match.maker, ext_comp.maker)
-            best_match.model = _prefer_extracted(best_match.model, ext_comp.model)
-            best_match.specification = _prefer_extracted(best_match.specification, ext_comp.specification)
-            best_match.serial_number = _prefer_extracted(best_match.serial_number, ext_comp.serial_number)
-            best_match.location = _prefer_extracted(best_match.location, ext_comp.location)
-            best_match.machinery_particulars = _prefer_extracted(best_match.machinery_particulars, ext_comp.machinery_particulars)
-            # Keep the standing vessel component as the canonical row.
-            if not best_match.page_reference and ext_comp.page_reference:
-                best_match.page_reference = ext_comp.page_reference
-            # pdf_reference: if different file, append "File1.pdf (pp.X-Y); File2.pdf (pp.A-B)"
-            if ext_comp.pdf_reference:
-                if not best_match.pdf_reference:
-                    ref = ext_comp.pdf_reference
-                    if ext_comp.page_reference:
-                        ref = f"{ref} (p.{ext_comp.page_reference})"
-                    best_match.pdf_reference = ref
-                elif ext_comp.pdf_reference not in best_match.pdf_reference:
-                    # Append new source
-                    ref = ext_comp.pdf_reference
-                    if ext_comp.page_reference:
-                        ref = f"{ref} (p.{ext_comp.page_reference})"
-                    best_match.pdf_reference = f"{best_match.pdf_reference}; {ref}"
-            # job_pages / spare_pages: append ranges from different manuals
-            if ext_comp.job_pages:
-                if _is_blankish(best_match.job_pages):
-                    best_match.job_pages = ext_comp.job_pages
-                elif ext_comp.job_pages not in best_match.job_pages:
-                    best_match.job_pages = f"{best_match.job_pages}; {ext_comp.job_pages}"
-            if ext_comp.spare_pages:
-                if _is_blankish(best_match.spare_pages):
-                    best_match.spare_pages = ext_comp.spare_pages
-                elif ext_comp.spare_pages not in best_match.spare_pages:
-                    best_match.spare_pages = f"{best_match.spare_pages}; {ext_comp.spare_pages}"
-            if not best_match.confidence_score and ext_comp.confidence_score:
-                best_match.confidence_score = ext_comp.confidence_score
-            best_match.qc_status = QCStatus.modified
-            best_match.is_unmapped = False
-            if ext_comp.is_critical and not best_match.is_critical:
-                best_match.is_critical = True
-
+            merge_component_into_target(ext_comp, best_match)
             db.add(best_match)
             to_delete.append(ext_comp.id)
             merged += 1

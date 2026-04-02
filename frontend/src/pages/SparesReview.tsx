@@ -1,9 +1,20 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle, XCircle, FileSearch, ExternalLink } from 'lucide-react'
+import { CheckCircle, XCircle, FileSearch, ExternalLink, Plus, Pencil } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
+
+interface ComponentOption {
+  id: string
+  component_name: string
+  group1: string
+  group2: string
+  main_machinery: string
+  maker?: string | null
+  model?: string | null
+  qc_status?: string
+}
 
 interface Spare {
   id: string
@@ -13,6 +24,7 @@ interface Spare {
   drawing_position: string | null
   specification: string | null
   spare_maker: string | null
+  spare_model?: string | null
   component_id: string | null
   component_name?: string | null
   component_maker?: string | null
@@ -26,6 +38,121 @@ interface Spare {
   confidence_score: number | null
   qc_status: string
   is_duplicate: boolean
+}
+
+interface SpareEditorModalProps {
+  title: string
+  submitLabel: string
+  isPending: boolean
+  components: ComponentOption[]
+  initialValues?: Partial<Spare>
+  onClose: () => void
+  onSubmit: (payload: Record<string, unknown>) => void
+}
+
+function SpareEditorModal({ title, submitLabel, isPending, components, initialValues, onClose, onSubmit }: SpareEditorModalProps) {
+  const [form, setForm] = useState({
+    part_name: initialValues?.part_name ?? '',
+    part_number: initialValues?.part_number ?? '',
+    drawing_number: initialValues?.drawing_number ?? '',
+    drawing_position: initialValues?.drawing_position ?? '',
+    specification: initialValues?.specification ?? '',
+    spare_maker: initialValues?.spare_maker ?? '',
+    spare_model: initialValues?.spare_model ?? '',
+    component_id: initialValues?.component_id ?? '',
+    is_critical: Boolean(initialValues?.is_critical),
+    qc_status: initialValues?.qc_status ?? 'pending',
+  })
+
+  const set = (key: keyof typeof form, value: string | boolean) => setForm((prev) => ({ ...prev, [key]: value }))
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4">
+          <h2 className="text-base font-semibold text-white">{title}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><XCircle className="h-5 w-5" /></button>
+        </div>
+        <div className="grid gap-4 px-6 py-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className="mb-1 block text-xs text-slate-400">Part Name</label>
+            <input value={form.part_name} onChange={(e) => set('part_name', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Part Number</label>
+            <input value={form.part_number} onChange={(e) => set('part_number', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Drawing Number</label>
+            <input value={form.drawing_number} onChange={(e) => set('drawing_number', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Drawing Position</label>
+            <input value={form.drawing_position} onChange={(e) => set('drawing_position', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Spare Maker</label>
+            <input value={form.spare_maker} onChange={(e) => set('spare_maker', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Spare Model</label>
+            <input value={form.spare_model} onChange={(e) => set('spare_model', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Component</label>
+            <select value={form.component_id} onChange={(e) => set('component_id', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
+              <option value="">Unmapped</option>
+              {components.map((component) => (
+                <option key={component.id} value={component.id}>
+                  {component.component_name} ({component.group1} / {component.main_machinery})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2 pt-6">
+            <input id="spare-critical" type="checkbox" checked={form.is_critical} onChange={(e) => set('is_critical', e.target.checked)} className="h-4 w-4 rounded" />
+            <label htmlFor="spare-critical" className="text-sm text-slate-300">Critical spare</label>
+          </div>
+          <div className="md:col-span-2">
+            <label className="mb-1 block text-xs text-slate-400">Specification</label>
+            <textarea value={form.specification} onChange={(e) => set('specification', e.target.value)} rows={4} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">QC Status</label>
+            <select value={form.qc_status} onChange={(e) => set('qc_status', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
+              <option value="pending">Pending</option>
+              <option value="accepted">Accepted</option>
+              <option value="modified">Modified</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-slate-700 px-6 py-4">
+          <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+          <button
+            onClick={() =>
+              onSubmit({
+                part_name: form.part_name,
+                part_number: form.part_number || null,
+                drawing_number: form.drawing_number || null,
+                drawing_position: form.drawing_position || null,
+                specification: form.specification || null,
+                spare_maker: form.spare_maker || null,
+                spare_model: form.spare_model || null,
+                component_id: form.component_id || null,
+                is_critical: form.is_critical,
+                qc_status: form.qc_status,
+              })
+            }
+            disabled={!form.part_name || isPending}
+            className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+          >
+            {submitLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 const QC_COLORS: Record<string, string> = {
@@ -50,6 +177,8 @@ const SparesReview: React.FC = () => {
   const [filterCritical, setFilterCritical] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedSpare, setSelectedSpare] = useState<Spare | null>(null)
+  const [editingSpare, setEditingSpare] = useState<Spare | null>(null)
+  const [showCreateSpare, setShowCreateSpare] = useState(false)
 
   const { data, isLoading } = useQuery({
     queryKey: ['spares', vesselId, filterQC, filterMethod, filterCritical],
@@ -60,6 +189,15 @@ const SparesReview: React.FC = () => {
       if (filterCritical) params.is_critical = filterCritical
       return apiClient.get(`/vessels/${vesselId}/spares`, { params }).then((r) => r.data)
     },
+    enabled: !!vesselId,
+  })
+
+  const componentOptionsQuery = useQuery({
+    queryKey: ['spare-components', vesselId],
+    queryFn: () =>
+      apiClient
+        .get(`/vessels/${vesselId}/components`, { params: { page_size: 5000, is_unmapped: 'false' } })
+        .then((r) => r.data),
     enabled: !!vesselId,
   })
 
@@ -81,6 +219,23 @@ const SparesReview: React.FC = () => {
     },
   })
 
+  const saveSpareMutation = useMutation({
+    mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) =>
+      apiClient.patch(`/vessels/${vesselId}/spares/${id}`, payload).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
+      setEditingSpare(null)
+    },
+  })
+
+  const createSpareMutation = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => apiClient.post(`/vessels/${vesselId}/spares`, payload).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
+      setShowCreateSpare(false)
+    },
+  })
+
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev)
@@ -90,9 +245,31 @@ const SparesReview: React.FC = () => {
   }, [])
 
   const spares: Spare[] = data?.items ?? []
+  const componentOptions: ComponentOption[] = (componentOptionsQuery.data?.items ?? []).filter((component: ComponentOption) => component.qc_status !== 'rejected')
 
   return (
     <div className="flex h-full gap-4">
+      {showCreateSpare && (
+        <SpareEditorModal
+          title="Add Spare"
+          submitLabel="Create Spare"
+          isPending={createSpareMutation.isPending}
+          components={componentOptions}
+          onClose={() => setShowCreateSpare(false)}
+          onSubmit={(payload) => createSpareMutation.mutate(payload)}
+        />
+      )}
+      {editingSpare && (
+        <SpareEditorModal
+          title="Edit Spare"
+          submitLabel="Save Changes"
+          isPending={saveSpareMutation.isPending}
+          components={componentOptions}
+          initialValues={editingSpare}
+          onClose={() => setEditingSpare(null)}
+          onSubmit={(payload) => saveSpareMutation.mutate({ id: editingSpare.id, payload })}
+        />
+      )}
       {/* Left: Spare Grid */}
       <div className="flex flex-1 flex-col gap-4 overflow-hidden">
         <div className="flex items-center justify-between">
@@ -119,6 +296,13 @@ const SparesReview: React.FC = () => {
                 </button>
               </>
             )}
+            <button
+              onClick={() => setShowCreateSpare(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add Spare
+            </button>
           </div>
         </div>
 
@@ -198,6 +382,7 @@ const SparesReview: React.FC = () => {
                   <th className="px-4 py-3">Conf</th>
                   <th className="px-4 py-3">QC</th>
                   <th className="px-4 py-3">View</th>
+                  <th className="px-4 py-3">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
@@ -299,6 +484,18 @@ const SparesReview: React.FC = () => {
                         title="Preview manual pages"
                       >
                         <FileSearch className="h-3 w-3" />
+                      </button>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <button
+                        onClick={() => {
+                          setSelectedSpare(spare)
+                          setEditingSpare(spare)
+                        }}
+                        className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600"
+                        title="Edit spare"
+                      >
+                        <Pencil className="h-3 w-3" />
                       </button>
                     </td>
                   </tr>

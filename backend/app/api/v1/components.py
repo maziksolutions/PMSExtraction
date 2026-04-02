@@ -16,9 +16,12 @@ from app.deps import get_current_user
 from app.models.component import Component, ComponentTemplate, QCStatus
 from app.models.feedback import CorrectionType, FeedbackEntry
 from app.models.ingestion import Manual
+from app.models.job import Job
+from app.models.spare import Spare
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.component import ComponentCreate, ComponentOut, ComponentUpdate
+from app.services.component_matcher import merge_component_into_target
 from app.services.vessel_library import ensure_vessel_library_baseline
 
 router = APIRouter()
@@ -402,19 +405,96 @@ async def remap_component(
     if comp is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Component not found")
 
+    if "component_name" in body and body["component_name"].strip():
+        comp.component_name = body["component_name"].strip()
     if "group1" in body:
         comp.group1 = body["group1"]
     if "group2" in body:
         comp.group2 = body["group2"]
     if "main_machinery" in body:
         comp.main_machinery = body["main_machinery"]
-    if comp.source_manual_id and comp.qc_status == QCStatus.pending:
+    requested_qc = body.get("qc_status")
+    if requested_qc:
+        try:
+            comp.qc_status = QCStatus(requested_qc)
+        except ValueError:
+            pass
+    elif comp.source_manual_id and comp.qc_status == QCStatus.pending:
         comp.qc_status = QCStatus.modified
     comp.is_unmapped = False
     db.add(comp)
     await db.commit()
     await db.refresh(comp)
     return ComponentOut.model_validate(comp)
+
+
+@router.post("/{vessel_id}/components/{component_id}/merge-into", summary="Merge an extracted unmapped component into an existing vessel component")
+async def merge_component_into_existing(
+    vessel_id: uuid.UUID,
+    component_id: uuid.UUID,
+    body: dict[str, str],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ComponentOut:
+    target_id_raw = body.get("target_component_id")
+    if not target_id_raw:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="target_component_id is required")
+
+    target_component_id = uuid.UUID(target_id_raw)
+    result = await db.execute(
+        select(Component).where(
+            Component.id.in_([component_id, target_component_id]),
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == current_user.tenant_id,
+            Component.is_deleted == False,
+        )
+    )
+    components = {component.id: component for component in result.scalars().all()}
+    source = components.get(component_id)
+    target = components.get(target_component_id)
+
+    if source is None or target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Component not found")
+    if source.id == target.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Source and target cannot be the same component")
+
+    merge_component_into_target(source, target)
+    target.qc_status = QCStatus.accepted
+    db.add(target)
+
+    jobs_result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == current_user.tenant_id,
+            Job.component_id == source.id,
+            Job.is_deleted == False,
+        )
+    )
+    for job in jobs_result.scalars().all():
+        job.component_id = target.id
+        job.is_unmapped = False
+        db.add(job)
+
+    spares_result = await db.execute(
+        select(Spare).where(
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == current_user.tenant_id,
+            Spare.component_id == source.id,
+            Spare.is_deleted == False,
+        )
+    )
+    for spare in spares_result.scalars().all():
+        spare.component_id = target.id
+        db.add(spare)
+
+    source.is_deleted = True
+    source.is_unmapped = False
+    source.qc_status = QCStatus.accepted
+    db.add(source)
+
+    await db.commit()
+    await db.refresh(target)
+    return ComponentOut.model_validate(target)
 
 
 @router.get("/components/import-template", summary="Download blank Excel template for component import")

@@ -1,9 +1,20 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle, XCircle, Upload, AlertCircle, ExternalLink, FileSearch } from 'lucide-react'
+import { CheckCircle, XCircle, Upload, AlertCircle, ExternalLink, FileSearch, Plus, Pencil } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
+
+interface ComponentOption {
+  id: string
+  component_name: string
+  group1: string
+  group2: string
+  main_machinery: string
+  maker?: string | null
+  model?: string | null
+  qc_status?: string
+}
 
 interface Job {
   id: string
@@ -14,8 +25,13 @@ interface Job {
   component_maker?: string | null
   component_model?: string | null
   job_description: string | null
+  safety_precaution?: string | null
+  tools_required?: string | null
   frequency: number | null
   frequency_type: string | null
+  verifying_rank?: string | null
+  initial_due?: number | null
+  initial_frequency_type?: string | null
   performing_rank: string | null
   cms_id: string | null
   is_critical: boolean
@@ -27,6 +43,173 @@ interface Job {
   page_reference: number | null
   source_page_number: number | null
   pdf_reference: string | null
+}
+
+interface JobEditorModalProps {
+  title: string
+  submitLabel: string
+  isPending: boolean
+  components: ComponentOption[]
+  initialValues?: Partial<Job>
+  onClose: () => void
+  onSubmit: (payload: Record<string, unknown>) => void
+}
+
+function JobEditorModal({ title, submitLabel, isPending, components, initialValues, onClose, onSubmit }: JobEditorModalProps) {
+  const [form, setForm] = useState({
+    job_name: initialValues?.job_name ?? '',
+    job_code: initialValues?.job_code ?? '',
+    component_id: initialValues?.component_id ?? '',
+    job_description: initialValues?.job_description ?? '',
+    safety_precaution: initialValues?.safety_precaution ?? '',
+    tools_required: initialValues?.tools_required ?? '',
+    performing_rank: initialValues?.performing_rank ?? '',
+    verifying_rank: initialValues?.verifying_rank ?? '',
+    frequency: initialValues?.frequency != null ? String(initialValues.frequency) : '',
+    frequency_type: initialValues?.frequency_type ?? '',
+    initial_due: initialValues?.initial_due != null ? String(initialValues.initial_due) : '',
+    initial_frequency_type: initialValues?.initial_frequency_type ?? '',
+    cms_id: initialValues?.cms_id ?? '',
+    is_critical: Boolean(initialValues?.is_critical),
+    qc_status: initialValues?.qc_status ?? 'pending',
+  })
+
+  const set = (key: keyof typeof form, value: string | boolean) => setForm((prev) => ({ ...prev, [key]: value }))
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-3xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4">
+          <h2 className="text-base font-semibold text-white">{title}</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><XCircle className="h-5 w-5" /></button>
+        </div>
+        <div className="grid gap-4 px-6 py-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className="mb-1 block text-xs text-slate-400">Job Name</label>
+            <input value={form.job_name} onChange={(e) => set('job_name', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Component</label>
+            <select value={form.component_id} onChange={(e) => set('component_id', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
+              <option value="">Unmapped</option>
+              {components.map((component) => (
+                <option key={component.id} value={component.id}>
+                  {component.component_name} ({component.group1} / {component.main_machinery})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Job Code</label>
+            <input value={form.job_code} onChange={(e) => set('job_code', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Frequency</label>
+            <input value={form.frequency} onChange={(e) => set('frequency', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Frequency Type</label>
+            <select value={form.frequency_type} onChange={(e) => set('frequency_type', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
+              <option value="">Select</option>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="biweekly">Biweekly</option>
+              <option value="monthly">Monthly</option>
+              <option value="quarterly">Quarterly</option>
+              <option value="half_yearly">Half Yearly</option>
+              <option value="yearly">Yearly</option>
+              <option value="biannual">Biannual</option>
+              <option value="running_hours">Running Hours</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Performing Rank</label>
+            <input value={form.performing_rank} onChange={(e) => set('performing_rank', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Verifying Rank</label>
+            <input value={form.verifying_rank} onChange={(e) => set('verifying_rank', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Initial Due</label>
+            <input value={form.initial_due} onChange={(e) => set('initial_due', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Initial Frequency Type</label>
+            <select value={form.initial_frequency_type} onChange={(e) => set('initial_frequency_type', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
+              <option value="">Select</option>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="biweekly">Biweekly</option>
+              <option value="monthly">Monthly</option>
+              <option value="quarterly">Quarterly</option>
+              <option value="half_yearly">Half Yearly</option>
+              <option value="yearly">Yearly</option>
+              <option value="biannual">Biannual</option>
+              <option value="running_hours">Running Hours</option>
+            </select>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">CMS ID</label>
+            <input value={form.cms_id} onChange={(e) => set('cms_id', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div className="flex items-center gap-2 pt-6">
+            <input id="job-critical" type="checkbox" checked={form.is_critical} onChange={(e) => set('is_critical', e.target.checked)} className="h-4 w-4 rounded" />
+            <label htmlFor="job-critical" className="text-sm text-slate-300">Critical job</label>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">QC Status</label>
+            <select value={form.qc_status} onChange={(e) => set('qc_status', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
+              <option value="pending">Pending</option>
+              <option value="accepted">Accepted</option>
+              <option value="modified">Modified</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="mb-1 block text-xs text-slate-400">Job Procedure</label>
+            <textarea value={form.job_description} onChange={(e) => set('job_description', e.target.value)} rows={4} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="mb-1 block text-xs text-slate-400">Safety Precaution</label>
+            <textarea value={form.safety_precaution} onChange={(e) => set('safety_precaution', e.target.value)} rows={3} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="mb-1 block text-xs text-slate-400">Tools Required</label>
+            <input value={form.tools_required} onChange={(e) => set('tools_required', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-slate-700 px-6 py-4">
+          <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+          <button
+            onClick={() =>
+              onSubmit({
+                job_name: form.job_name,
+                job_code: form.job_code || null,
+                component_id: form.component_id || null,
+                job_description: form.job_description || null,
+                safety_precaution: form.safety_precaution || null,
+                tools_required: form.tools_required || null,
+                performing_rank: form.performing_rank || null,
+                verifying_rank: form.verifying_rank || null,
+                frequency: form.frequency ? Number(form.frequency) : null,
+                frequency_type: form.frequency_type || null,
+                initial_due: form.initial_due ? Number(form.initial_due) : null,
+                initial_frequency_type: form.initial_frequency_type || null,
+                cms_id: form.cms_id || null,
+                is_critical: form.is_critical,
+                qc_status: form.qc_status,
+              })
+            }
+            disabled={!form.job_name || isPending}
+            className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+          >
+            {submitLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 const QC_COLORS: Record<string, string> = {
@@ -47,6 +230,8 @@ const JobsReview: React.FC = () => {
   const [filterNoCMS, setFilterNoCMS] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
+  const [editingJob, setEditingJob] = useState<Job | null>(null)
+  const [showCreateJob, setShowCreateJob] = useState(false)
 
   const { data, isLoading } = useQuery({
     queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS],
@@ -58,6 +243,15 @@ const JobsReview: React.FC = () => {
       if (filterFreqType) params.frequency_type = filterFreqType
       return apiClient.get(`/vessels/${vesselId}/jobs`, { params }).then((r) => r.data)
     },
+    enabled: !!vesselId,
+  })
+
+  const componentOptionsQuery = useQuery({
+    queryKey: ['job-components', vesselId],
+    queryFn: () =>
+      apiClient
+        .get(`/vessels/${vesselId}/components`, { params: { page_size: 5000, is_unmapped: 'false' } })
+        .then((r) => r.data),
     enabled: !!vesselId,
   })
 
@@ -76,6 +270,23 @@ const JobsReview: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       setSelectedIds(new Set())
+    },
+  })
+
+  const saveJobMutation = useMutation({
+    mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) =>
+      apiClient.patch(`/vessels/${vesselId}/jobs/${id}`, payload).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
+      setEditingJob(null)
+    },
+  })
+
+  const createJobMutation = useMutation({
+    mutationFn: (payload: Record<string, unknown>) => apiClient.post(`/vessels/${vesselId}/jobs`, payload).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
+      setShowCreateJob(false)
     },
   })
 
@@ -105,9 +316,31 @@ const JobsReview: React.FC = () => {
     if (filterNoCMS && j.cms_id) return false
     return true
   })
+  const componentOptions: ComponentOption[] = (componentOptionsQuery.data?.items ?? []).filter((component: ComponentOption) => component.qc_status !== 'rejected')
 
   return (
     <div className="flex h-full gap-4">
+      {showCreateJob && (
+        <JobEditorModal
+          title="Add Job"
+          submitLabel="Create Job"
+          isPending={createJobMutation.isPending}
+          components={componentOptions}
+          onClose={() => setShowCreateJob(false)}
+          onSubmit={(payload) => createJobMutation.mutate(payload)}
+        />
+      )}
+      {editingJob && (
+        <JobEditorModal
+          title="Edit Job"
+          submitLabel="Save Changes"
+          isPending={saveJobMutation.isPending}
+          components={componentOptions}
+          initialValues={editingJob}
+          onClose={() => setEditingJob(null)}
+          onSubmit={(payload) => saveJobMutation.mutate({ id: editingJob.id, payload })}
+        />
+      )}
       <div className="flex flex-1 flex-col gap-6 overflow-hidden">
         <div className="flex items-center justify-between">
           <div>
@@ -138,6 +371,13 @@ const JobsReview: React.FC = () => {
               Upload CMS Mapping
               <input type="file" accept=".csv" className="hidden" onChange={handleCMSUpload} />
             </label>
+            <button
+              onClick={() => setShowCreateJob(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add Job
+            </button>
           </div>
         </div>
 
@@ -239,6 +479,7 @@ const JobsReview: React.FC = () => {
                   <th className="px-4 py-3">Source</th>
                   <th className="px-4 py-3">QC Status</th>
                   <th className="px-4 py-3">Preview</th>
+                  <th className="px-4 py-3">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
@@ -344,6 +585,18 @@ const JobsReview: React.FC = () => {
                       title="Preview manual pages"
                     >
                       <FileSearch className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <button
+                      onClick={() => {
+                        setSelectedJob(job)
+                        setEditingJob(job)
+                      }}
+                      className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600"
+                      title="Edit job"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
                     </button>
                   </td>
                   </tr>

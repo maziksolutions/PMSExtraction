@@ -17,9 +17,12 @@ import {
   RefreshCw,
   FileDown,
   Search,
+  FileSearch,
+  ArrowRightLeft,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
+import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 
 interface Component {
   id: string
@@ -229,6 +232,9 @@ const ComponentReview: React.FC = () => {
   const [importResult, setImportResult] = useState<string | null>(null)
   const [showBatchPanel, setShowBatchPanel] = useState(false)
   const [batchFields, setBatchFields] = useState<Record<string, string>>({})
+  const [selectedComponent, setSelectedComponent] = useState<Component | null>(null)
+  const [mergeSource, setMergeSource] = useState<Component | null>(null)
+  const [keepSource, setKeepSource] = useState<Component | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data, isLoading } = useQuery({
@@ -293,6 +299,38 @@ const ComponentReview: React.FC = () => {
     },
   })
 
+  const refreshComponentQueries = () => {
+    queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
+    queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
+  }
+
+  const mergeIntoExistingMutation = useMutation({
+    mutationFn: ({ sourceId, targetId }: { sourceId: string; targetId: string }) =>
+      apiClient.post(`/vessels/${vesselId}/components/${sourceId}/merge-into`, { target_component_id: targetId }).then((r) => r.data),
+    onSuccess: () => {
+      refreshComponentQueries()
+      setImportResult('Merged extracted component into the selected vessel component.')
+      setMergeSource(null)
+      setSelectedComponent(null)
+    },
+  })
+
+  const keepAsMappedMutation = useMutation({
+    mutationFn: async ({
+      sourceId,
+      payload,
+    }: {
+      sourceId: string
+      payload: { component_name: string; group1: string; group2: string; main_machinery: string; qc_status: string }
+    }) => apiClient.post(`/vessels/${vesselId}/components/${sourceId}/remap`, payload).then((r) => r.data),
+    onSuccess: () => {
+      refreshComponentQueries()
+      setImportResult('Accepted extracted component into the vessel structure.')
+      setKeepSource(null)
+      setSelectedComponent(null)
+    },
+  })
+
   // Reset to page 1 when any filter changes
   React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, pageSize])
 
@@ -350,6 +388,7 @@ const ComponentReview: React.FC = () => {
   const total: number = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const components: Component[] = data?.items ?? []
+  const mappedComponentOptions: Component[] = allComponentsQuery.data?.items ?? []
 
   return (
     <div className="flex h-full gap-4">
@@ -364,6 +403,23 @@ const ComponentReview: React.FC = () => {
           initialGroup1={addContext.group1}
           initialGroup2={addContext.group2}
           initialMachinery={addContext.machinery}
+        />
+      )}
+      {mergeSource && (
+        <MergeComponentModal
+          source={mergeSource}
+          candidates={mappedComponentOptions}
+          isPending={mergeIntoExistingMutation.isPending}
+          onClose={() => setMergeSource(null)}
+          onConfirm={(targetComponentId) => mergeIntoExistingMutation.mutate({ sourceId: mergeSource.id, targetId: targetComponentId })}
+        />
+      )}
+      {keepSource && (
+        <KeepComponentModal
+          source={keepSource}
+          isPending={keepAsMappedMutation.isPending}
+          onClose={() => setKeepSource(null)}
+          onConfirm={(payload) => keepAsMappedMutation.mutate({ sourceId: keepSource.id, payload })}
         />
       )}
 
@@ -852,6 +908,8 @@ const ComponentReview: React.FC = () => {
                     <th className="px-3 py-3">Mach. Particulars</th>
                     <th className="px-3 py-3">Critical</th>
                     <th className="px-3 py-3">QC</th>
+                    <th className="px-3 py-3">Source</th>
+                    <th className="px-3 py-3">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
@@ -861,7 +919,7 @@ const ComponentReview: React.FC = () => {
                     return (
                       <tr
                         key={comp.id}
-                        className={`transition-colors hover:bg-slate-800/50 ${changed ? 'bg-violet-900/10' : ''} ${selectedIds.has(comp.id) ? 'bg-sky-900/10' : ''}`}
+                        className={`transition-colors hover:bg-slate-800/50 ${changed ? 'bg-violet-900/10' : ''} ${selectedIds.has(comp.id) ? 'bg-sky-900/10' : ''} ${selectedComponent?.id === comp.id ? 'bg-slate-800/70' : ''}`}
                       >
                         <td className="px-3 py-2.5">
                           <input type="checkbox" checked={selectedIds.has(comp.id)} onChange={() => toggleSelect(comp.id)} className="h-3.5 w-3.5 rounded" />
@@ -962,6 +1020,63 @@ const ComponentReview: React.FC = () => {
                             <option value="modified">modified</option>
                           </select>
                         </td>
+                        <td className="px-3 py-2.5">
+                          {comp.source_manual_id ? (
+                            <button
+                              onClick={() => setSelectedComponent(comp)}
+                              className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-2 py-1 text-xs text-sky-300 hover:bg-slate-800"
+                            >
+                              <FileSearch className="h-3.5 w-3.5" />
+                              {comp.page_reference ? `p.${comp.page_reference}` : 'Preview'}
+                            </button>
+                          ) : (
+                            <span className="text-xs text-slate-600">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {comp.is_unmapped ? (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    setSelectedComponent(comp)
+                                    setMergeSource(comp)
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-sky-700 px-2 py-1 text-xs text-sky-300 hover:bg-slate-800"
+                                >
+                                  <ArrowRightLeft className="h-3.5 w-3.5" />
+                                  Map
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSelectedComponent(comp)
+                                    setKeepSource(comp)
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-700 px-2 py-1 text-xs text-emerald-300 hover:bg-slate-800"
+                                >
+                                  <Plus className="h-3.5 w-3.5" />
+                                  Keep
+                                </button>
+                                <button
+                                  onClick={() => bulkRejectMutation.mutate([comp.id])}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-red-800 px-2 py-1 text-xs text-red-300 hover:bg-slate-800"
+                                >
+                                  <XCircle className="h-3.5 w-3.5" />
+                                  Reject
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                onClick={() => setSelectedComponent(comp)}
+                                disabled={!comp.source_manual_id}
+                                className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                              >
+                                <FileSearch className="h-3.5 w-3.5" />
+                                Preview
+                              </button>
+                            )}
+                          </div>
+                        </td>
                       </tr>
                     )
                   })}
@@ -1006,6 +1121,167 @@ const ComponentReview: React.FC = () => {
             )}
           </div>
         )}
+      </div>
+      <ManualPagePreview
+        vesselId={vesselId ?? ''}
+        manualId={selectedComponent?.source_manual_id}
+        manualName={selectedComponent?.pdf_reference}
+        title="Component Source Preview"
+        subtitle={
+          selectedComponent
+            ? [
+                selectedComponent.component_name,
+                selectedComponent.group1,
+                selectedComponent.group2,
+                selectedComponent.main_machinery,
+              ]
+                .filter(Boolean)
+                .join(' • ')
+            : null
+        }
+        defaultPages={selectedComponent?.page_reference}
+      />
+    </div>
+  )
+}
+
+interface MergeModalProps {
+  source: Component
+  candidates: Component[]
+  isPending: boolean
+  onClose: () => void
+  onConfirm: (targetComponentId: string) => void
+}
+
+function MergeComponentModal({ source, candidates, isPending, onClose, onConfirm }: MergeModalProps) {
+  const [search, setSearch] = useState(source.component_name)
+  const [selectedId, setSelectedId] = useState('')
+
+  const filtered = candidates
+    .filter((candidate) => candidate.id !== source.id)
+    .filter((candidate) => {
+      const haystack = `${candidate.component_name} ${candidate.group1} ${candidate.group2} ${candidate.main_machinery} ${candidate.maker ?? ''} ${candidate.model ?? ''}`.toLowerCase()
+      return haystack.includes(search.toLowerCase())
+    })
+    .slice(0, 30)
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-3xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4">
+          <div>
+            <h2 className="text-base font-semibold text-white">Map To Existing Component</h2>
+            <p className="mt-1 text-sm text-slate-400">{source.component_name}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="space-y-4 px-6 py-4">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search target component..."
+            className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none"
+          />
+          <div className="max-h-[22rem] space-y-2 overflow-y-auto rounded-xl border border-slate-800 bg-slate-950/40 p-2">
+            {filtered.map((candidate) => (
+              <button
+                key={candidate.id}
+                type="button"
+                onClick={() => setSelectedId(candidate.id)}
+                className={`w-full rounded-lg border px-3 py-3 text-left transition-colors ${
+                  selectedId === candidate.id
+                    ? 'border-sky-500 bg-sky-900/20'
+                    : 'border-slate-800 bg-slate-900 hover:bg-slate-800'
+                }`}
+              >
+                <div className="font-medium text-slate-100">{candidate.component_name}</div>
+                <div className="mt-1 text-xs text-slate-400">{candidate.group1} • {candidate.group2} • {candidate.main_machinery}</div>
+                <div className="mt-1 text-xs text-slate-500">{[candidate.maker, candidate.model].filter(Boolean).join(' • ') || 'No maker/model yet'}</div>
+              </button>
+            ))}
+            {filtered.length === 0 && (
+              <div className="px-3 py-8 text-center text-sm text-slate-500">No matching vessel components found for that search.</div>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-slate-700 px-6 py-4">
+          <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+          <button
+            onClick={() => onConfirm(selectedId)}
+            disabled={!selectedId || isPending}
+            className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+          >
+            Merge Into Selected Component
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface KeepModalProps {
+  source: Component
+  isPending: boolean
+  onClose: () => void
+  onConfirm: (payload: { component_name: string; group1: string; group2: string; main_machinery: string; qc_status: string }) => void
+}
+
+function KeepComponentModal({ source, isPending, onClose, onConfirm }: KeepModalProps) {
+  const [form, setForm] = useState({
+    component_name: source.component_name,
+    group1: source.group1,
+    group2: source.group2,
+    main_machinery: source.main_machinery,
+    qc_status: 'accepted',
+  })
+
+  const set = (key: keyof typeof form, value: string) => setForm((prev) => ({ ...prev, [key]: value }))
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4">
+          <div>
+            <h2 className="text-base font-semibold text-white">Keep As Vessel Component</h2>
+            <p className="mt-1 text-sm text-slate-400">This moves the extracted component into All Components.</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="grid gap-4 px-6 py-4 md:grid-cols-2">
+          <div className="md:col-span-2">
+            <label className="mb-1 block text-xs text-slate-400">Component Name</label>
+            <input value={form.component_name} onChange={(e) => set('component_name', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Group</label>
+            <input value={form.group1} onChange={(e) => set('group1', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Sub-Group</label>
+            <input value={form.group2} onChange={(e) => set('group2', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Main Machinery</label>
+            <input value={form.main_machinery} onChange={(e) => set('main_machinery', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">QC Status</label>
+            <select value={form.qc_status} onChange={(e) => set('qc_status', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
+              <option value="accepted">Accepted</option>
+              <option value="modified">Modified</option>
+            </select>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-slate-700 px-6 py-4">
+          <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+          <button
+            onClick={() => onConfirm(form)}
+            disabled={!form.component_name || !form.group1 || !form.group2 || !form.main_machinery || isPending}
+            className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+          >
+            Save To Vessel Structure
+          </button>
+        </div>
       </div>
     </div>
   )

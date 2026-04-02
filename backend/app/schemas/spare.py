@@ -44,8 +44,10 @@ class SpareCreate(BaseModel):
     drawing_position: Optional[str] = None
     specification: Optional[str] = None
     spare_maker: Optional[str] = None
+    spare_model: Optional[str] = None
     component_id: Optional[uuid.UUID] = None
     is_critical: bool = False
+    qc_status: Optional[QCStatus] = None
 
 
 class SpareUpdate(BaseModel):
