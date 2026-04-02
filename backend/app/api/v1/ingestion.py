@@ -790,7 +790,7 @@ _extract_state: dict[str, dict] = {}
 
 async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) -> None:
     """Background task: runs auto_extract_from_manual for each selected manual."""
-    from app.api.v1.extraction import set_extraction_state
+    from app.api.v1.extraction import get_extraction_state, set_extraction_state
     from app.services.extractor import auto_extract_from_manual
 
     set_extraction_state(vessel_id_str, total=len(manual_ids), done=0, status="running")
@@ -800,11 +800,29 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
                 await auto_extract_from_manual(manual_id)
             except Exception as exc:
                 logger.error("_run_extract_selected_task: extraction failed for manual %s: %s", manual_id, exc)
-            _extract_state[vessel_id_str]["done"] += 1
-        _extract_state[vessel_id_str]["status"] = "completed"
+            state = get_extraction_state(vessel_id_str)
+            set_extraction_state(
+                vessel_id_str,
+                total=state.get("total", len(manual_ids)),
+                done=state.get("done", 0) + 1,
+                status="running",
+            )
+        state = get_extraction_state(vessel_id_str)
+        set_extraction_state(
+            vessel_id_str,
+            total=state.get("total", len(manual_ids)),
+            done=state.get("done", len(manual_ids)),
+            status="completed",
+        )
     except Exception as exc:
         logger.error("_run_extract_selected_task: task failed: %s", exc)
-        _extract_state[vessel_id_str]["status"] = "failed"
+        state = get_extraction_state(vessel_id_str)
+        set_extraction_state(
+            vessel_id_str,
+            total=state.get("total", len(manual_ids)),
+            done=state.get("done", 0),
+            status="failed",
+        )
 
 
 @router.post(
