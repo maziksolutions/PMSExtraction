@@ -75,11 +75,14 @@ class Settings(BaseSettings):
 
     # OpenAI / AI
     OPENAI_API_KEY: str = ""
+    OPENAI_MODEL_ID: str = "gpt-4.1-mini"
     ANTHROPIC_API_KEY: str = ""
     CLAUDE_MODEL_ID: str = "claude-sonnet-4-6"
     GEMINI_API_KEY: str = ""
     GROQ_API_KEY: str = ""
     EXTRACTION_MAX_TOKENS: int = 8192
+    EXTRACTION_CHUNK_CHARS: int = 14000
+    EXTRACTION_CHUNK_OVERLAP_CHARS: int = 500
 
     # File storage (local disk — ephemeral on Railway; mount a Volume for persistence)
     UPLOAD_DIR: str = "/tmp/pms_uploads"

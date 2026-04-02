@@ -229,6 +229,7 @@ def _parse_json_records(raw_text: str) -> list[dict]:
 def _redact_error_message(exc: Exception) -> str:
     message = str(exc)
     for secret in (
+        getattr(settings, "OPENAI_API_KEY", ""),
         getattr(settings, "ANTHROPIC_API_KEY", ""),
         getattr(settings, "GEMINI_API_KEY", ""),
         getattr(settings, "GROQ_API_KEY", ""),
@@ -259,6 +260,37 @@ async def _extract_with_claude(
     )
     raw_text: str = message.content[0].text.strip()
     logger.info("extract_entities[claude]: %s/%s responded", filename, extraction_type)
+    return _parse_json_records(raw_text)
+
+
+async def _extract_with_openai(
+    *,
+    system_prompt: str,
+    user_message: str,
+    filename: str,
+    extraction_type: str,
+) -> list[dict]:
+    if not settings.OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    max_tokens = getattr(settings, "EXTRACTION_MAX_TOKENS", 8192)
+    model_id: str = getattr(settings, "OPENAI_MODEL_ID", None) or "gpt-4.1-mini"
+    response = await client.chat.completions.create(
+        model=model_id,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        max_tokens=max_tokens,
+        temperature=0,
+    )
+    raw_text = (response.choices[0].message.content or "").strip()
+    if not raw_text:
+        raise RuntimeError("OpenAI returned an empty response")
+    logger.info("extract_entities[openai]: %s/%s responded", filename, extraction_type)
     return _parse_json_records(raw_text)
 
 
@@ -610,6 +642,7 @@ async def extract_entities(
     if context_note:
         user_message = f"{user_message}\n\nAdditional extraction context:\n{context_note}"
     providers: list[tuple[str, Any]] = [
+        ("openai", _extract_with_openai),
         ("claude", _extract_with_claude),
         ("gemini", _extract_with_gemini),
         ("groq", _extract_with_groq),
@@ -1099,10 +1132,37 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         # 120,000 chars ≈ 30,000 tokens — leaves ample room for system
         # prompt and a large JSON response.
         # ------------------------------------------------------------------
-        CHUNK_SIZE = 120_000
-        OVERLAP = 2_000  # small overlap to avoid cutting mid-table
+        CHUNK_SIZE = max(4_000, int(getattr(settings, "EXTRACTION_CHUNK_CHARS", 14_000) or 14_000))
+        OVERLAP = max(0, int(getattr(settings, "EXTRACTION_CHUNK_OVERLAP_CHARS", 500) or 500))
 
         def _chunk_text(text: str) -> list[str]:
+            page_blocks = [
+                f"[PAGE {page_no}]\n{page_body}".strip()
+                for page_no, page_body in _split_marked_pages(text)
+            ]
+            if page_blocks:
+                chunks: list[str] = []
+                current_blocks: list[str] = []
+                current_size = 0
+                for block in page_blocks:
+                    block_size = len(block) + 2
+                    if current_blocks and current_size + block_size > CHUNK_SIZE:
+                        chunks.append("\n\n".join(current_blocks))
+                        overlap_blocks: list[str] = []
+                        overlap_size = 0
+                        for previous_block in reversed(current_blocks):
+                            previous_size = len(previous_block) + 2
+                            if overlap_blocks and overlap_size + previous_size > OVERLAP:
+                                break
+                            overlap_blocks.insert(0, previous_block)
+                            overlap_size += previous_size
+                        current_blocks = overlap_blocks.copy()
+                        current_size = sum(len(item) + 2 for item in current_blocks)
+                    current_blocks.append(block)
+                    current_size += block_size
+                if current_blocks:
+                    chunks.append("\n\n".join(current_blocks))
+                return chunks
             if len(text) <= CHUNK_SIZE:
                 return [text]
             chunks: list[str] = []
@@ -1110,7 +1170,9 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             while start < len(text):
                 end = min(start + CHUNK_SIZE, len(text))
                 chunks.append(text[start:end])
-                start = end - OVERLAP
+                if end >= len(text):
+                    break
+                start = max(end - OVERLAP, start + 1)
             return chunks
 
         text_chunks = _chunk_text(full_text)
