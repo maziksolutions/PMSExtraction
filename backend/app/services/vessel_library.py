@@ -9,6 +9,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.component import Component
 
 
+async def _single_populated_vessel_type(
+    *,
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+) -> Optional[dict[str, str]]:
+    result = await db.execute(
+        text(
+            "SELECT vt.id, vt.name, COUNT(csl.id) AS component_count "
+            "FROM vessel_types vt "
+            "LEFT JOIN component_structure_library csl "
+            "  ON csl.vessel_type_id = vt.id "
+            " AND csl.is_deleted = false "
+            " AND csl.status = 'active' "
+            "WHERE vt.tenant_id = :tid AND vt.is_deleted = false "
+            "GROUP BY vt.id, vt.name "
+            "HAVING COUNT(csl.id) > 0 "
+            "ORDER BY COUNT(csl.id) DESC, vt.name ASC"
+        ),
+        {"tid": str(tenant_id)},
+    )
+    rows = result.mappings().all()
+    if len(rows) == 1:
+        row = rows[0]
+        return {"id": str(row["id"]), "name": str(row["name"])}
+    return None
+
+
 async def resolve_vessel_type_id(
     *,
     db: AsyncSession,
@@ -17,7 +44,8 @@ async def resolve_vessel_type_id(
 ) -> Optional[str]:
     vessel_type_name = (vessel_type_name or "").strip()
     if not vessel_type_name:
-        return None
+        fallback = await _single_populated_vessel_type(db=db, tenant_id=tenant_id)
+        return fallback["id"] if fallback else None
 
     result = await db.execute(
         text(
@@ -30,7 +58,11 @@ async def resolve_vessel_type_id(
         {"tid": str(tenant_id), "name": vessel_type_name},
     )
     row = result.first()
-    return str(row[0]) if row else None
+    if row:
+        return str(row[0])
+
+    fallback = await _single_populated_vessel_type(db=db, tenant_id=tenant_id)
+    return fallback["id"] if fallback else None
 
 
 async def load_library_components_for_vessel(

@@ -31,7 +31,7 @@ const statusColors: Record<string, string> = {
   complete: 'bg-green-700 text-green-200',
 }
 
-const VESSEL_TYPES = [
+const FALLBACK_VESSEL_TYPES = [
   'Bulk Carrier', 'Container Ship', 'Tanker', 'General Cargo',
   'Ro-Ro', 'Passenger', 'Offshore Vessel', 'Tugboat', 'Other',
 ]
@@ -61,6 +61,16 @@ const Vessels: React.FC = () => {
       return res.data
     },
   })
+
+  const vesselTypesQuery = useQuery<{ items: { id: string; name: string; component_count: number }[] }>({
+    queryKey: ['library', 'vessel-types'],
+    queryFn: async () => {
+      const res = await apiClient.get('/library/vessel-types')
+      return res.data
+    },
+  })
+
+  const vesselTypeOptions = vesselTypesQuery.data?.items?.map((item) => item.name) ?? FALLBACK_VESSEL_TYPES
 
   const createMutation = useMutation({
     mutationFn: async (payload: typeof form) => {
@@ -250,7 +260,7 @@ const Vessels: React.FC = () => {
                   className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-sm text-white focus:border-sky-500 focus:outline-none"
                 >
                   <option value="">Select vessel type...</option>
-                  {VESSEL_TYPES.map(t => (
+                  {vesselTypeOptions.map(t => (
                     <option key={t} value={t}>{t}</option>
                   ))}
                 </select>
@@ -329,7 +339,7 @@ const Vessels: React.FC = () => {
                   className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2.5 text-sm text-white focus:border-sky-500 focus:outline-none"
                 >
                   <option value="">Select vessel type...</option>
-                  {VESSEL_TYPES.map(t => (
+                  {vesselTypeOptions.map(t => (
                     <option key={t} value={t}>{t}</option>
                   ))}
                 </select>
