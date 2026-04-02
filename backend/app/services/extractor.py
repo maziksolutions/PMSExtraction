@@ -223,6 +223,13 @@ def _parse_json_records(raw_text: str) -> list[dict]:
     parsed: Any = json.loads(_strip_code_fences(raw_text).strip())
     if isinstance(parsed, list):
         return [r for r in parsed if isinstance(r, dict)]
+    if isinstance(parsed, dict):
+        for key in ("items", "records", "components", "jobs", "spares", "data", "results"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                return [r for r in value if isinstance(r, dict)]
+        if any(field in parsed for field in ("component_name", "job_name", "part_name", "source_page_number")):
+            return [parsed]
     return []
 
 
