@@ -16,6 +16,12 @@ function timeAgo(isoDate: string): string {
   return `${Math.floor(hours / 24)}d ago`
 }
 
+function timestampLabel(isoDate: string): string {
+  const parsed = new Date(isoDate)
+  if (Number.isNaN(parsed.getTime())) return isoDate
+  return parsed.toLocaleString()
+}
+
 const ACTION_COLORS: Record<string, string> = {
   accepted: 'text-green-400',
   rejected: 'text-red-400',
@@ -23,12 +29,14 @@ const ACTION_COLORS: Record<string, string> = {
   modified: 'text-amber-400',
   created: 'text-violet-400',
   deleted: 'text-slate-400',
+  mapped: 'text-cyan-400',
+  merged: 'text-emerald-400',
+  imported_screening: 'text-sky-400',
 }
 
 const ActivityFeed: React.FC<Props> = ({ events }) => {
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
       <div className="flex items-center gap-2 border-b border-slate-800 px-4 py-3">
         <Activity className="h-4 w-4 text-sky-400" />
         <span className="text-sm font-semibold text-slate-200">Activity Feed</span>
@@ -39,8 +47,7 @@ const ActivityFeed: React.FC<Props> = ({ events }) => {
         )}
       </div>
 
-      {/* Events list */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+      <div className="flex-1 space-y-2 overflow-y-auto p-3">
         {events.length === 0 ? (
           <p className="py-10 text-center text-xs text-slate-500">
             No recent activity.
@@ -53,13 +60,14 @@ const ActivityFeed: React.FC<Props> = ({ events }) => {
             const colorClass = ACTION_COLORS[actionWord] ?? 'text-slate-300'
             return (
               <div key={e.id} className="rounded-lg bg-slate-800 p-2.5">
-                <p className="text-xs text-slate-200 leading-relaxed">{e.description}</p>
+                <p className="text-xs leading-relaxed text-slate-200">{e.description}</p>
                 <div className="mt-1.5 flex items-center justify-between">
                   <span className={`text-xs font-medium ${colorClass}`}>
-                    {e.entity_type} • {actionWord}
+                    {e.entity_type} • {actionWord.replace(/_/g, ' ')}
                   </span>
                   <span className="text-xs text-slate-500">{timeAgo(e.created_at)}</span>
                 </div>
+                <div className="mt-1 text-[11px] text-slate-500">{timestampLabel(e.created_at)}</div>
               </div>
             )
           })

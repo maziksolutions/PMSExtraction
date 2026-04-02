@@ -19,6 +19,7 @@ from app.models.ingestion import Manual, ManualStatus
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.manual import ManualOut, ManualUpdate
+from app.services.review_workflow import broadcast_activity, log_activity
 
 router = APIRouter()
 
@@ -621,9 +622,29 @@ async def update_manual(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manual not found")
 
     update_data = body.model_dump(exclude_unset=True)
-    _apply_manual_updates(manual=manual, update_data=update_data, current_user=current_user, db=db)
+    prepared = _apply_manual_updates(
+        manual=manual,
+        update_data=update_data,
+        current_user=current_user,
+        db=db,
+    )
+    activity = None
+    if prepared:
+        activity = await log_activity(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            user_id=current_user.id,
+            action_type="manual.corrected",
+            entity_type="manual",
+            entity_id=manual.id,
+            description=f"Updated screening details for '{manual.original_filename}'.",
+            metadata={"fields": sorted(prepared.keys())},
+        )
     await db.commit()
     await db.refresh(manual)
+    if activity:
+        await broadcast_activity(activity)
     return ManualOut.model_validate(manual)
 
 
@@ -752,6 +773,7 @@ async def import_manual_screening(
     updated = 0
     skipped = 0
     errors: list[str] = []
+    activities = []
 
     for row_number, row in enumerate(rows[1:], start=2):
         row_map = {
@@ -790,13 +812,33 @@ async def import_manual_screening(
                 skipped += 1
                 continue
 
-            _apply_manual_updates(manual=manual, update_data=update_data, current_user=current_user, db=db)
+            prepared = _apply_manual_updates(
+                manual=manual,
+                update_data=update_data,
+                current_user=current_user,
+                db=db,
+            )
+            activities.append(
+                await log_activity(
+                    db,
+                    tenant_id=current_user.tenant_id,
+                    vessel_id=vessel_id,
+                    user_id=current_user.id,
+                    action_type="manual.imported_screening",
+                    entity_type="manual",
+                    entity_id=manual.id,
+                    description=f"Imported screening updates for '{manual.original_filename}'.",
+                    metadata={"fields": sorted(prepared.keys())},
+                )
+            )
             updated += 1
         except ValueError as exc:
             skipped += 1
             errors.append(f"Row {row_number}: {exc}")
 
     await db.commit()
+    for activity in activities:
+        await broadcast_activity(activity)
 
     return {
         "updated": updated,

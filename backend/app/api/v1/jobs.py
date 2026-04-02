@@ -16,6 +16,11 @@ from app.models.job import FrequencyType, Job
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.job import JobCreate, JobOut, JobUpdate
+from app.services.review_workflow import (
+    broadcast_activity,
+    log_activity,
+    sync_jobs_to_global_library,
+)
 
 router = APIRouter()
 
@@ -145,8 +150,28 @@ async def create_job(
         **body.model_dump(),
     )
     db.add(job)
+    await db.flush()
+    activity = await log_activity(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        action_type="job.created",
+        entity_type="job",
+        entity_id=job.id,
+        description=f"Created job '{job.job_name}'.",
+        metadata={"component_id": str(job.component_id) if job.component_id else None},
+    )
+    if job.qc_status == QCStatus.accepted:
+        await sync_jobs_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            jobs=[job],
+        )
     await db.commit()
     await db.refresh(job)
+    await broadcast_activity(activity)
     return JobOut.model_validate(job)
 
 
@@ -169,6 +194,7 @@ async def update_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
 
     original = {"job_name": job.job_name, "qc_status": job.qc_status.value if job.qc_status else None}
+    original_qc_status = job.qc_status
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(job, field, value)
@@ -186,8 +212,32 @@ async def update_job(
         )
         db.add(feedback)
 
+    activity = None
+    if update_data:
+        activity = await log_activity(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            user_id=current_user.id,
+            action_type="job.corrected" if job.source_manual_id else "job.modified",
+            entity_type="job",
+            entity_id=job.id,
+            description=f"Updated job '{job.job_name}'.",
+            metadata={"fields": sorted(update_data.keys())},
+        )
+    if job.qc_status == QCStatus.accepted and (
+        original_qc_status != QCStatus.accepted or update_data
+    ):
+        await sync_jobs_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            jobs=[job],
+        )
     await db.commit()
     await db.refresh(job)
+    if activity:
+        await broadcast_activity(activity)
     return JobOut.model_validate(job)
 
 
@@ -218,10 +268,32 @@ async def bulk_accept_jobs(
     ids = [uuid.UUID(i) for i in body.get("ids", [])]
     result = await db.execute(select(Job).where(Job.id.in_(ids), Job.vessel_id == vessel_id))
     jobs = result.scalars().all()
+    activities = []
     for job in jobs:
         job.qc_status = QCStatus.accepted
         db.add(job)
+        activities.append(
+            await log_activity(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                user_id=current_user.id,
+                action_type="job.accepted",
+                entity_type="job",
+                entity_id=job.id,
+                description=f"Accepted job '{job.job_name}'.",
+            )
+        )
+    if jobs:
+        await sync_jobs_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            jobs=jobs,
+        )
     await db.commit()
+    for activity in activities:
+        await broadcast_activity(activity)
     return {"accepted": len(jobs)}
 
 
@@ -235,10 +307,25 @@ async def bulk_reject_jobs(
     ids = [uuid.UUID(i) for i in body.get("ids", [])]
     result = await db.execute(select(Job).where(Job.id.in_(ids), Job.vessel_id == vessel_id))
     jobs = result.scalars().all()
+    activities = []
     for job in jobs:
         job.qc_status = QCStatus.rejected
         db.add(job)
+        activities.append(
+            await log_activity(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                user_id=current_user.id,
+                action_type="job.rejected",
+                entity_type="job",
+                entity_id=job.id,
+                description=f"Rejected job '{job.job_name}'.",
+            )
+        )
     await db.commit()
+    for activity in activities:
+        await broadcast_activity(activity)
     return {"rejected": len(jobs)}
 
 
@@ -259,8 +346,20 @@ async def link_component(
     job.component_id = uuid.UUID(body["component_id"])
     job.is_unmapped = False
     db.add(job)
+    activity = await log_activity(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        action_type="job.mapped",
+        entity_type="job",
+        entity_id=job.id,
+        description=f"Linked job '{job.job_name}' to a vessel component.",
+        metadata={"component_id": body["component_id"]},
+    )
     await db.commit()
     await db.refresh(job)
+    await broadcast_activity(activity)
     return JobOut.model_validate(job)
 
 

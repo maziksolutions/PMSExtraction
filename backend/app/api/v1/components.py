@@ -22,6 +22,11 @@ from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.component import ComponentCreate, ComponentOut, ComponentUpdate
 from app.services.component_matcher import merge_component_into_target
+from app.services.review_workflow import (
+    broadcast_activity,
+    log_activity,
+    sync_components_to_global_library,
+)
 from app.services.vessel_library import ensure_vessel_library_baseline
 
 router = APIRouter()
@@ -212,8 +217,28 @@ async def create_component(
         **body.model_dump(),
     )
     db.add(comp)
+    await db.flush()
+    activity = await log_activity(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        action_type="component.created",
+        entity_type="component",
+        entity_id=comp.id,
+        description=f"Created component '{comp.component_name}'.",
+        metadata={"group1": comp.group1, "main_machinery": comp.main_machinery},
+    )
+    if comp.qc_status == QCStatus.accepted:
+        await sync_components_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            components=[comp],
+        )
     await db.commit()
     await db.refresh(comp)
+    await broadcast_activity(activity)
     return ComponentOut.model_validate(comp)
 
 
@@ -247,6 +272,7 @@ async def update_component(
         "model": comp.model,
         "qc_status": comp.qc_status.value if comp.qc_status else None,
     }
+    original_qc_status = comp.qc_status
 
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -267,8 +293,32 @@ async def update_component(
             )
             db.add(feedback)
 
+    activity = None
+    if update_data:
+        activity = await log_activity(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            user_id=current_user.id,
+            action_type="component.corrected" if comp.source_manual_id else "component.modified",
+            entity_type="component",
+            entity_id=comp.id,
+            description=f"Updated component '{comp.component_name}'.",
+            metadata={"fields": sorted(update_data.keys())},
+        )
+    if comp.qc_status == QCStatus.accepted and (
+        original_qc_status != QCStatus.accepted or update_data
+    ):
+        await sync_components_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            components=[comp],
+        )
     await db.commit()
     await db.refresh(comp)
+    if activity:
+        await broadcast_activity(activity)
     return ComponentOut.model_validate(comp)
 
 
@@ -358,10 +408,32 @@ async def bulk_accept_components(
         )
     )
     components = result.scalars().all()
+    activities = []
     for comp in components:
         comp.qc_status = QCStatus.accepted
         db.add(comp)
+        activities.append(
+            await log_activity(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                user_id=current_user.id,
+                action_type="component.accepted",
+                entity_type="component",
+                entity_id=comp.id,
+                description=f"Accepted component '{comp.component_name}'.",
+            )
+        )
+    if components:
+        await sync_components_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            components=components,
+        )
     await db.commit()
+    for activity in activities:
+        await broadcast_activity(activity)
     return {"accepted": len(components)}
 
 
@@ -379,10 +451,25 @@ async def bulk_reject_components(
         )
     )
     components = result.scalars().all()
+    activities = []
     for comp in components:
         comp.qc_status = QCStatus.rejected
         db.add(comp)
+        activities.append(
+            await log_activity(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                user_id=current_user.id,
+                action_type="component.rejected",
+                entity_type="component",
+                entity_id=comp.id,
+                description=f"Rejected component '{comp.component_name}'.",
+            )
+        )
     await db.commit()
+    for activity in activities:
+        await broadcast_activity(activity)
     return {"rejected": len(components)}
 
 
@@ -423,8 +510,27 @@ async def remap_component(
         comp.qc_status = QCStatus.modified
     comp.is_unmapped = False
     db.add(comp)
+    if comp.qc_status == QCStatus.accepted:
+        await sync_components_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            components=[comp],
+        )
+    activity = await log_activity(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        action_type="component.remapped",
+        entity_type="component",
+        entity_id=comp.id,
+        description=f"Mapped extracted component '{comp.component_name}' into the vessel structure.",
+        metadata={"group1": comp.group1, "group2": comp.group2, "main_machinery": comp.main_machinery},
+    )
     await db.commit()
     await db.refresh(comp)
+    await broadcast_activity(activity)
     return ComponentOut.model_validate(comp)
 
 
@@ -491,9 +597,27 @@ async def merge_component_into_existing(
     source.is_unmapped = False
     source.qc_status = QCStatus.accepted
     db.add(source)
+    await sync_components_to_global_library(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        components=[target],
+    )
+    activity = await log_activity(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        action_type="component.merged",
+        entity_type="component",
+        entity_id=target.id,
+        description=f"Merged extracted component '{source.component_name}' into '{target.component_name}'.",
+        metadata={"source_component_id": str(source.id)},
+    )
 
     await db.commit()
     await db.refresh(target)
+    await broadcast_activity(activity)
     return ComponentOut.model_validate(target)
 
 

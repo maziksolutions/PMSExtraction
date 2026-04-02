@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from difflib import SequenceMatcher
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.deps import get_current_user
+from app.models.component import Component, QCStatus
 from app.models.job import Job
 from app.models.missing_manual import MissingManualGap
 from app.models.standard_jobs import (
@@ -61,6 +63,7 @@ async def list_standard_jobs(
             {
                 "id": str(j.id),
                 "class_society": j.class_society.value,
+                "job_type": "standard" if j.class_society == ClassSociety.general else "class",
                 "machinery_type": j.machinery_type,
                 "job_name": j.job_name,
                 "job_description": j.job_description,
@@ -223,60 +226,93 @@ async def run_comparison(
     vessel_jobs_result = await db.execute(
         select(Job).where(
             Job.vessel_id == vessel_id,
+            Job.qc_status != QCStatus.rejected,
             Job.is_deleted == False,
         )
     )
     vessel_jobs = vessel_jobs_result.scalars().all()
-    vessel_job_names = {j.job_name.lower() for j in vessel_jobs}
-    vessel_jobs_dict = {j.job_name.lower(): j for j in vessel_jobs}
+    component_ids = {job.component_id for job in vessel_jobs if job.component_id}
+    component_lookup: dict[uuid.UUID, Component] = {}
+    if component_ids:
+        component_result = await db.execute(select(Component).where(Component.id.in_(component_ids)))
+        component_lookup = {component.id: component for component in component_result.scalars().all()}
+
+    def _norm(value: str | None) -> str:
+        return " ".join((value or "").lower().replace("_", " ").replace("-", " ").split())
+
+    def _score(std_job: StandardJob, vessel_job: Job) -> int:
+        std_name = _norm(std_job.job_name)
+        vessel_name = _norm(vessel_job.job_name)
+        if not std_name or not vessel_name:
+            return 0
+
+        ratio = SequenceMatcher(None, std_name, vessel_name).ratio()
+        score = int(ratio * 100)
+
+        if std_name == vessel_name:
+            score = max(score, 100)
+
+        if std_job.frequency and vessel_job.frequency and std_job.frequency == vessel_job.frequency:
+            score += 5
+        if (
+            std_job.frequency_type
+            and vessel_job.frequency_type
+            and std_job.frequency_type == vessel_job.frequency_type
+        ):
+            score += 5
+
+        linked_component = component_lookup.get(vessel_job.component_id) if vessel_job.component_id else None
+        machinery_context = _norm(linked_component.main_machinery if linked_component else "")
+        std_machinery = _norm(std_job.machinery_type)
+        if std_machinery and machinery_context and (
+            std_machinery in machinery_context or machinery_context in std_machinery
+        ):
+            score += 10
+
+        return min(score, 100)
+
+    existing_result = await db.execute(
+        select(StandardJobMatch).where(
+            StandardJobMatch.vessel_id == vessel_id,
+            StandardJobMatch.is_deleted == False,
+        )
+    )
+    existing_matches = {match.standard_job_id: match for match in existing_result.scalars().all()}
 
     matches_created = 0
     for std_job in std_jobs:
-        std_name_lower = std_job.job_name.lower()
+        best_match: Job | None = None
+        best_score = 0
+        for vessel_job in vessel_jobs:
+            score = _score(std_job, vessel_job)
+            if score > best_score:
+                best_score = score
+                best_match = vessel_job
 
-        # Check for existing match
-        existing = await db.execute(
-            select(StandardJobMatch).where(
-                StandardJobMatch.vessel_id == vessel_id,
-                StandardJobMatch.standard_job_id == std_job.id,
-                StandardJobMatch.is_deleted == False,
-            )
-        )
-        if existing.scalar_one_or_none():
-            continue
-
-        # Simple name matching
-        if std_name_lower in vessel_job_names:
-            matched_job = vessel_jobs_dict[std_name_lower]
+        if best_score >= 92 and best_match is not None:
             match_status = MatchStatus.matched
-            match_score = 100
-            matched_job_id = matched_job.id
+            matched_job_id = best_match.id
+        elif best_score >= 70 and best_match is not None:
+            match_status = MatchStatus.partial
+            matched_job_id = best_match.id
         else:
-            # Check partial match (contains)
-            partial = None
-            for vj_name, vj in vessel_jobs_dict.items():
-                if std_name_lower in vj_name or vj_name in std_name_lower:
-                    partial = vj
-                    break
-            if partial:
-                match_status = MatchStatus.partial
-                match_score = 60
-                matched_job_id = partial.id
-            else:
-                match_status = MatchStatus.not_found
-                match_score = 0
-                matched_job_id = None
+            match_status = MatchStatus.not_found
+            matched_job_id = None
+            best_score = 0
 
-        match = StandardJobMatch(
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            standard_job_id=std_job.id,
-            matched_job_id=matched_job_id,
-            match_status=match_status,
-            match_score=match_score,
-        )
+        match = existing_matches.get(std_job.id)
+        if match is None:
+            match = StandardJobMatch(
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                standard_job_id=std_job.id,
+            )
+            matches_created += 1
+
+        match.matched_job_id = matched_job_id
+        match.match_status = match_status
+        match.match_score = best_score
         db.add(match)
-        matches_created += 1
 
     await db.commit()
     return {"status": "completed", "matches_created": matches_created}
@@ -304,6 +340,11 @@ async def get_matches(
     query = query.offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     matches = result.scalars().all()
+    matched_job_ids = [match.matched_job_id for match in matches if match.matched_job_id]
+    job_lookup: dict[uuid.UUID, Job] = {}
+    if matched_job_ids:
+        jobs_result = await db.execute(select(Job).where(Job.id.in_(matched_job_ids)))
+        job_lookup = {job.id: job for job in jobs_result.scalars().all()}
     return {
         "items": [
             {
@@ -313,6 +354,9 @@ async def get_matches(
                 "match_status": m.match_status.value,
                 "match_score": m.match_score,
                 "not_applicable_reason": m.not_applicable_reason,
+                "matched_job_name": job_lookup[m.matched_job_id].job_name if m.matched_job_id in job_lookup else None,
+                "matched_job_code": job_lookup[m.matched_job_id].job_code if m.matched_job_id in job_lookup else None,
+                "matched_job_qc_status": job_lookup[m.matched_job_id].qc_status.value if m.matched_job_id in job_lookup and job_lookup[m.matched_job_id].qc_status else None,
             }
             for m in matches
         ],
@@ -372,6 +416,16 @@ async def import_standard_job(
 
     from app.models.component import QCStatus
 
+    existing_job = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.job_name == std_job.job_name,
+            Job.is_deleted == False,
+        )
+    )
+    if existing_job.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A similar vessel job already exists")
+
     new_job = Job(
         tenant_id=current_user.tenant_id,
         vessel_id=vessel_id,
@@ -381,7 +435,8 @@ async def import_standard_job(
         frequency_type=std_job.frequency_type,
         is_critical=std_job.is_critical,
         source_reference=std_job.library_reference,
-        qc_status=QCStatus.accepted,
+        qc_status=QCStatus.pending,
+        is_unmapped=True,
     )
     db.add(new_job)
     await db.commit()

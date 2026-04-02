@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import uuid
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -30,13 +31,18 @@ FIELD_MAPPINGS = {
     "frequency": "Frequency",
     "frequency_type": "Frequency Type",
     "cms_id": "CMS ID",
+    "component_linked": "Component Linked",
     # Spares
     "part_name": "Part Name",
     "part_number": "Part Number",
     "drawing_number": "Drawing Number",
     "drawing_position": "Drawing Position",
     "spare_maker": "Spare Maker",
+    "spare_model": "Spare Model",
+    "machinery_maker": "Machinery Maker",
+    "machinery_model": "Machinery Model",
     "extraction_method": "Extraction Method",
+    "reason": "Reason",
 }
 
 
@@ -168,6 +174,118 @@ class ExportService:
             "excluded": excluded_out,
         }
 
+    async def serialize_async(
+        self, db: Any, vessel_id: uuid.UUID | str, export_schema: dict | None = None
+    ) -> dict[str, Any]:
+        from sqlalchemy import select
+
+        from app.models.component import Component, QCStatus
+        from app.models.job import Job
+        from app.models.spare import Spare
+
+        vessel_uuid = uuid.UUID(str(vessel_id))
+
+        components_out: list[dict[str, Any]] = []
+        jobs_out: list[dict[str, Any]] = []
+        spares_out: list[dict[str, Any]] = []
+        excluded_out: list[dict[str, Any]] = []
+
+        comp_result = await db.execute(
+            select(Component).where(
+                Component.vessel_id == vessel_uuid,
+                Component.is_deleted == False,
+            )
+        )
+        for c in comp_result.scalars().all():
+            row = {
+                "group1": c.group1,
+                "group2": c.group2,
+                "main_machinery": c.main_machinery,
+                "component_name": c.component_name,
+                "maker": c.maker or "",
+                "model": c.model or "",
+                "specification": c.specification or "",
+                "serial_number": c.serial_number or "",
+                "location": c.location or "",
+                "machinery_particulars": c.machinery_particulars or "",
+                "job_pages": c.job_pages or "",
+                "spare_pages": c.spare_pages or "",
+                "pdf_reference": c.pdf_reference or "",
+                "page_reference": c.page_reference or "",
+                "is_critical": "Yes" if c.is_critical else "No",
+                "qc_status": c.qc_status.value,
+            }
+            if c.qc_status in (QCStatus.accepted, QCStatus.modified):
+                components_out.append(row)
+            else:
+                excluded_out.append({**row, "reason": f"QC Status: {c.qc_status.value}"})
+
+        job_result = await db.execute(
+            select(Job).where(
+                Job.vessel_id == vessel_uuid,
+                Job.is_deleted == False,
+            )
+        )
+        for j in job_result.scalars().all():
+            row = {
+                "job_name": j.job_name,
+                "job_code": j.job_code or "",
+                "job_description": j.job_description or "",
+                "safety_precaution": j.safety_precaution or "",
+                "tools_required": j.tools_required or "",
+                "performing_rank": j.performing_rank or "",
+                "verifying_rank": j.verifying_rank or "",
+                "frequency": j.frequency or "",
+                "frequency_type": j.frequency_type.value if j.frequency_type else "",
+                "cms_id": j.cms_id or "",
+                "pdf_reference": j.pdf_reference or "",
+                "page_reference": j.page_reference or "",
+                "is_critical": "Yes" if j.is_critical else "No",
+                "qc_status": j.qc_status.value,
+                "component_linked": str(j.component_id) if j.component_id else "",
+            }
+            if j.qc_status in (QCStatus.accepted, QCStatus.modified):
+                jobs_out.append(row)
+            else:
+                excluded_out.append({**row, "reason": f"QC Status: {j.qc_status.value}"})
+
+        spare_result = await db.execute(
+            select(Spare).where(
+                Spare.vessel_id == vessel_uuid,
+                Spare.is_deleted == False,
+                Spare.is_duplicate == False,
+            )
+        )
+        for s in spare_result.scalars().all():
+            row = {
+                "part_name": s.part_name,
+                "part_number": s.part_number or "",
+                "drawing_number": s.drawing_number or "",
+                "drawing_position": s.drawing_position or "",
+                "specification": s.specification or "",
+                "spare_maker": s.spare_maker or "",
+                "spare_model": s.spare_model or "",
+                "machinery_maker": s.machinery_maker or "",
+                "machinery_model": s.machinery_model or "",
+                "pdf_reference": "",
+                "page_reference": s.page_reference or "",
+                "extraction_method": s.extraction_method.value,
+                "is_critical": "Yes" if s.is_critical else "No",
+                "qc_status": s.qc_status.value,
+                "component_linked": str(s.component_id) if s.component_id else "",
+            }
+            if s.qc_status in (QCStatus.accepted, QCStatus.modified):
+                spares_out.append(row)
+            else:
+                excluded_out.append({**row, "reason": f"QC Status: {s.qc_status.value}"})
+
+        return {
+            "components": components_out,
+            "jobs": jobs_out,
+            "spares": spares_out,
+            "excluded": excluded_out,
+        }
+
     def to_excel(
         self, serialized_data: dict[str, Any], template_schema: dict | None = None
     ) -> bytes:
@@ -188,12 +306,7 @@ class ExportService:
 
         wb = openpyxl.Workbook()
 
-        sheets = {
-            "Components": data.get("components", []),
-            "Jobs": data.get("jobs", []),
-            "Spares": data.get("spares", []),
-            "Excluded Records": data.get("excluded", []),
-        }
+        sheets = self._resolve_sheets(data, schema)
 
         first = True
         for sheet_name, rows in sheets.items():
@@ -208,11 +321,8 @@ class ExportService:
                 ws.append([f"No {sheet_name.lower()} records to export."])
                 continue
 
-            # Write headers
-            headers = list(rows[0].keys()) if rows else []
-            header_row = [
-                FIELD_MAPPINGS.get(h, h.replace("_", " ").title()) for h in headers
-            ]
+            headers = self._resolve_headers(rows, schema, sheet_name)
+            header_row = self._resolve_header_labels(headers, schema, sheet_name)
             ws.append(header_row)
 
             # Style header
@@ -278,6 +388,67 @@ class ExportService:
             if field == header_lower or display.lower().replace(" ", "_") == header_lower:
                 return field
         return None
+
+    def _resolve_sheets(self, data: dict[str, Any], schema: dict | None) -> dict[str, list[dict[str, Any]]]:
+        default = {
+            "Components": data.get("components", []),
+            "Jobs": data.get("jobs", []),
+            "Spares": data.get("spares", []),
+            "Excluded Records": data.get("excluded", []),
+        }
+        if not schema:
+            return default
+
+        resolved: dict[str, list[dict[str, Any]]] = {}
+        schema_map = schema.get("sheet_mappings", schema) if isinstance(schema, dict) else {}
+        for sheet_name in schema_map.keys():
+            normalized = sheet_name.strip().lower()
+            if "component" in normalized:
+                resolved[sheet_name] = data.get("components", [])
+            elif "job" in normalized:
+                resolved[sheet_name] = data.get("jobs", [])
+            elif "spare" in normalized:
+                resolved[sheet_name] = data.get("spares", [])
+            elif "exclude" in normalized or "reject" in normalized:
+                resolved[sheet_name] = data.get("excluded", [])
+        return resolved or default
+
+    def _resolve_headers(
+        self,
+        rows: list[dict[str, Any]],
+        schema: dict | None,
+        sheet_name: str,
+    ) -> list[str]:
+        if not rows:
+            return []
+        if not schema:
+            return list(rows[0].keys())
+
+        schema_map = schema.get("sheet_mappings", schema) if isinstance(schema, dict) else {}
+        columns = schema_map.get(sheet_name) or []
+        mapped_fields = [col.get("field_name") for col in columns if col.get("field_name")]
+        return mapped_fields or list(rows[0].keys())
+
+    def _resolve_header_labels(
+        self,
+        headers: list[str],
+        schema: dict | None,
+        sheet_name: str,
+    ) -> list[str]:
+        if not schema:
+            return [FIELD_MAPPINGS.get(h, h.replace("_", " ").title()) for h in headers]
+
+        schema_map = schema.get("sheet_mappings", schema) if isinstance(schema, dict) else {}
+        columns = schema_map.get(sheet_name) or []
+        header_by_field = {
+            col.get("field_name"): col.get("column_header")
+            for col in columns
+            if col.get("field_name")
+        }
+        return [
+            header_by_field.get(h) or FIELD_MAPPINGS.get(h, h.replace("_", " ").title())
+            for h in headers
+        ]
 
 
 export_service = ExportService()

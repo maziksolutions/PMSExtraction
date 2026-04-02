@@ -1,12 +1,13 @@
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, Download, XCircle, CheckCircle, AlertTriangle } from 'lucide-react'
+import { Play, Download, XCircle, CheckCircle, AlertTriangle, Upload } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface StandardJob {
   id: string
   class_society: string
+  job_type?: string
   machinery_type: string
   job_name: string
   job_description: string | null
@@ -23,6 +24,9 @@ interface Match {
   match_status: string
   match_score: number | null
   not_applicable_reason: string | null
+  matched_job_name?: string | null
+  matched_job_code?: string | null
+  matched_job_qc_status?: string | null
 }
 
 const MATCH_COLORS: Record<string, string> = {
@@ -41,6 +45,8 @@ const StandardJobs: React.FC = () => {
   const [naReason, setNaReason] = useState('')
   const [naMatchId, setNaMatchId] = useState<string | null>(null)
   const [showNaDialog, setShowNaDialog] = useState(false)
+  const [importJobType, setImportJobType] = useState<'standard' | 'class'>('standard')
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const { data: stdJobsData } = useQuery({
     queryKey: ['standard-jobs', filterSociety, filterMachinery],
@@ -72,6 +78,24 @@ const StandardJobs: React.FC = () => {
       apiClient
         .post(`/vessels/${vesselId}/standard-jobs/import/${standardJobId}`)
         .then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+    },
+  })
+
+  const importLibraryMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      const response = await apiClient.post(`/standard-jobs/bulk-import?job_type=${importJobType}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      return response.data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['standard-jobs'] })
+    },
   })
 
   const markNaMutation = useMutation({
@@ -99,6 +123,11 @@ const StandardJobs: React.FC = () => {
     setShowNaDialog(true)
   }
 
+  const handleLibraryImport = (file?: File | null) => {
+    if (!file) return
+    importLibraryMutation.mutate(file)
+  }
+
   const matchedCount = matches.filter((m) => m.match_status === 'matched').length
   const partialCount = matches.filter((m) => m.match_status === 'partial').length
   const notFoundCount = matches.filter((m) => m.match_status === 'not_found').length
@@ -109,17 +138,41 @@ const StandardJobs: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold text-white">Standard Jobs Comparison</h1>
           <p className="mt-1 text-sm text-slate-400">
-            Compare extracted jobs against class society standard requirements.
+            Compare vessel jobs against imported company SMS and CMS/class standard job libraries.
           </p>
         </div>
-        <button
-          onClick={() => runComparisonMutation.mutate()}
-          disabled={runComparisonMutation.isPending}
-          className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
-        >
-          <Play className="h-4 w-4" />
-          {runComparisonMutation.isPending ? 'Running...' : 'Run Comparison'}
-        </button>
+        <div className="flex items-center gap-2">
+          <select
+            value={importJobType}
+            onChange={(e) => setImportJobType(e.target.value as 'standard' | 'class')}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200"
+          >
+            <option value="standard">Company SMS Jobs</option>
+            <option value="class">CMS / Class Jobs</option>
+          </select>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+          >
+            <Upload className="h-4 w-4" />
+            {importLibraryMutation.isPending ? 'Importing...' : 'Import Library'}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.csv"
+            className="hidden"
+            onChange={(e) => handleLibraryImport(e.target.files?.[0])}
+          />
+          <button
+            onClick={() => runComparisonMutation.mutate()}
+            disabled={runComparisonMutation.isPending}
+            className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+          >
+            <Play className="h-4 w-4" />
+            {runComparisonMutation.isPending ? 'Running...' : 'Run Comparison'}
+          </button>
+        </div>
       </div>
 
       {/* Summary stats */}
@@ -174,6 +227,7 @@ const StandardJobs: React.FC = () => {
               <th className="px-4 py-3">Frequency</th>
               <th className="px-4 py-3">Critical</th>
               <th className="px-4 py-3">Match Status</th>
+              <th className="px-4 py-3">Matched Vessel Job</th>
               <th className="px-4 py-3">Score</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
@@ -181,8 +235,8 @@ const StandardJobs: React.FC = () => {
           <tbody className="divide-y divide-slate-800">
             {stdJobs.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-12 text-center text-slate-500">
-                  No standard jobs found. Run comparison to match against extracted jobs.
+                <td colSpan={9} className="py-12 text-center text-slate-500">
+                  No standard jobs library found yet. Import company SMS or CMS/class jobs first.
                 </td>
               </tr>
             ) : (
@@ -213,14 +267,27 @@ const StandardJobs: React.FC = () => {
                       )}
                     </td>
                     <td className="px-4 py-2.5">
-                      {match ? (
+                      <div className="flex flex-col gap-1">
                         <span
-                          className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                            MATCH_COLORS[match.match_status] ?? 'bg-slate-700 text-slate-300'
+                          className={`w-fit rounded-full px-2 py-0.5 text-xs font-medium ${
+                            MATCH_COLORS[match?.match_status ?? ''] ?? 'bg-slate-700 text-slate-300'
                           }`}
                         >
-                          {match.match_status.replace('_', ' ')}
+                          {match ? match.match_status.replace('_', ' ') : 'Not compared'}
                         </span>
+                        <span className="text-xs text-slate-500">
+                          {job.job_type === 'class' ? 'CMS / Class' : 'Company SMS'}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {match ? (
+                        <div className="min-w-[190px]">
+                          <p className="text-slate-200">{match.matched_job_name ?? 'No vessel job linked'}</p>
+                          <p className="text-xs text-slate-500">
+                            {[match.matched_job_code, match.matched_job_qc_status].filter(Boolean).join(' • ') || '—'}
+                          </p>
+                        </div>
                       ) : (
                         <span className="text-slate-600 text-xs">Not compared</span>
                       )}
@@ -230,11 +297,11 @@ const StandardJobs: React.FC = () => {
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1">
-                        {match && match.match_status === 'not_found' && (
+                        {match && (match.match_status === 'not_found' || match.match_status === 'partial') && (
                           <button
                             onClick={() => importJobMutation.mutate(job.id)}
                             className="rounded bg-sky-700 px-2 py-1 text-xs text-white hover:bg-sky-600"
-                            title="Import this standard job"
+                            title="Add this standard job into vessel jobs for review"
                           >
                             <Download className="h-3 w-3" />
                           </button>

@@ -104,6 +104,17 @@ async def trigger_export(
 ) -> dict[str, Any]:
     """Generate an export for a vessel. Checks pre-export conditions."""
     vessel = await _get_vessel_or_404(vessel_id, db)
+    schema_result = await db.execute(
+        select(ExportSchema)
+        .where(
+            ExportSchema.tenant_id == current_user.tenant_id,
+            ExportSchema.is_deleted == False,
+            ExportSchema.is_active == True,
+        )
+        .order_by(ExportSchema.created_at.desc())
+        .limit(1)
+    )
+    export_schema = schema_result.scalar_one_or_none()
 
     # Pre-export check: count pending records
     pending_components = await db.scalar(
@@ -145,39 +156,27 @@ async def trigger_export(
         )
     ) or 0
 
-    # Get component/job/spare counts
-    comp_count = await db.scalar(
-        select(func.count()).select_from(Component).where(
-            Component.vessel_id == vessel_id,
-            Component.qc_status == QCStatus.accepted,
-            Component.is_deleted == False,
-        )
-    ) or 0
-    job_count = await db.scalar(
-        select(func.count()).select_from(Job).where(
-            Job.vessel_id == vessel_id,
-            Job.qc_status == QCStatus.accepted,
-            Job.is_deleted == False,
-        )
-    ) or 0
-    spare_count = await db.scalar(
-        select(func.count()).select_from(Spare).where(
-            Spare.vessel_id == vessel_id,
-            Spare.qc_status == QCStatus.accepted,
-            Spare.is_deleted == False,
-        )
-    ) or 0
+    serialized = await export_service.serialize_async(
+        db,
+        vessel_id,
+        export_schema.sheet_mappings if export_schema else None,
+    )
+    comp_count = len(serialized["components"])
+    job_count = len(serialized["jobs"])
+    spare_count = len(serialized["spares"])
+    excluded_count = len(serialized["excluded"])
 
     export_version = ExportVersion(
         tenant_id=current_user.tenant_id,
         vessel_id=vessel_id,
+        export_schema_id=export_schema.id if export_schema else None,
         version_number=last_version + 1,
         generated_by=current_user.id,
         row_counts={
             "components": comp_count,
             "jobs": job_count,
             "spares": spare_count,
-            "excluded": total_pending,
+            "excluded": excluded_count,
         },
         status=ExportVersionStatus.generating,
     )
@@ -185,7 +184,6 @@ async def trigger_export(
     await db.commit()
     await db.refresh(export_version)
 
-    # Generate Excel asynchronously (mock for now)
     export_version.status = ExportVersionStatus.ready
     export_version.blob_storage_key = (
         f"{current_user.tenant_id}/{vessel_id}/exports/v{last_version + 1}.xlsx"
@@ -251,14 +249,25 @@ async def download_export(
     if export_v is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export not found")
 
-    # Generate Excel bytes with mock data
-    serialized = {
-        "components": [],
-        "jobs": [],
-        "spares": [],
-        "excluded": [],
-    }
-    excel_bytes = export_service.to_excel(serialized)
+    schema = None
+    if export_v.export_schema_id:
+        schema_result = await db.execute(
+            select(ExportSchema).where(
+                ExportSchema.id == export_v.export_schema_id,
+                ExportSchema.is_deleted == False,
+            )
+        )
+        schema = schema_result.scalar_one_or_none()
+
+    serialized = await export_service.serialize_async(
+        db,
+        vessel_id,
+        schema.sheet_mappings if schema else None,
+    )
+    excel_bytes = export_service.to_excel(
+        serialized,
+        schema.sheet_mappings if schema else None,
+    )
 
     filename = f"vessel_pms_export_v{export_v.version_number}.xlsx"
     return Response(

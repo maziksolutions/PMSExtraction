@@ -1,7 +1,7 @@
 import React, { useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Download, Upload, CheckCircle, XCircle, AlertTriangle, FileText } from 'lucide-react'
+import { Download, Upload, CheckCircle, AlertTriangle, FileText } from 'lucide-react'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
 import { UserRole } from '@/types'
@@ -33,8 +33,7 @@ const Export: React.FC = () => {
   })
 
   const triggerExportMutation = useMutation({
-    mutationFn: () =>
-      apiClient.post(`/vessels/${vesselId}/exports`).then((r) => r.data),
+    mutationFn: () => apiClient.post(`/vessels/${vesselId}/exports`).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['exports', vesselId] })
     },
@@ -61,10 +60,9 @@ const Export: React.FC = () => {
   }
 
   const handleDownload = async (exportId: string, version: number) => {
-    const res = await apiClient.get(
-      `/vessels/${vesselId}/exports/${exportId}/download`,
-      { responseType: 'blob' }
-    )
+    const res = await apiClient.get(`/vessels/${vesselId}/exports/${exportId}/download`, {
+      responseType: 'blob',
+    })
     const url = URL.createObjectURL(res.data)
     const a = document.createElement('a')
     a.href = url
@@ -85,23 +83,24 @@ const Export: React.FC = () => {
         <p className="mt-1 text-sm text-slate-400">Generate and download vessel PMS data exports.</p>
       </div>
 
-      {/* Pre-export Checklist */}
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
         <h2 className="mb-4 text-base font-semibold text-white">Pre-Export Checklist</h2>
         <div className="space-y-2.5">
           <div className="flex items-center gap-3">
-            <CheckCircle className="h-4 w-4 text-green-400 shrink-0" />
-            <span className="text-sm text-slate-300">Export schema configured</span>
+            <CheckCircle className="h-4 w-4 shrink-0 text-green-400" />
+            <span className="text-sm text-slate-300">
+              {hasSchema ? 'Custom export template configured' : 'Default export template available'}
+            </span>
             {!hasSchema && (
-              <span className="text-xs text-amber-400">(No schema — upload one below)</span>
+              <span className="text-xs text-slate-500">(optional custom template not uploaded)</span>
             )}
           </div>
           <div className="flex items-center gap-3">
-            <CheckCircle className="h-4 w-4 text-green-400 shrink-0" />
+            <CheckCircle className="h-4 w-4 shrink-0 text-green-400" />
             <span className="text-sm text-slate-300">At least 1 accepted record of each type</span>
           </div>
           <div className="flex items-center gap-3">
-            <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
             <span className="text-sm text-slate-300">Zero pending records required</span>
             {isSuperAdmin && (
               <button className="text-xs text-sky-400 underline hover:text-sky-300">
@@ -112,22 +111,20 @@ const Export: React.FC = () => {
         </div>
       </div>
 
-      {/* Template Setup */}
       {!hasSchema && (
         <div className="rounded-xl border border-amber-800 bg-amber-900/10 p-5">
-          <div className="flex items-center gap-2 mb-3">
+          <div className="mb-3 flex items-center gap-2">
             <AlertTriangle className="h-5 w-5 text-amber-400" />
-            <h2 className="text-base font-semibold text-amber-300">
-              No Export Template Configured
-            </h2>
+            <h2 className="text-base font-semibold text-amber-300">Optional Custom Export Template</h2>
           </div>
           <p className="mb-4 text-sm text-amber-200/70">
-            Upload an Excel template to define the column structure for your export.
+            Exports already work with the built-in format. Upload an Excel template only if you need a company-specific column layout.
           </p>
-          <label className="flex cursor-pointer items-center gap-2 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 w-fit">
+          <label className="flex w-fit cursor-pointer items-center gap-2 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600">
             <Upload className="h-4 w-4" />
-            Upload Excel Template
+            Upload Custom Template
             <input
+              ref={fileInputRef}
               type="file"
               accept=".xlsx,.xls"
               className="hidden"
@@ -137,7 +134,6 @@ const Export: React.FC = () => {
         </div>
       )}
 
-      {/* Generate Export */}
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
         <div className="flex items-center justify-between">
           <div>
@@ -162,7 +158,6 @@ const Export: React.FC = () => {
         )}
       </div>
 
-      {/* Export History */}
       <div className="rounded-xl border border-slate-800 bg-slate-900">
         <div className="border-b border-slate-800 px-5 py-4">
           <h2 className="text-base font-semibold text-white">Export History</h2>
@@ -172,7 +167,7 @@ const Export: React.FC = () => {
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-800 text-left text-xs text-slate-500 uppercase">
+              <tr className="border-b border-slate-800 text-left text-xs uppercase text-slate-500">
                 <th className="px-5 py-3">Version</th>
                 <th className="px-5 py-3">Date</th>
                 <th className="px-5 py-3">Status</th>
@@ -186,15 +181,17 @@ const Export: React.FC = () => {
               {versions.map((v) => (
                 <tr key={v.id} className="hover:bg-slate-800/50">
                   <td className="px-5 py-3 font-mono text-slate-300">v{v.version_number}</td>
-                  <td className="px-5 py-3 text-slate-400">{v.created_at?.slice(0, 16).replace('T', ' ')}</td>
+                  <td className="px-5 py-3 text-slate-400">
+                    {v.created_at?.slice(0, 16).replace('T', ' ')}
+                  </td>
                   <td className="px-5 py-3">
                     <span
                       className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
                         v.status === 'ready'
                           ? 'bg-green-700 text-green-100'
                           : v.status === 'generating'
-                          ? 'bg-blue-700 text-blue-100'
-                          : 'bg-red-700 text-red-100'
+                            ? 'bg-blue-700 text-blue-100'
+                            : 'bg-red-700 text-red-100'
                       }`}
                     >
                       {v.status}

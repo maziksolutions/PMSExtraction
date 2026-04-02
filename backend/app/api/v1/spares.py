@@ -15,6 +15,11 @@ from app.models.spare import ExtractionMethod, Spare
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.spare import SpareCreate, SpareOut, SpareUpdate
+from app.services.review_workflow import (
+    broadcast_activity,
+    log_activity,
+    sync_spares_to_global_library,
+)
 
 router = APIRouter()
 
@@ -143,8 +148,28 @@ async def create_spare(
         **body.model_dump(),
     )
     db.add(spare)
+    await db.flush()
+    activity = await log_activity(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        action_type="spare.created",
+        entity_type="spare",
+        entity_id=spare.id,
+        description=f"Created spare '{spare.part_name}'.",
+        metadata={"component_id": str(spare.component_id) if spare.component_id else None},
+    )
+    if spare.qc_status == QCStatus.accepted:
+        await sync_spares_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            spares=[spare],
+        )
     await db.commit()
     await db.refresh(spare)
+    await broadcast_activity(activity)
     return SpareOut.model_validate(spare)
 
 
@@ -167,6 +192,7 @@ async def update_spare(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spare not found")
 
     original = {"part_name": spare.part_name, "qc_status": spare.qc_status.value}
+    original_qc_status = spare.qc_status
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(spare, field, value)
@@ -184,8 +210,32 @@ async def update_spare(
         )
         db.add(feedback)
 
+    activity = None
+    if update_data:
+        activity = await log_activity(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            user_id=current_user.id,
+            action_type="spare.corrected" if spare.source_manual_id else "spare.modified",
+            entity_type="spare",
+            entity_id=spare.id,
+            description=f"Updated spare '{spare.part_name}'.",
+            metadata={"fields": sorted(update_data.keys())},
+        )
+    if spare.qc_status == QCStatus.accepted and (
+        original_qc_status != QCStatus.accepted or update_data
+    ):
+        await sync_spares_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            spares=[spare],
+        )
     await db.commit()
     await db.refresh(spare)
+    if activity:
+        await broadcast_activity(activity)
     return SpareOut.model_validate(spare)
 
 
@@ -216,10 +266,32 @@ async def bulk_accept_spares(
     ids = [uuid.UUID(i) for i in body.get("ids", [])]
     result = await db.execute(select(Spare).where(Spare.id.in_(ids), Spare.vessel_id == vessel_id))
     spares = result.scalars().all()
+    activities = []
     for spare in spares:
         spare.qc_status = QCStatus.accepted
         db.add(spare)
+        activities.append(
+            await log_activity(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                user_id=current_user.id,
+                action_type="spare.accepted",
+                entity_type="spare",
+                entity_id=spare.id,
+                description=f"Accepted spare '{spare.part_name}'.",
+            )
+        )
+    if spares:
+        await sync_spares_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            spares=spares,
+        )
     await db.commit()
+    for activity in activities:
+        await broadcast_activity(activity)
     return {"accepted": len(spares)}
 
 
@@ -233,10 +305,25 @@ async def bulk_reject_spares(
     ids = [uuid.UUID(i) for i in body.get("ids", [])]
     result = await db.execute(select(Spare).where(Spare.id.in_(ids), Spare.vessel_id == vessel_id))
     spares = result.scalars().all()
+    activities = []
     for spare in spares:
         spare.qc_status = QCStatus.rejected
         db.add(spare)
+        activities.append(
+            await log_activity(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                user_id=current_user.id,
+                action_type="spare.rejected",
+                entity_type="spare",
+                entity_id=spare.id,
+                description=f"Rejected spare '{spare.part_name}'.",
+            )
+        )
     await db.commit()
+    for activity in activities:
+        await broadcast_activity(activity)
     return {"rejected": len(spares)}
 
 
@@ -286,8 +373,20 @@ async def reassign_component(
 
     spare.component_id = uuid.UUID(body["component_id"])
     db.add(spare)
+    activity = await log_activity(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        action_type="spare.mapped",
+        entity_type="spare",
+        entity_id=spare.id,
+        description=f"Linked spare '{spare.part_name}' to a vessel component.",
+        metadata={"component_id": body["component_id"]},
+    )
     await db.commit()
     await db.refresh(spare)
+    await broadcast_activity(activity)
     return SpareOut.model_validate(spare)
 
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
+import apiClient from '@/api/client'
 
 export interface PresenceUser {
   user_id: string
@@ -42,6 +43,20 @@ export function useVesselSocket(vesselId: string | undefined): UseVesselSocketRe
   useEffect(() => {
     if (!vesselId || !token) return
 
+    let cancelled = false
+    apiClient
+      .get(`/vessels/${vesselId}/activity`, { params: { limit: 100 } })
+      .then((response) => {
+        if (cancelled) return
+        const items = Array.isArray(response.data?.items) ? response.data.items : []
+        setActivityFeed(items)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setActivityFeed((prev) => prev)
+        }
+      })
+
     const url = `${WS_BASE}/api/v1/ws/${vesselId}?token=${token}`
     const ws = new WebSocket(url)
     wsRef.current = ws
@@ -59,7 +74,10 @@ export function useVesselSocket(vesselId: string | undefined): UseVesselSocketRe
         if (msg.type === 'presence_update') {
           setPresenceList(msg.users ?? [])
         } else if (msg.type === 'activity') {
-          setActivityFeed((prev) => [msg.event, ...prev].slice(0, 100))
+          setActivityFeed((prev) => {
+            const next = [msg.event, ...prev.filter((item) => item.id !== msg.event?.id)]
+            return next.slice(0, 100)
+          })
         }
       } catch {
         // ignore parse errors
@@ -78,6 +96,7 @@ export function useVesselSocket(vesselId: string | undefined): UseVesselSocketRe
     }
 
     return () => {
+      cancelled = true
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current)
       }
