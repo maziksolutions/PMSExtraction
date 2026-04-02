@@ -1081,7 +1081,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         extraction_types = [entity_type for entity_type, pages in entity_pages.items() if pages]
 
         if not extraction_types:
-            logger.info(
+            logger.warning(
                 "auto_extract_from_manual: skipping manual %s because no screened extraction pages are set",
                 filename,
             )
@@ -1098,7 +1098,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             selected_pages = entity_pages[entity_type]
             filtered_text = _filter_text_to_pages(full_text, selected_pages)
             type_to_text[entity_type] = filtered_text
-            logger.info(
+            logger.warning(
                 "auto_extract_from_manual: %s using %s screened pages=%s chars=%d",
                 filename,
                 entity_type,
@@ -1331,7 +1331,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
 
         await db.commit()
 
-        logger.info(
+        logger.warning(
             "auto_extract_from_manual: manual=%s → %d components, %d jobs, %d spares",
             manual_id_str,
             len(components_to_add),
@@ -1353,7 +1353,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 tenant_id=tenant_id,
             )
             await db.commit()
-            logger.info(
+            logger.warning(
                 "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d",
                 vessel_id_str,
                 component_ref_updates,

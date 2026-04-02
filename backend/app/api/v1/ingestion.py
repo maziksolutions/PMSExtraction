@@ -793,10 +793,20 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
     from app.api.v1.extraction import get_extraction_state, set_extraction_state
     from app.services.extractor import auto_extract_from_manual
 
+    logger.warning(
+        "_run_extract_selected_task: starting vessel=%s manuals=%s",
+        vessel_id_str,
+        manual_ids,
+    )
     set_extraction_state(vessel_id_str, total=len(manual_ids), done=0, status="running")
     try:
         for manual_id in manual_ids:
             try:
+                logger.warning(
+                    "_run_extract_selected_task: extracting manual_id=%s vessel=%s",
+                    manual_id,
+                    vessel_id_str,
+                )
                 await auto_extract_from_manual(manual_id)
             except Exception as exc:
                 logger.error("_run_extract_selected_task: extraction failed for manual %s: %s", manual_id, exc)
@@ -813,6 +823,12 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
             total=state.get("total", len(manual_ids)),
             done=state.get("done", len(manual_ids)),
             status="completed",
+        )
+        logger.warning(
+            "_run_extract_selected_task: completed vessel=%s total=%s done=%s",
+            vessel_id_str,
+            state.get("total", len(manual_ids)),
+            state.get("done", len(manual_ids)),
         )
     except Exception as exc:
         logger.error("_run_extract_selected_task: task failed: %s", exc)
@@ -843,12 +859,41 @@ async def extract_selected_manuals(
     if not manual_ids:
         return {"started": False, "message": "No manual_ids provided.", "total": 0}
 
+    selected_manual_ids = {uuid.UUID(manual_id) for manual_id in manual_ids}
+    result = await db.execute(
+        select(Manual).where(
+            Manual.id.in_(selected_manual_ids),
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manuals = result.scalars().all()
+    manual_page_signals = {
+        str(manual.id): any(
+            [
+                manual.pages_with_components_physical or manual.pages_with_components,
+                manual.pages_with_jobs_physical or manual.pages_with_jobs,
+                manual.pages_with_spares_physical or manual.pages_with_spares,
+            ]
+        )
+        for manual in manuals
+    }
+    runnable_manual_ids = [manual_id for manual_id in manual_ids if manual_page_signals.get(manual_id)]
+
+    if not runnable_manual_ids:
+        return {
+            "started": False,
+            "total": 0,
+            "message": "Selected manuals have no saved component/job/spare page refs. Save the screening refs first, then extract.",
+        }
+
     vessel_id_str = str(vessel_id)
     from app.api.v1.extraction import set_extraction_state
 
-    set_extraction_state(vessel_id_str, total=len(manual_ids), done=0, status="running")
-    background_tasks.add_task(_run_extract_selected_task, vessel_id_str, manual_ids)
-    return {"started": True, "total": len(manual_ids)}
+    set_extraction_state(vessel_id_str, total=len(runnable_manual_ids), done=0, status="running")
+    background_tasks.add_task(_run_extract_selected_task, vessel_id_str, runnable_manual_ids)
+    return {"started": True, "total": len(runnable_manual_ids)}
 
 
 @router.get(
