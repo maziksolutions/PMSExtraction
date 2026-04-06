@@ -16,10 +16,17 @@ from app.models.job import FrequencyType, Job
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.job import JobCreate, JobOut, JobUpdate
+from app.models.component import Component
 from app.services.review_workflow import (
     broadcast_activity,
     log_activity,
     sync_jobs_to_global_library,
+)
+from app.services.job_naming import (
+    append_source_references_to_description,
+    build_canonical_job_name,
+    split_reference_entries,
+    summarize_reference_entries,
 )
 
 router = APIRouter()
@@ -73,6 +80,34 @@ def _job_out_payload(job: Job) -> dict[str, Any]:
 
 def _job_out(job: Job) -> JobOut:
     return JobOut.model_validate(_job_out_payload(job))
+
+
+async def _component_name_for_job(db: AsyncSession, component_id: uuid.UUID | None) -> str | None:
+    if not component_id:
+        return None
+    result = await db.execute(select(Component).where(Component.id == component_id, Component.is_deleted == False))
+    component = result.scalar_one_or_none()
+    return component.component_name if component else None
+
+
+async def _apply_job_name_and_references(db: AsyncSession, job: Job) -> None:
+    component_name = await _component_name_for_job(db, job.component_id)
+    reference_entries = split_reference_entries(
+        pdf_reference=job.pdf_reference,
+        page_reference=job.page_reference,
+        source_reference=job.source_reference,
+    )
+    job.job_name = build_canonical_job_name(
+        component_name=component_name,
+        job_names=[job.job_name],
+        job_descriptions=[job.job_description],
+    )
+    pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
+    job.pdf_reference = pdf_reference
+    job.page_reference = primary_page
+    job.source_reference = source_reference
+    job.job_description = append_source_references_to_description(job.job_description, reference_entries)
+    db.add(job)
 
 
 async def _run_job_side_effects(
@@ -264,6 +299,8 @@ async def create_job(
     )
     db.add(job)
     await db.commit()
+    await _apply_job_name_and_references(db, job)
+    await db.commit()
     await db.refresh(job)
     await _run_job_side_effects(
         db,
@@ -321,6 +358,8 @@ async def update_job(
         )
         db.add(feedback)
 
+    await db.commit()
+    await _apply_job_name_and_references(db, job)
     await db.commit()
     await db.refresh(job)
     await _run_job_side_effects(
@@ -487,6 +526,8 @@ async def link_component(
     job.is_unmapped = False
     db.add(job)
     await db.commit()
+    await _apply_job_name_and_references(db, job)
+    await db.commit()
     await db.refresh(job)
     await _run_job_side_effects(
         db,
@@ -550,9 +591,18 @@ async def merge_jobs(
         )
 
     merged_ids: list[str] = []
+    merged_names: list[str | None] = [target.job_name]
+    merged_descriptions: list[str | None] = [target.job_description]
+    reference_entries = split_reference_entries(
+        pdf_reference=target.pdf_reference,
+        page_reference=target.page_reference,
+        source_reference=target.source_reference,
+    )
     for job in jobs:
         if job.id == target.id:
             continue
+        merged_names.append(job.job_name)
+        merged_descriptions.append(job.job_description)
         target.job_description = _merge_text_values(target.job_description, job.job_description)
         target.safety_precaution = _merge_text_values(target.safety_precaution, job.safety_precaution)
         target.tools_required = _merge_text_values(target.tools_required, job.tools_required)
@@ -574,18 +624,29 @@ async def merge_jobs(
         target.is_critical = bool(target.is_critical or job.is_critical)
         if (job.confidence_score or 0) > (target.confidence_score or 0):
             target.confidence_score = job.confidence_score
-        if not target.pdf_reference and job.pdf_reference:
-            target.pdf_reference = job.pdf_reference
-        if not target.source_reference and job.source_reference:
-            target.source_reference = job.source_reference
+        reference_entries.extend(
+            split_reference_entries(
+                pdf_reference=job.pdf_reference,
+                page_reference=job.page_reference,
+                source_reference=job.source_reference,
+            )
+        )
         if not target.source_manual_id and job.source_manual_id:
             target.source_manual_id = job.source_manual_id
-        if target.page_reference is None and job.page_reference is not None:
-            target.page_reference = job.page_reference
         job.is_deleted = True
         db.add(job)
         merged_ids.append(str(job.id))
 
+    target.job_name = build_canonical_job_name(
+        component_name=await _component_name_for_job(db, target.component_id),
+        job_names=merged_names,
+        job_descriptions=merged_descriptions,
+    )
+    pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
+    target.pdf_reference = pdf_reference
+    target.page_reference = primary_page
+    target.source_reference = source_reference
+    target.job_description = append_source_references_to_description(target.job_description, reference_entries)
     target.qc_status = QCStatus.modified if target.qc_status == QCStatus.accepted else target.qc_status
     db.add(target)
     await db.commit()

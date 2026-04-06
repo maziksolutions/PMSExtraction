@@ -14,6 +14,12 @@ from typing import Any, Optional
 import anthropic
 
 from app.core.config import settings
+from app.services.job_naming import (
+    append_source_references_to_description,
+    build_canonical_job_name,
+    split_reference_entries,
+    summarize_reference_entries,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -924,6 +930,16 @@ async def _consolidate_jobs_for_manual(
         ).order_by(Job.created_at, Job.job_name)
     )
     jobs = list(result.scalars().all())
+    component_ids = {job.component_id for job in jobs if getattr(job, "component_id", None)}
+    component_names: dict[uuid.UUID, str] = {}
+    if component_ids:
+        from app.models.component import Component
+
+        component_result = await db.execute(select(Component).where(Component.id.in_(component_ids)))
+        component_names = {
+            component.id: component.component_name
+            for component in component_result.scalars().all()
+        }
     merged_count = 0
 
     for idx, target in enumerate(jobs):
@@ -935,7 +951,18 @@ async def _consolidate_jobs_for_manual(
             if not _jobs_are_mergeable(target, candidate):
                 continue
 
-            target.job_name = target.job_name if len(target.job_name) >= len(candidate.job_name) else candidate.job_name
+            reference_entries = split_reference_entries(
+                pdf_reference=target.pdf_reference,
+                page_reference=target.page_reference,
+                source_reference=target.source_reference,
+            )
+            reference_entries.extend(
+                split_reference_entries(
+                    pdf_reference=candidate.pdf_reference,
+                    page_reference=candidate.page_reference,
+                    source_reference=candidate.source_reference,
+                )
+            )
             target.job_description = _combine_unique_text_parts(target.job_description, candidate.job_description)
             target.safety_precaution = _combine_unique_text_parts(target.safety_precaution, candidate.safety_precaution)
             target.tools_required = _combine_unique_text_parts(target.tools_required, candidate.tools_required)
@@ -952,8 +979,16 @@ async def _consolidate_jobs_for_manual(
                 int(target.confidence_score or 0),
                 int(candidate.confidence_score or 0),
             ) or None
-            target.source_reference = _merge_reference_values(target.source_reference, candidate.source_reference)
-            target.pdf_reference = _merge_reference_values(target.pdf_reference, candidate.pdf_reference)
+            target.job_name = build_canonical_job_name(
+                component_name=component_names.get(getattr(target, "component_id", None)),
+                job_names=[target.job_name, candidate.job_name],
+                job_descriptions=[target.job_description, candidate.job_description],
+            )
+            pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
+            target.pdf_reference = pdf_reference
+            target.page_reference = primary_page
+            target.source_reference = source_reference
+            target.job_description = append_source_references_to_description(target.job_description, reference_entries)
             db.add(target)
 
             candidate.is_deleted = True
@@ -1180,6 +1215,18 @@ async def _link_records_to_components(
             )
             if job.source_reference != source_ref:
                 job.source_reference = source_ref
+                changed = True
+            canonical_name = build_canonical_job_name(
+                component_name=getattr(match, "component_name", None),
+                job_names=[job.job_name],
+                job_descriptions=[job.job_description],
+            )
+            if job.job_name != canonical_name:
+                job.job_name = canonical_name
+                changed = True
+            description_with_refs = append_source_references_to_description(job.job_description, [source_ref])
+            if job.job_description != description_with_refs:
+                job.job_description = description_with_refs
                 changed = True
             if changed:
                 db.add(job)
@@ -1701,6 +1748,14 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                             f"{filename} (p.{int(source_page)})"
                             if source_page is not None
                             else filename
+                        ),
+                    )
+                    job.job_description = append_source_references_to_description(
+                        job.job_description,
+                        split_reference_entries(
+                            pdf_reference=job.pdf_reference,
+                            page_reference=job.page_reference,
+                            source_reference=job.source_reference,
                         ),
                     )
                     jobs_to_add.append(job)

@@ -56,6 +56,10 @@ class JobCreate(BaseModel):
     is_critical: bool = False
     component_id: Optional[uuid.UUID] = None
     qc_status: Optional[QCStatus] = None
+    page_reference: Optional[int] = None
+    pdf_reference: Optional[str] = None
+    source_reference: Optional[str] = None
+    source_manual_id: Optional[uuid.UUID] = None
 
 
 class JobUpdate(BaseModel):
@@ -74,3 +78,6 @@ class JobUpdate(BaseModel):
     is_critical: Optional[bool] = None
     qc_status: Optional[QCStatus] = None
     component_id: Optional[uuid.UUID] = None
+    page_reference: Optional[int] = None
+    pdf_reference: Optional[str] = None
+    source_reference: Optional[str] = None

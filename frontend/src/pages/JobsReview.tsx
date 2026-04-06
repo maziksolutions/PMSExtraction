@@ -267,6 +267,10 @@ function JobEditor({
             cms_id: form.cms_id || null,
             is_critical: form.is_critical,
             qc_status: form.qc_status,
+            page_reference: initial?.page_reference ?? null,
+            pdf_reference: initial?.pdf_reference ?? null,
+            source_reference: initial?.source_reference ?? null,
+            source_manual_id: initial?.source_manual_id ?? null,
           })}
           disabled={!form.job_name || isPending}
           className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
