@@ -34,6 +34,62 @@ async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselPr
     return vessel
 
 
+async def _get_or_create_export_schema(
+    vessel: VesselProject,
+    current_user: User,
+    db: AsyncSession,
+) -> ExportSchema:
+    if vessel.export_schema_id:
+        vessel_schema_result = await db.execute(
+            select(ExportSchema).where(
+                ExportSchema.id == vessel.export_schema_id,
+                ExportSchema.tenant_id == current_user.tenant_id,
+                ExportSchema.is_deleted == False,
+                ExportSchema.is_active == True,
+            )
+        )
+        vessel_schema = vessel_schema_result.scalar_one_or_none()
+        if vessel_schema is not None:
+            return vessel_schema
+
+    schema_result = await db.execute(
+        select(ExportSchema)
+        .where(
+            ExportSchema.tenant_id == current_user.tenant_id,
+            ExportSchema.is_deleted == False,
+            ExportSchema.is_active == True,
+        )
+        .order_by(ExportSchema.created_at.desc())
+        .limit(1)
+    )
+    export_schema = schema_result.scalar_one_or_none()
+    if export_schema is not None:
+        if vessel.export_schema_id != export_schema.id:
+            vessel.export_schema_id = export_schema.id
+            db.add(vessel)
+            await db.commit()
+            await db.refresh(vessel)
+        return export_schema
+
+    export_schema = ExportSchema(
+        tenant_id=current_user.tenant_id,
+        name="Default Export Schema",
+        version=1,
+        sheet_mappings=None,
+        uploaded_by=current_user.id,
+        is_active=True,
+    )
+    db.add(export_schema)
+    await db.flush()
+
+    vessel.export_schema_id = export_schema.id
+    db.add(vessel)
+    await db.commit()
+    await db.refresh(export_schema)
+    await db.refresh(vessel)
+    return export_schema
+
+
 @router.post("/export-schemas", response_model=ExportSchemaOut, status_code=status.HTTP_201_CREATED)
 async def create_export_schema(
     file: UploadFile = File(...),
@@ -104,17 +160,7 @@ async def trigger_export(
 ) -> dict[str, Any]:
     """Generate an export for a vessel. Checks pre-export conditions."""
     vessel = await _get_vessel_or_404(vessel_id, db)
-    schema_result = await db.execute(
-        select(ExportSchema)
-        .where(
-            ExportSchema.tenant_id == current_user.tenant_id,
-            ExportSchema.is_deleted == False,
-            ExportSchema.is_active == True,
-        )
-        .order_by(ExportSchema.created_at.desc())
-        .limit(1)
-    )
-    export_schema = schema_result.scalar_one_or_none()
+    export_schema = await _get_or_create_export_schema(vessel, current_user, db)
 
     # Pre-export check: count pending records
     pending_components = await db.scalar(
@@ -166,11 +212,15 @@ async def trigger_export(
     spare_count = len(serialized["spares"])
     excluded_count = len(serialized["excluded"])
 
+    blob_storage_key = (
+        f"{current_user.tenant_id}/{vessel_id}/exports/v{last_version + 1}.xlsx"
+    )
     export_version = ExportVersion(
         tenant_id=current_user.tenant_id,
         vessel_id=vessel_id,
-        export_schema_id=export_schema.id if export_schema else None,
+        export_schema_id=export_schema.id,
         version_number=last_version + 1,
+        blob_storage_key=blob_storage_key,
         generated_by=current_user.id,
         row_counts={
             "components": comp_count,
@@ -178,18 +228,11 @@ async def trigger_export(
             "spares": spare_count,
             "excluded": excluded_count,
         },
-        status=ExportVersionStatus.generating,
+        status=ExportVersionStatus.ready,
     )
     db.add(export_version)
     await db.commit()
     await db.refresh(export_version)
-
-    export_version.status = ExportVersionStatus.ready
-    export_version.blob_storage_key = (
-        f"{current_user.tenant_id}/{vessel_id}/exports/v{last_version + 1}.xlsx"
-    )
-    db.add(export_version)
-    await db.commit()
 
     # Purge old versions (keep 10)
     old_versions = await db.execute(
