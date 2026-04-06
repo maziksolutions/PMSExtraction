@@ -24,6 +24,8 @@ interface Spare {
   drawing_number: string | null
   drawing_position: string | null
   specification: string | null
+  spare_assembly?: string | null
+  assembly_description?: string | null
   spare_maker: string | null
   spare_model?: string | null
   component_id: string | null
@@ -48,6 +50,8 @@ type InlineSpareEdit = Partial<{
   drawing_number: string
   drawing_position: string
   specification: string
+  spare_assembly: string
+  assembly_description: string
   spare_maker: string
   spare_model: string
   component_id: string
@@ -57,6 +61,8 @@ type InlineSpareEdit = Partial<{
 
 type BatchSpareFields = {
   component_id?: string
+  spare_assembly?: string
+  assembly_description?: string
   spare_maker?: string
   spare_model?: string
   qc_status?: string
@@ -77,6 +83,8 @@ function buildSparePayload(edit: InlineSpareEdit | BatchSpareFields): Record<str
   if ('drawing_number' in edit) payload.drawing_number = edit.drawing_number ? edit.drawing_number : null
   if ('drawing_position' in edit) payload.drawing_position = edit.drawing_position ? edit.drawing_position : null
   if ('specification' in edit) payload.specification = edit.specification ? edit.specification : null
+  if ('spare_assembly' in edit) payload.spare_assembly = edit.spare_assembly ? edit.spare_assembly : null
+  if ('assembly_description' in edit) payload.assembly_description = edit.assembly_description ? edit.assembly_description : null
   if ('spare_maker' in edit) payload.spare_maker = edit.spare_maker ? edit.spare_maker : null
   if ('spare_model' in edit) payload.spare_model = edit.spare_model ? edit.spare_model : null
   if ('component_id' in edit) payload.component_id = edit.component_id ? edit.component_id : null
@@ -108,6 +116,8 @@ function SpareEditorModal({ title, submitLabel, isPending, components, initialVa
     drawing_number: initialValues?.drawing_number ?? '',
     drawing_position: initialValues?.drawing_position ?? '',
     specification: initialValues?.specification ?? '',
+    spare_assembly: initialValues?.spare_assembly ?? initialValues?.spare_model ?? '',
+    assembly_description: initialValues?.assembly_description ?? initialValues?.spare_assembly ?? initialValues?.spare_model ?? '',
     spare_maker: initialValues?.spare_maker ?? '',
     spare_model: initialValues?.spare_model ?? '',
     component_id: initialValues?.component_id ?? '',
@@ -124,6 +134,8 @@ function SpareEditorModal({ title, submitLabel, isPending, components, initialVa
       drawing_number: initialValues?.drawing_number ?? '',
       drawing_position: initialValues?.drawing_position ?? '',
       specification: initialValues?.specification ?? '',
+      spare_assembly: initialValues?.spare_assembly ?? initialValues?.spare_model ?? '',
+      assembly_description: initialValues?.assembly_description ?? initialValues?.spare_assembly ?? initialValues?.spare_model ?? '',
       spare_maker: initialValues?.spare_maker ?? '',
       spare_model: initialValues?.spare_model ?? '',
       component_id: initialValues?.component_id ?? '',
@@ -171,6 +183,14 @@ function SpareEditorModal({ title, submitLabel, isPending, components, initialVa
             <input value={form.spare_model} onChange={(e) => set('spare_model', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
           </div>
           <div>
+            <label className="mb-1 block text-xs text-slate-400">Spare Assembly</label>
+            <input value={form.spare_assembly} onChange={(e) => set('spare_assembly', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Assembly Description</label>
+            <input value={form.assembly_description} onChange={(e) => set('assembly_description', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          </div>
+          <div>
             <label className="mb-1 block text-xs text-slate-400">Component</label>
             <select value={form.component_id} onChange={(e) => set('component_id', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
               <option value="">Unmapped</option>
@@ -212,6 +232,8 @@ function SpareEditorModal({ title, submitLabel, isPending, components, initialVa
                 drawing_number: form.drawing_number || null,
                 drawing_position: form.drawing_position || null,
                 specification: form.specification || null,
+                spare_assembly: form.spare_assembly || null,
+                assembly_description: form.assembly_description || null,
                 spare_maker: form.spare_maker || null,
                 spare_model: form.spare_model || null,
                 component_id: form.component_id || null,
@@ -548,6 +570,8 @@ const SparesReview: React.FC = () => {
                   <option key={component.id} value={component.id}>{component.component_name}</option>
                 ))}
               </select>
+              <input value={batchFields.spare_assembly ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, spare_assembly: e.target.value }))} placeholder="Spare assembly" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
+              <input value={batchFields.assembly_description ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, assembly_description: e.target.value }))} placeholder="Assembly description" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
               <input value={batchFields.spare_maker ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, spare_maker: e.target.value }))} placeholder="Spare maker" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
               <input value={batchFields.spare_model ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, spare_model: e.target.value }))} placeholder="Spare model" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
               <select value={batchFields.qc_status ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, qc_status: e.target.value }))} className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none">
@@ -634,7 +658,7 @@ const SparesReview: React.FC = () => {
               No spares found yet. Extract from Manual Review after component matching is complete.
             </div>
           ) : (
-            <table className="min-w-[2060px] w-full text-sm">
+            <table className="min-w-[2380px] w-full text-sm">
               <thead>
                 <tr className="sticky top-0 border-b border-slate-700 bg-slate-900 text-left text-xs text-slate-500 uppercase">
                   <th className="px-4 py-3 w-8">
@@ -655,6 +679,8 @@ const SparesReview: React.FC = () => {
                   <th className="px-4 py-3">Pos</th>
                   <th className="px-4 py-3">Maker</th>
                   <th className="px-4 py-3">Specification / Particulars</th>
+                  <th className="px-4 py-3">Assembly</th>
+                  <th className="px-4 py-3">Assembly Description</th>
                   <th className="px-4 py-3">Component</th>
                   <th className="px-4 py-3">Source</th>
                   <th className="px-4 py-3">Method</th>
@@ -726,6 +752,22 @@ const SparesReview: React.FC = () => {
                         rows={2}
                         className="w-[280px] resize-y rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                         title={spare.specification ?? ''}
+                      />
+                    </td>
+                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        value={edits[spare.id]?.spare_assembly ?? (spare.spare_assembly ?? spare.spare_model ?? '')}
+                        onChange={(e) => setEdit(spare.id, 'spare_assembly', e.target.value)}
+                        className="w-[240px] rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                        title={spare.spare_assembly ?? spare.spare_model ?? ''}
+                      />
+                    </td>
+                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        value={edits[spare.id]?.assembly_description ?? (spare.assembly_description ?? spare.spare_assembly ?? spare.spare_model ?? '')}
+                        onChange={(e) => setEdit(spare.id, 'assembly_description', e.target.value)}
+                        className="w-[260px] rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                        title={spare.assembly_description ?? spare.spare_assembly ?? spare.spare_model ?? ''}
                       />
                     </td>
                     <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>

@@ -45,6 +45,8 @@ class Spare(TenantBase):
     drawing_number: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     drawing_position: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     specification: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    spare_assembly: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    assembly_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     spare_maker: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     spare_model: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 

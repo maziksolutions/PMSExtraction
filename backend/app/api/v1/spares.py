@@ -43,6 +43,8 @@ def _spare_out_payload(spare: Spare) -> dict[str, Any]:
         "drawing_number": spare.drawing_number,
         "drawing_position": spare.drawing_position,
         "specification": spare.specification,
+        "spare_assembly": spare.spare_assembly or spare.spare_model,
+        "assembly_description": spare.assembly_description or spare.spare_assembly or spare.spare_model,
         "spare_maker": spare.spare_maker,
         "spare_model": spare.spare_model,
         "machinery_maker": spare.machinery_maker,
@@ -256,6 +258,8 @@ async def create_spare(
         vessel_id=vessel_id,
         **body.model_dump(),
     )
+    if spare.spare_assembly and not spare.assembly_description:
+        spare.assembly_description = spare.spare_assembly
     db.add(spare)
     await db.commit()
     await db.refresh(spare)
@@ -301,6 +305,8 @@ async def update_spare(
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(spare, field, value)
+    if "spare_assembly" in update_data and "assembly_description" not in update_data:
+        spare.assembly_description = spare.spare_assembly
     db.add(spare)
 
     if spare.source_manual_id and update_data:

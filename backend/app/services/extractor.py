@@ -1772,6 +1772,8 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                         drawing_number=record.get("drawing_number") or None,
                         drawing_position=record.get("drawing_position") or None,
                         specification=record.get("specification") or None,
+                        spare_assembly=record.get("spare_assembly") or record.get("spare_model") or None,
+                        assembly_description=record.get("assembly_description") or record.get("spare_assembly") or record.get("spare_model") or None,
                         spare_maker=record.get("spare_maker") or None,
                         spare_model=record.get("spare_model") or None,
                         page_reference=int(source_page) if source_page is not None else None,

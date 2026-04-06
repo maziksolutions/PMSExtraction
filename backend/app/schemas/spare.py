@@ -19,6 +19,8 @@ class SpareOut(BaseModel):
     drawing_number: Optional[str] = None
     drawing_position: Optional[str] = None
     specification: Optional[str] = None
+    spare_assembly: Optional[str] = None
+    assembly_description: Optional[str] = None
     spare_maker: Optional[str] = None
     spare_model: Optional[str] = None
     machinery_maker: Optional[str] = None
@@ -45,6 +47,8 @@ class SpareCreate(BaseModel):
     drawing_number: Optional[str] = None
     drawing_position: Optional[str] = None
     specification: Optional[str] = None
+    spare_assembly: Optional[str] = None
+    assembly_description: Optional[str] = None
     spare_maker: Optional[str] = None
     spare_model: Optional[str] = None
     component_id: Optional[uuid.UUID] = None
@@ -58,6 +62,8 @@ class SpareUpdate(BaseModel):
     drawing_number: Optional[str] = None
     drawing_position: Optional[str] = None
     specification: Optional[str] = None
+    spare_assembly: Optional[str] = None
+    assembly_description: Optional[str] = None
     spare_maker: Optional[str] = None
     spare_model: Optional[str] = None
     component_id: Optional[uuid.UUID] = None

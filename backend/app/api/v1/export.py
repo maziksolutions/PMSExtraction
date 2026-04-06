@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -335,9 +335,50 @@ async def download_export(
     excel_bytes = export_service.to_excel(
         serialized,
         schema.sheet_mappings if schema else None,
+        export_format="bundle",
     )
 
     filename = f"vessel_pms_export_v{export_v.version_number}.xlsx"
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/vessels/{vessel_id}/exports/direct-download")
+async def direct_download_export(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    export_format: str = Query("bundle", alias="format"),
+) -> Response:
+    vessel = await _get_vessel_or_404(vessel_id, db)
+    export_schema = None
+    if export_format == "bundle":
+        export_schema = await _get_or_create_export_schema(vessel, current_user, db)
+
+    serialized = await export_service.serialize_async(
+        db,
+        vessel_id,
+        export_schema.sheet_mappings if export_schema else None,
+    )
+    excel_bytes = export_service.to_excel(
+        serialized,
+        export_schema.sheet_mappings if export_schema else None,
+        export_format=export_format,
+    )
+
+    filename_map = {
+        "bundle": "vessel_pms_export_bundle.xlsx",
+        "component_master": "ship_component_master.xlsx",
+        "job_master": "ship_job_master.xlsx",
+        "maintenance_procedure": "maintenance_procedure.xlsx",
+        "maintenance_reference": "maintenance_reference.xlsx",
+        "spare_master": "ship_spare_parts.xlsx",
+        "spare_assembly": "ship_spare_assemblies.xlsx",
+    }
+    filename = filename_map.get(export_format, f"{export_format}.xlsx")
     return Response(
         content=excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

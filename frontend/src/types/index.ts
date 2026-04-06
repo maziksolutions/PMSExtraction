@@ -324,6 +324,8 @@ export interface Spare {
   drawing_number: string | null
   drawing_position: string | null
   specification: string | null
+  spare_assembly: string | null
+  assembly_description: string | null
   spare_maker: string | null
   spare_model: string | null
   machinery_maker: string | null

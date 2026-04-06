@@ -23,6 +23,15 @@ const Export: React.FC = () => {
   const [downloadError, setDownloadError] = React.useState<string | null>(null)
   const [downloadMessage, setDownloadMessage] = React.useState<string | null>(null)
 
+  const directFormats = [
+    { key: 'component_master', label: 'Component Master', filename: 'ship_component_master.xlsx' },
+    { key: 'job_master', label: 'Job Master', filename: 'ship_job_master.xlsx' },
+    { key: 'maintenance_procedure', label: 'Maintenance Procedure', filename: 'maintenance_procedure.xlsx' },
+    { key: 'maintenance_reference', label: 'Maintenance Reference', filename: 'maintenance_reference.xlsx' },
+    { key: 'spare_master', label: 'Spare Parts Master', filename: 'ship_spare_parts.xlsx' },
+    { key: 'spare_assembly', label: 'Spare Assemblies', filename: 'ship_spare_assemblies.xlsx' },
+  ] as const
+
   const { data: exportsData } = useQuery({
     queryKey: ['exports', vesselId],
     queryFn: () => apiClient.get(`/vessels/${vesselId}/exports`).then((r) => r.data),
@@ -87,6 +96,23 @@ const Export: React.FC = () => {
     URL.revokeObjectURL(url)
     setDownloadError(null)
     setDownloadMessage(`Export v${version} downloaded successfully.`)
+  }
+
+  const handleDirectDownload = async (format: string, filename: string) => {
+    const res = await apiClient.get(`/vessels/${vesselId}/exports/direct-download`, {
+      params: { format },
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(res.data)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    setDownloadError(null)
+    setDownloadMessage(`${filename} downloaded successfully.`)
   }
 
   const versions: ExportVersion[] = exportsData?.items ?? []
@@ -184,6 +210,30 @@ const Export: React.FC = () => {
             {downloadMessage}
           </div>
         ) : null}
+      </div>
+
+      <div className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+        <div className="mb-4">
+          <h2 className="text-base font-semibold text-white">Individual Export Formats</h2>
+          <p className="mt-1 text-sm text-slate-400">
+            Download each Annecy load-sheet format separately when needed.
+          </p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {directFormats.map((format) => (
+            <button
+              key={format.key}
+              onClick={() => handleDirectDownload(format.key, format.filename)}
+              className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950 px-4 py-3 text-left hover:border-sky-700 hover:bg-slate-900"
+            >
+              <div>
+                <div className="text-sm font-medium text-white">{format.label}</div>
+                <div className="mt-1 text-xs text-slate-500">{format.filename}</div>
+              </div>
+              <Download className="h-4 w-4 text-sky-400" />
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="rounded-xl border border-slate-800 bg-slate-900">
