@@ -4,7 +4,7 @@ import re
 from typing import Iterable, Sequence
 
 SOURCE_HEADER = "Source References:"
-_CANONICAL_RE = re.compile(r"^\s*(.+?)\s*-\s*(.+?)\s*-\s*(.+?)\s*$")
+_BODY_ACTION_RE = re.compile(r"^\s*(.+?)\s*-\s*(.+?)\s*$")
 
 _ACTION_PHRASES = [
     "back wash",
@@ -97,6 +97,22 @@ def _unique_nonempty(values: Iterable[str]) -> list[str]:
     return ordered
 
 
+def _normalise_compare_text(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+def _is_component_fragment(value: str | None, component_name: str | None) -> bool:
+    value_tokens = _normalise_compare_text(value).split()
+    component_tokens = _normalise_compare_text(component_name).split()
+    if not value_tokens or not component_tokens:
+        return False
+    if value_tokens == component_tokens:
+        return True
+    if len(value_tokens) <= len(component_tokens) and value_tokens == component_tokens[: len(value_tokens)]:
+        return True
+    return False
+
+
 def strip_source_reference_footer(text: str | None) -> str | None:
     cleaned = (text or "").strip()
     if not cleaned:
@@ -106,6 +122,24 @@ def strip_source_reference_footer(text: str | None) -> str | None:
     if idx >= 0:
         cleaned = cleaned[:idx].rstrip()
     return cleaned or None
+
+
+def _strip_component_prefix(text: str | None, component_name: str | None) -> str:
+    cleaned = strip_source_reference_footer(text) or ""
+    component = re.sub(r"\s+", " ", (component_name or "").strip())
+    if not cleaned or not component:
+        return cleaned
+    pattern = re.compile(
+        r"^\s*(?:"
+        + re.escape(component).replace(r"\ ", r"\s+")
+        + r"(?:\s*[/,:;|\-]\s*|\s+))*",
+        flags=re.I,
+    )
+    stripped = pattern.sub("", cleaned)
+    stripped = stripped.strip(" -:/,.;")
+    if _is_component_fragment(stripped, component):
+        return ""
+    return stripped
 
 
 def split_reference_entries(
@@ -181,11 +215,11 @@ def _normalise_action_label(action: str) -> str:
 
 def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
     cleaned = strip_source_reference_footer(text) or ""
-    canonical_match = _CANONICAL_RE.match(cleaned)
+    canonical_match = _BODY_ACTION_RE.match(cleaned)
     if canonical_match:
-        canonical_body = _trim_body_text(canonical_match.group(2))
+        canonical_body = _trim_body_text(canonical_match.group(1))
         canonical_actions = _unique_nonempty(
-            [_normalise_action_label(part) for part in re.split(r"\s*/\s*", canonical_match.group(3))]
+            [_normalise_action_label(part) for part in re.split(r"\s*/\s*", canonical_match.group(2))]
         )
         return _unique_nonempty([canonical_body]), canonical_actions
 
@@ -254,7 +288,9 @@ def build_canonical_job_name(
     name_bodies: list[str] = []
     name_actions: list[str] = []
     for source_text in job_names:
-        body_parts, action_parts = _extract_body_and_actions(source_text)
+        stripped_name = _strip_component_prefix(source_text, component_label)
+        candidate_name = stripped_name if component_name else source_text
+        body_parts, action_parts = _extract_body_and_actions(candidate_name)
         name_bodies.extend(body_parts)
         name_actions.extend(action_parts)
 
@@ -265,8 +301,22 @@ def build_canonical_job_name(
         desc_bodies.extend(body_parts)
         desc_actions.extend(action_parts)
 
-    bodies = _unique_nonempty(name_bodies) or _unique_nonempty(desc_bodies)
+    component_key = _normalise_compare_text(component_label)
+    filtered_name_bodies = [
+        body
+        for body in _unique_nonempty(name_bodies)
+        if _normalise_compare_text(body) and not _is_component_fragment(body, component_label)
+    ]
+    filtered_desc_bodies = [
+        body
+        for body in _unique_nonempty(desc_bodies)
+        if _normalise_compare_text(body) and not _is_component_fragment(body, component_label)
+    ]
+
+    bodies = filtered_name_bodies or filtered_desc_bodies
     actions = _unique_nonempty(name_actions) or _unique_nonempty(desc_actions)
-    body_text = " / ".join(_unique_nonempty(bodies)) or "General maintenance"
+    body_text = " / ".join(_unique_nonempty(bodies))
     action_text = " / ".join(_unique_nonempty(actions)) or "Maintenance"
-    return f"{component_label} {body_text} - {action_text}"[:500]
+    if body_text:
+        return f"{component_label} {body_text} - {action_text}"[:500]
+    return f"{component_label} - {action_text}"[:500]
