@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -186,19 +186,24 @@ def _standard_job_key(
 
 
 def _extract_structured_workbook_rows(wb: Any, *, job_type: str) -> list[dict[str, Any]]:
-    if job_type != "standard":
+    if job_type not in {"standard", "critical"}:
         return []
 
     rows: list[dict[str, Any]] = []
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
-        if _header_key(sheet_name) not in WORKBOOK_SHEETS:
+        sheet_key = _header_key(sheet_name)
+        if sheet_key not in WORKBOOK_SHEETS:
+            continue
+        if job_type == "critical" and sheet_key != "criticaljobs":
             continue
         headers = [_header_key(cell.value) for cell in next(ws.iter_rows(min_row=1, max_row=1))]
         for row in ws.iter_rows(min_row=2, values_only=True):
             mapped = {headers[i]: (row[i] if i < len(row) else None) for i in range(len(headers))}
             canonical = _canonical_standard_row(sheet_name, mapped, default_cs=ClassSociety.general)
             if canonical is not None:
+                if job_type == "critical":
+                    canonical["is_critical"] = True
                 rows.append(canonical)
     return rows
 
@@ -403,20 +408,39 @@ async def list_standard_jobs(
     class_society: Optional[str] = Query(None),
     machinery_type: Optional[str] = Query(None),
     is_critical: Optional[bool] = Query(None),
+    job_type: Optional[str] = Query(None, description="'standard', 'class', or 'critical'"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
-    query = select(StandardJob).where(StandardJob.is_deleted == False)
+    conditions = [
+        StandardJob.tenant_id == current_user.tenant_id,
+        StandardJob.is_deleted == False,
+    ]
+    if job_type == "standard":
+        conditions.extend([StandardJob.class_society == ClassSociety.general, StandardJob.is_critical == False])
+    elif job_type == "class":
+        conditions.extend([StandardJob.class_society != ClassSociety.general, StandardJob.is_critical == False])
+    elif job_type == "critical":
+        conditions.append(StandardJob.is_critical == True)
     if class_society:
         try:
-            query = query.where(StandardJob.class_society == ClassSociety(class_society))
+            conditions.append(StandardJob.class_society == ClassSociety(class_society))
         except ValueError:
             pass
     if machinery_type:
-        query = query.where(StandardJob.machinery_type == machinery_type)
+        conditions.append(StandardJob.machinery_type == machinery_type)
     if is_critical is not None:
-        query = query.where(StandardJob.is_critical == is_critical)
-    query = query.offset((page - 1) * page_size).limit(page_size)
+        conditions.append(StandardJob.is_critical == is_critical)
+
+    total = await db.scalar(select(func.count()).select_from(StandardJob).where(*conditions)) or 0
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    query = (
+        select(StandardJob)
+        .where(*conditions)
+        .order_by(StandardJob.job_name.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     result = await db.execute(query)
     jobs = result.scalars().all()
     return {
@@ -436,6 +460,9 @@ async def list_standard_jobs(
             for j in jobs
         ],
         "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
     }
 
 
@@ -449,8 +476,12 @@ async def bulk_import_standard_jobs(
     """Import Standard Jobs or Class Society Jobs from Excel/CSV."""
     content = await file.read()
     filename = (file.filename or "").lower()
+    if job_type not in {"standard", "class", "critical"}:
+        raise HTTPException(status_code=400, detail="job_type must be 'standard', 'class', or 'critical'")
     rows = _extract_rows_from_upload(content, filename, job_type=job_type)
     default_cs = ClassSociety.general if job_type == "standard" else None
+    if job_type == "critical":
+        default_cs = ClassSociety.general
 
     existing_result = await db.execute(
         select(StandardJob).where(
@@ -665,6 +696,7 @@ async def run_comparison(
     # Get all standard jobs
     std_jobs_result = await db.execute(
         select(StandardJob).where(
+            StandardJob.tenant_id == current_user.tenant_id,
             StandardJob.is_deleted == False,
             StandardJob.is_critical == False,
         )
@@ -677,6 +709,7 @@ async def run_comparison(
             Job.vessel_id == vessel_id,
             Job.qc_status != QCStatus.rejected,
             Job.is_deleted == False,
+            Job.source_manual_id.is_not(None),
         )
     )
     vessel_jobs = vessel_jobs_result.scalars().all()
@@ -743,16 +776,24 @@ async def get_matches(
     page_size: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
     await _get_vessel_or_404(vessel_id, db)
-    query = select(StandardJobMatch).where(
+    conditions = [
         StandardJobMatch.vessel_id == vessel_id,
         StandardJobMatch.is_deleted == False,
-    )
+    ]
     if match_status:
         try:
-            query = query.where(StandardJobMatch.match_status == MatchStatus(match_status))
+            conditions.append(StandardJobMatch.match_status == MatchStatus(match_status))
         except ValueError:
             pass
-    query = query.offset((page - 1) * page_size).limit(page_size)
+    total = await db.scalar(select(func.count()).select_from(StandardJobMatch).where(*conditions)) or 0
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    query = (
+        select(StandardJobMatch)
+        .where(*conditions)
+        .order_by(StandardJobMatch.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     result = await db.execute(query)
     matches = result.scalars().all()
     matched_job_ids = [match.matched_job_id for match in matches if match.matched_job_id]
@@ -776,6 +817,9 @@ async def get_matches(
             for m in matches
         ],
         "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
     }
 
 

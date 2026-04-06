@@ -18,6 +18,7 @@ import apiClient from '@/api/client'
 interface StandardJob {
   id: string
   class_society: string
+  job_type?: string
   machinery_type: string
   job_name: string
   job_description: string | null
@@ -38,9 +39,10 @@ interface StandardJobFormState {
   library_reference: string
 }
 
-type TabType = 'standard' | 'class'
+type TabType = 'standard' | 'class' | 'critical'
 
 const CLASS_SOCIETIES = ['DNV GL', "Lloyd's Register", 'Bureau Veritas', 'ABS', 'ClassNK']
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
 
 // ─── Import Panel ─────────────────────────────────────────────────────────────
 
@@ -53,8 +55,9 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
     mutationFn: async (file: File) => {
       const fd = new FormData()
       fd.append('file', file)
+      const importType = jobType === 'critical' ? 'critical' : jobType
       const res = await apiClient.post(
-        `/standard-jobs/bulk-import?job_type=${jobType}`,
+        `/standard-jobs/bulk-import?job_type=${importType}`,
         fd,
         { headers: { 'Content-Type': 'multipart/form-data' } }
       )
@@ -83,15 +86,20 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-xl p-5">
       <h3 className="text-sm font-semibold text-slate-300 mb-3">
-        Import {jobType === 'standard' ? 'Standard Jobs' : 'Class Society Jobs'} from Excel / CSV
+        Import {jobType === 'standard' ? 'Standard Jobs' : jobType === 'class' ? 'Class Society Jobs' : 'Critical Jobs'} from Excel / CSV
       </h3>
 
       <div className="text-xs text-slate-500 mb-4 space-y-1">
-        {jobType === 'standard' ? (
+        {jobType !== 'class' ? (
           <>
             <p>Supported workbook sheets: <span className="text-slate-400">Audit standard jobs, Annex Job Title, Critical Jobs</span></p>
             <p>The importer auto-detects job title, description, criticality, frequency, and reference fields from the workbook. `Annex 1 PMS_Jobs` is not required.</p>
-            <p>Critical jobs are stored in the same standard library, but they are added later from Jobs Review instead of comparison.</p>
+            {jobType === 'standard' && (
+              <p>Critical jobs are stored in the Critical Jobs library and are added later from Jobs Review instead of comparison.</p>
+            )}
+            {jobType === 'critical' && (
+              <p>This imports only the critical jobs sheet into the Critical Jobs library.</p>
+            )}
           </>
         ) : (
           <>
@@ -157,13 +165,17 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
   const [filterSociety, setFilterSociety] = useState('')
   const [filterMachinery, setFilterMachinery] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
 
   const { data, isLoading } = useQuery({
     queryKey: ['standard-jobs-library', jobType, filterSociety, filterMachinery],
     queryFn: async () => {
       const params: Record<string, string> = {}
-      if (jobType === 'standard') params.class_society = 'General'
-      else if (filterSociety) params.class_society = filterSociety
+      params.job_type = jobType
+      params.page = '1'
+      params.page_size = '5000'
+      if (jobType === 'class' && filterSociety) params.class_society = filterSociety
       if (filterMachinery) params.machinery_type = filterMachinery
       const res = await apiClient.get('/standard-jobs', { params })
       return res.data as { items: StandardJob[] }
@@ -176,6 +188,17 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
   })
 
   const jobs: StandardJob[] = data?.items ?? []
+  const total = jobs.length
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const pageJobs = jobs.slice((page - 1) * pageSize, page * pageSize)
+
+  React.useEffect(() => {
+    setPage(1)
+  }, [jobType, filterSociety, filterMachinery, pageSize])
+
+  React.useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
 
   return (
     <div className="space-y-4">
@@ -184,7 +207,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
         {jobType === 'class' && (
           <select
             value={filterSociety}
-            onChange={(e) => setFilterSociety(e.target.value)}
+            onChange={(e) => { setFilterSociety(e.target.value); setPage(1) }}
             className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-sky-500"
           >
             <option value="">All Class Societies</option>
@@ -194,7 +217,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
         <input
           type="text"
           value={filterMachinery}
-          onChange={(e) => setFilterMachinery(e.target.value)}
+          onChange={(e) => { setFilterMachinery(e.target.value); setPage(1) }}
           placeholder="Filter by machinery type..."
           className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-sky-500 w-56"
         />
@@ -217,16 +240,16 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
       ) : jobs.length === 0 ? (
         <div className="bg-slate-800 border border-slate-700 rounded-xl p-12 text-center">
           <BookOpen className="w-12 h-12 text-slate-600 mx-auto mb-4" />
-          <p className="text-slate-400 font-medium">No {jobType === 'standard' ? 'standard' : 'class society'} jobs imported yet</p>
+          <p className="text-slate-400 font-medium">No {jobType === 'standard' ? 'standard' : jobType === 'class' ? 'class society' : 'critical'} jobs imported yet</p>
           <p className="text-slate-500 text-sm mt-1">Use the import panel above to load jobs from Excel or CSV.</p>
         </div>
       ) : (
         <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
             <span className="text-sm font-semibold text-slate-300">
-              {jobType === 'standard' ? 'Standard Jobs' : 'Class Society Jobs'} Library
+              {jobType === 'standard' ? 'Standard Jobs' : jobType === 'class' ? 'Class Society Jobs' : 'Critical Jobs'} Library
             </span>
-            <span className="text-xs text-slate-500">{jobs.length} jobs</span>
+            <span className="text-xs text-slate-500">{total} jobs</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -243,7 +266,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700/50">
-                {jobs.map((job) => (
+                {pageJobs.map((job) => (
                   <React.Fragment key={job.id}>
                     <tr className="hover:bg-slate-700/20 transition-colors">
                       <td className="px-4 py-3">
@@ -303,6 +326,38 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
               </tbody>
             </table>
           </div>
+          <div className="flex items-center justify-between border-t border-slate-700 px-4 py-2.5 shrink-0">
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <span>{total} total</span>
+              <span>·</span>
+              <span>Show</span>
+              <select
+                value={pageSize}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }}
+                className="bg-slate-700 border border-slate-600 rounded px-2 py-0.5 text-white text-xs"
+              >
+                {PAGE_SIZE_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <span>per page</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40"
+              >
+                ← Prev
+              </button>
+              <span className="px-3 text-xs text-slate-400">Page {page} of {totalPages}</span>
+              <button
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40"
+              >
+                Next →
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -340,13 +395,13 @@ const StandardJobsLibrary: React.FC = () => {
       setShowAddDialog(false)
       setAddError(null)
       setForm({
-        class_society: activeTab === 'standard' ? 'General' : 'DNV GL',
+        class_society: activeTab === 'class' ? 'DNV GL' : 'General',
         machinery_type: '',
         job_name: '',
         job_description: '',
         frequency: '',
         frequency_type: '',
-        is_critical: false,
+        is_critical: activeTab === 'critical',
         library_reference: '',
       })
       refresh()
@@ -372,7 +427,9 @@ const StandardJobsLibrary: React.FC = () => {
         <p className="text-slate-400 mt-1">
           {activeTab === 'standard'
             ? 'Global maintenance job standards — imported once, applied to all vessels'
-            : 'Classification society job requirements — DNV GL, Lloyd\'s Register, Bureau Veritas, ABS, ClassNK'}
+            : activeTab === 'class'
+              ? 'Classification society job requirements — DNV GL, Lloyd\'s Register, Bureau Veritas, ABS, ClassNK'
+              : 'Critical maintenance jobs library — added to vessels after Jobs QC.'}
         </p>
       </div>
 
@@ -381,6 +438,7 @@ const StandardJobsLibrary: React.FC = () => {
         {([
           { value: 'standard', label: 'Standard Jobs' },
           { value: 'class', label: 'Class Society Jobs' },
+          { value: 'critical', label: 'Critical Jobs' },
         ] as { value: TabType; label: string }[]).map(({ value, label }) => (
           <button
             key={value}
@@ -402,8 +460,8 @@ const StandardJobsLibrary: React.FC = () => {
             setAddError(null)
             setForm((prev) => ({
               ...prev,
-              class_society: activeTab === 'standard' ? 'General' : prev.class_society === 'General' ? 'DNV GL' : prev.class_society,
-              is_critical: false,
+              class_society: activeTab === 'class' ? (prev.class_society === 'General' ? 'DNV GL' : prev.class_society) : 'General',
+              is_critical: activeTab === 'critical',
             }))
             setShowAddDialog(true)
           }}
@@ -425,7 +483,7 @@ const StandardJobsLibrary: React.FC = () => {
           <div className="w-full max-w-2xl rounded-xl border border-slate-700 bg-slate-900 p-6">
             <h2 className="text-lg font-semibold text-white">Add Library Job</h2>
             <p className="mt-1 text-sm text-slate-400">
-              Create a reusable {activeTab === 'standard' ? 'company SMS' : 'CMS / class'} standard job.
+              Create a reusable {activeTab === 'standard' ? 'company SMS' : activeTab === 'class' ? 'CMS / class' : 'critical'} standard job.
             </p>
             <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
               <label className="space-y-1 text-sm">
@@ -434,9 +492,9 @@ const StandardJobsLibrary: React.FC = () => {
                   value={form.class_society}
                   onChange={(e) => setForm((prev) => ({ ...prev, class_society: e.target.value }))}
                   className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
-                  disabled={activeTab === 'standard'}
+                  disabled={activeTab !== 'class'}
                 >
-                  {activeTab === 'standard' ? (
+                  {activeTab !== 'class' ? (
                     <option value="General">General</option>
                   ) : (
                     CLASS_SOCIETIES.map((society) => <option key={society} value={society}>{society}</option>)
@@ -506,6 +564,7 @@ const StandardJobsLibrary: React.FC = () => {
                   type="checkbox"
                   checked={form.is_critical}
                   onChange={(e) => setForm((prev) => ({ ...prev, is_critical: e.target.checked }))}
+                  disabled={activeTab === 'critical'}
                 />
                 Critical Job
               </label>
