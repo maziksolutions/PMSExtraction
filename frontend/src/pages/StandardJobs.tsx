@@ -54,6 +54,7 @@ const StandardJobs: React.FC = () => {
       const params: Record<string, string> = {}
       if (filterSociety) params.class_society = filterSociety
       if (filterMachinery) params.machinery_type = filterMachinery
+      params.is_critical = 'false'
       return apiClient.get('/standard-jobs', { params }).then((r) => r.data)
     },
   })
@@ -140,6 +141,9 @@ const StandardJobs: React.FC = () => {
           <p className="mt-1 text-sm text-slate-400">
             Compare vessel jobs against imported company SMS and CMS/class standard job libraries.
           </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Critical library jobs are managed separately from Jobs Review and are not part of this comparison run.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <select
@@ -160,7 +164,7 @@ const StandardJobs: React.FC = () => {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".xlsx,.csv"
+            accept=".xlsx,.xls,.csv"
             className="hidden"
             onChange={(e) => handleLibraryImport(e.target.files?.[0])}
           />
@@ -214,6 +218,10 @@ const StandardJobs: React.FC = () => {
           placeholder="Machinery type..."
           className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
         />
+      </div>
+
+      <div className="rounded-xl border border-sky-900/50 bg-sky-950/20 px-4 py-3 text-xs text-sky-200">
+        Supported workbook import: <span className="font-medium">Annex 1 PMS_Jobs</span>, <span className="font-medium">Audit standard jobs</span>, <span className="font-medium">Annex Job Title</span>, and <span className="font-medium">Critical Jobs</span>. Critical jobs go into the library but are excluded from comparison.
       </div>
 
       {/* Comparison Table */}

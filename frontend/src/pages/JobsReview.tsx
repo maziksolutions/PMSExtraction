@@ -429,6 +429,20 @@ const JobsReview: React.FC = () => {
     onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
   })
 
+  const addCriticalJobsMutation = useMutation({
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/standard-jobs/add-critical-jobs`).then((r) => r.data),
+    onSuccess: (result) => {
+      refreshJobs()
+      queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+      setActionError(null)
+      setActionMessage(
+        `Critical jobs sync completed. Added ${result.added ?? 0}, updated ${result.updated ?? 0}, skipped ${result.skipped ?? 0}.`
+      )
+    },
+    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
+  })
+
   const handleCMSUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -582,6 +596,14 @@ const JobsReview: React.FC = () => {
             <button onClick={() => { setCreateDraft({ qc_status: 'pending' }); setEditingJob(null) }} className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500">
               <Plus className="h-3.5 w-3.5" />
               Add Job
+            </button>
+            <button
+              onClick={() => addCriticalJobsMutation.mutate()}
+              disabled={addCriticalJobsMutation.isPending}
+              className="flex items-center gap-1.5 rounded-lg border border-amber-700 px-3 py-1.5 text-xs font-medium text-amber-300 hover:bg-slate-800 disabled:opacity-50"
+            >
+              <AlertCircle className="h-3.5 w-3.5" />
+              {addCriticalJobsMutation.isPending ? 'Adding Critical...' : 'Add Critical Jobs'}
             </button>
             {Object.keys(edits).length > 0 ? (
               <button

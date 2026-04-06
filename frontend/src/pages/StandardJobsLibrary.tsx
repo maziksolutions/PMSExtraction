@@ -76,8 +76,18 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
       </h3>
 
       <div className="text-xs text-slate-500 mb-4 space-y-1">
-        <p>Required columns: <span className="text-slate-400">job_name, machinery_type</span></p>
-        <p>Optional columns: <span className="text-slate-400">job_description, {jobType === 'class' ? 'class_society,' : ''} frequency, frequency_type, is_critical, library_reference</span></p>
+        {jobType === 'standard' ? (
+          <>
+            <p>Supported workbook sheets: <span className="text-slate-400">Annex 1 PMS_Jobs, Audit standard jobs, Annex Job Title, Critical Jobs</span></p>
+            <p>The importer auto-detects job title, description, criticality, frequency, and reference fields from the workbook.</p>
+            <p>Critical jobs are stored in the same standard library, but they are added later from Jobs Review instead of comparison.</p>
+          </>
+        ) : (
+          <>
+            <p>Required columns: <span className="text-slate-400">job_name, machinery_type</span></p>
+            <p>Optional columns: <span className="text-slate-400">job_description, class_society, frequency, frequency_type, is_critical, library_reference</span></p>
+          </>
+        )}
         {jobType === 'class' && (
           <p>class_society values: <span className="text-slate-400">DNV GL, Lloyd's Register, Bureau Veritas, ABS, ClassNK</span></p>
         )}
