@@ -29,6 +29,24 @@ def _as_uuid_str(value: uuid.UUID | str) -> str:
     return str(value)
 
 
+def _activity_event_payload(entry: ActivityEntry) -> dict[str, Any]:
+    cached = getattr(entry, "_event_payload", None)
+    if cached:
+        return cached
+    payload = {
+        "id": str(entry.id),
+        "action_type": entry.action_type,
+        "entity_type": entry.entity_type,
+        "entity_id": str(entry.entity_id),
+        "description": entry.description,
+        "created_at": entry.created_at.isoformat() if entry.created_at else "",
+        "user_id": str(entry.user_id),
+        "vessel_id": str(entry.vessel_id),
+    }
+    setattr(entry, "_event_payload", payload)
+    return payload
+
+
 async def ensure_maker_models_table(db: AsyncSession) -> None:
     result = await db.execute(
         text(
@@ -152,22 +170,24 @@ async def log_activity(
     )
     db.add(entry)
     await db.flush()
+    _activity_event_payload(entry)
     return entry
 
 
-async def broadcast_activity(entry: ActivityEntry) -> None:
+async def broadcast_activity(entry: ActivityEntry | dict[str, Any]) -> None:
+    payload = entry if isinstance(entry, dict) else _activity_event_payload(entry)
     await manager.broadcast_to_vessel(
-        str(entry.vessel_id),
+        str(payload["vessel_id"]),
         {
             "type": "activity",
             "event": {
-                "id": str(entry.id),
-                "action_type": entry.action_type,
-                "entity_type": entry.entity_type,
-                "entity_id": str(entry.entity_id),
-                "description": entry.description,
-                "created_at": entry.created_at.isoformat() if entry.created_at else "",
-                "user_id": str(entry.user_id),
+                "id": str(payload["id"]),
+                "action_type": payload["action_type"],
+                "entity_type": payload["entity_type"],
+                "entity_id": str(payload["entity_id"]),
+                "description": payload["description"],
+                "created_at": payload["created_at"],
+                "user_id": str(payload["user_id"]),
             },
         },
     )
