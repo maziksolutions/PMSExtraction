@@ -4,6 +4,7 @@ import re
 from typing import Iterable, Sequence
 
 SOURCE_HEADER = "Source References:"
+_CANONICAL_RE = re.compile(r"^\s*(.+?)\s*-\s*(.+?)\s*-\s*(.+?)\s*$")
 
 _ACTION_PHRASES = [
     "back wash",
@@ -33,7 +34,51 @@ _ACTION_PHRASES = [
     "tighten",
     "remove",
 ]
-_PREPOSITIONS = ("from", "of", "inside", "within", "in", "on", "at", "for")
+_ACTION_LABELS = {
+    "back wash": "Cleaning",
+    "backwash": "Cleaning",
+    "discharge": "Cleaning",
+    "clean": "Cleaning",
+    "cleaning": "Cleaning",
+    "flush": "Cleaning",
+    "drain": "Cleaning",
+    "remove": "Cleaning",
+    "check": "Inspection",
+    "inspect": "Inspection",
+    "inspection": "Inspection",
+    "verify": "Inspection",
+    "test": "Inspection",
+    "monitor": "Inspection",
+    "measure": "Inspection",
+    "calibrate": "Inspection",
+    "replace": "Replacement",
+    "renew": "Replacement",
+    "replenish": "Replenishment",
+    "overhaul": "Overhaul",
+    "service": "Service",
+    "lubricate": "Lubrication",
+    "grease": "Lubrication",
+    "repair": "Repair",
+    "adjust": "Adjustment",
+    "tighten": "Adjustment",
+}
+_PREPOSITIONS = ("of", "inside", "within", "in", "on", "at")
+_BODY_STOP_PHRASES = (
+    " by ",
+    " using ",
+    " while ",
+    " when ",
+    " where ",
+    " because ",
+    " due to ",
+    " in order to ",
+    " to ",
+    " with ",
+    " after ",
+    " before ",
+    " during ",
+    " if ",
+)
 _REF_RE = re.compile(r"^\s*(.+?)\s*\(p\.(\d+)\)\s*$", re.I)
 
 
@@ -114,9 +159,38 @@ def append_source_references_to_description(
     return f"{body}\n\n{footer}" if body else footer
 
 
+def _trim_body_text(value: str) -> str:
+    body = re.sub(r"\s+", " ", (value or "").strip(" -:/,.;")).strip()
+    body = re.sub(r"^(the|a|an)\s+", "", body, flags=re.I)
+    for stop in _BODY_STOP_PHRASES:
+        idx = body.lower().find(stop)
+        if idx > 0:
+            body = body[:idx].rstrip(" -:/,.;")
+            break
+    body = body.rstrip(" -:/,.;")
+    words = body.split()
+    if len(words) > 7:
+        body = " ".join(words[:7]).rstrip(" -:/,.;")
+    return body
+
+
+def _normalise_action_label(action: str) -> str:
+    key = (action or "").strip().lower()
+    return _ACTION_LABELS.get(key, action.title())
+
+
 def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
     cleaned = strip_source_reference_footer(text) or ""
+    canonical_match = _CANONICAL_RE.match(cleaned)
+    if canonical_match:
+        canonical_body = _trim_body_text(canonical_match.group(2))
+        canonical_actions = _unique_nonempty(
+            [_normalise_action_label(part) for part in re.split(r"\s*/\s*", canonical_match.group(3))]
+        )
+        return _unique_nonempty([canonical_body]), canonical_actions
+
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:/")
+    cleaned = re.sub(r"^(item|step|procedure|job)\s*[\d.()-]*\s*[:\-]?\s*", "", cleaned, flags=re.I)
     if not cleaned:
         return [], []
 
@@ -125,9 +199,20 @@ def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
     for phrase in _ACTION_PHRASES:
         pattern = r"\b" + re.escape(phrase).replace(r"\ ", r"\s+") + r"\b"
         if re.search(pattern, lowered):
-            actions.append(phrase.title())
+            actions.append(_normalise_action_label(phrase))
 
     body = ""
+    for phrase in sorted(_ACTION_PHRASES, key=len, reverse=True):
+        pattern = re.compile(
+            r"^\s*" + re.escape(phrase).replace(r"\ ", r"\s+") + r"\b\s*",
+            flags=re.I,
+        )
+        match = pattern.match(cleaned)
+        if match:
+            body = _trim_body_text(cleaned[match.end():])
+            if body:
+                break
+
     prep_match = re.search(
         r"\b(?:"
         + "|".join(_PREPOSITIONS)
@@ -135,9 +220,9 @@ def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
         cleaned,
         flags=re.I,
     )
-    if prep_match:
-        body = prep_match.group(1).strip(" -:/")
-    else:
+    if not body and prep_match:
+        body = _trim_body_text(prep_match.group(1))
+    if not body:
         body = cleaned
         for phrase in _ACTION_PHRASES:
             body = re.sub(
@@ -147,15 +232,15 @@ def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
                 flags=re.I,
             )
         body = re.sub(r"^(and|/|,|-|\.)+\s*", "", body, flags=re.I)
-        body = re.sub(r"\s+", " ", body).strip(" -:/")
+        body = _trim_body_text(body)
 
     if not actions and cleaned:
-        first_token = cleaned.split(" ", 1)[0].strip(" -:/").title()
+        first_token = _normalise_action_label(cleaned.split(" ", 1)[0].strip(" -:/"))
         if first_token:
             actions = [first_token]
 
     if not body:
-        body = cleaned
+        body = _trim_body_text(cleaned)
     return _unique_nonempty([body]), _unique_nonempty(actions)
 
 
@@ -166,12 +251,22 @@ def build_canonical_job_name(
     job_descriptions: Sequence[str | None] = (),
 ) -> str:
     component_label = (component_name or "Unmapped Component").strip() or "Unmapped Component"
-    bodies: list[str] = []
-    actions: list[str] = []
-    for source_text in [*job_names, *job_descriptions]:
+    name_bodies: list[str] = []
+    name_actions: list[str] = []
+    for source_text in job_names:
         body_parts, action_parts = _extract_body_and_actions(source_text)
-        bodies.extend(body_parts)
-        actions.extend(action_parts)
+        name_bodies.extend(body_parts)
+        name_actions.extend(action_parts)
+
+    desc_bodies: list[str] = []
+    desc_actions: list[str] = []
+    for source_text in job_descriptions:
+        body_parts, action_parts = _extract_body_and_actions(source_text)
+        desc_bodies.extend(body_parts)
+        desc_actions.extend(action_parts)
+
+    bodies = _unique_nonempty(name_bodies) or _unique_nonempty(desc_bodies)
+    actions = _unique_nonempty(name_actions) or _unique_nonempty(desc_actions)
     body_text = " / ".join(_unique_nonempty(bodies)) or "General maintenance"
     action_text = " / ".join(_unique_nonempty(actions)) or "Maintenance"
-    return f"{component_label} - {body_text} - {action_text}"[:500]
+    return f"{component_label} {body_text} - {action_text}"[:500]

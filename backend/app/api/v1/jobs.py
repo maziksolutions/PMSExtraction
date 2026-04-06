@@ -110,6 +110,30 @@ async def _apply_job_name_and_references(db: AsyncSession, job: Job) -> None:
     db.add(job)
 
 
+async def _normalize_vessel_job_names(
+    db: AsyncSession,
+    *,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> None:
+    result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == tenant_id,
+            Job.is_deleted == False,
+        )
+    )
+    jobs = result.scalars().all()
+    changed = False
+    for job in jobs:
+        existing_name = job.job_name
+        await _apply_job_name_and_references(db, job)
+        if job.job_name != existing_name:
+            changed = True
+    if changed:
+        await db.commit()
+
+
 async def _run_job_side_effects(
     db: AsyncSession,
     *,
@@ -213,6 +237,11 @@ async def list_jobs(
     from app.models.component import Component
     from app.models.ingestion import Manual
     await _get_vessel_or_404(vessel_id, db)
+    await _normalize_vessel_job_names(
+        db,
+        vessel_id=vessel_id,
+        tenant_id=current_user.tenant_id,
+    )
     base_where = [
         Job.vessel_id == vessel_id,
         Job.tenant_id == current_user.tenant_id,
