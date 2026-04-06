@@ -864,6 +864,104 @@ def _build_component_context_text(components: list[Any], manual: Any) -> str:
     )
     return "\n".join(lines)
 
+
+def _combine_unique_text_parts(*values: str | None) -> str | None:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        for part in re.split(r"\n{2,}", value or ""):
+            cleaned = part.strip()
+            if not cleaned:
+                continue
+            key = re.sub(r"\s+", " ", cleaned).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(cleaned)
+    return "\n\n".join(ordered) if ordered else None
+
+
+def _jobs_are_mergeable(left: Any, right: Any) -> bool:
+    if getattr(left, "component_id", None) != getattr(right, "component_id", None):
+        return False
+    if getattr(left, "frequency", None) != getattr(right, "frequency", None):
+        return False
+    if getattr(left, "frequency_type", None) != getattr(right, "frequency_type", None):
+        return False
+    if getattr(left, "source_manual_id", None) != getattr(right, "source_manual_id", None):
+        return False
+
+    left_name = _normalise_text(getattr(left, "job_name", None))
+    right_name = _normalise_text(getattr(right, "job_name", None))
+    if not left_name or not right_name:
+        return False
+    if left_name == right_name:
+        return True
+
+    similarity = SequenceMatcher(None, left_name, right_name).ratio()
+    left_page = getattr(left, "page_reference", None)
+    right_page = getattr(right, "page_reference", None)
+    same_page = left_page is not None and right_page is not None and left_page == right_page
+    return similarity >= 0.84 or (same_page and similarity >= 0.72)
+
+
+async def _consolidate_jobs_for_manual(
+    *,
+    db: Any,
+    manual: Any,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> int:
+    from sqlalchemy import select
+    from app.models.job import Job
+
+    result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == tenant_id,
+            Job.is_deleted == False,
+            Job.source_manual_id == manual.id,
+        ).order_by(Job.created_at, Job.job_name)
+    )
+    jobs = list(result.scalars().all())
+    merged_count = 0
+
+    for idx, target in enumerate(jobs):
+        if getattr(target, "is_deleted", False):
+            continue
+        for candidate in jobs[idx + 1:]:
+            if getattr(candidate, "is_deleted", False):
+                continue
+            if not _jobs_are_mergeable(target, candidate):
+                continue
+
+            target.job_name = target.job_name if len(target.job_name) >= len(candidate.job_name) else candidate.job_name
+            target.job_description = _combine_unique_text_parts(target.job_description, candidate.job_description)
+            target.safety_precaution = _combine_unique_text_parts(target.safety_precaution, candidate.safety_precaution)
+            target.tools_required = _combine_unique_text_parts(target.tools_required, candidate.tools_required)
+            if not target.job_code and candidate.job_code:
+                target.job_code = candidate.job_code
+            if not target.performing_rank and candidate.performing_rank:
+                target.performing_rank = candidate.performing_rank
+            if not target.verifying_rank and candidate.verifying_rank:
+                target.verifying_rank = candidate.verifying_rank
+            if not target.cms_id and candidate.cms_id:
+                target.cms_id = candidate.cms_id
+            target.is_critical = bool(target.is_critical or candidate.is_critical)
+            target.confidence_score = max(
+                int(target.confidence_score or 0),
+                int(candidate.confidence_score or 0),
+            ) or None
+            target.source_reference = _merge_reference_values(target.source_reference, candidate.source_reference)
+            target.pdf_reference = _merge_reference_values(target.pdf_reference, candidate.pdf_reference)
+            db.add(target)
+
+            candidate.is_deleted = True
+            db.add(candidate)
+            merged_count += 1
+
+    return merged_count
+
 # ---------------------------------------------------------------------------
 # Core extraction function
 # ---------------------------------------------------------------------------
@@ -1679,13 +1777,20 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 vessel_id=vessel_id,
                 tenant_id=tenant_id,
             )
+            merged_jobs = await _consolidate_jobs_for_manual(
+                db=db,
+                manual=manual,
+                vessel_id=vessel_id,
+                tenant_id=tenant_id,
+            )
             await db.commit()
             logger.warning(
-                "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d",
+                "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d merged_jobs=%d",
                 vessel_id_str,
                 component_ref_updates,
                 jobs_linked,
                 spares_linked,
+                merged_jobs,
             )
         except Exception as link_exc:
             logger.warning("auto_extract_from_manual: manual sync failed: %s", link_exc)

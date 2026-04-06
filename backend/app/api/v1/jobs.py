@@ -25,6 +25,22 @@ from app.services.review_workflow import (
 router = APIRouter()
 
 
+def _merge_text_values(*values: Optional[str]) -> Optional[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for value in values:
+        for part in (value or "").split("\n\n"):
+            cleaned = part.strip()
+            if not cleaned:
+                continue
+            key = " ".join(cleaned.lower().split())
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(cleaned)
+    return "\n\n".join(merged) if merged else None
+
+
 async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselProject:
     result = await db.execute(
         select(VesselProject).where(
@@ -361,6 +377,87 @@ async def link_component(
     await db.refresh(job)
     await broadcast_activity(activity)
     return JobOut.model_validate(job)
+
+
+@router.post("/{vessel_id}/jobs/merge")
+async def merge_jobs(
+    vessel_id: uuid.UUID,
+    body: dict[str, Any],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> JobOut:
+    ids = [uuid.UUID(value) for value in body.get("ids", []) if value]
+    if len(ids) < 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Select at least two jobs to merge.")
+
+    target_id_raw = body.get("target_id")
+    target_id = uuid.UUID(target_id_raw) if target_id_raw else ids[0]
+
+    result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.id.in_(ids),
+            Job.is_deleted == False,
+        )
+    )
+    jobs = list(result.scalars().all())
+    if len(jobs) < 2:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Jobs not found.")
+
+    target = next((job for job in jobs if job.id == target_id), None)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target job must be one of the selected jobs.")
+
+    merged_ids: list[str] = []
+    for job in jobs:
+        if job.id == target.id:
+            continue
+        target.job_description = _merge_text_values(target.job_description, job.job_description)
+        target.safety_precaution = _merge_text_values(target.safety_precaution, job.safety_precaution)
+        target.tools_required = _merge_text_values(target.tools_required, job.tools_required)
+        if not target.job_code and job.job_code:
+            target.job_code = job.job_code
+        if not target.component_id and job.component_id:
+            target.component_id = job.component_id
+            target.is_unmapped = False
+        if not target.performing_rank and job.performing_rank:
+            target.performing_rank = job.performing_rank
+        if not target.verifying_rank and job.verifying_rank:
+            target.verifying_rank = job.verifying_rank
+        if not target.cms_id and job.cms_id:
+            target.cms_id = job.cms_id
+        if target.frequency is None and job.frequency is not None:
+            target.frequency = job.frequency
+        if target.frequency_type is None and job.frequency_type is not None:
+            target.frequency_type = job.frequency_type
+        target.is_critical = bool(target.is_critical or job.is_critical)
+        if (job.confidence_score or 0) > (target.confidence_score or 0):
+            target.confidence_score = job.confidence_score
+        if not target.pdf_reference and job.pdf_reference:
+            target.pdf_reference = job.pdf_reference
+        if not target.source_reference and job.source_reference:
+            target.source_reference = job.source_reference
+        job.is_deleted = True
+        db.add(job)
+        merged_ids.append(str(job.id))
+
+    target.qc_status = QCStatus.modified if target.qc_status == QCStatus.accepted else target.qc_status
+    db.add(target)
+    activity = await log_activity(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        action_type="job.merged",
+        entity_type="job",
+        entity_id=target.id,
+        description=f"Merged {len(merged_ids)} jobs into '{target.job_name}'.",
+        metadata={"merged_job_ids": merged_ids},
+    )
+    await db.commit()
+    await db.refresh(target)
+    await broadcast_activity(activity)
+    return JobOut.model_validate(target)
 
 
 @router.post("/{vessel_id}/jobs/trigger-extraction")

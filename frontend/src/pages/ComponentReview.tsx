@@ -1140,6 +1140,8 @@ const ComponentReview: React.FC = () => {
             : null
         }
         defaultPages={selectedComponent?.page_reference}
+        panelClassName="w-[48rem]"
+        showTextSnippet={false}
       />
     </div>
   )

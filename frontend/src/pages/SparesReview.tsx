@@ -46,11 +46,12 @@ interface SpareEditorModalProps {
   isPending: boolean
   components: ComponentOption[]
   initialValues?: Partial<Spare>
-  onClose: () => void
+  onCancel?: () => void
   onSubmit: (payload: Record<string, unknown>) => void
+  embedded?: boolean
 }
 
-function SpareEditorModal({ title, submitLabel, isPending, components, initialValues, onClose, onSubmit }: SpareEditorModalProps) {
+function SpareEditorModal({ title, submitLabel, isPending, components, initialValues, onCancel, onSubmit, embedded = false }: SpareEditorModalProps) {
   const [form, setForm] = useState({
     part_name: initialValues?.part_name ?? '',
     part_number: initialValues?.part_number ?? '',
@@ -66,14 +67,35 @@ function SpareEditorModal({ title, submitLabel, isPending, components, initialVa
 
   const set = (key: keyof typeof form, value: string | boolean) => setForm((prev) => ({ ...prev, [key]: value }))
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4">
-          <h2 className="text-base font-semibold text-white">{title}</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-white"><XCircle className="h-5 w-5" /></button>
+  React.useEffect(() => {
+    setForm({
+      part_name: initialValues?.part_name ?? '',
+      part_number: initialValues?.part_number ?? '',
+      drawing_number: initialValues?.drawing_number ?? '',
+      drawing_position: initialValues?.drawing_position ?? '',
+      specification: initialValues?.specification ?? '',
+      spare_maker: initialValues?.spare_maker ?? '',
+      spare_model: initialValues?.spare_model ?? '',
+      component_id: initialValues?.component_id ?? '',
+      is_critical: Boolean(initialValues?.is_critical),
+      qc_status: initialValues?.qc_status ?? 'pending',
+    })
+  }, [initialValues])
+
+  const formBody = (
+    <>
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-white">{title}</h3>
+          <p className="mt-1 text-xs text-slate-500">Edit while reviewing the source PDF page below.</p>
         </div>
-        <div className="grid gap-4 px-6 py-4 md:grid-cols-2">
+        {onCancel ? (
+          <button onClick={onCancel} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
+            Cancel
+          </button>
+        ) : null}
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
           <div className="md:col-span-2">
             <label className="mb-1 block text-xs text-slate-400">Part Name</label>
             <input value={form.part_name} onChange={(e) => set('part_name', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
@@ -126,9 +148,9 @@ function SpareEditorModal({ title, submitLabel, isPending, components, initialVa
               <option value="rejected">Rejected</option>
             </select>
           </div>
-        </div>
-        <div className="flex items-center justify-end gap-2 border-t border-slate-700 px-6 py-4">
-          <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
+      </div>
+      <div className="flex items-center justify-end gap-2 border-t border-slate-700 pt-4">
+          {onCancel ? <button onClick={onCancel} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button> : null}
           <button
             onClick={() =>
               onSubmit({
@@ -149,7 +171,18 @@ function SpareEditorModal({ title, submitLabel, isPending, components, initialVa
           >
             {submitLabel}
           </button>
-        </div>
+      </div>
+    </>
+  )
+
+  if (embedded) {
+    return formBody
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+        <div className="px-6 py-4">{formBody}</div>
       </div>
     </div>
   )
@@ -178,7 +211,7 @@ const SparesReview: React.FC = () => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedSpare, setSelectedSpare] = useState<Spare | null>(null)
   const [editingSpare, setEditingSpare] = useState<Spare | null>(null)
-  const [showCreateSpare, setShowCreateSpare] = useState(false)
+  const [createDraft, setCreateDraft] = useState<Partial<Spare> | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['spares', vesselId, filterQC, filterMethod, filterCritical],
@@ -222,17 +255,20 @@ const SparesReview: React.FC = () => {
   const saveSpareMutation = useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) =>
       apiClient.patch(`/vessels/${vesselId}/spares/${id}`, payload).then((r) => r.data),
-    onSuccess: () => {
+    onSuccess: (spare) => {
       queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
-      setEditingSpare(null)
+      setEditingSpare(spare)
+      setSelectedSpare(spare)
     },
   })
 
   const createSpareMutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) => apiClient.post(`/vessels/${vesselId}/spares`, payload).then((r) => r.data),
-    onSuccess: () => {
+    onSuccess: (spare) => {
       queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
-      setShowCreateSpare(false)
+      setCreateDraft(null)
+      setEditingSpare(spare)
+      setSelectedSpare(spare)
     },
   })
 
@@ -247,29 +283,53 @@ const SparesReview: React.FC = () => {
   const spares: Spare[] = data?.items ?? []
   const componentOptions: ComponentOption[] = (componentOptionsQuery.data?.items ?? []).filter((component: ComponentOption) => component.qc_status !== 'rejected')
 
+  const editorContent = editingSpare ? (
+    <SpareEditorModal
+      title="Edit Spare"
+      submitLabel="Save Changes"
+      isPending={saveSpareMutation.isPending}
+      components={componentOptions}
+      initialValues={editingSpare}
+      embedded
+      onCancel={() => setEditingSpare(null)}
+      onSubmit={(payload) => saveSpareMutation.mutate({ id: editingSpare.id, payload })}
+    />
+  ) : createDraft ? (
+    <SpareEditorModal
+      title="Add Spare"
+      submitLabel="Create Spare"
+      isPending={createSpareMutation.isPending}
+      components={componentOptions}
+      initialValues={createDraft}
+      embedded
+      onCancel={() => setCreateDraft(null)}
+      onSubmit={(payload) => createSpareMutation.mutate(payload)}
+    />
+  ) : selectedSpare ? (
+    <div className="space-y-2">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-white">{selectedSpare.part_name}</h3>
+          <p className="mt-1 text-xs text-slate-500">Review the drawing/table page, then edit if required.</p>
+        </div>
+        <button onClick={() => setEditingSpare(selectedSpare)} className="rounded-lg border border-sky-700 px-3 py-1.5 text-xs text-sky-300 hover:bg-slate-800">
+          <Pencil className="mr-1 inline h-3.5 w-3.5" />
+          Edit
+        </button>
+      </div>
+      <div className="grid gap-2 text-xs text-slate-400 md:grid-cols-2">
+        <div>Part #: <span className="text-slate-200">{selectedSpare.part_number ?? '-'}</span></div>
+        <div>Drawing: <span className="text-slate-200">{selectedSpare.drawing_number ?? '-'}</span></div>
+        <div>Position: <span className="text-slate-200">{selectedSpare.drawing_position ?? '-'}</span></div>
+        <div>Component: <span className="text-slate-200">{selectedSpare.component_name ?? 'Unmapped'}</span></div>
+      </div>
+    </div>
+  ) : (
+    <div className="text-sm text-slate-500">Select a spare to review it against the source PDF.</div>
+  )
+
   return (
     <div className="flex h-full gap-4">
-      {showCreateSpare && (
-        <SpareEditorModal
-          title="Add Spare"
-          submitLabel="Create Spare"
-          isPending={createSpareMutation.isPending}
-          components={componentOptions}
-          onClose={() => setShowCreateSpare(false)}
-          onSubmit={(payload) => createSpareMutation.mutate(payload)}
-        />
-      )}
-      {editingSpare && (
-        <SpareEditorModal
-          title="Edit Spare"
-          submitLabel="Save Changes"
-          isPending={saveSpareMutation.isPending}
-          components={componentOptions}
-          initialValues={editingSpare}
-          onClose={() => setEditingSpare(null)}
-          onSubmit={(payload) => saveSpareMutation.mutate({ id: editingSpare.id, payload })}
-        />
-      )}
       {/* Left: Spare Grid */}
       <div className="flex flex-1 flex-col gap-4 overflow-hidden">
         <div className="flex items-center justify-between">
@@ -297,7 +357,7 @@ const SparesReview: React.FC = () => {
               </>
             )}
             <button
-              onClick={() => setShowCreateSpare(true)}
+              onClick={() => { setCreateDraft({ qc_status: 'pending' }); setEditingSpare(null) }}
               className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -355,7 +415,7 @@ const SparesReview: React.FC = () => {
               No spares found yet. Extract from Manual Review after component matching is complete.
             </div>
           ) : (
-            <table className="w-full text-sm">
+            <table className="min-w-[1500px] w-full text-sm">
               <thead>
                 <tr className="sticky top-0 border-b border-slate-700 bg-slate-900 text-left text-xs text-slate-500 uppercase">
                   <th className="px-4 py-3 w-8">
@@ -389,11 +449,12 @@ const SparesReview: React.FC = () => {
                 {spares.map((spare) => (
                   <tr
                     key={spare.id}
-                    className={`hover:bg-slate-800/50 transition-colors ${
+                    onClick={() => { setSelectedSpare(spare); setEditingSpare(null); setCreateDraft(null) }}
+                    className={`cursor-pointer hover:bg-slate-800/50 transition-colors ${
                       selectedIds.has(spare.id) ? 'bg-sky-900/10' : ''
                     } ${selectedSpare?.id === spare.id ? 'bg-slate-800' : ''}`}
                   >
-                    <td className="px-4 py-2.5">
+                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={selectedIds.has(spare.id)}
@@ -401,20 +462,20 @@ const SparesReview: React.FC = () => {
                         className="h-3.5 w-3.5 rounded"
                       />
                     </td>
-                    <td className="px-4 py-2.5 text-slate-200 font-medium">{spare.part_name}</td>
-                    <td className="px-4 py-2.5 font-mono text-xs text-slate-400">
+                    <td className="px-4 py-2.5 text-slate-200 font-medium"><div className="max-w-[260px] truncate whitespace-nowrap" title={spare.part_name}>{spare.part_name}</div></td>
+                    <td className="px-4 py-2.5 whitespace-nowrap font-mono text-xs text-slate-400">
                       {spare.part_number ?? '-'}
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-xs text-slate-400">
+                    <td className="px-4 py-2.5 whitespace-nowrap font-mono text-xs text-slate-400">
                       {spare.drawing_number ?? '-'}
                     </td>
-                    <td className="px-4 py-2.5 text-slate-400">{spare.drawing_position ?? '-'}</td>
-                    <td className="px-4 py-2.5 text-slate-300">{spare.spare_maker ?? '-'}</td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-slate-400">{spare.drawing_position ?? '-'}</td>
+                    <td className="px-4 py-2.5"><div className="max-w-[180px] truncate whitespace-nowrap text-slate-300" title={spare.spare_maker ?? ''}>{spare.spare_maker ?? '-'}</div></td>
                     <td className="px-4 py-2.5">
                       {spare.component_name ? (
                         <div className="min-w-[180px]">
-                          <p className="text-slate-200">{spare.component_name}</p>
-                          <p className="text-xs text-slate-500">
+                          <p className="truncate whitespace-nowrap text-slate-200" title={spare.component_name}>{spare.component_name}</p>
+                          <p className="truncate whitespace-nowrap text-xs text-slate-500">
                             {[spare.component_maker, spare.component_model].filter(Boolean).join(' - ') || 'Linked'}
                           </p>
                         </div>
@@ -425,11 +486,11 @@ const SparesReview: React.FC = () => {
                     <td className="px-4 py-2.5">
                       {spare.page_reference != null ? (
                         <div className="min-w-[170px] text-xs">
-                          <div className="inline-flex items-center gap-1 text-sky-400" title={`${spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'} - page ${spare.page_reference}`}>
+                          <div className="inline-flex items-center gap-1 whitespace-nowrap text-sky-400" title={`${spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'} - page ${spare.page_reference}`}>
                             <ExternalLink className="h-3 w-3" />
                             p.{spare.page_reference}
                           </div>
-                          <p className="mt-1 truncate text-slate-500">{spare.source_manual_name ?? spare.pdf_reference ?? 'Manual'}</p>
+                          <p className="mt-1 truncate whitespace-nowrap text-slate-500">{spare.source_manual_name ?? spare.pdf_reference ?? 'Manual'}</p>
                         </div>
                       ) : <span className="text-slate-600">-</span>}
                     </td>
@@ -477,7 +538,7 @@ const SparesReview: React.FC = () => {
                         {spare.qc_status}
                       </span>
                     </td>
-                    <td className="px-4 py-2.5">
+                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => setSelectedSpare(spare)}
                         className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600"
@@ -486,7 +547,7 @@ const SparesReview: React.FC = () => {
                         <FileSearch className="h-3 w-3" />
                       </button>
                     </td>
-                    <td className="px-4 py-2.5">
+                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => {
                           setSelectedSpare(spare)
@@ -525,6 +586,9 @@ const SparesReview: React.FC = () => {
             : null
         }
         defaultPages={selectedSpare?.page_reference}
+        panelClassName="w-[48rem]"
+        headerContent={editorContent}
+        showTextSnippet={false}
       />
     </div>
   )
