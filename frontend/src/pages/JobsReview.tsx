@@ -41,6 +41,7 @@ interface Job {
   page_reference: number | null
   source_page_number: number | null
   pdf_reference: string | null
+  source_reference?: string | null
 }
 
 type JobForm = {
