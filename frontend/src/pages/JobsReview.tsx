@@ -91,6 +91,7 @@ function toForm(initial?: Partial<Job>): JobForm {
 
 function JobEditor({
   title,
+  submitLabel,
   initial,
   components,
   isPending,
@@ -99,6 +100,7 @@ function JobEditor({
   onSplit,
 }: {
   title: string
+  submitLabel: string
   initial?: Partial<Job>
   components: ComponentOption[]
   isPending: boolean
@@ -220,7 +222,7 @@ function JobEditor({
           disabled={!form.job_name || isPending}
           className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
         >
-          {title}
+          {submitLabel}
         </button>
       </div>
     </div>
@@ -239,6 +241,8 @@ const JobsReview: React.FC = () => {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [editingJob, setEditingJob] = useState<Job | null>(null)
   const [createDraft, setCreateDraft] = useState<Partial<Job> | null>(null)
+  const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS],
@@ -268,7 +272,10 @@ const JobsReview: React.FC = () => {
     onSuccess: () => {
       refreshJobs()
       setSelectedIds(new Set())
+      setActionError(null)
+      setActionMessage('Selected jobs were accepted.')
     },
+    onError: (error: Error) => setActionError(error.message),
   })
 
   const bulkRejectMutation = useMutation({
@@ -277,7 +284,10 @@ const JobsReview: React.FC = () => {
       refreshJobs()
       setSelectedIds(new Set())
       setEditingJob(null)
+      setActionError(null)
+      setActionMessage('Selected jobs were rejected.')
     },
+    onError: (error: Error) => setActionError(error.message),
   })
 
   const mergeJobsMutation = useMutation({
@@ -289,7 +299,10 @@ const JobsReview: React.FC = () => {
       setSelectedJob(job)
       setEditingJob(job)
       setCreateDraft(null)
+      setActionError(null)
+      setActionMessage('Selected jobs were merged.')
     },
+    onError: (error: Error) => setActionError(error.message),
   })
 
   const saveJobMutation = useMutation({
@@ -299,7 +312,10 @@ const JobsReview: React.FC = () => {
       refreshJobs()
       setSelectedJob(job)
       setEditingJob(job)
+      setActionError(null)
+      setActionMessage('Job changes were saved.')
     },
+    onError: (error: Error) => setActionError(error.message),
   })
 
   const createJobMutation = useMutation({
@@ -309,7 +325,10 @@ const JobsReview: React.FC = () => {
       setSelectedJob(job)
       setEditingJob(job)
       setCreateDraft(null)
+      setActionError(null)
+      setActionMessage('New job was created.')
     },
+    onError: (error: Error) => setActionError(error.message),
   })
 
   const handleCMSUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -317,10 +336,16 @@ const JobsReview: React.FC = () => {
     if (!file) return
     const formData = new FormData()
     formData.append('file', file)
-    await apiClient.post(`/vessels/${vesselId}/jobs/upload-cms-mapping`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
-    refreshJobs()
+    try {
+      await apiClient.post(`/vessels/${vesselId}/jobs/upload-cms-mapping`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      refreshJobs()
+      setActionError(null)
+      setActionMessage('CMS mapping upload completed.')
+    } catch (error) {
+      setActionError((error as Error).message)
+    }
   }, [vesselId, refreshJobs])
 
   const toggleSelect = useCallback((id: string) => {
@@ -336,6 +361,24 @@ const JobsReview: React.FC = () => {
     [data?.items, filterNoCMS]
   )
 
+  React.useEffect(() => {
+    if (!jobs.length) {
+      setSelectedJob(null)
+      setEditingJob(null)
+      return
+    }
+
+    if (selectedJob) {
+      const refreshed = jobs.find((job) => job.id === selectedJob.id)
+      if (refreshed) setSelectedJob(refreshed)
+    }
+
+    if (editingJob) {
+      const refreshed = jobs.find((job) => job.id === editingJob.id)
+      if (refreshed) setEditingJob(refreshed)
+    }
+  }, [jobs, selectedJob, editingJob])
+
   const componentOptions: ComponentOption[] = useMemo(
     () => (componentOptionsQuery.data?.items ?? []).filter((component: ComponentOption) => component.qc_status !== 'rejected'),
     [componentOptionsQuery.data?.items]
@@ -348,7 +391,8 @@ const JobsReview: React.FC = () => {
 
   const editorContent = editingJob ? (
     <JobEditor
-      title="Save Changes"
+      title="Edit Job"
+      submitLabel="Save Changes"
       initial={editingJob}
       components={componentOptions}
       isPending={saveJobMutation.isPending}
@@ -358,7 +402,8 @@ const JobsReview: React.FC = () => {
     />
   ) : createDraft ? (
     <JobEditor
-      title="Create Job"
+      title="Add Job"
+      submitLabel="Create Job"
       initial={createDraft}
       components={componentOptions}
       isPending={createJobMutation.isPending}
@@ -405,18 +450,18 @@ const JobsReview: React.FC = () => {
           <div className="flex items-center gap-2">
             {selectedIds.size > 0 ? (
               <>
-                <button onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))} className="flex items-center gap-1.5 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600">
+                <button onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))} disabled={bulkAcceptMutation.isPending} className="flex items-center gap-1.5 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50">
                   <CheckCircle className="h-3.5 w-3.5" />
                   Accept ({selectedIds.size})
                 </button>
-                <button onClick={() => bulkRejectMutation.mutate(Array.from(selectedIds))} className="flex items-center gap-1.5 rounded-lg bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600">
+                <button onClick={() => bulkRejectMutation.mutate(Array.from(selectedIds))} disabled={bulkRejectMutation.isPending} className="flex items-center gap-1.5 rounded-lg bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50">
                   <XCircle className="h-3.5 w-3.5" />
                   Reject ({selectedIds.size})
                 </button>
               </>
             ) : null}
             {selectedIds.size >= 2 ? (
-              <button onClick={() => mergeJobsMutation.mutate({ ids: Array.from(selectedIds), targetId: mergeTargetId })} className="flex items-center gap-1.5 rounded-lg border border-sky-700 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-800">
+              <button onClick={() => mergeJobsMutation.mutate({ ids: Array.from(selectedIds), targetId: mergeTargetId })} disabled={mergeJobsMutation.isPending} className="flex items-center gap-1.5 rounded-lg border border-sky-700 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-800 disabled:opacity-50">
                 <GitMerge className="h-3.5 w-3.5" />
                 Merge Selected
               </button>
@@ -432,6 +477,18 @@ const JobsReview: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {actionError ? (
+          <div className="rounded-xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+            {actionError}
+          </div>
+        ) : null}
+
+        {actionMessage ? (
+          <div className="rounded-xl border border-green-900/60 bg-green-950/30 px-4 py-3 text-sm text-green-200">
+            {actionMessage}
+          </div>
+        ) : null}
 
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => setFilterUnmapped(!filterUnmapped)} className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors ${filterUnmapped ? 'border-amber-600 bg-amber-900/20 text-amber-300' : 'border-slate-700 text-slate-400 hover:bg-slate-800'}`}>
@@ -524,7 +581,7 @@ const JobsReview: React.FC = () => {
         title="Job Source Preview"
         subtitle={selectedJob ? [selectedJob.job_name, selectedJob.component_name, selectedJob.component_maker, selectedJob.component_model].filter(Boolean).join(' • ') : null}
         defaultPages={selectedJob?.source_page_number ?? selectedJob?.page_reference}
-        panelClassName="w-[48rem]"
+        panelClassName="w-[56rem]"
         headerContent={editorContent}
         showTextSnippet={false}
       />

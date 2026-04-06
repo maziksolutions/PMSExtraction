@@ -20,11 +20,17 @@ const Export: React.FC = () => {
   const queryClient = useQueryClient()
   const { user } = useAuthStore()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [downloadError, setDownloadError] = React.useState<string | null>(null)
+  const [downloadMessage, setDownloadMessage] = React.useState<string | null>(null)
 
   const { data: exportsData } = useQuery({
     queryKey: ['exports', vesselId],
     queryFn: () => apiClient.get(`/vessels/${vesselId}/exports`).then((r) => r.data),
     enabled: !!vesselId,
+    refetchInterval: (query) => {
+      const items: ExportVersion[] = query.state.data?.items ?? []
+      return items.some((item) => item.status === 'generating') ? 3000 : false
+    },
   })
 
   const { data: schemasData } = useQuery({
@@ -34,9 +40,17 @@ const Export: React.FC = () => {
 
   const triggerExportMutation = useMutation({
     mutationFn: () => apiClient.post(`/vessels/${vesselId}/exports`).then((r) => r.data),
-    onSuccess: () => {
+    onSuccess: async (exportVersion) => {
       queryClient.invalidateQueries({ queryKey: ['exports', vesselId] })
+      if (exportVersion?.id && exportVersion?.version_number) {
+        try {
+          await handleDownload(exportVersion.id, exportVersion.version_number)
+        } catch (error) {
+          setDownloadError((error as Error).message)
+        }
+      }
     },
+    onError: (error: Error) => setDownloadError(error.message),
   })
 
   const uploadSchemaMutation = useMutation({
@@ -67,8 +81,12 @@ const Export: React.FC = () => {
     const a = document.createElement('a')
     a.href = url
     a.download = `vessel_pms_export_v${version}.xlsx`
+    document.body.appendChild(a)
     a.click()
+    a.remove()
     URL.revokeObjectURL(url)
+    setDownloadError(null)
+    setDownloadMessage(`Export v${version} downloaded successfully.`)
   }
 
   const versions: ExportVersion[] = exportsData?.items ?? []
@@ -156,6 +174,16 @@ const Export: React.FC = () => {
             {String((triggerExportMutation.error as any)?.response?.data?.detail ?? 'Export failed')}
           </div>
         )}
+        {downloadError ? (
+          <div className="mt-3 rounded-lg border border-red-800 bg-red-900/20 p-3 text-sm text-red-300">
+            {downloadError}
+          </div>
+        ) : null}
+        {downloadMessage ? (
+          <div className="mt-3 rounded-lg border border-green-800 bg-green-900/20 p-3 text-sm text-green-300">
+            {downloadMessage}
+          </div>
+        ) : null}
       </div>
 
       <div className="rounded-xl border border-slate-800 bg-slate-900">

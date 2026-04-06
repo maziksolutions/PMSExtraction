@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { FileSearch, Maximize2, RefreshCw, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, FileSearch, Maximize2, RefreshCw, RotateCcw, RotateCw, X } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface PreviewPage {
@@ -44,6 +44,8 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
   const [pageInput, setPageInput] = useState('')
   const [requestedPages, setRequestedPages] = useState('')
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [rotation, setRotation] = useState(0)
+  const [activePageNumber, setActivePageNumber] = useState<number | null>(null)
 
   useEffect(() => {
     const nextValue = defaultPages == null ? '' : String(defaultPages)
@@ -62,6 +64,34 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
     enabled: !!manualId && !!requestedPages,
     retry: false,
   })
+
+  useEffect(() => {
+    const pages = data?.pages ?? []
+    setActivePageNumber(pages.length > 1 ? pages[0].page_number : null)
+  }, [data?.pages])
+
+  const visiblePages =
+    activePageNumber == null
+      ? data?.pages ?? []
+      : (data?.pages ?? []).filter((page) => page.page_number === activePageNumber)
+
+  const multiPage = (data?.pages?.length ?? 0) > 1
+  const activePageIndex =
+    activePageNumber == null
+      ? -1
+      : (data?.pages ?? []).findIndex((page) => page.page_number === activePageNumber)
+
+  const stepPage = (direction: -1 | 1) => {
+    if (!data?.pages?.length) return
+    if (activePageNumber == null) {
+      setActivePageNumber(data.pages[0].page_number)
+      return
+    }
+    const nextIndex = activePageIndex + direction
+    if (nextIndex >= 0 && nextIndex < data.pages.length) {
+      setActivePageNumber(data.pages[nextIndex].page_number)
+    }
+  }
 
   const renderPageCards = (fullscreen = false) => (
     <div className="space-y-4">
@@ -83,7 +113,7 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
         </div>
       ) : null}
 
-      {data?.pages?.map((page) => (
+      {visiblePages.map((page) => (
         <section key={page.page_number} className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950/60">
           <div className="border-b border-slate-800 px-3 py-2">
             <div className="text-sm font-medium text-slate-100">Physical Page {page.page_number}</div>
@@ -94,7 +124,8 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
               <img
                 src={page.image_data_url}
                 alt={`Manual page ${page.page_number}`}
-                className={`rounded-lg border border-slate-800 bg-white ${fullscreen ? 'mx-auto max-h-[80vh] w-auto max-w-full' : 'w-full'}`}
+                className={`rounded-lg border border-slate-800 bg-white transition-transform ${fullscreen ? 'mx-auto max-h-[80vh] w-auto max-w-full' : 'w-full'}`}
+                style={{ transform: `rotate(${rotation}deg)`, transformOrigin: 'center center' }}
               />
             ) : (
               <div className="flex min-h-32 items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-900/80 text-xs text-slate-500">
@@ -184,10 +215,74 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
             >
               <Maximize2 className="h-3.5 w-3.5" />
             </button>
+            <button
+              type="button"
+              onClick={() => setRotation((value) => (value + 270) % 360)}
+              className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
+              title="Rotate left"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setRotation((value) => (value + 90) % 360)}
+              className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
+              title="Rotate right"
+            >
+              <RotateCw className="h-3.5 w-3.5" />
+            </button>
           </div>
           <p className="mt-2 text-[11px] text-slate-500">
             Load one page or multiple physical pages to verify what the extractor used.
           </p>
+          {multiPage ? (
+            <div className="mt-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => stepPage(-1)}
+                  disabled={activePageNumber == null || activePageIndex <= 0}
+                  className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                  title="Previous page"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActivePageNumber(null)}
+                  className={`rounded-lg px-2.5 py-1 text-xs ${activePageNumber == null ? 'bg-sky-600 text-white' : 'border border-slate-700 text-slate-300 hover:bg-slate-800'}`}
+                >
+                  All Pages
+                </button>
+                {(data?.pages ?? []).map((page) => (
+                  <button
+                    key={page.page_number}
+                    type="button"
+                    onClick={() => setActivePageNumber(page.page_number)}
+                    className={`rounded-lg px-2.5 py-1 text-xs ${
+                      activePageNumber === page.page_number
+                        ? 'bg-sky-600 text-white'
+                        : 'border border-slate-700 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    {page.page_number}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => stepPage(1)}
+                  disabled={activePageNumber == null || activePageIndex < 0 || activePageIndex >= (data?.pages?.length ?? 1) - 1}
+                  className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                  title="Next page"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Toggle between individual pages or view all selected pages together.
+              </p>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -207,13 +302,31 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
               <div className="text-sm font-semibold text-white">{title}</div>
               <div className="mt-1 text-xs text-slate-400">{manualName ?? 'Manual preview'}</div>
             </div>
-            <button
-              type="button"
-              onClick={() => setIsFullscreen(false)}
-              className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setRotation((value) => (value + 270) % 360)}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
+                title="Rotate left"
+              >
+                <RotateCcw className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setRotation((value) => (value + 90) % 360)}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
+                title="Rotate right"
+              >
+                <RotateCw className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsFullscreen(false)}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto p-5">
             {renderPageCards(true)}

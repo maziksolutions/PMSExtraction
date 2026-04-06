@@ -390,6 +390,21 @@ const ComponentReview: React.FC = () => {
   const components: Component[] = data?.items ?? []
   const mappedComponentOptions: Component[] = allComponentsQuery.data?.items ?? []
 
+  React.useEffect(() => {
+    if (!components.length) {
+      if (selectedComponent && !showUnmapped) {
+        const fallback = mappedComponentOptions.find((component) => component.id === selectedComponent.id)
+        if (fallback) setSelectedComponent(fallback)
+      }
+      return
+    }
+
+    if (selectedComponent) {
+      const refreshed = components.find((component) => component.id === selectedComponent.id)
+      if (refreshed) setSelectedComponent(refreshed)
+    }
+  }, [components, mappedComponentOptions, selectedComponent, showUnmapped])
+
   return (
     <div className="flex h-full gap-4">
       {showAddModal && vesselId && (
@@ -1140,7 +1155,7 @@ const ComponentReview: React.FC = () => {
             : null
         }
         defaultPages={selectedComponent?.page_reference}
-        panelClassName="w-[48rem]"
+        panelClassName="w-[56rem]"
         showTextSnippet={false}
       />
     </div>

@@ -212,6 +212,8 @@ const SparesReview: React.FC = () => {
   const [selectedSpare, setSelectedSpare] = useState<Spare | null>(null)
   const [editingSpare, setEditingSpare] = useState<Spare | null>(null)
   const [createDraft, setCreateDraft] = useState<Partial<Spare> | null>(null)
+  const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['spares', vesselId, filterQC, filterMethod, filterCritical],
@@ -240,7 +242,10 @@ const SparesReview: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
       setSelectedIds(new Set())
+      setActionError(null)
+      setActionMessage('Selected spares were accepted.')
     },
+    onError: (error: Error) => setActionError(error.message),
   })
 
   const bulkRejectMutation = useMutation({
@@ -249,7 +254,10 @@ const SparesReview: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
       setSelectedIds(new Set())
+      setActionError(null)
+      setActionMessage('Selected spares were rejected.')
     },
+    onError: (error: Error) => setActionError(error.message),
   })
 
   const saveSpareMutation = useMutation({
@@ -259,7 +267,10 @@ const SparesReview: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
       setEditingSpare(spare)
       setSelectedSpare(spare)
+      setActionError(null)
+      setActionMessage('Spare changes were saved.')
     },
+    onError: (error: Error) => setActionError(error.message),
   })
 
   const createSpareMutation = useMutation({
@@ -269,7 +280,10 @@ const SparesReview: React.FC = () => {
       setCreateDraft(null)
       setEditingSpare(spare)
       setSelectedSpare(spare)
+      setActionError(null)
+      setActionMessage('New spare was created.')
     },
+    onError: (error: Error) => setActionError(error.message),
   })
 
   const toggleSelect = useCallback((id: string) => {
@@ -282,6 +296,24 @@ const SparesReview: React.FC = () => {
 
   const spares: Spare[] = data?.items ?? []
   const componentOptions: ComponentOption[] = (componentOptionsQuery.data?.items ?? []).filter((component: ComponentOption) => component.qc_status !== 'rejected')
+
+  React.useEffect(() => {
+    if (!spares.length) {
+      setSelectedSpare(null)
+      setEditingSpare(null)
+      return
+    }
+
+    if (selectedSpare) {
+      const refreshed = spares.find((spare) => spare.id === selectedSpare.id)
+      if (refreshed) setSelectedSpare(refreshed)
+    }
+
+    if (editingSpare) {
+      const refreshed = spares.find((spare) => spare.id === editingSpare.id)
+      if (refreshed) setEditingSpare(refreshed)
+    }
+  }, [spares, selectedSpare, editingSpare])
 
   const editorContent = editingSpare ? (
     <SpareEditorModal
@@ -342,14 +374,16 @@ const SparesReview: React.FC = () => {
               <>
                 <button
                   onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))}
-                  className="flex items-center gap-1.5 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600"
+                  disabled={bulkAcceptMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
                 >
                   <CheckCircle className="h-3.5 w-3.5" />
                   Accept ({selectedIds.size})
                 </button>
                 <button
                   onClick={() => bulkRejectMutation.mutate(Array.from(selectedIds))}
-                  className="flex items-center gap-1.5 rounded-lg bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600"
+                  disabled={bulkRejectMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-lg bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50"
                 >
                   <XCircle className="h-3.5 w-3.5" />
                   Reject ({selectedIds.size})
@@ -365,6 +399,18 @@ const SparesReview: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {actionError ? (
+          <div className="rounded-xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+            {actionError}
+          </div>
+        ) : null}
+
+        {actionMessage ? (
+          <div className="rounded-xl border border-green-900/60 bg-green-950/30 px-4 py-3 text-sm text-green-200">
+            {actionMessage}
+          </div>
+        ) : null}
 
         {/* Filter bar */}
         <div className="flex flex-wrap items-center gap-2">
@@ -586,7 +632,7 @@ const SparesReview: React.FC = () => {
             : null
         }
         defaultPages={selectedSpare?.page_reference}
-        panelClassName="w-[48rem]"
+        panelClassName="w-[56rem]"
         headerContent={editorContent}
         showTextSnippet={false}
       />
