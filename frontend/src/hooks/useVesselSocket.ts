@@ -44,18 +44,22 @@ export function useVesselSocket(vesselId: string | undefined): UseVesselSocketRe
     if (!vesselId || !token) return
 
     let cancelled = false
-    apiClient
-      .get(`/vessels/${vesselId}/activity`, { params: { limit: 100 } })
-      .then((response) => {
-        if (cancelled) return
-        const items = Array.isArray(response.data?.items) ? response.data.items : []
-        setActivityFeed(items)
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setActivityFeed((prev) => prev)
-        }
-      })
+    const loadActivity = () =>
+      apiClient
+        .get(`/vessels/${vesselId}/activity`, { params: { limit: 100 } })
+        .then((response) => {
+          if (cancelled) return
+          const items = Array.isArray(response.data?.items) ? response.data.items : []
+          setActivityFeed(items)
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setActivityFeed((prev) => prev)
+          }
+        })
+
+    loadActivity()
+    const activityInterval = window.setInterval(loadActivity, 15000)
 
     const url = `${WS_BASE}/api/v1/ws/${vesselId}?token=${token}`
     const ws = new WebSocket(url)
@@ -97,6 +101,7 @@ export function useVesselSocket(vesselId: string | undefined): UseVesselSocketRe
 
     return () => {
       cancelled = true
+      window.clearInterval(activityInterval)
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current)
       }

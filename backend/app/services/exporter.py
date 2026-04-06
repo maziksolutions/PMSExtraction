@@ -43,6 +43,7 @@ FIELD_MAPPINGS = {
     "machinery_model": "Machinery Model",
     "extraction_method": "Extraction Method",
     "reason": "Reason",
+    "record_type": "Record Type",
 }
 
 
@@ -106,7 +107,7 @@ class ExportService:
                 if c.qc_status in (QCStatus.accepted, QCStatus.modified):
                     components_out.append(row)
                 else:
-                    excluded_out.append({**row, "reason": f"QC Status: {c.qc_status.value}"})
+                    excluded_out.append({**row, "record_type": "component", "reason": f"QC Status: {c.qc_status.value}"})
 
             # ---- Jobs ----
             jobs = session.execute(
@@ -135,7 +136,7 @@ class ExportService:
                 if j.qc_status in (QCStatus.accepted, QCStatus.modified):
                     jobs_out.append(row)
                 else:
-                    excluded_out.append({**row, "reason": f"QC Status: {j.qc_status.value}"})
+                    excluded_out.append({**row, "record_type": "job", "reason": f"QC Status: {j.qc_status.value}"})
 
             # ---- Spares ----
             spares = session.execute(
@@ -165,7 +166,7 @@ class ExportService:
                 if s.qc_status in (QCStatus.accepted, QCStatus.modified):
                     spares_out.append(row)
                 else:
-                    excluded_out.append({**row, "reason": f"QC Status: {s.qc_status.value}"})
+                    excluded_out.append({**row, "record_type": "spare", "reason": f"QC Status: {s.qc_status.value}"})
 
         return {
             "components": components_out,
@@ -218,7 +219,7 @@ class ExportService:
             if c.qc_status in (QCStatus.accepted, QCStatus.modified):
                 components_out.append(row)
             else:
-                excluded_out.append({**row, "reason": f"QC Status: {c.qc_status.value}"})
+                excluded_out.append({**row, "record_type": "component", "reason": f"QC Status: {c.qc_status.value}"})
 
         job_result = await db.execute(
             select(Job).where(
@@ -247,7 +248,7 @@ class ExportService:
             if j.qc_status in (QCStatus.accepted, QCStatus.modified):
                 jobs_out.append(row)
             else:
-                excluded_out.append({**row, "reason": f"QC Status: {j.qc_status.value}"})
+                excluded_out.append({**row, "record_type": "job", "reason": f"QC Status: {j.qc_status.value}"})
 
         spare_result = await db.execute(
             select(Spare).where(
@@ -277,7 +278,7 @@ class ExportService:
             if s.qc_status in (QCStatus.accepted, QCStatus.modified):
                 spares_out.append(row)
             else:
-                excluded_out.append({**row, "reason": f"QC Status: {s.qc_status.value}"})
+                excluded_out.append({**row, "record_type": "spare", "reason": f"QC Status: {s.qc_status.value}"})
 
         return {
             "components": components_out,
@@ -422,7 +423,58 @@ class ExportService:
         if not rows:
             return []
         if not schema:
-            return list(rows[0].keys())
+            headers: list[str] = []
+            seen: set[str] = set()
+            preferred_order = [
+                "record_type",
+                "reason",
+                "group1",
+                "group2",
+                "main_machinery",
+                "component_name",
+                "maker",
+                "model",
+                "specification",
+                "serial_number",
+                "location",
+                "machinery_particulars",
+                "job_pages",
+                "spare_pages",
+                "job_name",
+                "job_code",
+                "job_description",
+                "safety_precaution",
+                "tools_required",
+                "performing_rank",
+                "verifying_rank",
+                "frequency",
+                "frequency_type",
+                "cms_id",
+                "part_name",
+                "part_number",
+                "drawing_number",
+                "drawing_position",
+                "spare_maker",
+                "spare_model",
+                "machinery_maker",
+                "machinery_model",
+                "extraction_method",
+                "component_linked",
+                "pdf_reference",
+                "page_reference",
+                "is_critical",
+                "qc_status",
+            ]
+            for key in preferred_order:
+                if any(key in row for row in rows):
+                    headers.append(key)
+                    seen.add(key)
+            for row in rows:
+                for key in row.keys():
+                    if key not in seen:
+                        headers.append(key)
+                        seen.add(key)
+            return headers
 
         schema_map = schema.get("sheet_mappings", schema) if isinstance(schema, dict) else {}
         columns = schema_map.get(sheet_name) or []

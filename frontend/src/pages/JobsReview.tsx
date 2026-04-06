@@ -364,7 +364,7 @@ const JobsReview: React.FC = () => {
       setActionError(null)
       setActionMessage('Selected jobs were merged.')
     },
-    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
+    onError: (error: unknown) => setActionError(`Merge failed: ${getApiErrorMessage(error)}`),
   })
 
   const saveJobMutation = useMutation({
@@ -565,10 +565,10 @@ const JobsReview: React.FC = () => {
               </>
             ) : null}
             {selectedIds.size >= 2 ? (
-              <button onClick={() => mergeJobsMutation.mutate({ ids: Array.from(selectedIds), targetId: mergeTargetId })} disabled={mergeJobsMutation.isPending} className="flex items-center gap-1.5 rounded-lg border border-sky-700 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-800 disabled:opacity-50">
-                <GitMerge className="h-3.5 w-3.5" />
-                Merge Selected
-              </button>
+                <button onClick={() => mergeJobsMutation.mutate({ ids: Array.from(selectedIds), targetId: mergeTargetId })} disabled={mergeJobsMutation.isPending} className="flex items-center gap-1.5 rounded-lg border border-sky-700 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-800 disabled:opacity-50">
+                  <GitMerge className="h-3.5 w-3.5" />
+                  Merge Selected
+                </button>
             ) : null}
             <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
               <Upload className="h-3.5 w-3.5" />
