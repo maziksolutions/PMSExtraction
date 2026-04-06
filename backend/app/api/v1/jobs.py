@@ -515,7 +515,6 @@ async def merge_jobs(
     target.qc_status = QCStatus.modified if target.qc_status == QCStatus.accepted else target.qc_status
     db.add(target)
     await db.commit()
-    await db.refresh(target)
     try:
         activity = await log_activity(
             db,
@@ -539,7 +538,17 @@ async def merge_jobs(
         await broadcast_activity(activity)
     except Exception:
         await db.rollback()
-    return JobOut.model_validate(target)
+    refreshed_result = await db.execute(
+        select(Job).where(
+            Job.id == target.id,
+            Job.vessel_id == vessel_id,
+            Job.is_deleted == False,
+        )
+    )
+    refreshed_target = refreshed_result.scalar_one_or_none()
+    if refreshed_target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Merged job not found after merge.")
+    return JobOut.model_validate(refreshed_target)
 
 
 @router.post("/{vessel_id}/jobs/trigger-extraction")

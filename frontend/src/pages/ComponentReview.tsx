@@ -23,6 +23,7 @@ import {
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
+import ResizableSplitView from '@/components/layout/ResizableSplitView'
 
 interface Component {
   id: string
@@ -406,7 +407,7 @@ const ComponentReview: React.FC = () => {
   }, [components, mappedComponentOptions, selectedComponent, showUnmapped])
 
   return (
-    <div className="flex h-full gap-4">
+    <>
       {showAddModal && vesselId && (
         <AddComponentModal
           vesselId={vesselId}
@@ -437,7 +438,11 @@ const ComponentReview: React.FC = () => {
           onConfirm={(payload) => keepAsMappedMutation.mutate({ sourceId: keepSource.id, payload })}
         />
       )}
-
+      <ResizableSplitView
+        storageKey={`components-review-layout:${vesselId ?? 'default'}`}
+        initialLeftPercent={62}
+        left={
+      <div className="flex h-full gap-4">
       {/* Left Panel: 3-level Tree */}
       <aside className="w-64 shrink-0 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-3">
         <div className="mb-2 flex items-center justify-between">
@@ -1137,6 +1142,9 @@ const ComponentReview: React.FC = () => {
           </div>
         )}
       </div>
+      </div>
+      }
+      right={
       <ManualPagePreview
         vesselId={vesselId ?? ''}
         manualId={selectedComponent?.source_manual_id}
@@ -1155,10 +1163,12 @@ const ComponentReview: React.FC = () => {
             : null
         }
         defaultPages={selectedComponent?.page_reference}
-        panelClassName="w-[56rem]"
+        panelClassName="h-full w-full min-w-0"
         showTextSnippet={false}
       />
-    </div>
+      }
+      />
+    </>
   )
 }
 

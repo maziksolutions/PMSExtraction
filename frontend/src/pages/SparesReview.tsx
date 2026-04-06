@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
+import ResizableSplitView from '@/components/layout/ResizableSplitView'
 
 interface ComponentOption {
   id: string
@@ -452,9 +453,11 @@ const SparesReview: React.FC = () => {
   )
 
   return (
-    <div className="flex h-full gap-4">
-      {/* Left: Spare Grid */}
-      <div className="flex flex-1 flex-col gap-4 overflow-hidden">
+    <ResizableSplitView
+      storageKey={`spares-review-layout:${vesselId ?? 'default'}`}
+      initialLeftPercent={58}
+      left={
+      <div className="flex h-full flex-col gap-4 overflow-hidden">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">Spares Review</h1>
@@ -808,6 +811,8 @@ const SparesReview: React.FC = () => {
         </div>
       </div>
 
+      }
+      right={
       <ManualPagePreview
         vesselId={vesselId ?? ''}
         manualId={selectedSpare?.source_manual_id}
@@ -827,11 +832,12 @@ const SparesReview: React.FC = () => {
             : null
         }
         defaultPages={selectedSpare?.page_reference}
-        panelClassName="w-[56rem]"
+        panelClassName="h-full w-full min-w-0"
         headerContent={editorContent}
         showTextSnippet={false}
       />
-    </div>
+      }
+    />
   )
 }
 

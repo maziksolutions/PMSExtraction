@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CheckCircle, Copy, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Upload, XCircle } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
+import ResizableSplitView from '@/components/layout/ResizableSplitView'
 
 interface ComponentOption {
   id: string
@@ -530,8 +531,11 @@ const JobsReview: React.FC = () => {
   )
 
   return (
-    <div className="flex h-full gap-4">
-      <div className="flex flex-1 flex-col gap-6 overflow-hidden">
+    <ResizableSplitView
+      storageKey={`jobs-review-layout:${vesselId ?? 'default'}`}
+      initialLeftPercent={58}
+      left={
+      <div className="flex h-full flex-col gap-6 overflow-hidden">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">Jobs Review</h1>
@@ -806,6 +810,8 @@ const JobsReview: React.FC = () => {
         </div>
       </div>
 
+      }
+      right={
       <ManualPagePreview
         vesselId={vesselId ?? ''}
         manualId={selectedJob?.source_manual_id}
@@ -813,11 +819,12 @@ const JobsReview: React.FC = () => {
         title="Job Source Preview"
         subtitle={selectedJob ? [selectedJob.job_name, selectedJob.component_name, selectedJob.component_maker, selectedJob.component_model].filter(Boolean).join(' • ') : null}
         defaultPages={selectedJob?.source_page_number ?? selectedJob?.page_reference}
-        panelClassName="w-[56rem]"
+        panelClassName="h-full w-full min-w-0"
         headerContent={editorContent}
         showTextSnippet={false}
       />
-    </div>
+      }
+    />
   )
 }
 
