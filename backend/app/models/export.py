@@ -81,7 +81,13 @@ class ExportVersion(TenantBase):
     )
 
     status: Mapped[ExportVersionStatus] = mapped_column(
-        Enum(ExportVersionStatus, name="export_version_status"),
+        Enum(
+            ExportVersionStatus,
+            name="export_status",
+            native_enum=False,
+            create_constraint=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
         default=ExportVersionStatus.generating,
     )

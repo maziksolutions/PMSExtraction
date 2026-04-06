@@ -93,6 +93,64 @@ async def _normalize_pending_extracted_components(
         await db.commit()
 
 
+async def _backfill_component_manual_links(
+    *,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    components: list[Component],
+    db: AsyncSession,
+) -> None:
+    needs_backfill = [
+        component
+        for component in components
+        if not component.source_manual_id and (component.pdf_reference or component.page_reference)
+    ]
+    if not needs_backfill:
+        return
+
+    manual_result = await db.execute(
+        select(Manual).where(
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == tenant_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manuals = manual_result.scalars().all()
+    manual_by_name = {manual.original_filename.lower(): manual for manual in manuals}
+
+    changed = False
+    for component in needs_backfill:
+        pdf_reference = (component.pdf_reference or "").strip().lower()
+        if not pdf_reference:
+            continue
+
+        matched_manual = manual_by_name.get(pdf_reference)
+        if matched_manual is None:
+            for manual in manuals:
+                name = manual.original_filename.lower()
+                if name and (name in pdf_reference or pdf_reference in name):
+                    matched_manual = manual
+                    break
+
+        if matched_manual is None:
+            continue
+
+        component.source_manual_id = matched_manual.id
+        if not component.page_reference and matched_manual.pages_with_components:
+            try:
+                first_token = str(matched_manual.pages_with_components).split(",")[0].strip()
+                if "-" in first_token:
+                    first_token = first_token.split("-", 1)[0].strip()
+                component.page_reference = int(first_token)
+            except Exception:
+                pass
+        db.add(component)
+        changed = True
+
+    if changed:
+        await db.commit()
+
+
 @router.get("/{vessel_id}/components", summary="List components with filters")
 async def list_components(
     vessel_id: uuid.UUID,
@@ -171,6 +229,12 @@ async def list_components(
     )
     result = await db.execute(query)
     components = result.scalars().all()
+    await _backfill_component_manual_links(
+        vessel_id=vessel_id,
+        tenant_id=current_user.tenant_id,
+        components=components,
+        db=db,
+    )
     return {"items": [ComponentOut.model_validate(c) for c in components], "page": page, "page_size": page_size, "total": total}
 
 

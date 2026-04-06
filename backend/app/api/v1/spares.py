@@ -327,6 +327,59 @@ async def bulk_reject_spares(
     return {"rejected": len(spares)}
 
 
+@router.post("/{vessel_id}/spares/bulk-update")
+async def bulk_update_spares(
+    vessel_id: uuid.UUID,
+    body: dict[str, Any],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    ids = [uuid.UUID(value) for value in body.get("ids", []) if value]
+    updates = body.get("updates", {}) or {}
+    if not ids or not updates:
+        return {"updated": 0}
+
+    update_payload = SpareUpdate.model_validate(updates).model_dump(exclude_unset=True)
+    if not update_payload:
+        return {"updated": 0}
+
+    result = await db.execute(
+        select(Spare).where(Spare.id.in_(ids), Spare.vessel_id == vessel_id, Spare.is_deleted == False)
+    )
+    spares = result.scalars().all()
+    activities = []
+    for spare in spares:
+        for field, value in update_payload.items():
+            setattr(spare, field, value)
+        db.add(spare)
+        activities.append(
+            await log_activity(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                user_id=current_user.id,
+                action_type="spare.bulk_updated",
+                entity_type="spare",
+                entity_id=spare.id,
+                description=f"Bulk updated spare '{spare.part_name}'.",
+                metadata={"fields": sorted(update_payload.keys())},
+            )
+        )
+
+    accepted_spares = [spare for spare in spares if spare.qc_status == QCStatus.accepted]
+    if accepted_spares:
+        await sync_spares_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            spares=accepted_spares,
+        )
+    await db.commit()
+    for activity in activities:
+        await broadcast_activity(activity)
+    return {"updated": len(spares)}
+
+
 @router.post("/{vessel_id}/spares/{spare_id}/merge")
 async def merge_spare(
     vessel_id: uuid.UUID,

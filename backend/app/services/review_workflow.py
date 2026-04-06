@@ -66,6 +66,36 @@ async def ensure_maker_models_table(db: AsyncSession) -> None:
     )
 
 
+async def ensure_global_library_tables(db: AsyncSession) -> None:
+    for table_name in _GLOBAL_TABLE_MAP.values():
+        await db.execute(
+            text(
+                f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id UUID NOT NULL,
+                    canonical_data JSONB NOT NULL,
+                    source_vessels JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    occurrence_count INTEGER NOT NULL DEFAULT 1,
+                    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_confirmed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    is_deleted BOOLEAN NOT NULL DEFAULT false
+                )
+                """
+            )
+        )
+        await db.execute(
+            text(
+                f"""
+                CREATE INDEX IF NOT EXISTS ix_{table_name}_tenant_id
+                ON {table_name} (tenant_id)
+                """
+            )
+        )
+
+
 async def upsert_maker_model_library_entry(
     db: AsyncSession,
     *,
@@ -188,6 +218,7 @@ async def _load_existing_global_entries(
     table: str,
     tenant_id: uuid.UUID,
 ) -> list[dict[str, Any]]:
+    await ensure_global_library_tables(db)
     existing_result = await db.execute(
         text(
             f"SELECT id, canonical_data, source_vessels, occurrence_count "
@@ -248,7 +279,9 @@ async def _upsert_global_library_record(
                 f"UPDATE {table} "
                 "SET canonical_data = :cd::jsonb, "
                 "    source_vessels = :sv::jsonb, "
-                "    occurrence_count = :count "
+                "    occurrence_count = :count, "
+                "    last_confirmed_at = NOW(), "
+                "    updated_at = NOW() "
                 "WHERE id = :id"
             ),
             {
@@ -267,8 +300,9 @@ async def _upsert_global_library_record(
     await db.execute(
         text(
             f"INSERT INTO {table} "
-            "(id, tenant_id, canonical_data, occurrence_count, source_vessels, first_seen_at, is_deleted) "
-            "VALUES (:id, :tid, :cd::jsonb, 1, :sv::jsonb, NOW(), false)"
+            "(id, tenant_id, canonical_data, occurrence_count, source_vessels, first_seen_at, "
+            " last_confirmed_at, created_at, updated_at, is_deleted) "
+            "VALUES (:id, :tid, :cd::jsonb, 1, :sv::jsonb, NOW(), NOW(), NOW(), NOW(), false)"
         ),
         {
             "id": new_id,

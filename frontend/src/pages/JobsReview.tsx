@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, CheckCircle, Copy, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Upload, XCircle } from 'lucide-react'
+import { AlertCircle, CheckCircle, Copy, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Upload, XCircle } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 
@@ -60,6 +60,26 @@ type JobForm = {
   qc_status: string
 }
 
+type InlineJobEdit = Partial<{
+  job_name: string
+  component_id: string
+  job_code: string
+  frequency: string
+  frequency_type: string
+  cms_id: string
+  qc_status: string
+  is_critical: boolean
+}>
+
+type BatchJobFields = {
+  component_id?: string
+  frequency?: string
+  frequency_type?: string
+  cms_id?: string
+  qc_status?: string
+  is_critical?: string
+}
+
 const QC_COLORS: Record<string, string> = {
   pending: 'bg-slate-600 text-slate-200',
   accepted: 'bg-green-700 text-green-100',
@@ -68,6 +88,31 @@ const QC_COLORS: Record<string, string> = {
 }
 
 const FREQUENCY_OPTIONS = ['daily', 'weekly', 'biweekly', 'monthly', 'quarterly', 'half_yearly', 'yearly', 'biannual', 'running_hours']
+
+function getApiErrorMessage(error: unknown): string {
+  const maybeError = error as { response?: { data?: { detail?: unknown } }; message?: string }
+  const detail = maybeError?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  return maybeError?.message ?? 'Request failed.'
+}
+
+function buildJobPayload(edit: InlineJobEdit | BatchJobFields): Record<string, unknown> {
+  const payload: Record<string, unknown> = {}
+  if ('job_name' in edit) payload.job_name = edit.job_name ?? ''
+  if ('component_id' in edit) payload.component_id = edit.component_id ? edit.component_id : null
+  if ('job_code' in edit) payload.job_code = edit.job_code ? edit.job_code : null
+  if ('frequency' in edit) payload.frequency = edit.frequency ? Number(edit.frequency) : null
+  if ('frequency_type' in edit) payload.frequency_type = edit.frequency_type ? edit.frequency_type : null
+  if ('cms_id' in edit) payload.cms_id = edit.cms_id ? edit.cms_id : null
+  if ('qc_status' in edit && edit.qc_status) payload.qc_status = edit.qc_status
+  if ('is_critical' in edit) {
+    payload.is_critical =
+      typeof edit.is_critical === 'string'
+        ? edit.is_critical === 'true'
+        : Boolean(edit.is_critical)
+  }
+  return payload
+}
 
 function toForm(initial?: Partial<Job>): JobForm {
   return {
@@ -243,6 +288,9 @@ const JobsReview: React.FC = () => {
   const [createDraft, setCreateDraft] = useState<Partial<Job> | null>(null)
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [edits, setEdits] = useState<Record<string, InlineJobEdit>>({})
+  const [showBatchPanel, setShowBatchPanel] = useState(false)
+  const [batchFields, setBatchFields] = useState<BatchJobFields>({})
 
   const { data, isLoading } = useQuery({
     queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS],
@@ -267,6 +315,16 @@ const JobsReview: React.FC = () => {
     queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
   }, [queryClient, vesselId])
 
+  const setEdit = useCallback((id: string, key: keyof InlineJobEdit, value: string | boolean) => {
+    setEdits((prev) => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] ?? {}),
+        [key]: value,
+      },
+    }))
+  }, [])
+
   const bulkAcceptMutation = useMutation({
     mutationFn: (ids: string[]) => apiClient.post(`/vessels/${vesselId}/jobs/bulk-accept`, { ids }).then((r) => r.data),
     onSuccess: () => {
@@ -275,7 +333,7 @@ const JobsReview: React.FC = () => {
       setActionError(null)
       setActionMessage('Selected jobs were accepted.')
     },
-    onError: (error: Error) => setActionError(error.message),
+    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
   })
 
   const bulkRejectMutation = useMutation({
@@ -287,7 +345,7 @@ const JobsReview: React.FC = () => {
       setActionError(null)
       setActionMessage('Selected jobs were rejected.')
     },
-    onError: (error: Error) => setActionError(error.message),
+    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
   })
 
   const mergeJobsMutation = useMutation({
@@ -302,7 +360,7 @@ const JobsReview: React.FC = () => {
       setActionError(null)
       setActionMessage('Selected jobs were merged.')
     },
-    onError: (error: Error) => setActionError(error.message),
+    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
   })
 
   const saveJobMutation = useMutation({
@@ -315,7 +373,7 @@ const JobsReview: React.FC = () => {
       setActionError(null)
       setActionMessage('Job changes were saved.')
     },
-    onError: (error: Error) => setActionError(error.message),
+    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
   })
 
   const createJobMutation = useMutation({
@@ -328,7 +386,39 @@ const JobsReview: React.FC = () => {
       setActionError(null)
       setActionMessage('New job was created.')
     },
-    onError: (error: Error) => setActionError(error.message),
+    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
+  })
+
+  const saveInlineEditsMutation = useMutation({
+    mutationFn: async (nextEdits: Record<string, InlineJobEdit>) => {
+      const entries = Object.entries(nextEdits).filter(([, value]) => Object.keys(value).length > 0)
+      await Promise.all(
+        entries.map(([id, value]) =>
+          apiClient.patch(`/vessels/${vesselId}/jobs/${id}`, buildJobPayload(value))
+        )
+      )
+    },
+    onSuccess: () => {
+      refreshJobs()
+      setEdits({})
+      setActionError(null)
+      setActionMessage('Inline job edits were saved.')
+    },
+    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
+  })
+
+  const bulkUpdateMutation = useMutation({
+    mutationFn: ({ ids, updates }: { ids: string[]; updates: BatchJobFields }) =>
+      apiClient.post(`/vessels/${vesselId}/jobs/bulk-update`, { ids, updates: buildJobPayload(updates) }).then((r) => r.data),
+    onSuccess: () => {
+      refreshJobs()
+      setShowBatchPanel(false)
+      setBatchFields({})
+      setSelectedIds(new Set())
+      setActionError(null)
+      setActionMessage('Selected jobs were updated.')
+    },
+    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
   })
 
   const handleCMSUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -344,7 +434,7 @@ const JobsReview: React.FC = () => {
       setActionError(null)
       setActionMessage('CMS mapping upload completed.')
     } catch (error) {
-      setActionError((error as Error).message)
+      setActionError(getApiErrorMessage(error))
     }
   }, [vesselId, refreshJobs])
 
@@ -458,6 +548,13 @@ const JobsReview: React.FC = () => {
                   <XCircle className="h-3.5 w-3.5" />
                   Reject ({selectedIds.size})
                 </button>
+                <button
+                  onClick={() => setShowBatchPanel((value) => !value)}
+                  className="flex items-center gap-1.5 rounded-lg border border-violet-700 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-slate-800"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                  Batch Edit ({selectedIds.size})
+                </button>
               </>
             ) : null}
             {selectedIds.size >= 2 ? (
@@ -475,6 +572,16 @@ const JobsReview: React.FC = () => {
               <Plus className="h-3.5 w-3.5" />
               Add Job
             </button>
+            {Object.keys(edits).length > 0 ? (
+              <button
+                onClick={() => saveInlineEditsMutation.mutate(edits)}
+                disabled={saveInlineEditsMutation.isPending}
+                className="flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-50"
+              >
+                <Save className="h-3.5 w-3.5" />
+                Save {Object.keys(edits).length} edit(s)
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -487,6 +594,64 @@ const JobsReview: React.FC = () => {
         {actionMessage ? (
           <div className="rounded-xl border border-green-900/60 bg-green-950/30 px-4 py-3 text-sm text-green-200">
             {actionMessage}
+          </div>
+        ) : null}
+
+        {showBatchPanel && selectedIds.size > 0 ? (
+          <div className="rounded-xl border border-violet-700 bg-violet-900/20 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-violet-300">Batch Update - {selectedIds.size} selected job(s)</p>
+              <button onClick={() => { setShowBatchPanel(false); setBatchFields({}) }} className="text-slate-500 hover:text-white">
+                <XCircle className="h-4 w-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-400">Fill only the fields you want to update. Empty fields are ignored.</p>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+              <select value={batchFields.component_id ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, component_id: e.target.value }))} className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none">
+                <option value="">Component - no change</option>
+                <option value="__unmapped__">Unmapped</option>
+                {componentOptions.map((component) => (
+                  <option key={component.id} value={component.id}>{component.component_name}</option>
+                ))}
+              </select>
+              <input value={batchFields.frequency ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, frequency: e.target.value }))} placeholder="Frequency" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
+              <select value={batchFields.frequency_type ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, frequency_type: e.target.value }))} className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none">
+                <option value="">Frequency Type - no change</option>
+                {FREQUENCY_OPTIONS.map((option) => <option key={option} value={option}>{option.replace('_', ' ')}</option>)}
+              </select>
+              <input value={batchFields.cms_id ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, cms_id: e.target.value }))} placeholder="CMS ID" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
+              <select value={batchFields.qc_status ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, qc_status: e.target.value }))} className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none">
+                <option value="">QC - no change</option>
+                <option value="pending">Pending</option>
+                <option value="accepted">Accepted</option>
+                <option value="modified">Modified</option>
+                <option value="rejected">Rejected</option>
+              </select>
+              <select value={batchFields.is_critical ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, is_critical: e.target.value }))} className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none">
+                <option value="">Criticality - no change</option>
+                <option value="true">Critical</option>
+                <option value="false">Non-Critical</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => {
+                  const cleaned: BatchJobFields = { ...batchFields }
+                  if (cleaned.component_id === '__unmapped__') cleaned.component_id = ''
+                  const hasAny = Object.values(cleaned).some((value) => value !== undefined && value !== '')
+                  if (!hasAny) return
+                  bulkUpdateMutation.mutate({ ids: Array.from(selectedIds), updates: cleaned })
+                }}
+                disabled={bulkUpdateMutation.isPending}
+                className="flex items-center gap-1.5 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-50"
+              >
+                <Save className="h-4 w-4" />
+                Apply to {selectedIds.size} job(s)
+              </button>
+              <button onClick={() => setBatchFields({})} className="text-xs text-slate-500 hover:text-slate-300">
+                Clear fields
+              </button>
+            </div>
           </div>
         ) : null}
 
@@ -522,7 +687,7 @@ const JobsReview: React.FC = () => {
           ) : jobs.length === 0 ? (
             <div className="py-16 text-center text-slate-500">No jobs found yet. Extract from Manual Review after component matching is complete.</div>
           ) : (
-            <table className="min-w-[1600px] w-full text-sm">
+            <table className="min-w-[1900px] w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-700 text-left text-xs uppercase text-slate-500">
                   <th className="w-8 px-4 py-3"><input type="checkbox" checked={selectedIds.size === jobs.length && jobs.length > 0} onChange={(e) => setSelectedIds(e.target.checked ? new Set(jobs.map((job) => job.id)) : new Set())} className="h-3.5 w-3.5 rounded" /></th>
@@ -547,17 +712,84 @@ const JobsReview: React.FC = () => {
                   return (
                     <tr key={job.id} className={`cursor-pointer transition-colors hover:bg-slate-800/60 ${selectedIds.has(job.id) ? 'bg-sky-900/10' : ''} ${selectedJob?.id === job.id ? 'bg-slate-800/70' : ''} ${job.is_unmapped ? 'border-l-2 border-amber-600' : ''}`} onClick={() => { setSelectedJob(job); setEditingJob(null); setCreateDraft(null) }}>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(job.id)} onChange={() => toggleSelect(job.id)} className="h-3.5 w-3.5 rounded" /></td>
-                      <td className="px-4 py-3"><div className="max-w-[320px] truncate whitespace-nowrap font-medium text-slate-100" title={job.job_name}>{job.job_name}</div></td>
-                      <td className="px-4 py-3">{job.component_name ? <div className="max-w-[250px] truncate whitespace-nowrap text-slate-200" title={`${job.component_name} ${job.component_maker ?? ''} ${job.component_model ?? ''}`.trim()}>{job.component_name}</div> : <span className="rounded-full bg-amber-900/40 px-2 py-0.5 text-xs text-amber-300">Unmapped</span>}</td>
-                      <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-400">{job.job_code ?? '-'}</td>
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          value={edits[job.id]?.job_name ?? job.job_name}
+                          onChange={(e) => setEdit(job.id, 'job_name', e.target.value)}
+                          className="w-[320px] rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100 focus:border-sky-500 focus:outline-none"
+                          title={job.job_name}
+                        />
+                      </td>
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                        <select
+                          value={edits[job.id]?.component_id ?? (job.component_id ?? '')}
+                          onChange={(e) => setEdit(job.id, 'component_id', e.target.value)}
+                          className="w-[240px] rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                        >
+                          <option value="">Unmapped</option>
+                          {componentOptions.map((component) => (
+                            <option key={component.id} value={component.id}>{component.component_name}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-400" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          value={edits[job.id]?.job_code ?? (job.job_code ?? '')}
+                          onChange={(e) => setEdit(job.id, 'job_code', e.target.value)}
+                          className="w-24 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                        />
+                      </td>
                       <td className="px-4 py-3"><div className="max-w-[360px] truncate whitespace-nowrap text-xs text-slate-400" title={job.job_description ?? ''}>{job.job_description ?? '-'}</div></td>
-                      <td className="px-4 py-3 whitespace-nowrap text-slate-300">{job.frequency != null && job.frequency_type ? `${job.frequency} ${job.frequency_type.replace('_', ' ')}` : '-'}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-slate-300" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-2">
+                          <input
+                            value={edits[job.id]?.frequency ?? (job.frequency != null ? String(job.frequency) : '')}
+                            onChange={(e) => setEdit(job.id, 'frequency', e.target.value)}
+                            className="w-16 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                          />
+                          <select
+                            value={edits[job.id]?.frequency_type ?? (job.frequency_type ?? '')}
+                            onChange={(e) => setEdit(job.id, 'frequency_type', e.target.value)}
+                            className="w-36 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                          >
+                            <option value="">-</option>
+                            {FREQUENCY_OPTIONS.map((option) => <option key={option} value={option}>{option.replace('_', ' ')}</option>)}
+                          </select>
+                        </div>
+                      </td>
                       <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-400">{[job.performing_rank, job.verifying_rank].filter(Boolean).join(' / ') || '-'}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-xs">{job.cms_id ? <span className="font-mono text-green-400">{job.cms_id}</span> : <span className="text-amber-500">Pending</span>}</td>
-                      <td className="px-4 py-3 whitespace-nowrap">{job.is_critical ? <span className="rounded-full bg-red-900/50 px-2 py-0.5 text-xs text-red-300">Critical</span> : <span className="text-slate-600">-</span>}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-xs" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          value={edits[job.id]?.cms_id ?? (job.cms_id ?? '')}
+                          onChange={(e) => setEdit(job.id, 'cms_id', e.target.value)}
+                          className="w-28 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                        />
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                        <label className="inline-flex items-center gap-2 text-xs text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={edits[job.id]?.is_critical ?? job.is_critical}
+                            onChange={(e) => setEdit(job.id, 'is_critical', e.target.checked)}
+                            className="h-4 w-4 rounded"
+                          />
+                          Critical
+                        </label>
+                      </td>
                       <td className="px-4 py-3 whitespace-nowrap">{job.confidence_score != null ? <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${job.confidence_score >= 85 ? 'bg-green-700 text-green-100' : job.confidence_score >= 60 ? 'bg-amber-700 text-amber-100' : 'bg-red-700 text-red-100'}`}>{job.confidence_score}%</span> : '-'}</td>
                       <td className="px-4 py-3"><div className="max-w-[220px] text-xs"><div className="inline-flex items-center gap-1 whitespace-nowrap text-sky-400" title={`${sourceLabel} page ${pageRef ?? '-'}`}><ExternalLink className="h-3 w-3" />{pageRef != null ? `p.${pageRef}` : 'No page'}</div><div className="mt-1 truncate whitespace-nowrap text-slate-500" title={sourceLabel}>{sourceLabel}</div></div></td>
-                      <td className="px-4 py-3 whitespace-nowrap"><span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${QC_COLORS[job.qc_status] ?? 'bg-slate-700 text-slate-300'}`}>{job.qc_status}</span></td>
+                      <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                        <select
+                          value={edits[job.id]?.qc_status ?? job.qc_status}
+                          onChange={(e) => setEdit(job.id, 'qc_status', e.target.value)}
+                          className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                        >
+                          <option value="pending">Pending</option>
+                          <option value="accepted">Accepted</option>
+                          <option value="modified">Modified</option>
+                          <option value="rejected">Rejected</option>
+                        </select>
+                      </td>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-2">
                           <button onClick={() => { setSelectedJob(job); setEditingJob(job); setCreateDraft(null) }} className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600" title="Edit job"><Pencil className="h-3.5 w-3.5" /></button>

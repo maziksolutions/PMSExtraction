@@ -345,6 +345,59 @@ async def bulk_reject_jobs(
     return {"rejected": len(jobs)}
 
 
+@router.post("/{vessel_id}/jobs/bulk-update")
+async def bulk_update_jobs(
+    vessel_id: uuid.UUID,
+    body: dict[str, Any],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    ids = [uuid.UUID(value) for value in body.get("ids", []) if value]
+    updates = body.get("updates", {}) or {}
+    if not ids or not updates:
+        return {"updated": 0}
+
+    update_payload = JobUpdate.model_validate(updates).model_dump(exclude_unset=True)
+    if not update_payload:
+        return {"updated": 0}
+
+    result = await db.execute(
+        select(Job).where(Job.id.in_(ids), Job.vessel_id == vessel_id, Job.is_deleted == False)
+    )
+    jobs = result.scalars().all()
+    activities = []
+    for job in jobs:
+        for field, value in update_payload.items():
+            setattr(job, field, value)
+        db.add(job)
+        activities.append(
+            await log_activity(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                user_id=current_user.id,
+                action_type="job.bulk_updated",
+                entity_type="job",
+                entity_id=job.id,
+                description=f"Bulk updated job '{job.job_name}'.",
+                metadata={"fields": sorted(update_payload.keys())},
+            )
+        )
+
+    accepted_jobs = [job for job in jobs if job.qc_status == QCStatus.accepted]
+    if accepted_jobs:
+        await sync_jobs_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            jobs=accepted_jobs,
+        )
+    await db.commit()
+    for activity in activities:
+        await broadcast_activity(activity)
+    return {"updated": len(jobs)}
+
+
 @router.post("/{vessel_id}/jobs/{job_id}/link-component")
 async def link_component(
     vessel_id: uuid.UUID,

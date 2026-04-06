@@ -156,6 +156,8 @@ def merge_component_into_target(extracted: Component, target: Component) -> None
 
     if not target.page_reference and extracted.page_reference:
         target.page_reference = extracted.page_reference
+    if not target.source_manual_id and extracted.source_manual_id:
+        target.source_manual_id = extracted.source_manual_id
 
     if extracted.pdf_reference:
         ref = extracted.pdf_reference
