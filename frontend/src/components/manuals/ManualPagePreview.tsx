@@ -121,12 +121,22 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
           </div>
           <div className="space-y-3 p-3">
             {page.image_data_url ? (
-              <img
-                src={page.image_data_url}
-                alt={`Manual page ${page.page_number}`}
-                className={`rounded-lg border border-slate-800 bg-white transition-transform ${fullscreen ? 'mx-auto max-h-[80vh] w-auto max-w-full' : 'w-full'}`}
-                style={{ transform: `rotate(${rotation}deg)`, transformOrigin: 'center center' }}
-              />
+              <div className="overflow-auto rounded-lg border border-slate-800 bg-slate-900/70">
+                <div className={`flex ${fullscreen ? 'min-w-max justify-center p-4' : 'min-w-max p-3'}`}>
+                  <img
+                    src={page.image_data_url}
+                    alt={`Manual page ${page.page_number}`}
+                    className="rounded-lg bg-white transition-transform"
+                    style={{
+                      transform: `rotate(${rotation}deg)`,
+                      transformOrigin: 'center center',
+                      maxHeight: fullscreen ? '80vh' : undefined,
+                      width: rotation % 180 === 0 && !fullscreen ? '100%' : 'auto',
+                      maxWidth: rotation % 180 === 0 && !fullscreen ? '100%' : 'none',
+                    }}
+                  />
+                </div>
+              </div>
             ) : (
               <div className="flex min-h-32 items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-900/80 text-xs text-slate-500">
                 <div className="text-center">

@@ -232,9 +232,12 @@ function JobEditor({
           <label className="mb-1 block text-xs text-slate-400">CMS ID</label>
           <input value={form.cms_id} onChange={(e) => set('cms_id', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
         </div>
-        <div className="flex items-center gap-2 pt-6">
-          <input id="job-critical" type="checkbox" checked={form.is_critical} onChange={(e) => set('is_critical', e.target.checked)} className="h-4 w-4 rounded" />
-          <label htmlFor="job-critical" className="text-sm text-slate-300">Critical job</label>
+        <div>
+          <label className="mb-1 block text-xs text-slate-400">Criticality</label>
+          <select value={form.is_critical ? 'true' : 'false'} onChange={(e) => set('is_critical', e.target.value === 'true')} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
+            <option value="false">Non-Critical</option>
+            <option value="true">Critical</option>
+          </select>
         </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">QC Status</label>
@@ -770,15 +773,14 @@ const JobsReview: React.FC = () => {
                         />
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                        <label className="inline-flex items-center gap-2 text-xs text-slate-300">
-                          <input
-                            type="checkbox"
-                            checked={edits[job.id]?.is_critical ?? job.is_critical}
-                            onChange={(e) => setEdit(job.id, 'is_critical', e.target.checked)}
-                            className="h-4 w-4 rounded"
-                          />
-                          Critical
-                        </label>
+                        <select
+                          value={String(edits[job.id]?.is_critical ?? job.is_critical)}
+                          onChange={(e) => setEdit(job.id, 'is_critical', e.target.value === 'true')}
+                          className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                        >
+                          <option value="false">Non-Critical</option>
+                          <option value="true">Critical</option>
+                        </select>
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">{job.confidence_score != null ? <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${job.confidence_score >= 85 ? 'bg-green-700 text-green-100' : job.confidence_score >= 60 ? 'bg-amber-700 text-amber-100' : 'bg-red-700 text-red-100'}`}>{job.confidence_score}%</span> : '-'}</td>
                       <td className="px-4 py-3"><div className="max-w-[220px] text-xs"><div className="inline-flex items-center gap-1 whitespace-nowrap text-sky-400" title={`${sourceLabel} page ${pageRef ?? '-'}`}><ExternalLink className="h-3 w-3" />{pageRef != null ? `p.${pageRef}` : 'No page'}</div><div className="mt-1 truncate whitespace-nowrap text-slate-500" title={sourceLabel}>{sourceLabel}</div></div></td>

@@ -22,6 +22,31 @@ from app.services.exporter import export_service
 router = APIRouter()
 
 
+def _export_schema_out_payload(schema: ExportSchema) -> dict[str, Any]:
+    return {
+        "id": schema.id,
+        "name": schema.name,
+        "version": schema.version,
+        "sheet_mappings": schema.sheet_mappings,
+        "is_active": schema.is_active,
+        "created_at": schema.created_at,
+    }
+
+
+def _export_version_out_payload(version: ExportVersion) -> dict[str, Any]:
+    return {
+        "id": version.id,
+        "vessel_id": version.vessel_id,
+        "export_schema_id": version.export_schema_id,
+        "version_number": version.version_number,
+        "blob_storage_key": version.blob_storage_key,
+        "generated_by": version.generated_by,
+        "row_counts": version.row_counts,
+        "status": version.status,
+        "created_at": version.created_at,
+    }
+
+
 async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselProject:
     result = await db.execute(
         select(VesselProject).where(
@@ -110,7 +135,7 @@ async def create_export_schema(
     db.add(schema)
     await db.commit()
     await db.refresh(schema)
-    return ExportSchemaOut.model_validate(schema)
+    return ExportSchemaOut.model_validate(_export_schema_out_payload(schema))
 
 
 @router.put("/export-schemas/{schema_id}/mapping", response_model=ExportSchemaOut)
@@ -133,7 +158,7 @@ async def update_schema_mapping(
     db.add(schema)
     await db.commit()
     await db.refresh(schema)
-    return ExportSchemaOut.model_validate(schema)
+    return ExportSchemaOut.model_validate(_export_schema_out_payload(schema))
 
 
 @router.get("/export-schemas")
@@ -149,7 +174,7 @@ async def list_export_schemas(
         )
     )
     schemas = result.scalars().all()
-    return {"items": [ExportSchemaOut.model_validate(s) for s in schemas]}
+    return {"items": [ExportSchemaOut.model_validate(_export_schema_out_payload(s)) for s in schemas]}
 
 
 @router.post("/vessels/{vessel_id}/exports", status_code=status.HTTP_201_CREATED)
@@ -249,7 +274,7 @@ async def trigger_export(
         db.add(old)
     await db.commit()
 
-    return ExportVersionOut.model_validate(export_version).model_dump()
+    return ExportVersionOut.model_validate(_export_version_out_payload(export_version)).model_dump()
 
 
 @router.get("/vessels/{vessel_id}/exports")
@@ -269,7 +294,7 @@ async def list_exports(
         .limit(10)
     )
     versions = result.scalars().all()
-    return {"items": [ExportVersionOut.model_validate(v) for v in versions]}
+    return {"items": [ExportVersionOut.model_validate(_export_version_out_payload(v)) for v in versions]}
 
 
 @router.get("/vessels/{vessel_id}/exports/{export_id}/download")

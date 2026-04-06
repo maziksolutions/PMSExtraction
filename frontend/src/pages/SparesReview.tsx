@@ -178,9 +178,12 @@ function SpareEditorModal({ title, submitLabel, isPending, components, initialVa
               ))}
             </select>
           </div>
-          <div className="flex items-center gap-2 pt-6">
-            <input id="spare-critical" type="checkbox" checked={form.is_critical} onChange={(e) => set('is_critical', e.target.checked)} className="h-4 w-4 rounded" />
-            <label htmlFor="spare-critical" className="text-sm text-slate-300">Critical spare</label>
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Criticality</label>
+            <select value={form.is_critical ? 'true' : 'false'} onChange={(e) => set('is_critical', e.target.value === 'true')} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
+              <option value="false">Non-Critical</option>
+              <option value="true">Critical</option>
+            </select>
           </div>
           <div className="md:col-span-2">
             <label className="mb-1 block text-xs text-slate-400">Specification</label>
@@ -743,15 +746,14 @@ const SparesReview: React.FC = () => {
                       </span>
                     </td>
                     <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
-                      <label className="inline-flex items-center gap-2 text-xs text-slate-300">
-                        <input
-                          type="checkbox"
-                          checked={edits[spare.id]?.is_critical ?? spare.is_critical}
-                          onChange={(e) => setEdit(spare.id, 'is_critical', e.target.checked)}
-                          className="h-4 w-4 rounded"
-                        />
-                        Critical
-                      </label>
+                      <select
+                        value={String(edits[spare.id]?.is_critical ?? spare.is_critical)}
+                        onChange={(e) => setEdit(spare.id, 'is_critical', e.target.value === 'true')}
+                        className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                      >
+                        <option value="false">Non-Critical</option>
+                        <option value="true">Critical</option>
+                      </select>
                     </td>
                     <td className="px-4 py-2.5">
                       {spare.confidence_score != null ? (

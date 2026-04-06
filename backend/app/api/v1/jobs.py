@@ -41,6 +41,103 @@ def _merge_text_values(*values: Optional[str]) -> Optional[str]:
     return "\n\n".join(merged) if merged else None
 
 
+def _job_out_payload(job: Job) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "vessel_id": job.vessel_id,
+        "component_id": job.component_id,
+        "job_name": job.job_name,
+        "job_code": job.job_code,
+        "job_description": job.job_description,
+        "safety_precaution": job.safety_precaution,
+        "tools_required": job.tools_required,
+        "performing_rank": job.performing_rank,
+        "verifying_rank": job.verifying_rank,
+        "frequency": job.frequency,
+        "frequency_type": job.frequency_type,
+        "initial_due": job.initial_due,
+        "initial_frequency_type": job.initial_frequency_type,
+        "cms_id": job.cms_id,
+        "page_reference": job.page_reference,
+        "pdf_reference": job.pdf_reference,
+        "source_reference": job.source_reference,
+        "is_critical": job.is_critical,
+        "qc_status": job.qc_status,
+        "is_unmapped": job.is_unmapped,
+        "source_manual_id": job.source_manual_id,
+        "confidence_score": job.confidence_score,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+    }
+
+
+def _job_out(job: Job) -> JobOut:
+    return JobOut.model_validate(_job_out_payload(job))
+
+
+async def _run_job_side_effects(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    vessel_id: uuid.UUID,
+    user_id: uuid.UUID,
+    activity_payloads: list[dict[str, Any]] | None = None,
+    sync_job_ids: list[uuid.UUID] | None = None,
+) -> None:
+    activities = []
+    if activity_payloads:
+        try:
+            for payload in activity_payloads:
+                activities.append(
+                    await log_activity(
+                        db,
+                        tenant_id=tenant_id,
+                        vessel_id=vessel_id,
+                        user_id=user_id,
+                        action_type=payload["action_type"],
+                        entity_type="job",
+                        entity_id=payload["entity_id"],
+                        description=payload["description"],
+                        metadata=payload.get("metadata"),
+                    )
+                )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            activities = []
+
+    for activity in activities:
+        try:
+            await broadcast_activity(activity)
+        except Exception:
+            continue
+
+    if sync_job_ids:
+        try:
+            sync_result = await db.execute(
+                select(Job).where(
+                    Job.id.in_(sync_job_ids),
+                    Job.vessel_id == vessel_id,
+                    Job.is_deleted == False,
+                )
+            )
+            sync_jobs = [
+                job
+                for job in sync_result.scalars().all()
+                if job.qc_status == QCStatus.accepted
+            ]
+            if sync_jobs:
+                await sync_jobs_to_global_library(
+                    db,
+                    tenant_id=tenant_id,
+                    vessel_id=vessel_id,
+                    jobs=sync_jobs,
+                )
+                await db.commit()
+        except Exception:
+            await db.rollback()
+
+
 async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselProject:
     result = await db.execute(
         select(VesselProject).where(
@@ -132,7 +229,7 @@ async def list_jobs(
 
     items = []
     for job in jobs:
-        payload = JobOut.model_validate(job).model_dump()
+        payload = _job_out(job).model_dump()
         component = component_lookup.get(job.component_id) if job.component_id else None
         manual = manual_lookup.get(job.source_manual_id) if job.source_manual_id else None
         payload.update(
@@ -166,29 +263,25 @@ async def create_job(
         **body.model_dump(),
     )
     db.add(job)
-    await db.flush()
-    activity = await log_activity(
+    await db.commit()
+    await db.refresh(job)
+    await _run_job_side_effects(
         db,
         tenant_id=current_user.tenant_id,
         vessel_id=vessel_id,
         user_id=current_user.id,
-        action_type="job.created",
-        entity_type="job",
-        entity_id=job.id,
-        description=f"Created job '{job.job_name}'.",
-        metadata={"component_id": str(job.component_id) if job.component_id else None},
+        activity_payloads=[
+            {
+                "action_type": "job.created",
+                "entity_id": job.id,
+                "description": f"Created job '{job.job_name}'.",
+                "metadata": {"component_id": str(job.component_id) if job.component_id else None},
+            }
+        ],
+        sync_job_ids=[job.id] if job.qc_status == QCStatus.accepted else None,
     )
-    if job.qc_status == QCStatus.accepted:
-        await sync_jobs_to_global_library(
-            db,
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            jobs=[job],
-        )
-    await db.commit()
     await db.refresh(job)
-    await broadcast_activity(activity)
-    return JobOut.model_validate(job)
+    return _job_out(job)
 
 
 @router.patch("/{vessel_id}/jobs/{job_id}", response_model=JobOut)
@@ -228,33 +321,28 @@ async def update_job(
         )
         db.add(feedback)
 
-    activity = None
-    if update_data:
-        activity = await log_activity(
-            db,
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            user_id=current_user.id,
-            action_type="job.corrected" if job.source_manual_id else "job.modified",
-            entity_type="job",
-            entity_id=job.id,
-            description=f"Updated job '{job.job_name}'.",
-            metadata={"fields": sorted(update_data.keys())},
-        )
-    if job.qc_status == QCStatus.accepted and (
-        original_qc_status != QCStatus.accepted or update_data
-    ):
-        await sync_jobs_to_global_library(
-            db,
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            jobs=[job],
-        )
     await db.commit()
     await db.refresh(job)
-    if activity:
-        await broadcast_activity(activity)
-    return JobOut.model_validate(job)
+    await _run_job_side_effects(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        activity_payloads=[
+            {
+                "action_type": "job.corrected" if job.source_manual_id else "job.modified",
+                "entity_id": job.id,
+                "description": f"Updated job '{job.job_name}'.",
+                "metadata": {"fields": sorted(update_data.keys())},
+            }
+        ] if update_data else None,
+        sync_job_ids=[job.id]
+        if job.qc_status == QCStatus.accepted
+        and (original_qc_status != QCStatus.accepted or bool(update_data))
+        else None,
+    )
+    await db.refresh(job)
+    return _job_out(job)
 
 
 @router.delete("/{vessel_id}/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response, response_model=None)
@@ -284,32 +372,25 @@ async def bulk_accept_jobs(
     ids = [uuid.UUID(i) for i in body.get("ids", [])]
     result = await db.execute(select(Job).where(Job.id.in_(ids), Job.vessel_id == vessel_id))
     jobs = result.scalars().all()
-    activities = []
     for job in jobs:
         job.qc_status = QCStatus.accepted
         db.add(job)
-        activities.append(
-            await log_activity(
-                db,
-                tenant_id=current_user.tenant_id,
-                vessel_id=vessel_id,
-                user_id=current_user.id,
-                action_type="job.accepted",
-                entity_type="job",
-                entity_id=job.id,
-                description=f"Accepted job '{job.job_name}'.",
-            )
-        )
-    if jobs:
-        await sync_jobs_to_global_library(
-            db,
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            jobs=jobs,
-        )
     await db.commit()
-    for activity in activities:
-        await broadcast_activity(activity)
+    await _run_job_side_effects(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        activity_payloads=[
+            {
+                "action_type": "job.accepted",
+                "entity_id": job.id,
+                "description": f"Accepted job '{job.job_name}'.",
+            }
+            for job in jobs
+        ],
+        sync_job_ids=[job.id for job in jobs],
+    )
     return {"accepted": len(jobs)}
 
 
@@ -323,25 +404,24 @@ async def bulk_reject_jobs(
     ids = [uuid.UUID(i) for i in body.get("ids", [])]
     result = await db.execute(select(Job).where(Job.id.in_(ids), Job.vessel_id == vessel_id))
     jobs = result.scalars().all()
-    activities = []
     for job in jobs:
         job.qc_status = QCStatus.rejected
         db.add(job)
-        activities.append(
-            await log_activity(
-                db,
-                tenant_id=current_user.tenant_id,
-                vessel_id=vessel_id,
-                user_id=current_user.id,
-                action_type="job.rejected",
-                entity_type="job",
-                entity_id=job.id,
-                description=f"Rejected job '{job.job_name}'.",
-            )
-        )
     await db.commit()
-    for activity in activities:
-        await broadcast_activity(activity)
+    await _run_job_side_effects(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        activity_payloads=[
+            {
+                "action_type": "job.rejected",
+                "entity_id": job.id,
+                "description": f"Rejected job '{job.job_name}'.",
+            }
+            for job in jobs
+        ],
+    )
     return {"rejected": len(jobs)}
 
 
@@ -365,36 +445,27 @@ async def bulk_update_jobs(
         select(Job).where(Job.id.in_(ids), Job.vessel_id == vessel_id, Job.is_deleted == False)
     )
     jobs = result.scalars().all()
-    activities = []
     for job in jobs:
         for field, value in update_payload.items():
             setattr(job, field, value)
         db.add(job)
-        activities.append(
-            await log_activity(
-                db,
-                tenant_id=current_user.tenant_id,
-                vessel_id=vessel_id,
-                user_id=current_user.id,
-                action_type="job.bulk_updated",
-                entity_type="job",
-                entity_id=job.id,
-                description=f"Bulk updated job '{job.job_name}'.",
-                metadata={"fields": sorted(update_payload.keys())},
-            )
-        )
-
-    accepted_jobs = [job for job in jobs if job.qc_status == QCStatus.accepted]
-    if accepted_jobs:
-        await sync_jobs_to_global_library(
-            db,
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            jobs=accepted_jobs,
-        )
     await db.commit()
-    for activity in activities:
-        await broadcast_activity(activity)
+    await _run_job_side_effects(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        activity_payloads=[
+            {
+                "action_type": "job.bulk_updated",
+                "entity_id": job.id,
+                "description": f"Bulk updated job '{job.job_name}'.",
+                "metadata": {"fields": sorted(update_payload.keys())},
+            }
+            for job in jobs
+        ],
+        sync_job_ids=[job.id for job in jobs if job.qc_status == QCStatus.accepted],
+    )
     return {"updated": len(jobs)}
 
 
@@ -415,21 +486,24 @@ async def link_component(
     job.component_id = uuid.UUID(body["component_id"])
     job.is_unmapped = False
     db.add(job)
-    activity = await log_activity(
+    await db.commit()
+    await db.refresh(job)
+    await _run_job_side_effects(
         db,
         tenant_id=current_user.tenant_id,
         vessel_id=vessel_id,
         user_id=current_user.id,
-        action_type="job.mapped",
-        entity_type="job",
-        entity_id=job.id,
-        description=f"Linked job '{job.job_name}' to a vessel component.",
-        metadata={"component_id": body["component_id"]},
+        activity_payloads=[
+            {
+                "action_type": "job.mapped",
+                "entity_id": job.id,
+                "description": f"Linked job '{job.job_name}' to a vessel component.",
+                "metadata": {"component_id": body["component_id"]},
+            }
+        ],
     )
-    await db.commit()
     await db.refresh(job)
-    await broadcast_activity(activity)
-    return JobOut.model_validate(job)
+    return _job_out(job)
 
 
 @router.post("/{vessel_id}/jobs/merge")
@@ -515,29 +589,21 @@ async def merge_jobs(
     target.qc_status = QCStatus.modified if target.qc_status == QCStatus.accepted else target.qc_status
     db.add(target)
     await db.commit()
-    try:
-        activity = await log_activity(
-            db,
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            user_id=current_user.id,
-            action_type="job.merged",
-            entity_type="job",
-            entity_id=target.id,
-            description=f"Merged {len(merged_ids)} jobs into '{target.job_name}'.",
-            metadata={"merged_job_ids": merged_ids},
-        )
-        if target.qc_status == QCStatus.accepted:
-            await sync_jobs_to_global_library(
-                db,
-                tenant_id=current_user.tenant_id,
-                vessel_id=vessel_id,
-                jobs=[target],
-            )
-        await db.commit()
-        await broadcast_activity(activity)
-    except Exception:
-        await db.rollback()
+    await _run_job_side_effects(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        activity_payloads=[
+            {
+                "action_type": "job.merged",
+                "entity_id": target.id,
+                "description": f"Merged {len(merged_ids)} jobs into '{target.job_name}'.",
+                "metadata": {"merged_job_ids": merged_ids},
+            }
+        ],
+        sync_job_ids=[target.id] if target.qc_status == QCStatus.accepted else None,
+    )
     refreshed_result = await db.execute(
         select(Job).where(
             Job.id == target.id,
@@ -548,7 +614,7 @@ async def merge_jobs(
     refreshed_target = refreshed_result.scalar_one_or_none()
     if refreshed_target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Merged job not found after merge.")
-    return JobOut.model_validate(refreshed_target)
+    return _job_out(refreshed_target)
 
 
 @router.post("/{vessel_id}/jobs/trigger-extraction")

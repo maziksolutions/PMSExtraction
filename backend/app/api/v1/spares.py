@@ -24,6 +24,100 @@ from app.services.review_workflow import (
 router = APIRouter()
 
 
+def _spare_out_payload(spare: Spare) -> dict[str, Any]:
+    return {
+        "id": spare.id,
+        "vessel_id": spare.vessel_id,
+        "component_id": spare.component_id,
+        "part_name": spare.part_name,
+        "part_number": spare.part_number,
+        "drawing_number": spare.drawing_number,
+        "drawing_position": spare.drawing_position,
+        "specification": spare.specification,
+        "spare_maker": spare.spare_maker,
+        "spare_model": spare.spare_model,
+        "machinery_maker": spare.machinery_maker,
+        "machinery_model": spare.machinery_model,
+        "source_manual_id": spare.source_manual_id,
+        "page_reference": spare.page_reference,
+        "extraction_method": spare.extraction_method,
+        "is_critical": spare.is_critical,
+        "qc_status": spare.qc_status,
+        "confidence_score": spare.confidence_score,
+        "is_duplicate": spare.is_duplicate,
+        "merged_into_id": spare.merged_into_id,
+        "created_at": spare.created_at,
+        "updated_at": spare.updated_at,
+    }
+
+
+def _spare_out(spare: Spare) -> SpareOut:
+    return SpareOut.model_validate(_spare_out_payload(spare))
+
+
+async def _run_spare_side_effects(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    vessel_id: uuid.UUID,
+    user_id: uuid.UUID,
+    activity_payloads: list[dict[str, Any]] | None = None,
+    sync_spare_ids: list[uuid.UUID] | None = None,
+) -> None:
+    activities = []
+    if activity_payloads:
+        try:
+            for payload in activity_payloads:
+                activities.append(
+                    await log_activity(
+                        db,
+                        tenant_id=tenant_id,
+                        vessel_id=vessel_id,
+                        user_id=user_id,
+                        action_type=payload["action_type"],
+                        entity_type="spare",
+                        entity_id=payload["entity_id"],
+                        description=payload["description"],
+                        metadata=payload.get("metadata"),
+                    )
+                )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            activities = []
+
+    for activity in activities:
+        try:
+            await broadcast_activity(activity)
+        except Exception:
+            continue
+
+    if sync_spare_ids:
+        try:
+            sync_result = await db.execute(
+                select(Spare).where(
+                    Spare.id.in_(sync_spare_ids),
+                    Spare.vessel_id == vessel_id,
+                    Spare.is_deleted == False,
+                )
+            )
+            sync_spares = [
+                spare
+                for spare in sync_result.scalars().all()
+                if spare.qc_status == QCStatus.accepted
+            ]
+            if sync_spares:
+                await sync_spares_to_global_library(
+                    db,
+                    tenant_id=tenant_id,
+                    vessel_id=vessel_id,
+                    spares=sync_spares,
+                )
+                await db.commit()
+        except Exception:
+            await db.rollback()
+
+
 async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselProject:
     result = await db.execute(
         select(VesselProject).where(
@@ -113,7 +207,7 @@ async def list_spares(
 
     items = []
     for spare in spares:
-        payload = SpareOut.model_validate(spare).model_dump()
+        payload = _spare_out(spare).model_dump()
         component = component_lookup.get(spare.component_id) if spare.component_id else None
         manual = manual_lookup.get(spare.source_manual_id) if spare.source_manual_id else None
         payload.update(
@@ -148,29 +242,25 @@ async def create_spare(
         **body.model_dump(),
     )
     db.add(spare)
-    await db.flush()
-    activity = await log_activity(
+    await db.commit()
+    await db.refresh(spare)
+    await _run_spare_side_effects(
         db,
         tenant_id=current_user.tenant_id,
         vessel_id=vessel_id,
         user_id=current_user.id,
-        action_type="spare.created",
-        entity_type="spare",
-        entity_id=spare.id,
-        description=f"Created spare '{spare.part_name}'.",
-        metadata={"component_id": str(spare.component_id) if spare.component_id else None},
+        activity_payloads=[
+            {
+                "action_type": "spare.created",
+                "entity_id": spare.id,
+                "description": f"Created spare '{spare.part_name}'.",
+                "metadata": {"component_id": str(spare.component_id) if spare.component_id else None},
+            }
+        ],
+        sync_spare_ids=[spare.id] if spare.qc_status == QCStatus.accepted else None,
     )
-    if spare.qc_status == QCStatus.accepted:
-        await sync_spares_to_global_library(
-            db,
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            spares=[spare],
-        )
-    await db.commit()
     await db.refresh(spare)
-    await broadcast_activity(activity)
-    return SpareOut.model_validate(spare)
+    return _spare_out(spare)
 
 
 @router.patch("/{vessel_id}/spares/{spare_id}", response_model=SpareOut)
@@ -210,33 +300,28 @@ async def update_spare(
         )
         db.add(feedback)
 
-    activity = None
-    if update_data:
-        activity = await log_activity(
-            db,
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            user_id=current_user.id,
-            action_type="spare.corrected" if spare.source_manual_id else "spare.modified",
-            entity_type="spare",
-            entity_id=spare.id,
-            description=f"Updated spare '{spare.part_name}'.",
-            metadata={"fields": sorted(update_data.keys())},
-        )
-    if spare.qc_status == QCStatus.accepted and (
-        original_qc_status != QCStatus.accepted or update_data
-    ):
-        await sync_spares_to_global_library(
-            db,
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            spares=[spare],
-        )
     await db.commit()
     await db.refresh(spare)
-    if activity:
-        await broadcast_activity(activity)
-    return SpareOut.model_validate(spare)
+    await _run_spare_side_effects(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        activity_payloads=[
+            {
+                "action_type": "spare.corrected" if spare.source_manual_id else "spare.modified",
+                "entity_id": spare.id,
+                "description": f"Updated spare '{spare.part_name}'.",
+                "metadata": {"fields": sorted(update_data.keys())},
+            }
+        ] if update_data else None,
+        sync_spare_ids=[spare.id]
+        if spare.qc_status == QCStatus.accepted
+        and (original_qc_status != QCStatus.accepted or bool(update_data))
+        else None,
+    )
+    await db.refresh(spare)
+    return _spare_out(spare)
 
 
 @router.delete("/{vessel_id}/spares/{spare_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response, response_model=None)
@@ -266,32 +351,25 @@ async def bulk_accept_spares(
     ids = [uuid.UUID(i) for i in body.get("ids", [])]
     result = await db.execute(select(Spare).where(Spare.id.in_(ids), Spare.vessel_id == vessel_id))
     spares = result.scalars().all()
-    activities = []
     for spare in spares:
         spare.qc_status = QCStatus.accepted
         db.add(spare)
-        activities.append(
-            await log_activity(
-                db,
-                tenant_id=current_user.tenant_id,
-                vessel_id=vessel_id,
-                user_id=current_user.id,
-                action_type="spare.accepted",
-                entity_type="spare",
-                entity_id=spare.id,
-                description=f"Accepted spare '{spare.part_name}'.",
-            )
-        )
-    if spares:
-        await sync_spares_to_global_library(
-            db,
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            spares=spares,
-        )
     await db.commit()
-    for activity in activities:
-        await broadcast_activity(activity)
+    await _run_spare_side_effects(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        activity_payloads=[
+            {
+                "action_type": "spare.accepted",
+                "entity_id": spare.id,
+                "description": f"Accepted spare '{spare.part_name}'.",
+            }
+            for spare in spares
+        ],
+        sync_spare_ids=[spare.id for spare in spares],
+    )
     return {"accepted": len(spares)}
 
 
@@ -305,25 +383,24 @@ async def bulk_reject_spares(
     ids = [uuid.UUID(i) for i in body.get("ids", [])]
     result = await db.execute(select(Spare).where(Spare.id.in_(ids), Spare.vessel_id == vessel_id))
     spares = result.scalars().all()
-    activities = []
     for spare in spares:
         spare.qc_status = QCStatus.rejected
         db.add(spare)
-        activities.append(
-            await log_activity(
-                db,
-                tenant_id=current_user.tenant_id,
-                vessel_id=vessel_id,
-                user_id=current_user.id,
-                action_type="spare.rejected",
-                entity_type="spare",
-                entity_id=spare.id,
-                description=f"Rejected spare '{spare.part_name}'.",
-            )
-        )
     await db.commit()
-    for activity in activities:
-        await broadcast_activity(activity)
+    await _run_spare_side_effects(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        activity_payloads=[
+            {
+                "action_type": "spare.rejected",
+                "entity_id": spare.id,
+                "description": f"Rejected spare '{spare.part_name}'.",
+            }
+            for spare in spares
+        ],
+    )
     return {"rejected": len(spares)}
 
 
@@ -347,36 +424,27 @@ async def bulk_update_spares(
         select(Spare).where(Spare.id.in_(ids), Spare.vessel_id == vessel_id, Spare.is_deleted == False)
     )
     spares = result.scalars().all()
-    activities = []
     for spare in spares:
         for field, value in update_payload.items():
             setattr(spare, field, value)
         db.add(spare)
-        activities.append(
-            await log_activity(
-                db,
-                tenant_id=current_user.tenant_id,
-                vessel_id=vessel_id,
-                user_id=current_user.id,
-                action_type="spare.bulk_updated",
-                entity_type="spare",
-                entity_id=spare.id,
-                description=f"Bulk updated spare '{spare.part_name}'.",
-                metadata={"fields": sorted(update_payload.keys())},
-            )
-        )
-
-    accepted_spares = [spare for spare in spares if spare.qc_status == QCStatus.accepted]
-    if accepted_spares:
-        await sync_spares_to_global_library(
-            db,
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            spares=accepted_spares,
-        )
     await db.commit()
-    for activity in activities:
-        await broadcast_activity(activity)
+    await _run_spare_side_effects(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        activity_payloads=[
+            {
+                "action_type": "spare.bulk_updated",
+                "entity_id": spare.id,
+                "description": f"Bulk updated spare '{spare.part_name}'.",
+                "metadata": {"fields": sorted(update_payload.keys())},
+            }
+            for spare in spares
+        ],
+        sync_spare_ids=[spare.id for spare in spares if spare.qc_status == QCStatus.accepted],
+    )
     return {"updated": len(spares)}
 
 
@@ -404,7 +472,7 @@ async def merge_spare(
     db.add(spare)
     await db.commit()
     await db.refresh(spare)
-    return SpareOut.model_validate(spare)
+    return _spare_out(spare)
 
 
 @router.post("/{vessel_id}/spares/{spare_id}/reassign-component")
@@ -426,21 +494,24 @@ async def reassign_component(
 
     spare.component_id = uuid.UUID(body["component_id"])
     db.add(spare)
-    activity = await log_activity(
+    await db.commit()
+    await db.refresh(spare)
+    await _run_spare_side_effects(
         db,
         tenant_id=current_user.tenant_id,
         vessel_id=vessel_id,
         user_id=current_user.id,
-        action_type="spare.mapped",
-        entity_type="spare",
-        entity_id=spare.id,
-        description=f"Linked spare '{spare.part_name}' to a vessel component.",
-        metadata={"component_id": body["component_id"]},
+        activity_payloads=[
+            {
+                "action_type": "spare.mapped",
+                "entity_id": spare.id,
+                "description": f"Linked spare '{spare.part_name}' to a vessel component.",
+                "metadata": {"component_id": body["component_id"]},
+            }
+        ],
     )
-    await db.commit()
     await db.refresh(spare)
-    await broadcast_activity(activity)
-    return SpareOut.model_validate(spare)
+    return _spare_out(spare)
 
 
 @router.post("/{vessel_id}/spares/trigger-extraction")
