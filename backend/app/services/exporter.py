@@ -16,7 +16,7 @@ FIELD_MAPPINGS = {
     "component_name": "Component Name",
     "maker": "Maker",
     "model": "Model",
-    "specification": "Specification",
+    "specification": "Specification / Particulars",
     "serial_number": "Serial Number",
     "is_critical": "Critical",
     "qc_status": "QC Status",
@@ -41,6 +41,7 @@ FIELD_MAPPINGS = {
     "spare_model": "Spare Model",
     "machinery_maker": "Machinery Maker",
     "machinery_model": "Machinery Model",
+    "source_reference": "Source Reference",
     "extraction_method": "Extraction Method",
     "reason": "Reason",
     "record_type": "Record Type",
@@ -65,6 +66,7 @@ class ExportService:
 
         from app.core.config import settings
         from app.models.component import Component, QCStatus
+        from app.models.ingestion import Manual
         from app.models.job import Job
         from app.models.spare import Spare
 
@@ -146,8 +148,22 @@ class ExportService:
                     Spare.is_duplicate == False,
                 )
             ).scalars().all()
+            spare_manual_lookup: dict[uuid.UUID, Manual] = {}
+            spare_manual_ids = {s.source_manual_id for s in spares if s.source_manual_id}
+            if spare_manual_ids:
+                manuals = session.execute(
+                    select(Manual).where(Manual.id.in_(spare_manual_ids))
+                ).scalars().all()
+                spare_manual_lookup = {manual.id: manual for manual in manuals}
 
             for s in spares:
+                manual = spare_manual_lookup.get(s.source_manual_id) if s.source_manual_id else None
+                pdf_reference = manual.original_filename if manual else ""
+                source_reference = (
+                    f"{pdf_reference} (p.{s.page_reference})"
+                    if pdf_reference and s.page_reference
+                    else pdf_reference or (f"p.{s.page_reference}" if s.page_reference else "")
+                )
                 row = {
                     "part_name": s.part_name,
                     "part_number": s.part_number or "",
@@ -158,6 +174,9 @@ class ExportService:
                     "spare_model": s.spare_model or "",
                     "machinery_maker": s.machinery_maker or "",
                     "machinery_model": s.machinery_model or "",
+                    "pdf_reference": pdf_reference,
+                    "page_reference": s.page_reference or "",
+                    "source_reference": source_reference,
                     "extraction_method": s.extraction_method.value,
                     "is_critical": "Yes" if s.is_critical else "No",
                     "qc_status": s.qc_status.value,
@@ -181,6 +200,7 @@ class ExportService:
         from sqlalchemy import select
 
         from app.models.component import Component, QCStatus
+        from app.models.ingestion import Manual
         from app.models.job import Job
         from app.models.spare import Spare
 
@@ -257,7 +277,20 @@ class ExportService:
                 Spare.is_duplicate == False,
             )
         )
-        for s in spare_result.scalars().all():
+        spares = spare_result.scalars().all()
+        spare_manual_lookup: dict[uuid.UUID, Manual] = {}
+        spare_manual_ids = {s.source_manual_id for s in spares if s.source_manual_id}
+        if spare_manual_ids:
+            manual_result = await db.execute(select(Manual).where(Manual.id.in_(spare_manual_ids)))
+            spare_manual_lookup = {manual.id: manual for manual in manual_result.scalars().all()}
+        for s in spares:
+            manual = spare_manual_lookup.get(s.source_manual_id) if s.source_manual_id else None
+            pdf_reference = manual.original_filename if manual else ""
+            source_reference = (
+                f"{pdf_reference} (p.{s.page_reference})"
+                if pdf_reference and s.page_reference
+                else pdf_reference or (f"p.{s.page_reference}" if s.page_reference else "")
+            )
             row = {
                 "part_name": s.part_name,
                 "part_number": s.part_number or "",
@@ -268,8 +301,9 @@ class ExportService:
                 "spare_model": s.spare_model or "",
                 "machinery_maker": s.machinery_maker or "",
                 "machinery_model": s.machinery_model or "",
-                "pdf_reference": "",
+                "pdf_reference": pdf_reference,
                 "page_reference": s.page_reference or "",
+                "source_reference": source_reference,
                 "extraction_method": s.extraction_method.value,
                 "is_critical": "Yes" if s.is_critical else "No",
                 "qc_status": s.qc_status.value,
@@ -460,6 +494,7 @@ class ExportService:
                 "machinery_model",
                 "extraction_method",
                 "component_linked",
+                "source_reference",
                 "pdf_reference",
                 "page_reference",
                 "is_critical",

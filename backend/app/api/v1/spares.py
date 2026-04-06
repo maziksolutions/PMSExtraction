@@ -24,6 +24,15 @@ from app.services.review_workflow import (
 router = APIRouter()
 
 
+def _format_spare_source_reference(
+    manual_name: Optional[str],
+    page_reference: Optional[int],
+) -> Optional[str]:
+    if manual_name and page_reference:
+        return f"{manual_name} (p.{page_reference})"
+    return manual_name or (f"p.{page_reference}" if page_reference else None)
+
+
 def _spare_out_payload(spare: Spare) -> dict[str, Any]:
     return {
         "id": spare.id,
@@ -39,6 +48,8 @@ def _spare_out_payload(spare: Spare) -> dict[str, Any]:
         "machinery_maker": spare.machinery_maker,
         "machinery_model": spare.machinery_model,
         "source_manual_id": spare.source_manual_id,
+        "pdf_reference": None,
+        "source_reference": None,
         "page_reference": spare.page_reference,
         "extraction_method": spare.extraction_method,
         "is_critical": spare.is_critical,
@@ -217,6 +228,10 @@ async def list_spares(
                 "component_model": component.model if component else None,
                 "source_manual_name": manual.original_filename if manual else None,
                 "pdf_reference": manual.original_filename if manual else None,
+                "source_reference": _format_spare_source_reference(
+                    manual.original_filename if manual else None,
+                    spare.page_reference,
+                ),
             }
         )
         items.append(payload)

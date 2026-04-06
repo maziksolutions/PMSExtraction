@@ -33,6 +33,7 @@ interface Spare {
   source_manual_id: string | null
   source_manual_name?: string | null
   pdf_reference?: string | null
+  source_reference?: string | null
   page_reference: number | null
   extraction_method: string
   is_critical: boolean
@@ -46,6 +47,7 @@ type InlineSpareEdit = Partial<{
   part_number: string
   drawing_number: string
   drawing_position: string
+  specification: string
   spare_maker: string
   spare_model: string
   component_id: string
@@ -74,6 +76,7 @@ function buildSparePayload(edit: InlineSpareEdit | BatchSpareFields): Record<str
   if ('part_number' in edit) payload.part_number = edit.part_number ? edit.part_number : null
   if ('drawing_number' in edit) payload.drawing_number = edit.drawing_number ? edit.drawing_number : null
   if ('drawing_position' in edit) payload.drawing_position = edit.drawing_position ? edit.drawing_position : null
+  if ('specification' in edit) payload.specification = edit.specification ? edit.specification : null
   if ('spare_maker' in edit) payload.spare_maker = edit.spare_maker ? edit.spare_maker : null
   if ('spare_model' in edit) payload.spare_model = edit.spare_model ? edit.spare_model : null
   if ('component_id' in edit) payload.component_id = edit.component_id ? edit.component_id : null
@@ -449,6 +452,8 @@ const SparesReview: React.FC = () => {
         <div>Drawing: <span className="text-slate-200">{selectedSpare.drawing_number ?? '-'}</span></div>
         <div>Position: <span className="text-slate-200">{selectedSpare.drawing_position ?? '-'}</span></div>
         <div>Component: <span className="text-slate-200">{selectedSpare.component_name ?? 'Unmapped'}</span></div>
+        <div className="md:col-span-2">Specification / Particulars: <span className="text-slate-200">{selectedSpare.specification ?? '-'}</span></div>
+        <div className="md:col-span-2">Source: <span className="text-slate-200">{selectedSpare.source_reference ?? selectedSpare.pdf_reference ?? selectedSpare.source_manual_name ?? '-'}</span></div>
       </div>
     </div>
   ) : (
@@ -629,7 +634,7 @@ const SparesReview: React.FC = () => {
               No spares found yet. Extract from Manual Review after component matching is complete.
             </div>
           ) : (
-            <table className="min-w-[1800px] w-full text-sm">
+            <table className="min-w-[2060px] w-full text-sm">
               <thead>
                 <tr className="sticky top-0 border-b border-slate-700 bg-slate-900 text-left text-xs text-slate-500 uppercase">
                   <th className="px-4 py-3 w-8">
@@ -649,6 +654,7 @@ const SparesReview: React.FC = () => {
                   <th className="px-4 py-3">Drawing #</th>
                   <th className="px-4 py-3">Pos</th>
                   <th className="px-4 py-3">Maker</th>
+                  <th className="px-4 py-3">Specification / Particulars</th>
                   <th className="px-4 py-3">Component</th>
                   <th className="px-4 py-3">Source</th>
                   <th className="px-4 py-3">Method</th>
@@ -714,6 +720,15 @@ const SparesReview: React.FC = () => {
                       />
                     </td>
                     <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <textarea
+                        value={edits[spare.id]?.specification ?? (spare.specification ?? '')}
+                        onChange={(e) => setEdit(spare.id, 'specification', e.target.value)}
+                        rows={2}
+                        className="w-[280px] resize-y rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                        title={spare.specification ?? ''}
+                      />
+                    </td>
+                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
                       <select
                         value={edits[spare.id]?.component_id ?? (spare.component_id ?? '')}
                         onChange={(e) => setEdit(spare.id, 'component_id', e.target.value)}
@@ -727,12 +742,19 @@ const SparesReview: React.FC = () => {
                     </td>
                     <td className="px-4 py-2.5">
                       {spare.page_reference != null ? (
-                        <div className="min-w-[170px] text-xs">
-                          <div className="inline-flex items-center gap-1 whitespace-nowrap text-sky-400" title={`${spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'} - page ${spare.page_reference}`}>
+                        <div className="min-w-[240px] text-xs">
+                          <div className="inline-flex items-center gap-1 whitespace-nowrap text-sky-400" title={spare.source_reference ?? `${spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'} - page ${spare.page_reference}`}>
                             <ExternalLink className="h-3 w-3" />
                             p.{spare.page_reference}
                           </div>
-                          <p className="mt-1 truncate whitespace-nowrap text-slate-500">{spare.source_manual_name ?? spare.pdf_reference ?? 'Manual'}</p>
+                          <p className="mt-1 truncate whitespace-nowrap text-slate-500" title={spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'}>
+                            {spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'}
+                          </p>
+                          {spare.source_reference ? (
+                            <p className="mt-1 truncate whitespace-nowrap text-slate-600" title={spare.source_reference}>
+                              {spare.source_reference}
+                            </p>
+                          ) : null}
                         </div>
                       ) : <span className="text-slate-600">-</span>}
                     </td>

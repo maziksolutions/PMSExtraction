@@ -24,6 +24,8 @@ class SpareOut(BaseModel):
     machinery_maker: Optional[str] = None
     machinery_model: Optional[str] = None
     source_manual_id: Optional[uuid.UUID] = None
+    pdf_reference: Optional[str] = None
+    source_reference: Optional[str] = None
     page_reference: Optional[int] = None
     extraction_method: ExtractionMethod
     is_critical: bool

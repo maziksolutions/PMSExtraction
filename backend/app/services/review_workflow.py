@@ -227,6 +227,7 @@ def _spare_record(spare: Spare) -> dict[str, Any]:
         "part_number": spare.part_number or "",
         "drawing_number": spare.drawing_number or "",
         "drawing_position": spare.drawing_position or "",
+        "specification": spare.specification or "",
         "spare_maker": spare.spare_maker or "",
         "spare_model": spare.spare_model or "",
     }
