@@ -461,6 +461,20 @@ async def merge_jobs(
     if target is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Target job must be one of the selected jobs.")
 
+    # Only allow merge of jobs that belong to the same component/frequency bucket.
+    component_ids = {job.component_id for job in jobs}
+    frequency_keys = {(job.frequency, job.frequency_type.value if job.frequency_type else None) for job in jobs}
+    if len(component_ids) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only jobs linked to the same component can be merged.",
+        )
+    if len(frequency_keys) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only jobs with the same frequency and frequency type can be merged.",
+        )
+
     merged_ids: list[str] = []
     for job in jobs:
         if job.id == target.id:
@@ -490,26 +504,41 @@ async def merge_jobs(
             target.pdf_reference = job.pdf_reference
         if not target.source_reference and job.source_reference:
             target.source_reference = job.source_reference
+        if not target.source_manual_id and job.source_manual_id:
+            target.source_manual_id = job.source_manual_id
+        if target.page_reference is None and job.page_reference is not None:
+            target.page_reference = job.page_reference
         job.is_deleted = True
         db.add(job)
         merged_ids.append(str(job.id))
 
     target.qc_status = QCStatus.modified if target.qc_status == QCStatus.accepted else target.qc_status
     db.add(target)
-    activity = await log_activity(
-        db,
-        tenant_id=current_user.tenant_id,
-        vessel_id=vessel_id,
-        user_id=current_user.id,
-        action_type="job.merged",
-        entity_type="job",
-        entity_id=target.id,
-        description=f"Merged {len(merged_ids)} jobs into '{target.job_name}'.",
-        metadata={"merged_job_ids": merged_ids},
-    )
     await db.commit()
     await db.refresh(target)
-    await broadcast_activity(activity)
+    try:
+        activity = await log_activity(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            user_id=current_user.id,
+            action_type="job.merged",
+            entity_type="job",
+            entity_id=target.id,
+            description=f"Merged {len(merged_ids)} jobs into '{target.job_name}'.",
+            metadata={"merged_job_ids": merged_ids},
+        )
+        if target.qc_status == QCStatus.accepted:
+            await sync_jobs_to_global_library(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                jobs=[target],
+            )
+        await db.commit()
+        await broadcast_activity(activity)
+    except Exception:
+        await db.rollback()
     return JobOut.model_validate(target)
 
 
