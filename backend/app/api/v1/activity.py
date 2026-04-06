@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
@@ -13,6 +14,7 @@ from app.models.activity import ActivityEntry
 from app.models.user import User
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/{vessel_id}/activity", summary="Get paginated activity feed for a vessel")
@@ -22,29 +24,37 @@ async def get_activity(
     db: Annotated[AsyncSession, Depends(get_db)],
     limit: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
-    result = await db.execute(
-        select(ActivityEntry)
-        .where(
-            ActivityEntry.vessel_id == vessel_id,
-            ActivityEntry.tenant_id == current_user.tenant_id,
-            ActivityEntry.is_deleted == False,
+    try:
+        result = await db.execute(
+            select(ActivityEntry)
+            .where(
+                ActivityEntry.vessel_id == vessel_id,
+                ActivityEntry.tenant_id == current_user.tenant_id,
+                ActivityEntry.is_deleted == False,
+            )
+            .order_by(ActivityEntry.created_at.desc())
+            .limit(limit)
         )
-        .order_by(ActivityEntry.created_at.desc())
-        .limit(limit)
-    )
-    entries = result.scalars().all()
-    return {
-        "items": [
-            {
-                "id": str(e.id),
-                "action_type": e.action_type,
-                "entity_type": e.entity_type,
-                "entity_id": str(e.entity_id),
-                "description": e.description,
-                "metadata": e.metadata_json,
-                "created_at": e.created_at.isoformat(),
-                "user_id": str(e.user_id),
-            }
-            for e in entries
-        ]
-    }
+        entries = result.scalars().all()
+        return {
+            "items": [
+                {
+                    "id": str(e.id),
+                    "action_type": e.action_type,
+                    "entity_type": e.entity_type,
+                    "entity_id": str(e.entity_id),
+                    "description": e.description,
+                    "metadata": e.metadata_json,
+                    "created_at": e.created_at.isoformat(),
+                    "user_id": str(e.user_id),
+                }
+                for e in entries
+            ]
+        }
+    except Exception:
+        logger.exception(
+            "get_activity failed for vessel_id=%s tenant_id=%s",
+            vessel_id,
+            current_user.tenant_id,
+        )
+        return {"items": []}

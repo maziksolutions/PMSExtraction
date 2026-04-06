@@ -46,6 +46,7 @@ class ActivityEntry(TenantBase):
     description: Mapped[str] = mapped_column(String(500), nullable=False)
 
     metadata_json: Mapped[Optional[dict]] = mapped_column(
+        "metadata",
         JSON,
         nullable=True,
     )
