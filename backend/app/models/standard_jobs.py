@@ -54,7 +54,13 @@ class StandardJob(TenantBase):
     __tablename__ = "standard_jobs"
 
     class_society: Mapped[ClassSociety] = mapped_column(
-        Enum(ClassSociety, name="class_society"),
+        Enum(
+            ClassSociety,
+            name="class_society",
+            native_enum=False,
+            create_constraint=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
     )
     machinery_type: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -62,7 +68,13 @@ class StandardJob(TenantBase):
     job_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     frequency: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     frequency_type: Mapped[Optional[FrequencyType]] = mapped_column(
-        Enum(FrequencyType, name="std_frequency_type", create_constraint=False),
+        Enum(
+            FrequencyType,
+            name="std_frequency_type",
+            native_enum=False,
+            create_constraint=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=True,
     )
     is_critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -96,7 +108,13 @@ class StandardJobMatch(TenantBase):
     )
 
     match_status: Mapped[MatchStatus] = mapped_column(
-        Enum(MatchStatus, name="match_status"),
+        Enum(
+            MatchStatus,
+            name="match_status",
+            native_enum=False,
+            create_constraint=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         nullable=False,
         default=MatchStatus.not_found,
     )

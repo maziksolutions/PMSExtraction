@@ -46,6 +46,9 @@ const StandardJobs: React.FC = () => {
   const [naMatchId, setNaMatchId] = useState<string | null>(null)
   const [showNaDialog, setShowNaDialog] = useState(false)
   const [importJobType, setImportJobType] = useState<'standard' | 'class'>('standard')
+  const [selectedJobIds, setSelectedJobIds] = useState<string[]>([])
+  const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const { data: stdJobsData } = useQuery({
@@ -80,8 +83,14 @@ const StandardJobs: React.FC = () => {
         .post(`/vessels/${vesselId}/standard-jobs/import/${standardJobId}`)
         .then((r) => r.data),
     onSuccess: () => {
+      setActionMessage('Library job added to vessel jobs.')
+      setActionError(null)
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+    },
+    onError: (err: any) => {
+      setActionError(err?.response?.data?.detail || 'Failed to add library job to vessel')
+      setActionMessage(null)
     },
   })
 
@@ -95,7 +104,13 @@ const StandardJobs: React.FC = () => {
       return response.data
     },
     onSuccess: () => {
+      setActionMessage('Standard jobs library imported successfully.')
+      setActionError(null)
       queryClient.invalidateQueries({ queryKey: ['standard-jobs'] })
+    },
+    onError: (err: any) => {
+      setActionError(err?.response?.data?.detail || 'Library import failed')
+      setActionMessage(null)
     },
   })
 
@@ -108,10 +123,62 @@ const StandardJobs: React.FC = () => {
         })
         .then((r) => r.data),
     onSuccess: () => {
+      setActionMessage('Standard job marked as not applicable.')
+      setActionError(null)
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
       setShowNaDialog(false)
       setNaReason('')
       setNaMatchId(null)
+    },
+    onError: (err: any) => {
+      setActionError(err?.response?.data?.detail || 'Unable to update match')
+      setActionMessage(null)
+    },
+  })
+
+  const importSelectedMutation = useMutation({
+    mutationFn: (payload: { standard_job_ids?: string[]; import_all?: boolean }) =>
+      apiClient.post(`/vessels/${vesselId}/standard-jobs/import-batch`, {
+        standard_job_ids: payload.standard_job_ids ?? [],
+        job_type: importJobType,
+        class_society: filterSociety || null,
+        machinery_type: filterMachinery || null,
+        include_critical: false,
+        import_all: payload.import_all ?? false,
+      }).then((r) => r.data),
+    onSuccess: (data) => {
+      setActionMessage(`Imported ${data.imported} and merged ${data.merged} library jobs into the vessel.`)
+      setActionError(null)
+      setSelectedJobIds([])
+      queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+    },
+    onError: (err: any) => {
+      setActionError(err?.response?.data?.detail || 'Failed to apply library jobs to vessel')
+      setActionMessage(null)
+    },
+  })
+
+  const removeSelectedMutation = useMutation({
+    mutationFn: (payload: { standard_job_ids?: string[]; remove_all?: boolean }) =>
+      apiClient.post(`/vessels/${vesselId}/standard-jobs/remove-batch`, {
+        standard_job_ids: payload.standard_job_ids ?? [],
+        job_type: importJobType,
+        class_society: filterSociety || null,
+        machinery_type: filterMachinery || null,
+        include_critical: false,
+        remove_all: payload.remove_all ?? false,
+      }).then((r) => r.data),
+    onSuccess: (data) => {
+      setActionMessage(`Removed ${data.removed} vessel-side imported jobs.`)
+      setActionError(null)
+      setSelectedJobIds([])
+      queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+    },
+    onError: (err: any) => {
+      setActionError(err?.response?.data?.detail || 'Failed to remove imported jobs from vessel')
+      setActionMessage(null)
     },
   })
 
@@ -126,8 +193,18 @@ const StandardJobs: React.FC = () => {
 
   const handleLibraryImport = (file?: File | null) => {
     if (!file) return
+    setActionError(null)
+    setActionMessage(null)
     importLibraryMutation.mutate(file)
   }
+
+  const toggleJobSelection = (jobId: string) => {
+    setSelectedJobIds((prev) => (
+      prev.includes(jobId) ? prev.filter((id) => id !== jobId) : [...prev, jobId]
+    ))
+  }
+
+  const allSelected = stdJobs.length > 0 && selectedJobIds.length === stdJobs.length
 
   const matchedCount = matches.filter((m) => m.match_status === 'matched').length
   const partialCount = matches.filter((m) => m.match_status === 'partial').length
@@ -179,6 +256,12 @@ const StandardJobs: React.FC = () => {
         </div>
       </div>
 
+      {(actionMessage || actionError) && (
+        <div className={`rounded-xl border px-4 py-3 text-sm ${actionError ? 'border-red-800 bg-red-950/30 text-red-300' : 'border-emerald-800 bg-emerald-950/30 text-emerald-300'}`}>
+          {actionError || actionMessage}
+        </div>
+      )}
+
       {/* Summary stats */}
       {matches.length > 0 && (
         <div className="grid grid-cols-3 gap-4">
@@ -221,7 +304,38 @@ const StandardJobs: React.FC = () => {
       </div>
 
       <div className="rounded-xl border border-sky-900/50 bg-sky-950/20 px-4 py-3 text-xs text-sky-200">
-        Supported workbook import: <span className="font-medium">Annex 1 PMS_Jobs</span>, <span className="font-medium">Audit standard jobs</span>, <span className="font-medium">Annex Job Title</span>, and <span className="font-medium">Critical Jobs</span>. Critical jobs go into the library but are excluded from comparison.
+        Supported workbook import: <span className="font-medium">Audit standard jobs</span>, <span className="font-medium">Annex Job Title</span>, and <span className="font-medium">Critical Jobs</span>. Critical jobs go into the library but are excluded from comparison.
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => importSelectedMutation.mutate({ standard_job_ids: selectedJobIds })}
+          disabled={selectedJobIds.length === 0 || importSelectedMutation.isPending}
+          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+        >
+          Add Selected To Vessel
+        </button>
+        <button
+          onClick={() => importSelectedMutation.mutate({ import_all: true })}
+          disabled={stdJobs.length === 0 || importSelectedMutation.isPending}
+          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+        >
+          Add All Filtered
+        </button>
+        <button
+          onClick={() => removeSelectedMutation.mutate({ standard_job_ids: selectedJobIds })}
+          disabled={selectedJobIds.length === 0 || removeSelectedMutation.isPending}
+          className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+        >
+          Remove Selected From Vessel
+        </button>
+        <button
+          onClick={() => removeSelectedMutation.mutate({ remove_all: true })}
+          disabled={stdJobs.length === 0 || removeSelectedMutation.isPending}
+          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+        >
+          Remove All Filtered
+        </button>
       </div>
 
       {/* Comparison Table */}
@@ -229,6 +343,13 @@ const StandardJobs: React.FC = () => {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-slate-700 text-left text-xs text-slate-500 uppercase">
+              <th className="px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={(e) => setSelectedJobIds(e.target.checked ? stdJobs.map((job) => job.id) : [])}
+                />
+              </th>
               <th className="px-4 py-3">Standard Job</th>
               <th className="px-4 py-3">Class Society</th>
               <th className="px-4 py-3">Machinery Type</th>
@@ -243,7 +364,7 @@ const StandardJobs: React.FC = () => {
           <tbody className="divide-y divide-slate-800">
             {stdJobs.length === 0 ? (
               <tr>
-                <td colSpan={9} className="py-12 text-center text-slate-500">
+                <td colSpan={10} className="py-12 text-center text-slate-500">
                   No standard jobs library found yet. Import company SMS or CMS/class jobs first.
                 </td>
               </tr>
@@ -252,6 +373,13 @@ const StandardJobs: React.FC = () => {
                 const match = matchByStdJobId[job.id]
                 return (
                   <tr key={job.id} className="hover:bg-slate-800/50 transition-colors">
+                    <td className="px-4 py-2.5">
+                      <input
+                        type="checkbox"
+                        checked={selectedJobIds.includes(job.id)}
+                        onChange={() => toggleJobSelection(job.id)}
+                      />
+                    </td>
                     <td className="px-4 py-2.5">
                       <p className="font-medium text-slate-200">{job.job_name}</p>
                       {job.library_reference && (

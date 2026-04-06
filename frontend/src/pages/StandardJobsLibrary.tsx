@@ -9,6 +9,7 @@ import {
   Trash2,
   ChevronDown,
   ChevronRight,
+  Plus,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 
@@ -26,6 +27,17 @@ interface StandardJob {
   library_reference: string | null
 }
 
+interface StandardJobFormState {
+  class_society: string
+  machinery_type: string
+  job_name: string
+  job_description: string
+  frequency: string
+  frequency_type: string
+  is_critical: boolean
+  library_reference: string
+}
+
 type TabType = 'standard' | 'class'
 
 const CLASS_SOCIETIES = ['DNV GL', "Lloyd's Register", 'Bureau Veritas', 'ABS', 'ClassNK']
@@ -34,7 +46,6 @@ const CLASS_SOCIETIES = ['DNV GL', "Lloyd's Register", 'Bureau Veritas', 'ABS', 
 
 const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ jobType, onImported }) => {
   const fileRef = useRef<HTMLInputElement>(null)
-  const [selectedSociety, setSelectedSociety] = useState(CLASS_SOCIETIES[0])
   const [result, setResult] = useState<{ imported: number; skipped: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -55,8 +66,8 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
       onImported()
       if (fileRef.current) fileRef.current.value = ''
     },
-    onError: () => {
-      setError('Import failed. Check the file format and try again.')
+    onError: (err: any) => {
+      setError(err?.response?.data?.detail || 'Import failed. Check the file format and try again.')
       setResult(null)
     },
   })
@@ -78,8 +89,8 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
       <div className="text-xs text-slate-500 mb-4 space-y-1">
         {jobType === 'standard' ? (
           <>
-            <p>Supported workbook sheets: <span className="text-slate-400">Annex 1 PMS_Jobs, Audit standard jobs, Annex Job Title, Critical Jobs</span></p>
-            <p>The importer auto-detects job title, description, criticality, frequency, and reference fields from the workbook.</p>
+            <p>Supported workbook sheets: <span className="text-slate-400">Audit standard jobs, Annex Job Title, Critical Jobs</span></p>
+            <p>The importer auto-detects job title, description, criticality, frequency, and reference fields from the workbook. `Annex 1 PMS_Jobs` is not required.</p>
             <p>Critical jobs are stored in the same standard library, but they are added later from Jobs Review instead of comparison.</p>
           </>
         ) : (
@@ -302,10 +313,52 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
 
 const StandardJobsLibrary: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabType>('standard')
+  const [showAddDialog, setShowAddDialog] = useState(false)
+  const [addError, setAddError] = useState<string | null>(null)
   const queryClient = useQueryClient()
+  const [form, setForm] = useState<StandardJobFormState>({
+    class_society: 'General',
+    machinery_type: '',
+    job_name: '',
+    job_description: '',
+    frequency: '',
+    frequency_type: '',
+    is_critical: false,
+    library_reference: '',
+  })
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      const payload = {
+        ...form,
+        frequency: form.frequency ? Number(form.frequency) : null,
+      }
+      const res = await apiClient.post('/standard-jobs', payload)
+      return res.data
+    },
+    onSuccess: () => {
+      setShowAddDialog(false)
+      setAddError(null)
+      setForm({
+        class_society: activeTab === 'standard' ? 'General' : 'DNV GL',
+        machinery_type: '',
+        job_name: '',
+        job_description: '',
+        frequency: '',
+        frequency_type: '',
+        is_critical: false,
+        library_reference: '',
+      })
+      refresh()
+    },
+    onError: (err: any) => {
+      setAddError(err?.response?.data?.detail || 'Unable to add job')
+    },
+  })
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['standard-jobs-library'] })
+    queryClient.invalidateQueries({ queryKey: ['standard-jobs'] })
   }
 
   return (
@@ -343,11 +396,139 @@ const StandardJobsLibrary: React.FC = () => {
         ))}
       </div>
 
+      <div className="flex justify-end">
+        <button
+          onClick={() => {
+            setAddError(null)
+            setForm((prev) => ({
+              ...prev,
+              class_society: activeTab === 'standard' ? 'General' : prev.class_society === 'General' ? 'DNV GL' : prev.class_society,
+              is_critical: false,
+            }))
+            setShowAddDialog(true)
+          }}
+          className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500"
+        >
+          <Plus className="h-4 w-4" />
+          Add Job
+        </button>
+      </div>
+
       {/* Import Panel */}
       <ImportPanel key={activeTab} jobType={activeTab} onImported={refresh} />
 
       {/* Jobs Table */}
       <JobsTable key={`table-${activeTab}`} jobType={activeTab} />
+
+      {showAddDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-2xl rounded-xl border border-slate-700 bg-slate-900 p-6">
+            <h2 className="text-lg font-semibold text-white">Add Library Job</h2>
+            <p className="mt-1 text-sm text-slate-400">
+              Create a reusable {activeTab === 'standard' ? 'company SMS' : 'CMS / class'} standard job.
+            </p>
+            <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
+              <label className="space-y-1 text-sm">
+                <span className="text-slate-400">Class Society</span>
+                <select
+                  value={form.class_society}
+                  onChange={(e) => setForm((prev) => ({ ...prev, class_society: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
+                  disabled={activeTab === 'standard'}
+                >
+                  {activeTab === 'standard' ? (
+                    <option value="General">General</option>
+                  ) : (
+                    CLASS_SOCIETIES.map((society) => <option key={society} value={society}>{society}</option>)
+                  )}
+                </select>
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="text-slate-400">Machinery Type</span>
+                <input
+                  value={form.machinery_type}
+                  onChange={(e) => setForm((prev) => ({ ...prev, machinery_type: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
+                />
+              </label>
+              <label className="space-y-1 text-sm md:col-span-2">
+                <span className="text-slate-400">Job Name</span>
+                <input
+                  value={form.job_name}
+                  onChange={(e) => setForm((prev) => ({ ...prev, job_name: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
+                />
+              </label>
+              <label className="space-y-1 text-sm md:col-span-2">
+                <span className="text-slate-400">Job Description</span>
+                <textarea
+                  rows={4}
+                  value={form.job_description}
+                  onChange={(e) => setForm((prev) => ({ ...prev, job_description: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
+                />
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="text-slate-400">Frequency</span>
+                <input
+                  value={form.frequency}
+                  onChange={(e) => setForm((prev) => ({ ...prev, frequency: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
+                />
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="text-slate-400">Frequency Type</span>
+                <select
+                  value={form.frequency_type}
+                  onChange={(e) => setForm((prev) => ({ ...prev, frequency_type: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
+                >
+                  <option value="">None</option>
+                  <option value="daily">daily</option>
+                  <option value="weekly">weekly</option>
+                  <option value="monthly">monthly</option>
+                  <option value="quarterly">quarterly</option>
+                  <option value="half_yearly">half_yearly</option>
+                  <option value="yearly">yearly</option>
+                  <option value="running_hours">running_hours</option>
+                </select>
+              </label>
+              <label className="space-y-1 text-sm md:col-span-2">
+                <span className="text-slate-400">Library Reference</span>
+                <input
+                  value={form.library_reference}
+                  onChange={(e) => setForm((prev) => ({ ...prev, library_reference: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
+                />
+              </label>
+              <label className="inline-flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={form.is_critical}
+                  onChange={(e) => setForm((prev) => ({ ...prev, is_critical: e.target.checked }))}
+                />
+                Critical Job
+              </label>
+            </div>
+            {addError && <p className="mt-4 text-sm text-red-400">{addError}</p>}
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setShowAddDialog(false)}
+                className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => createMutation.mutate()}
+                disabled={createMutation.isPending}
+                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+              >
+                {createMutation.isPending ? 'Saving...' : 'Add Job'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

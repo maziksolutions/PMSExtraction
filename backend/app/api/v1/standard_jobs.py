@@ -264,6 +264,138 @@ def _merge_source_reference(existing: Optional[str], new_value: Optional[str]) -
     return " | ".join(merged) if merged else None
 
 
+async def _upsert_standard_job_match(
+    *,
+    vessel_id: uuid.UUID,
+    standard_job_id: uuid.UUID,
+    matched_job_id: Optional[uuid.UUID],
+    current_user: User,
+    db: AsyncSession,
+    match_status: MatchStatus = MatchStatus.matched,
+    match_score: int = 100,
+) -> None:
+    result = await db.execute(
+        select(StandardJobMatch).where(
+            StandardJobMatch.vessel_id == vessel_id,
+            StandardJobMatch.standard_job_id == standard_job_id,
+            StandardJobMatch.is_deleted == False,
+        )
+    )
+    match = result.scalar_one_or_none()
+    if match is None:
+        match = StandardJobMatch(
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            standard_job_id=standard_job_id,
+        )
+    match.matched_job_id = matched_job_id
+    match.match_status = match_status
+    match.match_score = match_score if matched_job_id else 0
+    db.add(match)
+
+
+async def _import_standard_job_to_vessel(
+    *,
+    vessel_id: uuid.UUID,
+    std_job: StandardJob,
+    current_user: User,
+    db: AsyncSession,
+) -> tuple[str, Job]:
+    existing_match_result = await db.execute(
+        select(StandardJobMatch).where(
+            StandardJobMatch.vessel_id == vessel_id,
+            StandardJobMatch.standard_job_id == std_job.id,
+            StandardJobMatch.is_deleted == False,
+        )
+    )
+    existing_match = existing_match_result.scalar_one_or_none()
+    if existing_match and existing_match.matched_job_id:
+        matched_job_result = await db.execute(
+            select(Job).where(
+                Job.id == existing_match.matched_job_id,
+                Job.vessel_id == vessel_id,
+                Job.is_deleted == False,
+            )
+        )
+        matched_job = matched_job_result.scalar_one_or_none()
+        if matched_job is not None:
+            matched_job.is_critical = bool(matched_job.is_critical or std_job.is_critical)
+            matched_job.source_reference = _merge_source_reference(
+                matched_job.source_reference,
+                std_job.library_reference,
+            )
+            if not matched_job.job_description and std_job.job_description:
+                matched_job.job_description = std_job.job_description
+            db.add(matched_job)
+            await _upsert_standard_job_match(
+                vessel_id=vessel_id,
+                standard_job_id=std_job.id,
+                matched_job_id=matched_job.id,
+                current_user=current_user,
+                db=db,
+            )
+            return "merged", matched_job
+
+    existing_job_result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.job_name == std_job.job_name,
+            Job.is_deleted == False,
+        )
+    )
+    existing_job = existing_job_result.scalar_one_or_none()
+    if existing_job is not None:
+        existing_job.is_critical = bool(existing_job.is_critical or std_job.is_critical)
+        existing_job.source_reference = _merge_source_reference(
+            existing_job.source_reference,
+            std_job.library_reference,
+        )
+        if not existing_job.job_description and std_job.job_description:
+            existing_job.job_description = std_job.job_description
+        db.add(existing_job)
+        await _upsert_standard_job_match(
+            vessel_id=vessel_id,
+            standard_job_id=std_job.id,
+            matched_job_id=existing_job.id,
+            current_user=current_user,
+            db=db,
+        )
+        return "merged", existing_job
+
+    new_job = Job(
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        job_name=std_job.job_name,
+        job_description=std_job.job_description,
+        frequency=std_job.frequency,
+        frequency_type=std_job.frequency_type,
+        is_critical=std_job.is_critical,
+        source_reference=std_job.library_reference,
+        qc_status=QCStatus.pending,
+        is_unmapped=True,
+    )
+    db.add(new_job)
+    await db.flush()
+    await _upsert_standard_job_match(
+        vessel_id=vessel_id,
+        standard_job_id=std_job.id,
+        matched_job_id=new_job.id,
+        current_user=current_user,
+        db=db,
+    )
+    return "imported", new_job
+
+
+def _job_looks_library_imported(job: Job, std_job: StandardJob) -> bool:
+    source_ref = _norm_text(job.source_reference)
+    std_ref = _norm_text(std_job.library_reference)
+    if job.source_manual_id is None and _norm_text(job.job_name) == _norm_text(std_job.job_name):
+        return True
+    if source_ref and std_ref and std_ref in source_ref:
+        return True
+    return False
+
+
 @router.get("/standard-jobs", summary="List standard jobs library")
 async def list_standard_jobs(
     current_user: Annotated[User, Depends(get_current_user)],
@@ -314,16 +446,7 @@ async def bulk_import_standard_jobs(
     file: UploadFile = File(...),
     job_type: str = Query("standard", description="'standard' or 'class'"),
 ) -> dict[str, Any]:
-    """
-    Import Standard Jobs or Class Society Jobs from an Excel (.xlsx) or CSV file.
-
-    Expected columns (Excel header row):
-      job_name, machinery_type, job_description (opt), class_society (opt),
-      frequency (opt), frequency_type (opt), is_critical (opt), library_reference (opt)
-
-    For job_type='standard', class_society defaults to 'General'.
-    For job_type='class', class_society column is required.
-    """
+    """Import Standard Jobs or Class Society Jobs from Excel/CSV."""
     content = await file.read()
     filename = (file.filename or "").lower()
     rows = _extract_rows_from_upload(content, filename, job_type=job_type)
@@ -441,6 +564,51 @@ async def bulk_import_standard_jobs(
         "updated": updated,
         "skipped": skipped,
         "job_type": job_type,
+    }
+
+
+@router.post("/standard-jobs", summary="Create a standard or class job")
+async def create_standard_job(
+    body: dict[str, Any],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    job_name = _clean_text(body.get("job_name"))
+    machinery_type = _clean_text(body.get("machinery_type"))
+    if not job_name or not machinery_type:
+        raise HTTPException(status_code=400, detail="job_name and machinery_type are required")
+
+    class_society_raw = _clean_text(body.get("class_society")) or "General"
+    class_society = CS_MAP.get(_norm_text(class_society_raw))
+    if class_society is None:
+        raise HTTPException(status_code=400, detail="Invalid class_society")
+
+    std_job = StandardJob(
+        tenant_id=current_user.tenant_id,
+        class_society=class_society,
+        machinery_type=machinery_type,
+        job_name=job_name,
+        job_description=_clean_text(body.get("job_description")),
+        frequency=_coerce_int(body.get("frequency")),
+        frequency_type=_map_frequency_type(body.get("frequency_type")),
+        is_critical=_coerce_bool(body.get("is_critical")),
+        library_reference=_clean_text(body.get("library_reference")),
+        is_system=False,
+    )
+    db.add(std_job)
+    await db.commit()
+    await db.refresh(std_job)
+    return {
+        "id": str(std_job.id),
+        "class_society": std_job.class_society.value,
+        "job_type": "standard" if std_job.class_society == ClassSociety.general else "class",
+        "machinery_type": std_job.machinery_type,
+        "job_name": std_job.job_name,
+        "job_description": std_job.job_description,
+        "frequency": std_job.frequency,
+        "frequency_type": std_job.frequency_type.value if std_job.frequency_type else None,
+        "is_critical": std_job.is_critical,
+        "library_reference": std_job.library_reference,
     }
 
 
@@ -661,59 +829,136 @@ async def import_standard_job(
     if std_job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Standard job not found")
 
-    existing_match_result = await db.execute(
-        select(StandardJobMatch).where(
-            StandardJobMatch.vessel_id == vessel_id,
-            StandardJobMatch.standard_job_id == standard_job_id,
-            StandardJobMatch.is_deleted == False,
-        )
+    import_status, job = await _import_standard_job_to_vessel(
+        vessel_id=vessel_id,
+        std_job=std_job,
+        current_user=current_user,
+        db=db,
     )
-    existing_match = existing_match_result.scalar_one_or_none()
-    if existing_match and existing_match.matched_job_id:
-        matched_job_result = await db.execute(
+    await db.commit()
+    return {"status": import_status, "job_id": str(job.id)}
+
+
+@router.post("/vessels/{vessel_id}/standard-jobs/import-batch", summary="Import selected or filtered standard jobs")
+async def import_standard_jobs_batch(
+    vessel_id: uuid.UUID,
+    body: dict[str, Any],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+
+    selected_ids = [uuid.UUID(v) for v in body.get("standard_job_ids", []) if v]
+    query = select(StandardJob).where(
+        StandardJob.tenant_id == current_user.tenant_id,
+        StandardJob.is_deleted == False,
+    )
+    if selected_ids:
+        query = query.where(StandardJob.id.in_(selected_ids))
+    else:
+        if body.get("job_type") == "standard":
+            query = query.where(StandardJob.class_society == ClassSociety.general)
+        elif body.get("job_type") == "class":
+            query = query.where(StandardJob.class_society != ClassSociety.general)
+        if body.get("class_society"):
+            cs = CS_MAP.get(_norm_text(body["class_society"]))
+            if cs:
+                query = query.where(StandardJob.class_society == cs)
+        if body.get("machinery_type"):
+            query = query.where(StandardJob.machinery_type == body["machinery_type"])
+        if body.get("include_critical") is False:
+            query = query.where(StandardJob.is_critical == False)
+    result = await db.execute(query)
+    std_jobs = result.scalars().all()
+    if not std_jobs:
+        raise HTTPException(status_code=404, detail="No standard jobs found for import")
+
+    imported = 0
+    merged = 0
+    for std_job in std_jobs:
+        status_value, _ = await _import_standard_job_to_vessel(
+            vessel_id=vessel_id,
+            std_job=std_job,
+            current_user=current_user,
+            db=db,
+        )
+        if status_value == "imported":
+            imported += 1
+        else:
+            merged += 1
+    await db.commit()
+    return {"imported": imported, "merged": merged, "total": len(std_jobs)}
+
+
+@router.post("/vessels/{vessel_id}/standard-jobs/remove-batch", summary="Remove selected or filtered imported standard jobs from vessel")
+async def remove_standard_jobs_batch(
+    vessel_id: uuid.UUID,
+    body: dict[str, Any],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+
+    selected_ids = [uuid.UUID(v) for v in body.get("standard_job_ids", []) if v]
+    query = select(StandardJob).where(
+        StandardJob.tenant_id == current_user.tenant_id,
+        StandardJob.is_deleted == False,
+    )
+    if selected_ids:
+        query = query.where(StandardJob.id.in_(selected_ids))
+    else:
+        if body.get("job_type") == "standard":
+            query = query.where(StandardJob.class_society == ClassSociety.general)
+        elif body.get("job_type") == "class":
+            query = query.where(StandardJob.class_society != ClassSociety.general)
+        if body.get("class_society"):
+            cs = CS_MAP.get(_norm_text(body["class_society"]))
+            if cs:
+                query = query.where(StandardJob.class_society == cs)
+        if body.get("machinery_type"):
+            query = query.where(StandardJob.machinery_type == body["machinery_type"])
+        if body.get("include_critical") is False:
+            query = query.where(StandardJob.is_critical == False)
+    result = await db.execute(query)
+    std_jobs = result.scalars().all()
+    if not std_jobs:
+        raise HTTPException(status_code=404, detail="No standard jobs found for removal")
+
+    removed = 0
+    skipped = 0
+    for std_job in std_jobs:
+        match_result = await db.execute(
+            select(StandardJobMatch).where(
+                StandardJobMatch.vessel_id == vessel_id,
+                StandardJobMatch.standard_job_id == std_job.id,
+                StandardJobMatch.is_deleted == False,
+            )
+        )
+        match = match_result.scalar_one_or_none()
+        if match is None or match.matched_job_id is None:
+            skipped += 1
+            continue
+        job_result = await db.execute(
             select(Job).where(
-                Job.id == existing_match.matched_job_id,
+                Job.id == match.matched_job_id,
                 Job.vessel_id == vessel_id,
                 Job.is_deleted == False,
             )
         )
-        matched_job = matched_job_result.scalar_one_or_none()
-        if matched_job is not None:
-            matched_job.is_critical = bool(matched_job.is_critical or std_job.is_critical)
-            matched_job.source_reference = _merge_source_reference(
-                matched_job.source_reference,
-                std_job.library_reference,
-            )
-            db.add(matched_job)
-            await db.commit()
-            return {"status": "merged", "job_id": str(matched_job.id)}
+        job = job_result.scalar_one_or_none()
+        if job is None or not _job_looks_library_imported(job, std_job):
+            skipped += 1
+            continue
+        job.is_deleted = True
+        match.matched_job_id = None
+        match.match_status = MatchStatus.not_found
+        match.match_score = 0
+        db.add(job)
+        db.add(match)
+        removed += 1
 
-    existing_job = await db.execute(
-        select(Job).where(
-            Job.vessel_id == vessel_id,
-            Job.job_name == std_job.job_name,
-            Job.is_deleted == False,
-        )
-    )
-    if existing_job.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A similar vessel job already exists")
-
-    new_job = Job(
-        tenant_id=current_user.tenant_id,
-        vessel_id=vessel_id,
-        job_name=std_job.job_name,
-        job_description=std_job.job_description,
-        frequency=std_job.frequency,
-        frequency_type=std_job.frequency_type,
-        is_critical=std_job.is_critical,
-        source_reference=std_job.library_reference,
-        qc_status=QCStatus.pending,
-        is_unmapped=True,
-    )
-    db.add(new_job)
     await db.commit()
-    await db.refresh(new_job)
-    return {"status": "imported", "job_id": str(new_job.id)}
+    return {"removed": removed, "skipped": skipped, "total": len(std_jobs)}
 
 
 @router.post("/vessels/{vessel_id}/standard-jobs/add-critical-jobs", summary="Add missing critical standard jobs")
