@@ -4,8 +4,10 @@ Revision ID: 0017
 Revises: 0016
 Create Date: 2026-04-07
 
-NOTE: PostgreSQL requires ALTER TYPE ADD VALUE to be committed before the new
-value can be used in DML. The actual UPDATE normalization is in migration 0018.
+NOTE: ALTER TYPE ADD VALUE cannot be used inside the same transaction as DML
+that references the new value. We commit Alembic's open transaction first,
+run the DDL (which auto-commits as standalone DDL), then start a new transaction
+so Alembic can record the revision. The UPDATE remapping is in migration 0018.
 """
 import sqlalchemy as sa
 from alembic import op
@@ -17,15 +19,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # These ALTER TYPE statements must be committed on their own before
-    # 'hourly' can appear in any UPDATE (handled in migration 0018).
-    bind = op.get_bind()
-    bind.execution_options(isolation_level="AUTOCOMMIT").execute(
-        sa.text("ALTER TYPE frequency_type ADD VALUE IF NOT EXISTS 'hourly'")
-    )
-    bind.execution_options(isolation_level="AUTOCOMMIT").execute(
-        sa.text("ALTER TYPE initial_frequency_type ADD VALUE IF NOT EXISTS 'hourly'")
-    )
+    conn = op.get_bind()
+    # Commit the transaction Alembic opened so ALTER TYPE ADD VALUE can commit
+    conn.execute(sa.text("COMMIT"))
+    conn.execute(sa.text("ALTER TYPE frequency_type ADD VALUE IF NOT EXISTS 'hourly'"))
+    conn.execute(sa.text("ALTER TYPE initial_frequency_type ADD VALUE IF NOT EXISTS 'hourly'"))
+    # Re-open a transaction so Alembic can write the version stamp
+    conn.execute(sa.text("BEGIN"))
 
 
 def downgrade() -> None:
