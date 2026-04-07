@@ -48,7 +48,7 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
 
 const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ jobType, onImported }) => {
   const fileRef = useRef<HTMLInputElement>(null)
-  const [result, setResult] = useState<{ imported: number; updated: number; unchanged: number; skipped: number } | null>(null)
+  const [result, setResult] = useState<{ parsed_rows?: number; imported: number; updated: number; unchanged: number; skipped: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const importMutation = useMutation({
@@ -61,7 +61,7 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
         fd,
         { headers: { 'Content-Type': 'multipart/form-data' } }
       )
-      return res.data as { imported: number; updated: number; unchanged: number; skipped: number }
+      return res.data as { parsed_rows?: number; imported: number; updated: number; unchanged: number; skipped: number }
     },
     onSuccess: (data) => {
       setResult(data)
@@ -136,6 +136,11 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
 
         {result && (
           <div className="flex items-center gap-3 text-sm">
+            {typeof result.parsed_rows === 'number' && (
+              <span className="text-slate-400">
+                <strong>{result.parsed_rows}</strong> parsed
+              </span>
+            )}
             <span className="flex items-center gap-1.5 text-emerald-400">
               <CheckCircle className="w-4 h-4" />
               <strong>{result.imported}</strong> imported

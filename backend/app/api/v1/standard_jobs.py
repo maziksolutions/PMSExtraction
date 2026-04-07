@@ -95,6 +95,7 @@ FREQ_ALIASES = {
 }
 CS_MAP = {member.value.lower(): member for member in ClassSociety}
 WORKBOOK_SHEETS = {"annex1pmsjobs", "auditstandardjobs", "annexjobtitle", "criticaljobs"}
+IMPORTABLE_JOB_HEADERS = {"jobname", "jobtitle", "jobdescription", "frequencytype", "frequency", "iscritical"}
 
 
 def _map_frequency_type(value: Any) -> Optional[Any]:
@@ -136,6 +137,15 @@ def _build_library_reference(sheet_name: str, row: dict[str, Any]) -> Optional[s
     if remarks:
         return f"{sheet_name}: {remarks}"[:200]
     return sheet_name[:200]
+
+
+def _sheet_looks_like_job_library(sheet_key: str, headers: list[str]) -> bool:
+    if sheet_key in WORKBOOK_SHEETS:
+        return True
+    header_set = {header for header in headers if header}
+    return len(header_set.intersection(IMPORTABLE_JOB_HEADERS)) >= 3 and (
+        "jobname" in header_set or "jobtitle" in header_set
+    )
 
 
 def _canonical_standard_row(sheet_name: str, row: dict[str, Any], *, default_cs: ClassSociety) -> Optional[dict[str, Any]]:
@@ -193,19 +203,20 @@ def _extract_structured_workbook_rows(wb: Any, *, job_type: str) -> list[dict[st
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         sheet_key = _header_key(sheet_name)
-        if sheet_key not in WORKBOOK_SHEETS:
-            continue
-        if job_type == "standard" and sheet_key == "criticaljobs":
-            continue
-        if job_type == "critical" and sheet_key != "criticaljobs":
-            continue
         headers = [_header_key(cell.value) for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+        if not _sheet_looks_like_job_library(sheet_key, headers):
+            continue
         for row in ws.iter_rows(min_row=2, values_only=True):
             mapped = {headers[i]: (row[i] if i < len(row) else None) for i in range(len(headers))}
             canonical = _canonical_standard_row(sheet_name, mapped, default_cs=ClassSociety.general)
             if canonical is not None:
+                is_critical = bool(canonical.get("is_critical"))
                 if job_type == "critical":
+                    if not is_critical:
+                        continue
                     canonical["is_critical"] = True
+                elif is_critical:
+                    continue
                 rows.append(canonical)
     return rows
 
@@ -481,6 +492,7 @@ async def bulk_import_standard_jobs(
     if job_type not in {"standard", "class", "critical"}:
         raise HTTPException(status_code=400, detail="job_type must be 'standard', 'class', or 'critical'")
     rows = _extract_rows_from_upload(content, filename, job_type=job_type)
+    parsed_rows = len(rows)
     default_cs = ClassSociety.general if job_type == "standard" else None
     if job_type == "critical":
         default_cs = ClassSociety.general
@@ -601,7 +613,13 @@ async def bulk_import_standard_jobs(
             unchanged += 1
 
     await db.commit()
+    if imported == 0 and updated == 0 and unchanged == 0 and skipped == parsed_rows:
+        raise HTTPException(
+            status_code=400,
+            detail="No valid rows were imported. Please check that the selected tab matches the workbook content and required job columns are present.",
+        )
     return {
+        "parsed_rows": parsed_rows,
         "imported": imported,
         "updated": updated,
         "unchanged": unchanged,

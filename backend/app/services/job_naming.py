@@ -128,6 +128,12 @@ _GENERIC_BODY_TOKENS = {
     "of",
     "the",
 }
+_GENERIC_COMPONENT_LABELS = {
+    "unmapped",
+    "unmapped component",
+    "component",
+    "unknown component",
+}
 _REF_RE = re.compile(r"^\s*(.+?)\s*\(p\.(\d+)\)\s*$", re.I)
 
 
@@ -409,6 +415,8 @@ def build_canonical_job_name(
     job_descriptions: Sequence[str | None] = (),
 ) -> str:
     component_label = (component_name or "").strip()
+    if _normalise_compare_text(component_label) in _GENERIC_COMPONENT_LABELS:
+        component_label = ""
     name_bodies: list[str] = []
     name_actions: list[str] = []
     for source_text in job_names:
