@@ -203,14 +203,20 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "- spare_maker: infer from document title/header (e.g. 'TAIKO KIKAI INDUSTRIES' → 'Taiko Kikai')\n"
             "- spare_model: identify which sub-assembly the spare belongs to from context (section heading)\n"
             "- If no spare parts found, return []\n"
-            "- Return ONLY the JSON array, no markdown fences"
+            "- Return ONLY the JSON array, no markdown fences\n"
+            "LANGUAGE RULES:\n"
+            "- ALL output fields (part_name, specification, spare_maker, spare_model, drawing_number, etc.) MUST be in English only\n"
+            "- If the source document contains non-English text (e.g. Japanese, Chinese, Korean), translate the content to English\n"
+            "- Do NOT output any non-English characters in any field\n"
+            "- Use the English equivalent shown alongside or below non-English text when available (e.g. 'BALL BEARING' instead of 'ボールベアリング')"
         ),
         "user_template": (
             "Document: {filename}\n\n"
             "Extract all spare parts, recommended spares, and consumables. "
             "Use [PAGE N] markers for source_page_number.\n"
             "Look for: parts tables (NO./NAME/MATERIAL/QTY), drawing parts lists, "
-            "sections titled 'Spare Parts', 'Parts List', 'Recommended Spares'.\n\n{text}"
+            "sections titled 'Spare Parts', 'Parts List', 'Recommended Spares'.\n"
+            "IMPORTANT: All extracted data must be in English only. Translate any non-English text (Japanese, Chinese, etc.) to English.\n\n{text}"
         ),
     },
 }
