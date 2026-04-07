@@ -184,7 +184,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error } = useQuery({
     queryKey: ['standard-jobs-library', jobType, filterSociety, filterMachinery, page, pageSize],
     queryFn: async () => {
       const params: Record<string, string> = {}
@@ -252,6 +252,12 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
         <div className="py-12 text-center text-slate-500">
           <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" />
           Loading...
+        </div>
+      ) : isError ? (
+        <div className="bg-slate-800 border border-red-800 rounded-xl p-12 text-center">
+          <XCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+          <p className="text-red-300 font-medium">Unable to load {jobType === 'standard' ? 'standard' : jobType === 'class' ? 'class society' : 'critical'} jobs</p>
+          <p className="text-slate-400 text-sm mt-1">{error instanceof Error ? error.message : 'Unknown error'}</p>
         </div>
       ) : jobs.length === 0 ? (
         <div className="bg-slate-800 border border-slate-700 rounded-xl p-12 text-center">

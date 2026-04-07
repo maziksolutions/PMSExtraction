@@ -352,7 +352,9 @@ def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
     if canonical_match:
         canonical_body = _trim_body_text(canonical_match.group(1))
         canonical_actions = _extract_known_action_labels(canonical_match.group(2))
-        return _unique_nonempty([canonical_body]), canonical_actions
+        if canonical_actions:
+            return _unique_nonempty([canonical_body]), canonical_actions
+        cleaned = canonical_body
 
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:/")
     cleaned = re.sub(r"^(item|step|procedure|job)\s*[\d.()-]*\s*[:\-]?\s*", "", cleaned, flags=re.I)

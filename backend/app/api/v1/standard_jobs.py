@@ -54,6 +54,46 @@ def _clean_text(value: Any) -> Optional[str]:
     return text or None
 
 
+def _enum_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _class_society_value(value: Any) -> str:
+    raw = (_enum_value(value) or "General").strip()
+    return raw or "General"
+
+
+def _frequency_type_value(value: Any) -> str | None:
+    raw = _enum_value(value)
+    return raw.strip() if isinstance(raw, str) and raw.strip() else None
+
+
+def _job_type_for_standard_job(job: StandardJob) -> str:
+    if bool(job.is_critical):
+        return "critical"
+    return "standard" if _norm_text(_class_society_value(job.class_society)) == "general" else "class"
+
+
+def _serialize_standard_job(job: StandardJob) -> dict[str, Any]:
+    class_society = _class_society_value(job.class_society)
+    frequency_type = _frequency_type_value(job.frequency_type)
+    job_type = "critical" if job.is_critical else ("standard" if _norm_text(class_society) == "general" else "class")
+    return {
+        "id": str(job.id),
+        "class_society": class_society,
+        "job_type": job_type,
+        "machinery_type": job.machinery_type,
+        "job_name": job.job_name,
+        "job_description": job.job_description,
+        "frequency": job.frequency,
+        "frequency_type": frequency_type,
+        "is_critical": job.is_critical,
+        "library_reference": job.library_reference,
+    }
+
+
 def _coerce_bool(value: Any) -> bool:
     return _norm_text(value) in {"yes", "true", "1", "y"}
 
@@ -430,9 +470,9 @@ async def list_standard_jobs(
         StandardJob.is_deleted == False,
     ]
     if job_type == "standard":
-        conditions.extend([StandardJob.class_society == ClassSociety.general, StandardJob.is_critical == False])
+        conditions.extend([func.lower(StandardJob.class_society) == "general", StandardJob.is_critical == False])
     elif job_type == "class":
-        conditions.extend([StandardJob.class_society != ClassSociety.general, StandardJob.is_critical == False])
+        conditions.extend([func.lower(StandardJob.class_society) != "general", StandardJob.is_critical == False])
     elif job_type == "critical":
         conditions.append(StandardJob.is_critical == True)
     if class_society:
@@ -457,21 +497,7 @@ async def list_standard_jobs(
     result = await db.execute(query)
     jobs = result.scalars().all()
     return {
-        "items": [
-            {
-                "id": str(j.id),
-                "class_society": j.class_society.value,
-                "job_type": "standard" if j.class_society == ClassSociety.general else "class",
-                "machinery_type": j.machinery_type,
-                "job_name": j.job_name,
-                "job_description": j.job_description,
-                "frequency": j.frequency,
-                "frequency_type": j.frequency_type.value if j.frequency_type else None,
-                "is_critical": j.is_critical,
-                "library_reference": j.library_reference,
-            }
-            for j in jobs
-        ],
+        "items": [_serialize_standard_job(j) for j in jobs],
         "page": page,
         "page_size": page_size,
         "total": total,
@@ -659,18 +685,7 @@ async def create_standard_job(
     db.add(std_job)
     await db.commit()
     await db.refresh(std_job)
-    return {
-        "id": str(std_job.id),
-        "class_society": std_job.class_society.value,
-        "job_type": "standard" if std_job.class_society == ClassSociety.general else "class",
-        "machinery_type": std_job.machinery_type,
-        "job_name": std_job.job_name,
-        "job_description": std_job.job_description,
-        "frequency": std_job.frequency,
-        "frequency_type": std_job.frequency_type.value if std_job.frequency_type else None,
-        "is_critical": std_job.is_critical,
-        "library_reference": std_job.library_reference,
-    }
+    return _serialize_standard_job(std_job)
 
 
 @router.delete("/standard-jobs/{standard_job_id}", summary="Delete a standard job")
