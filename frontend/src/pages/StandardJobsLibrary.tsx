@@ -185,16 +185,16 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
   const [pageSize, setPageSize] = useState(50)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['standard-jobs-library', jobType, filterSociety, filterMachinery],
+    queryKey: ['standard-jobs-library', jobType, filterSociety, filterMachinery, page, pageSize],
     queryFn: async () => {
       const params: Record<string, string> = {}
       params.job_type = jobType
-      params.page = '1'
-      params.page_size = '5000'
+      params.page = String(page)
+      params.page_size = String(pageSize)
       if (jobType === 'class' && filterSociety) params.class_society = filterSociety
       if (filterMachinery) params.machinery_type = filterMachinery
       const res = await apiClient.get('/standard-jobs', { params })
-      return res.data as { items: StandardJob[] }
+      return res.data as { items: StandardJob[]; total: number; total_pages: number; page: number; page_size: number }
     },
   })
 
@@ -204,9 +204,9 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
   })
 
   const jobs: StandardJob[] = data?.items ?? []
-  const total = jobs.length
-  const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const pageJobs = jobs.slice((page - 1) * pageSize, page * pageSize)
+  const total = data?.total ?? 0
+  const totalPages = data?.total_pages ?? 1
+  const pageJobs = jobs
 
   React.useEffect(() => {
     setPage(1)
