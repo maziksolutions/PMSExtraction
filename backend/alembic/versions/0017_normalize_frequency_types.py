@@ -1,9 +1,13 @@
-"""Normalize frequency types to daily/weekly/monthly/yearly/hourly only
+"""Add hourly enum value to frequency types
 
 Revision ID: 0017
 Revises: 0016
 Create Date: 2026-04-07
+
+NOTE: PostgreSQL requires ALTER TYPE ADD VALUE to be committed before the new
+value can be used in DML. The actual UPDATE normalization is in migration 0018.
 """
+import sqlalchemy as sa
 from alembic import op
 
 revision = "0017"
@@ -11,51 +15,19 @@ down_revision = "0016"
 branch_labels = None
 depends_on = None
 
-# Mapping: old value -> new value
-FREQUENCY_REMAP = {
-    "biweekly": "weekly",       # every 2 weeks → weekly
-    "quarterly": "monthly",     # every 3 months → monthly (frequency stays as 3)
-    "half_yearly": "monthly",   # every 6 months → monthly (frequency stays as 6)
-    "biannual": "yearly",       # every 2 years → yearly (frequency stays as 2)
-    "running_hours": "hourly",  # running hours → hourly
-}
-
 
 def upgrade() -> None:
-    # Add 'hourly' to both native enum types
-    op.execute("ALTER TYPE frequency_type ADD VALUE IF NOT EXISTS 'hourly'")
-    op.execute("ALTER TYPE initial_frequency_type ADD VALUE IF NOT EXISTS 'hourly'")
-
-    # Normalize jobs.frequency_type
-    for old, new in FREQUENCY_REMAP.items():
-        op.execute(
-            f"UPDATE jobs SET frequency_type = '{new}' WHERE frequency_type = '{old}'"
-        )
-
-    # Normalize jobs.initial_frequency_type
-    for old, new in FREQUENCY_REMAP.items():
-        op.execute(
-            f"UPDATE jobs SET initial_frequency_type = '{new}' WHERE initial_frequency_type = '{old}'"
-        )
-
-    # Normalize standard_jobs.frequency_type (stored as VARCHAR)
-    for old, new in FREQUENCY_REMAP.items():
-        op.execute(
-            f"UPDATE standard_jobs SET frequency_type = '{new}' WHERE frequency_type = '{old}'"
-        )
+    # These ALTER TYPE statements must be committed on their own before
+    # 'hourly' can appear in any UPDATE (handled in migration 0018).
+    bind = op.get_bind()
+    bind.execution_options(isolation_level="AUTOCOMMIT").execute(
+        sa.text("ALTER TYPE frequency_type ADD VALUE IF NOT EXISTS 'hourly'")
+    )
+    bind.execution_options(isolation_level="AUTOCOMMIT").execute(
+        sa.text("ALTER TYPE initial_frequency_type ADD VALUE IF NOT EXISTS 'hourly'")
+    )
 
 
 def downgrade() -> None:
-    # PostgreSQL cannot remove enum values — no-op for enum changes
-    # Reverse the data updates
-    REVERSE = {v: k for k, v in FREQUENCY_REMAP.items()}
-    for new, old in REVERSE.items():
-        op.execute(
-            f"UPDATE jobs SET frequency_type = '{old}' WHERE frequency_type = '{new}'"
-        )
-        op.execute(
-            f"UPDATE jobs SET initial_frequency_type = '{old}' WHERE initial_frequency_type = '{new}'"
-        )
-        op.execute(
-            f"UPDATE standard_jobs SET frequency_type = '{old}' WHERE frequency_type = '{new}'"
-        )
+    # PostgreSQL does not support removing enum values — no-op
+    pass
