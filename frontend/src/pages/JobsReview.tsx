@@ -89,7 +89,7 @@ const QC_COLORS: Record<string, string> = {
   modified: 'bg-blue-700 text-blue-100',
 }
 
-const FREQUENCY_OPTIONS = ['daily', 'weekly', 'biweekly', 'monthly', 'quarterly', 'half_yearly', 'yearly', 'biannual', 'running_hours']
+const FREQUENCY_OPTIONS = ['daily', 'weekly', 'monthly', 'yearly', 'hourly']
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
 const SORT_OPTIONS = [
   { value: 'job_name', label: 'Job Name' },

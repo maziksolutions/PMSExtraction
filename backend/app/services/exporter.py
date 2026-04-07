@@ -897,10 +897,19 @@ class ExportService:
             )
         return list(seen.values())
 
+    _FREQ_NORMALIZE = {
+        "biweekly": "weekly",
+        "quarterly": "monthly",
+        "half_yearly": "monthly",
+        "biannual": "yearly",
+        "running_hours": "hourly",
+    }
+
     def _frequency_label(self, value: str | None) -> str:
         if not value:
             return ""
-        return value.replace("_", " ").title()
+        normalized = self._FREQ_NORMALIZE.get(value, value)
+        return normalized.replace("_", " ").title()
 
     def _procedure_code(self, job: Job) -> str:
         base = job.job_code or job.job_name

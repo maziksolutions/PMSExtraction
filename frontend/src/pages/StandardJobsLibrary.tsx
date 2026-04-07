@@ -118,7 +118,7 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
         {jobType === 'class' && (
           <p>class_society values: <span className="text-slate-400">DNV GL, Lloyd's Register, Bureau Veritas, ABS, ClassNK</span></p>
         )}
-        <p>frequency_type values: <span className="text-slate-400">daily, weekly, monthly, quarterly, half_yearly, yearly, running_hours</span></p>
+        <p>frequency_type values: <span className="text-slate-400">daily, weekly, monthly, yearly, hourly</span></p>
       </div>
 
       <div className="flex items-center gap-3 flex-wrap">
@@ -604,10 +604,8 @@ const StandardJobsLibrary: React.FC = () => {
                   <option value="daily">daily</option>
                   <option value="weekly">weekly</option>
                   <option value="monthly">monthly</option>
-                  <option value="quarterly">quarterly</option>
-                  <option value="half_yearly">half_yearly</option>
                   <option value="yearly">yearly</option>
-                  <option value="running_hours">running_hours</option>
+                  <option value="hourly">hourly</option>
                 </select>
               </label>
               <label className="space-y-1 text-sm md:col-span-2">

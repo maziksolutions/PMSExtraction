@@ -126,16 +126,12 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "  - Tables with columns: Interval | Description/Job (e.g. 'Every day', 'Weekly', 'Monthly')\n"
             "  - Numbered procedure lists under headings like '8. Maintenance', 'Service Schedule'\n"
             "  - Section headings like '8.3 Check V-Belt', '9.4 Maintenance of UV Sterilizer'\n\n"
-            "FREQUENCY TYPE MAPPING (use exact values shown):\n"
+            "FREQUENCY TYPE MAPPING (use ONLY these 5 types — no others):\n"
             "  Every day / Daily / 24h → frequency_type='daily', frequency=1\n"
-            "  Weekly / Every week / 7 days → frequency_type='weekly', frequency=1\n"
-            "  Biweekly / Fortnightly / Every 2 weeks → frequency_type='biweekly', frequency=2\n"
-            "  Monthly / Every month / 30 days → frequency_type='monthly', frequency=1\n"
-            "  3 months / Quarterly → frequency_type='quarterly', frequency=3\n"
-            "  6 months / Half yearly / Bi-annual → frequency_type='half_yearly', frequency=6\n"
-            "  12 months / Yearly / Annually / Once a year → frequency_type='yearly', frequency=12\n"
-            "  Biyearly / Every 2 years / Every 24 months → frequency_type='biannual', frequency=24\n"
-            "  Running hours (e.g. every 500h, 1000h) → frequency_type='running_hours', frequency=<hour value>\n\n"
+            "  Weekly / Every week / 7 days / Biweekly / Fortnightly / Every 2 weeks → frequency_type='weekly', frequency=<week count>\n"
+            "  Monthly / Every month / 30 days / Quarterly / Every 3 months / Half yearly / Every 6 months → frequency_type='monthly', frequency=<month count>\n"
+            "  Yearly / Annually / Once a year / Every 2 years / Biannual → frequency_type='yearly', frequency=<year count>\n"
+            "  Running hours / Every Nh / Engine hours → frequency_type='hourly', frequency=<hour value>\n\n"
             "IMPORTANT — job_name formatting:\n"
             "  - Be specific: 'Replace UV lamp' not 'Replace lamp'\n"
             "  - Include equipment context: 'Check aeration blower air filter'\n"
@@ -147,7 +143,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             '  "job_description": "full procedure text from the manual or null",\n'
             '  "safety_precaution": "WARNING/CAUTION/NOTICE text relevant to this job or null",\n'
             '  "frequency": integer representing the interval value (1 for daily, 2 for biweekly, 12 for yearly, etc.) or null,\n'
-            '  "frequency_type": "daily|weekly|biweekly|monthly|quarterly|half_yearly|yearly|biannual|running_hours or null",\n'
+            '  "frequency_type": "daily|weekly|monthly|yearly|hourly — ONLY these 5 values or null",\n'
             '  "is_critical": true if this job is for safety/regulatory equipment or has a WARNING label,\n'
             '  "source_page_number": integer from [PAGE N] marker or null,\n'
             '  "confidence_score": integer 70-98\n'

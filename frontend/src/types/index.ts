@@ -30,10 +30,8 @@ export enum FrequencyType {
   Daily = 'daily',
   Weekly = 'weekly',
   Monthly = 'monthly',
-  Quarterly = 'quarterly',
-  HalfYearly = 'half_yearly',
   Yearly = 'yearly',
-  RunningHours = 'running_hours',
+  Hourly = 'hourly',
 }
 
 export enum ExtractionMethod {

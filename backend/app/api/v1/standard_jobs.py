@@ -142,26 +142,32 @@ def _coerce_int(value: Any) -> Optional[int]:
 
 FREQ_MAP = {member.value: member for member in __import__("app.models.job", fromlist=["FrequencyType"]).FrequencyType}
 FREQ_ALIASES = {
+    # daily
     "daily": "daily",
+    # weekly
     "weekly": "weekly",
-    "fortnightly": "biweekly",
-    "biweekly": "biweekly",
+    "fortnightly": "weekly",
+    "biweekly": "weekly",
+    # monthly
     "monthly": "monthly",
-    "quarterly": "quarterly",
-    "half yearly": "half_yearly",
-    "halfyearly": "half_yearly",
-    "half_yearly": "half_yearly",
-    "sixmonthly": "half_yearly",
-    "6monthly": "half_yearly",
+    "quarterly": "monthly",
+    "half yearly": "monthly",
+    "halfyearly": "monthly",
+    "half_yearly": "monthly",
+    "sixmonthly": "monthly",
+    "6monthly": "monthly",
+    # yearly
     "yearly": "yearly",
     "annual": "yearly",
-    "biannual": "biannual",
-    "biennial": "biannual",
-    "runhours": "running_hours",
-    "runninghours": "running_hours",
-    "running_hours": "running_hours",
-    "hourly": "running_hours",
-    "hours": "running_hours",
+    "biannual": "yearly",
+    "biennial": "yearly",
+    # hourly (running hours)
+    "hourly": "hourly",
+    "hours": "hourly",
+    "runhours": "hourly",
+    "runninghours": "hourly",
+    "running_hours": "hourly",
+    "runninghour": "hourly",
 }
 CS_MAP = {member.value.lower(): member for member in ClassSociety}
 CLASS_LIBRARY_VALUES = {
