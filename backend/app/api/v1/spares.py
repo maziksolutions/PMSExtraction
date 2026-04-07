@@ -33,6 +33,16 @@ def _format_spare_source_reference(
     return manual_name or (f"p.{page_reference}" if page_reference else None)
 
 
+def _fallback_spare_part_number(
+    part_number: Optional[str],
+    manual_name: Optional[str],
+    page_reference: Optional[int],
+) -> Optional[str]:
+    if part_number:
+        return part_number
+    return _format_spare_source_reference(manual_name, page_reference)
+
+
 def _spare_out_payload(spare: Spare) -> dict[str, Any]:
     return {
         "id": spare.id,
@@ -223,15 +233,19 @@ async def list_spares(
         payload = _spare_out(spare).model_dump()
         component = component_lookup.get(spare.component_id) if spare.component_id else None
         manual = manual_lookup.get(spare.source_manual_id) if spare.source_manual_id else None
+        manual_name = manual.original_filename if manual else None
+        source_reference = _format_spare_source_reference(manual_name, spare.page_reference)
         payload.update(
             {
                 "component_name": component.component_name if component else None,
                 "component_maker": component.maker if component else None,
                 "component_model": component.model if component else None,
-                "source_manual_name": manual.original_filename if manual else None,
-                "pdf_reference": manual.original_filename if manual else None,
-                "source_reference": _format_spare_source_reference(
-                    manual.original_filename if manual else None,
+                "source_manual_name": manual_name,
+                "pdf_reference": manual_name,
+                "source_reference": source_reference,
+                "part_number": _fallback_spare_part_number(
+                    payload.get("part_number"),
+                    manual_name,
                     spare.page_reference,
                 ),
             }

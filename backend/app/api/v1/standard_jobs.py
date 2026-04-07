@@ -195,6 +195,8 @@ def _extract_structured_workbook_rows(wb: Any, *, job_type: str) -> list[dict[st
         sheet_key = _header_key(sheet_name)
         if sheet_key not in WORKBOOK_SHEETS:
             continue
+        if job_type == "standard" and sheet_key == "criticaljobs":
+            continue
         if job_type == "critical" and sheet_key != "criticaljobs":
             continue
         headers = [_header_key(cell.value) for cell in next(ws.iter_rows(min_row=1, max_row=1))]
@@ -499,8 +501,15 @@ async def bulk_import_standard_jobs(
         for job in existing_result.scalars().all()
     }
 
+    if not rows:
+        raise HTTPException(
+            status_code=400,
+            detail="No importable rows found. Use Audit standard jobs / Annex Job Title for Standard Jobs or Critical Jobs for the Critical Jobs tab.",
+        )
+
     imported = 0
     updated = 0
+    unchanged = 0
     skipped = 0
     seen_upload_keys: set[tuple[str, str, str, bool]] = set()
     for row in rows:
@@ -588,11 +597,14 @@ async def bulk_import_standard_jobs(
         if changed:
             db.add(existing)
             updated += 1
+        else:
+            unchanged += 1
 
     await db.commit()
     return {
         "imported": imported,
         "updated": updated,
+        "unchanged": unchanged,
         "skipped": skipped,
         "job_type": job_type,
     }

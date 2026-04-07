@@ -1761,6 +1761,11 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                     jobs_to_add.append(job)
 
                 elif etype == "spare":
+                    fallback_part_number = (
+                        f"{filename} (p.{int(source_page)})"
+                        if source_page is not None
+                        else filename
+                    )
                     spare = Spare(
                         tenant_id=tenant_id,
                         vessel_id=vessel_id,
@@ -1768,7 +1773,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                         confidence_score=confidence,
                         qc_status=QCStatus.pending,
                         part_name=record.get("part_name") or "Unknown Part",
-                        part_number=record.get("part_number") or None,
+                        part_number=record.get("part_number") or fallback_part_number,
                         drawing_number=record.get("drawing_number") or None,
                         drawing_position=record.get("drawing_position") or None,
                         specification=record.get("specification") or None,

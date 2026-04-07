@@ -48,7 +48,7 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
 
 const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ jobType, onImported }) => {
   const fileRef = useRef<HTMLInputElement>(null)
-  const [result, setResult] = useState<{ imported: number; updated: number; skipped: number } | null>(null)
+  const [result, setResult] = useState<{ imported: number; updated: number; unchanged: number; skipped: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const importMutation = useMutation({
@@ -61,7 +61,7 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
         fd,
         { headers: { 'Content-Type': 'multipart/form-data' } }
       )
-      return res.data as { imported: number; updated: number; skipped: number }
+      return res.data as { imported: number; updated: number; unchanged: number; skipped: number }
     },
     onSuccess: (data) => {
       setResult(data)
@@ -143,6 +143,11 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
             {result.updated > 0 && (
               <span className="text-sky-400">
                 <strong>{result.updated}</strong> updated
+              </span>
+            )}
+            {result.unchanged > 0 && (
+              <span className="text-amber-300">
+                <strong>{result.unchanged}</strong> unchanged
               </span>
             )}
             {result.skipped > 0 && (

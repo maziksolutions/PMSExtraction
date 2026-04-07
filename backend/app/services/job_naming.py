@@ -19,6 +19,7 @@ _ACTION_PHRASES = [
     "inspection",
     "check",
     "replace",
+    "install",
     "replenish",
     "overhaul",
     "lubricate",
@@ -57,6 +58,7 @@ _ACTION_LABELS = {
     "measure": "Inspection",
     "calibrate": "Inspection",
     "replace": "Replacement",
+    "install": "Replacement",
     "renew": "Replacement",
     "replenish": "Replenishment",
     "overhaul": "Overhaul",
@@ -325,14 +327,25 @@ def _normalise_action_label(action: str) -> str:
     return _ACTION_LABELS.get(key, action.title())
 
 
+def _extract_known_action_labels(text: str | None) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip(" -:/,.;")).strip()
+    if not cleaned:
+        return []
+    labels: list[str] = []
+    lowered = cleaned.lower()
+    for phrase in sorted(_ACTION_PHRASES, key=len, reverse=True):
+        pattern = r"\b" + re.escape(phrase).replace(r"\ ", r"\s+") + r"\b"
+        if re.search(pattern, lowered):
+            labels.append(_normalise_action_label(phrase))
+    return _unique_nonempty(labels)
+
+
 def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
     cleaned = strip_source_reference_footer(text) or ""
     canonical_match = _BODY_ACTION_RE.match(cleaned)
     if canonical_match:
         canonical_body = _trim_body_text(canonical_match.group(1))
-        canonical_actions = _unique_nonempty(
-            [_normalise_action_label(part) for part in re.split(r"\s*/\s*", canonical_match.group(2))]
-        )
+        canonical_actions = _extract_known_action_labels(canonical_match.group(2))
         return _unique_nonempty([canonical_body]), canonical_actions
 
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:/")
@@ -343,11 +356,7 @@ def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
         return [], []
 
     lowered = cleaned.lower()
-    actions: list[str] = []
-    for phrase in _ACTION_PHRASES:
-        pattern = r"\b" + re.escape(phrase).replace(r"\ ", r"\s+") + r"\b"
-        if re.search(pattern, lowered):
-            actions.append(_normalise_action_label(phrase))
+    actions = _extract_known_action_labels(cleaned)
 
     body = ""
     for phrase in sorted(_ACTION_PHRASES, key=len, reverse=True):
