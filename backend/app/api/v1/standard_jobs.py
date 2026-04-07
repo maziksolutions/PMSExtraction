@@ -364,6 +364,21 @@ def _merge_source_reference(existing: Optional[str], new_value: Optional[str]) -
     return " | ".join(merged) if merged else None
 
 
+def _remove_source_reference(existing: Optional[str], remove_value: Optional[str]) -> Optional[str]:
+    if not existing:
+        return None
+    remove_key = _norm_text(remove_value)
+    kept: list[str] = []
+    for part in existing.split(" | "):
+        cleaned = part.strip()
+        if not cleaned:
+            continue
+        if remove_key and _norm_text(cleaned) == remove_key:
+            continue
+        kept.append(cleaned)
+    return " | ".join(kept) if kept else None
+
+
 async def _resolve_component_mapping(
     *,
     vessel_id: uuid.UUID,
@@ -1267,6 +1282,15 @@ async def add_critical_jobs(
                 updated += 1
             else:
                 skipped += 1
+            await _upsert_standard_job_match(
+                vessel_id=vessel_id,
+                standard_job_id=std_job.id,
+                matched_job_id=best_match.id,
+                current_user=current_user,
+                db=db,
+                match_status=MatchStatus.matched,
+                match_score=best_score,
+            )
             continue
 
         existing_same_name = await db.execute(
@@ -1280,24 +1304,138 @@ async def add_critical_jobs(
             skipped += 1
             continue
 
-        db.add(
-            Job(
-                tenant_id=current_user.tenant_id,
-                vessel_id=vessel_id,
-                job_name=std_job.job_name,
-                job_description=std_job.job_description,
-                frequency=std_job.frequency,
-                frequency_type=std_job.frequency_type,
-                is_critical=True,
-                source_reference=std_job.library_reference,
-                qc_status=QCStatus.accepted,
-                is_unmapped=True,
-            )
+        new_job = Job(
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            job_name=std_job.job_name,
+            job_description=std_job.job_description,
+            frequency=std_job.frequency,
+            frequency_type=std_job.frequency_type,
+            is_critical=True,
+            source_reference=std_job.library_reference,
+            qc_status=QCStatus.accepted,
+            is_unmapped=True,
+        )
+        db.add(new_job)
+        await db.flush()
+        await _upsert_standard_job_match(
+            vessel_id=vessel_id,
+            standard_job_id=std_job.id,
+            matched_job_id=new_job.id,
+            current_user=current_user,
+            db=db,
+            match_status=MatchStatus.not_found,
+            match_score=0,
         )
         added += 1
 
     await db.commit()
     return {"added": added, "updated": updated, "skipped": skipped}
+
+
+@router.post("/vessels/{vessel_id}/standard-jobs/remove-critical-jobs", summary="Undo critical standard jobs")
+async def remove_critical_jobs(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+
+    critical_result = await db.execute(
+        select(StandardJob).where(
+            StandardJob.tenant_id == current_user.tenant_id,
+            StandardJob.is_deleted == False,
+            StandardJob.is_critical == True,
+        )
+    )
+    critical_jobs = critical_result.scalars().all()
+    if not critical_jobs:
+        return {"removed": 0, "unmarked": 0, "skipped": 0, "total": 0}
+
+    removed = 0
+    unmarked = 0
+    skipped = 0
+
+    for std_job in critical_jobs:
+        match_result = await db.execute(
+            select(StandardJobMatch).where(
+                StandardJobMatch.vessel_id == vessel_id,
+                StandardJobMatch.standard_job_id == std_job.id,
+                StandardJobMatch.is_deleted == False,
+            )
+        )
+        match = match_result.scalar_one_or_none()
+
+        candidate_job: Job | None = None
+        if match is not None and match.matched_job_id is not None:
+            job_result = await db.execute(
+                select(Job).where(
+                    Job.id == match.matched_job_id,
+                    Job.vessel_id == vessel_id,
+                    Job.is_deleted == False,
+                )
+            )
+            candidate_job = job_result.scalar_one_or_none()
+
+        if candidate_job is None:
+            fallback_result = await db.execute(
+                select(Job).where(
+                    Job.vessel_id == vessel_id,
+                    Job.is_deleted == False,
+                    or_(
+                        Job.job_name == std_job.job_name,
+                        Job.source_reference.ilike(f"%{std_job.library_reference or ''}%"),
+                    ),
+                )
+            )
+            fallback_jobs = fallback_result.scalars().all()
+            candidate_job = next((job for job in fallback_jobs if _job_looks_library_imported(job, std_job)), None)
+            if candidate_job is None:
+                candidate_job = next(
+                    (
+                        job for job in fallback_jobs
+                        if bool(job.is_critical)
+                        and _norm_text(std_job.library_reference) in _norm_text(job.source_reference)
+                    ),
+                    None,
+                )
+
+        if candidate_job is None:
+            if match is not None:
+                match.matched_job_id = None
+                match.match_status = MatchStatus.not_found
+                match.match_score = 0
+                db.add(match)
+            skipped += 1
+            continue
+
+        if _job_looks_library_imported(candidate_job, std_job):
+            candidate_job.is_deleted = True
+            db.add(candidate_job)
+            removed += 1
+        else:
+            changed = False
+            if candidate_job.is_critical:
+                candidate_job.is_critical = False
+                changed = True
+            cleaned_source_reference = _remove_source_reference(candidate_job.source_reference, std_job.library_reference)
+            if cleaned_source_reference != candidate_job.source_reference:
+                candidate_job.source_reference = cleaned_source_reference
+                changed = True
+            if changed:
+                db.add(candidate_job)
+                unmarked += 1
+            else:
+                skipped += 1
+
+        if match is not None:
+            match.matched_job_id = None
+            match.match_status = MatchStatus.not_found
+            match.match_score = 0
+            db.add(match)
+
+    await db.commit()
+    return {"removed": removed, "unmarked": unmarked, "skipped": skipped, "total": len(critical_jobs)}
 
 
 @router.get("/vessels/{vessel_id}/missing-manuals", summary="Missing manual gaps")

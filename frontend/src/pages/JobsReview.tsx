@@ -467,6 +467,20 @@ const JobsReview: React.FC = () => {
     onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
   })
 
+  const undoCriticalJobsMutation = useMutation({
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/standard-jobs/remove-critical-jobs`).then((r) => r.data),
+    onSuccess: (result) => {
+      refreshJobs()
+      queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+      setActionError(null)
+      setActionMessage(
+        `Critical jobs undo completed. Removed ${result.removed ?? 0}, unmarked ${result.unmarked ?? 0}, skipped ${result.skipped ?? 0}.`
+      )
+    },
+    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
+  })
+
   const handleCMSUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -638,6 +652,14 @@ const JobsReview: React.FC = () => {
             >
               <AlertCircle className="h-3.5 w-3.5" />
               {addCriticalJobsMutation.isPending ? 'Adding Critical...' : 'Add Critical Jobs'}
+            </button>
+            <button
+              onClick={() => undoCriticalJobsMutation.mutate()}
+              disabled={undoCriticalJobsMutation.isPending}
+              className="flex items-center gap-1.5 rounded-lg border border-rose-700 px-3 py-1.5 text-xs font-medium text-rose-300 hover:bg-slate-800 disabled:opacity-50"
+            >
+              <XCircle className="h-3.5 w-3.5" />
+              {undoCriticalJobsMutation.isPending ? 'Undoing Critical...' : 'Undo Critical Jobs'}
             </button>
             {Object.keys(edits).length > 0 ? (
               <button
