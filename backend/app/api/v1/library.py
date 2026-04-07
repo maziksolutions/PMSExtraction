@@ -474,6 +474,9 @@ async def list_component_structure(
     db: Annotated[AsyncSession, Depends(get_db)],
     status_filter: Optional[str] = Query(None, alias="status"),
     vessel_type_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("group1_name"),
+    sort_order: str = Query("asc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=1000),
 ) -> dict[str, Any]:
@@ -487,8 +490,33 @@ async def list_component_structure(
     if vessel_type_id:
         where_clauses.append("vessel_type_id = :vtid")
         params["vtid"] = vessel_type_id
+    if search:
+        where_clauses.append(
+            "("
+            "group1_name ILIKE :search_pat OR "
+            "group2_name ILIKE :search_pat OR "
+            "machinery_name ILIKE :search_pat OR "
+            "component_name ILIKE :search_pat OR "
+            "component_code ILIKE :search_pat OR "
+            "component_type ILIKE :search_pat"
+            ")"
+        )
+        params["search_pat"] = f"%{search}%"
 
     where_sql = " AND ".join(where_clauses)
+    sort_columns = {
+        "group1_name": "group1_name",
+        "group2_name": "group2_name",
+        "machinery_name": "machinery_name",
+        "component_name": "component_name",
+        "component_code": "component_code",
+        "component_type": "component_type",
+        "criticality": "criticality",
+        "status": "status",
+        "created_at": "created_at",
+    }
+    sort_column = sort_columns.get(sort_by, "group1_name")
+    sort_direction = "DESC" if str(sort_order).lower() == "desc" else "ASC"
 
     count_result = await db.execute(
         text(f"SELECT COUNT(*) FROM component_structure_library WHERE {where_sql}"),
@@ -503,7 +531,7 @@ async def list_component_structure(
             "component_type, is_critical, criticality, status, version, vessel_type_id, created_at "
             "FROM component_structure_library "
             f"WHERE {where_sql} "
-            "ORDER BY group1_name, group2_name, machinery_name, component_name "
+            f"ORDER BY {sort_column} {sort_direction}, group1_name ASC, group2_name ASC, machinery_name ASC, component_name ASC "
             f"LIMIT {page_size} OFFSET {(page - 1) * page_size}"
         ),
         params,
@@ -714,6 +742,9 @@ async def list_global_library(
     entity_type: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("occurrence_count"),
+    sort_order: str = Query("desc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
@@ -725,16 +756,36 @@ async def list_global_library(
             detail=f"Invalid entity_type '{entity_type}'. Must be one of: component, job, spare.",
         )
 
+    where_clauses = ["tenant_id = :tid", "is_deleted = false"]
+    params: dict[str, Any] = {"tid": str(current_user.tenant_id)}
+    if search:
+        where_clauses.append("CAST(canonical_data AS TEXT) ILIKE :search_pat")
+        params["search_pat"] = f"%{search}%"
+    where_sql = " AND ".join(where_clauses)
+    sort_columns = {
+        "occurrence_count": "occurrence_count",
+        "first_seen_at": "first_seen_at",
+        "created_at": "created_at",
+    }
+    sort_column = sort_columns.get(sort_by, "occurrence_count")
+    sort_direction = "DESC" if str(sort_order).lower() == "desc" else "ASC"
+
+    count_result = await db.execute(
+        text(f"SELECT COUNT(*) FROM {table} WHERE {where_sql}"),
+        params,
+    )
+    total = count_result.scalar_one()
+
     result = await db.execute(
         text(
             f"SELECT id, tenant_id, canonical_data, occurrence_count, "
             f"source_vessels, first_seen_at, created_at "
             f"FROM {table} "
-            f"WHERE tenant_id = :tid AND is_deleted = false "
-            f"ORDER BY occurrence_count DESC, first_seen_at DESC "
+            f"WHERE {where_sql} "
+            f"ORDER BY {sort_column} {sort_direction}, occurrence_count DESC, first_seen_at DESC "
             f"LIMIT {page_size} OFFSET {(page - 1) * page_size}"
         ),
-        {"tid": str(current_user.tenant_id)},
+        params,
     )
     rows = result.mappings().all()
     return {
@@ -742,6 +793,7 @@ async def list_global_library(
         "items": [dict(r) for r in rows],
         "page": page,
         "page_size": page_size,
+        "total": total,
     }
 
 
@@ -1053,36 +1105,78 @@ async def list_manual_matches(
     vessel_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("match_score"),
+    sort_order: str = Query("desc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
     """Return stored matches for manuals belonging to this vessel."""
     await _get_vessel_or_404(vessel_id, db)
 
+    where_sql = (
+        "sm.vessel_id = :vid "
+        "AND mm.tenant_id = :tid "
+        "AND mm.is_deleted = false"
+    )
+    params: dict[str, Any] = {"vid": str(vessel_id), "tid": str(current_user.tenant_id)}
+    if search:
+        where_sql += (
+            " AND ("
+            "sm.original_filename ILIKE :search_pat OR "
+            "tm.original_filename ILIKE :search_pat OR "
+            "COALESCE(vp.vessel_name, '') ILIKE :search_pat"
+            ")"
+        )
+        params["search_pat"] = f"%{search}%"
+    sort_columns = {
+        "source_manual_name": "sm.original_filename",
+        "matched_manual_name": "tm.original_filename",
+        "matched_vessel_name": "vp.vessel_name",
+        "match_score": "mm.match_score",
+        "match_confidence": "mm.match_confidence",
+        "created_at": "mm.created_at",
+    }
+    sort_column = sort_columns.get(sort_by, "mm.match_score")
+    sort_direction = "DESC" if str(sort_order).lower() == "desc" else "ASC"
+
     try:
+        count_result = await db.execute(
+            text(
+                "SELECT COUNT(*) "
+                "FROM manual_matches mm "
+                "JOIN manuals sm ON sm.id = mm.source_manual_id "
+                "JOIN manuals tm ON tm.id = mm.matched_manual_id "
+                "LEFT JOIN vessel_projects vp ON vp.id = tm.vessel_id "
+                f"WHERE {where_sql}"
+            ),
+            params,
+        )
+        total = count_result.scalar_one()
         result = await db.execute(
             text(
                 "SELECT mm.id, mm.source_manual_id, mm.matched_manual_id, "
                 "mm.match_score, mm.match_confidence, mm.created_at, "
                 "sm.original_filename AS source_manual_name, "
                 "tm.original_filename AS matched_manual_name, "
-                "tm.vessel_id AS matched_vessel_id "
+                "tm.vessel_id AS matched_vessel_id, "
+                "vp.vessel_name AS matched_vessel_name "
                 "FROM manual_matches mm "
                 "JOIN manuals sm ON sm.id = mm.source_manual_id "
                 "JOIN manuals tm ON tm.id = mm.matched_manual_id "
-                "WHERE sm.vessel_id = :vid "
-                "  AND mm.tenant_id = :tid "
-                "  AND mm.is_deleted = false "
-                "ORDER BY mm.match_score DESC "
+                "LEFT JOIN vessel_projects vp ON vp.id = tm.vessel_id "
+                f"WHERE {where_sql} "
+                f"ORDER BY {sort_column} {sort_direction}, mm.match_score DESC "
                 f"LIMIT {page_size} OFFSET {(page - 1) * page_size}"
             ),
-            {"vid": str(vessel_id), "tid": str(current_user.tenant_id)},
+            params,
         )
         rows = result.mappings().all()
     except Exception:
         rows = []
+        total = 0
 
-    return {"items": [dict(r) for r in rows], "page": page, "page_size": page_size}
+    return {"items": [dict(r) for r in rows], "page": page, "page_size": page_size, "total": total}
 
 
 @router.post(

@@ -8,6 +8,7 @@ import {
   BookOpen,
   CheckCircle,
   XCircle,
+  Search,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 
@@ -39,6 +40,12 @@ const ENTITY_DESCRIPTION: Record<EntityType, string> = {
   job: 'Standardised maintenance job definitions from all vessel data',
   spare: 'Global spare parts catalogue built from vessel-level extractions',
 }
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
+const SORT_OPTIONS = [
+  { value: 'occurrence_count', label: 'Occurrences' },
+  { value: 'first_seen_at', label: 'First Seen' },
+  { value: 'created_at', label: 'Newest Added' },
+]
 
 // ─── Populate Panel ───────────────────────────────────────────────────────────
 
@@ -153,14 +160,34 @@ interface LibraryTableProps {
 
 const LibraryTable: React.FC<LibraryTableProps> = ({ entityType }) => {
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState('occurrence_count')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
 
-  const { data: entries = [], isLoading } = useQuery<GlobalLibraryEntry[]>({
-    queryKey: ['library', 'global', entityType],
+  const { data, isLoading } = useQuery({
+    queryKey: ['library', 'global-standalone', entityType, search, sortBy, sortOrder, page, pageSize],
     queryFn: async () => {
-      const res = await apiClient.get(`/api/v1/library/global/${entityType}`)
+      const res = await apiClient.get(`/api/v1/library/global/${entityType}`, {
+        params: {
+          search: search || undefined,
+          sort_by: sortBy,
+          sort_order: sortOrder,
+          page,
+          page_size: pageSize,
+        },
+      })
       return res.data
     },
   })
+  const entries: GlobalLibraryEntry[] = data?.items ?? data ?? []
+  const total = data?.total ?? entries.length
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  React.useEffect(() => {
+    setPage(1)
+  }, [entityType, search, sortBy, sortOrder, pageSize])
 
   const toggleRow = (id: string) => {
     setExpandedRows((prev) => {
@@ -194,10 +221,41 @@ const LibraryTable: React.FC<LibraryTableProps> = ({ entityType }) => {
   }
 
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-64">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={`Search ${entityType} library...`}
+            className="w-full rounded-lg border border-slate-700 bg-slate-800 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+          />
+        </div>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
+        >
+          {SORT_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <select
+          value={sortOrder}
+          onChange={(e) => setSortOrder(e.target.value as 'asc' | 'desc')}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
+        >
+          <option value="asc">Sort A-Z / Low-High</option>
+          <option value="desc">Sort Z-A / High-Low</option>
+        </select>
+      </div>
+
+      <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
         <span className="text-sm font-semibold text-slate-300 capitalize">{entityType} Library</span>
-        <span className="text-xs text-slate-500">{entries.length} entries</span>
+        <span className="text-xs text-slate-500">{total} entries</span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -307,6 +365,39 @@ const LibraryTable: React.FC<LibraryTableProps> = ({ entityType }) => {
           </tbody>
         </table>
       </div>
+      <div className="flex items-center justify-between border-t border-slate-700 px-4 py-2.5">
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span>{total} total entries</span>
+          <span>·</span>
+          <span>Show</span>
+          <select
+            value={pageSize}
+            onChange={(e) => setPageSize(Number(e.target.value))}
+            className="rounded border border-slate-600 bg-slate-700 px-2 py-0.5 text-xs text-white"
+          >
+            {PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
+          </select>
+          <span>per page</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+            disabled={page === 1}
+            className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-40"
+          >
+            ← Prev
+          </button>
+          <span className="px-3 text-xs text-slate-400">Page {page} of {totalPages}</span>
+          <button
+            onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+            disabled={page >= totalPages}
+            className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-40"
+          >
+            Next →
+          </button>
+        </div>
+      </div>
+    </div>
     </div>
   )
 }

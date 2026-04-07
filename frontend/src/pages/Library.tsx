@@ -95,6 +95,34 @@ type GlobalEntity = 'component' | 'job' | 'spare'
 // ─── Component Structure Tab ──────────────────────────────────────────────────
 
 const PAGE_SIZE_OPTIONS = [100, 200, 500, 1000]
+const COMPONENT_STRUCTURE_SORT_OPTIONS = [
+  { value: 'group1_name', label: 'Category' },
+  { value: 'group2_name', label: 'Sub Category' },
+  { value: 'machinery_name', label: 'Machinery' },
+  { value: 'component_name', label: 'Component Name' },
+  { value: 'component_code', label: 'Component Code' },
+  { value: 'component_type', label: 'Component Type' },
+  { value: 'criticality', label: 'Criticality' },
+  { value: 'status', label: 'Status' },
+]
+const MAKER_MODEL_SORT_OPTIONS = [
+  { value: 'maker', label: 'Maker' },
+  { value: 'model', label: 'Model' },
+  { value: 'component_category', label: 'Category' },
+  { value: 'created_at', label: 'Newest Added' },
+]
+const GLOBAL_LIBRARY_SORT_OPTIONS = [
+  { value: 'occurrence_count', label: 'Occurrences' },
+  { value: 'first_seen_at', label: 'First Seen' },
+  { value: 'created_at', label: 'Newest Added' },
+]
+const MANUAL_MATCH_SORT_OPTIONS = [
+  { value: 'match_score', label: 'Match Score' },
+  { value: 'match_confidence', label: 'Confidence' },
+  { value: 'source_manual_name', label: 'Source Manual' },
+  { value: 'matched_manual_name', label: 'Matched Manual' },
+  { value: 'matched_vessel_name', label: 'Matched Vessel' },
+]
 
 const ComponentStructureTab: React.FC = () => {
   const queryClient = useQueryClient()
@@ -104,6 +132,9 @@ const ComponentStructureTab: React.FC = () => {
   const [selectedVesselTypeId, setSelectedVesselTypeId] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState('group1_name')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [showAddTypeModal, setShowAddTypeModal] = useState(false)
   const [newTypeName, setNewTypeName] = useState('')
   const [addTypeError, setAddTypeError] = useState('')
@@ -129,11 +160,18 @@ const ComponentStructureTab: React.FC = () => {
 
   // Components for selected vessel type
   const { data: pageData, isLoading } = useQuery({
-    queryKey: ['library', 'component-structure', selectedVesselTypeId, page, pageSize],
+    queryKey: ['library', 'component-structure', selectedVesselTypeId, search, sortBy, sortOrder, page, pageSize],
     queryFn: async () => {
       if (!selectedVesselTypeId) return { items: [], total: 0 }
       const res = await apiClient.get('/library/component-structure', {
-        params: { vessel_type_id: selectedVesselTypeId, page, page_size: pageSize },
+        params: {
+          vessel_type_id: selectedVesselTypeId,
+          search: search || undefined,
+          sort_by: sortBy,
+          sort_order: sortOrder,
+          page,
+          page_size: pageSize,
+        },
       })
       return res.data
     },
@@ -142,6 +180,10 @@ const ComponentStructureTab: React.FC = () => {
   const nodes: ComponentStructureNode[] = pageData?.items ?? []
   const total: number = pageData?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  React.useEffect(() => {
+    setPage(1)
+  }, [selectedVesselTypeId, search, sortBy, sortOrder, pageSize])
 
   const importMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -286,6 +328,38 @@ const ComponentStructureTab: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {selectedVesselTypeId && (
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative flex-1 min-w-64">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search component hierarchy..."
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+              />
+            </div>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
+            >
+              {COMPONENT_STRUCTURE_SORT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as 'asc' | 'desc')}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
+            >
+              <option value="asc">Sort A-Z / Low-High</option>
+              <option value="desc">Sort Z-A / High-Low</option>
+            </select>
+          </div>
+        )}
 
         {/* Banners */}
         {importResult && (
@@ -432,19 +506,34 @@ const MakerModelTab: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(100)
+  const [sortBy, setSortBy] = useState('maker')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [importMsg, setImportMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
   const [newMaker, setNewMaker] = useState('')
   const [newModel, setNewModel] = useState('')
   const [showAddRow, setShowAddRow] = useState(false)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['maker-models', search, page],
+    queryKey: ['maker-models', search, sortBy, sortOrder, page, pageSize],
     queryFn: () =>
-      apiClient.get('/maker-models', { params: { search: search || undefined, page, page_size: 100 } }).then(r => r.data),
+      apiClient.get('/maker-models', {
+        params: {
+          search: search || undefined,
+          sort_by: sortBy,
+          sort_order: sortOrder,
+          page,
+          page_size: pageSize,
+        },
+      }).then(r => r.data),
   })
   const items: { id: string; maker: string; model: string | null; component_category: string | null }[] = data?.items ?? []
   const total: number = data?.total ?? 0
-  const totalPages = Math.max(1, Math.ceil(total / 100))
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  React.useEffect(() => {
+    setPage(1)
+  }, [search, sortBy, sortOrder, pageSize])
 
   const importMutation = useMutation({
     mutationFn: async (file: File) => {
@@ -493,6 +582,23 @@ const MakerModelTab: React.FC = () => {
             className="w-full rounded-lg border border-slate-700 bg-slate-800 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
           />
         </div>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 focus:border-sky-500 focus:outline-none"
+        >
+          {MAKER_MODEL_SORT_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <select
+          value={sortOrder}
+          onChange={(e) => setSortOrder(e.target.value as 'asc' | 'desc')}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 focus:border-sky-500 focus:outline-none"
+        >
+          <option value="asc">Sort A-Z / Low-High</option>
+          <option value="desc">Sort Z-A / High-Low</option>
+        </select>
         <button
           onClick={() => setShowAddRow(r => !r)}
           className="flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-300 hover:bg-slate-700"
@@ -577,9 +683,21 @@ const MakerModelTab: React.FC = () => {
           </tbody>
         </table>
         {/* Pagination */}
-        {totalPages > 1 && (
+        {(total > 0 || totalPages > 1) && (
           <div className="flex items-center justify-between border-t border-slate-700 px-4 py-2.5">
-            <span className="text-xs text-slate-500">{total} total entries</span>
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span>{total} total entries</span>
+              <span>·</span>
+              <span>Show</span>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                className="rounded border border-slate-600 bg-slate-700 px-2 py-0.5 text-xs text-white"
+              >
+                {PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
+              </select>
+              <span>per page</span>
+            </div>
             <div className="flex items-center gap-1">
               <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
                 className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40">← Prev</button>
@@ -608,15 +726,35 @@ const GlobalLibrariesTab: React.FC = () => {
   const [populateVesselId, setPopulateVesselId] = useState('')
   const [populateResult, setPopulateResult] = useState<PopulateResult | null>(null)
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState('occurrence_count')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
 
-  const { data: entries = [], isLoading } = useQuery<GlobalLibraryEntry[]>({
-    queryKey: ['library', 'global', activeEntity],
+  const { data: entriesData, isLoading } = useQuery({
+    queryKey: ['library', 'global', activeEntity, search, sortBy, sortOrder, page, pageSize],
     queryFn: async () => {
-      const res = await apiClient.get(`/library/global/${activeEntity}`)
-      return res.data.items ?? res.data
+      const res = await apiClient.get(`/library/global/${activeEntity}`, {
+        params: {
+          search: search || undefined,
+          sort_by: sortBy,
+          sort_order: sortOrder,
+          page,
+          page_size: pageSize,
+        },
+      })
+      return res.data
     },
     enabled: activeSub !== 'makers',
   })
+  const entries: GlobalLibraryEntry[] = entriesData?.items ?? entriesData ?? []
+  const total = entriesData?.total ?? entries.length
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  React.useEffect(() => {
+    setPage(1)
+  }, [activeSub, activeEntity, search, sortBy, sortOrder, pageSize])
 
   const populateMutation = useMutation({
     mutationFn: async () => {
@@ -652,6 +790,7 @@ const GlobalLibrariesTab: React.FC = () => {
               setActiveSub(key)
               if (key !== 'makers') setActiveEntity(key as GlobalEntity)
               setPopulateResult(null)
+              setPage(1)
             }}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
               activeSub === key ? 'bg-sky-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'
@@ -695,6 +834,36 @@ const GlobalLibrariesTab: React.FC = () => {
                 </div>
               )}
             </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative flex-1 min-w-64">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={`Search ${GLOBAL_ENTITY_LABELS[activeEntity].toLowerCase()} library...`}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+              />
+            </div>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 focus:border-sky-500 focus:outline-none"
+            >
+              {GLOBAL_LIBRARY_SORT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as 'asc' | 'desc')}
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 focus:border-sky-500 focus:outline-none"
+            >
+              <option value="asc">Sort A-Z / Low-High</option>
+              <option value="desc">Sort Z-A / High-Low</option>
+            </select>
           </div>
 
           {/* Table */}
@@ -765,6 +934,30 @@ const GlobalLibrariesTab: React.FC = () => {
                 </tbody>
               </table>
             </div>
+            {(total > 0 || totalPages > 1) && (
+              <div className="flex items-center justify-between border-t border-slate-700 px-4 py-2.5">
+                <div className="flex items-center gap-2 text-xs text-slate-500">
+                  <span>{total} total entries</span>
+                  <span>·</span>
+                  <span>Show</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => setPageSize(Number(e.target.value))}
+                    className="rounded border border-slate-600 bg-slate-700 px-2 py-0.5 text-xs text-white"
+                  >
+                    {PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
+                  </select>
+                  <span>per page</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => setPage((prev) => Math.max(1, prev - 1))} disabled={page === 1}
+                    className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-40">← Prev</button>
+                  <span className="px-3 text-xs text-slate-400">Page {page} of {totalPages}</span>
+                  <button onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))} disabled={page >= totalPages}
+                    className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-40">Next →</button>
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -783,7 +976,11 @@ const CONFIDENCE_COLORS: Record<string, string> = {
 
 const ManualMatchesTab: React.FC = () => {
   const [selectedVesselId, setSelectedVesselId] = useState('')
-  const [matches, setMatches] = useState<any[]>([])
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState('match_score')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
   const [runMsg, setRunMsg] = useState<string | null>(null)
   const [isRunning, setIsRunning] = useState(false)
 
@@ -794,11 +991,21 @@ const ManualMatchesTab: React.FC = () => {
   const vessels: { id: string; name: string; imo_number: string }[] = vesselsQuery.data?.items ?? []
 
   const savedQuery = useQuery({
-    queryKey: ['manual-matches', selectedVesselId],
-    queryFn: () => apiClient.get(`/library/${selectedVesselId}/manuals/matches`, { params: { page_size: 200 } }).then(r => r.data),
+    queryKey: ['manual-matches', selectedVesselId, search, sortBy, sortOrder, page, pageSize],
+    queryFn: () => apiClient.get(`/library/${selectedVesselId}/manuals/matches`, {
+      params: {
+        search: search || undefined,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+        page,
+        page_size: pageSize,
+      },
+    }).then(r => r.data),
     enabled: !!selectedVesselId,
   })
   const savedItems: any[] = savedQuery.data?.items ?? []
+  const total = savedQuery.data?.total ?? savedItems.length
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   const handleFindMatches = async () => {
     if (!selectedVesselId) return
@@ -807,8 +1014,8 @@ const ManualMatchesTab: React.FC = () => {
     try {
       const res = await apiClient.post(`/library/${selectedVesselId}/manuals/find-matches`)
       const data = res.data
-      setMatches(data.matches ?? [])
       setRunMsg(`Found ${data.total ?? 0} cross-project matches.`)
+      setPage(1)
       savedQuery.refetch()
     } catch (err: any) {
       setRunMsg(err?.response?.data?.detail ?? err?.message ?? 'Match search failed.')
@@ -816,7 +1023,9 @@ const ManualMatchesTab: React.FC = () => {
     setIsRunning(false)
   }
 
-  const displayItems = matches.length > 0 ? matches : savedItems
+  React.useEffect(() => {
+    setPage(1)
+  }, [selectedVesselId, search, sortBy, sortOrder, pageSize])
 
   return (
     <div className="space-y-4">
@@ -824,7 +1033,7 @@ const ManualMatchesTab: React.FC = () => {
       <div className="flex items-center gap-3 flex-wrap">
         <select
           value={selectedVesselId}
-          onChange={e => { setSelectedVesselId(e.target.value); setMatches([]) }}
+          onChange={e => { setSelectedVesselId(e.target.value) }}
           className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 focus:border-sky-500 focus:outline-none min-w-64"
         >
           <option value="">— Select a vessel —</option>
@@ -854,6 +1063,38 @@ const ManualMatchesTab: React.FC = () => {
         Finds manuals from other vessel projects in your organisation that are identical (SHA-256) or have similar filenames (≥60% match). Useful for reusing already-extracted PMS data.
       </p>
 
+      {selectedVesselId && (
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative flex-1 min-w-64">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search matched manuals or vessels..."
+              className="w-full rounded-lg border border-slate-700 bg-slate-800 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+            />
+          </div>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 focus:border-sky-500 focus:outline-none"
+          >
+            {MANUAL_MATCH_SORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <select
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value as 'asc' | 'desc')}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-300 focus:border-sky-500 focus:outline-none"
+          >
+            <option value="asc">Sort A-Z / Low-High</option>
+            <option value="desc">Sort Z-A / High-Low</option>
+          </select>
+        </div>
+      )}
+
       {/* Result message */}
       {runMsg && (
         <div className="rounded-lg border border-sky-700/40 bg-sky-900/20 px-4 py-2 text-sm text-sky-300">
@@ -870,13 +1111,13 @@ const ManualMatchesTab: React.FC = () => {
       )}
 
       {/* Results table */}
-      {selectedVesselId && displayItems.length === 0 && !isRunning && (
+      {selectedVesselId && savedItems.length === 0 && !isRunning && (
         <div className="py-10 text-center text-slate-500 text-sm">
           No matches found yet. Click "Find Cross-Project Matches" to search.
         </div>
       )}
 
-      {displayItems.length > 0 && (
+      {savedItems.length > 0 && (
         <div className="rounded-xl border border-slate-700 bg-slate-800 overflow-hidden">
           <table className="w-full text-sm">
             <thead>
@@ -889,7 +1130,7 @@ const ManualMatchesTab: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700/50">
-              {displayItems.map((item: any, i: number) => (
+              {savedItems.map((item: any, i: number) => (
                 <tr key={item.id ?? `${item.source_manual_id}-${i}`} className="hover:bg-slate-700/30">
                   <td className="px-4 py-2.5 text-slate-200 max-w-xs truncate" title={item.source_manual_name}>
                     {item.source_manual_name}
@@ -910,6 +1151,28 @@ const ManualMatchesTab: React.FC = () => {
               ))}
             </tbody>
           </table>
+          <div className="flex items-center justify-between border-t border-slate-700 px-4 py-2.5">
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span>{total} total matches</span>
+              <span>·</span>
+              <span>Show</span>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                className="rounded border border-slate-600 bg-slate-700 px-2 py-0.5 text-xs text-white"
+              >
+                {PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
+              </select>
+              <span>per page</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setPage((prev) => Math.max(1, prev - 1))} disabled={page === 1}
+                className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-40">← Prev</button>
+              <span className="px-3 text-xs text-slate-400">Page {page} of {totalPages}</span>
+              <button onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))} disabled={page >= totalPages}
+                className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-40">Next →</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

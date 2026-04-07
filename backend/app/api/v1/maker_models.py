@@ -154,6 +154,8 @@ async def list_maker_models(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     search: Optional[str] = Query(None),
+    sort_by: str = Query("maker"),
+    sort_order: str = Query("asc"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
 ) -> dict[str, Any]:
@@ -171,11 +173,20 @@ async def list_maker_models(
         "search": search, "pat1": search_pat, "pat2": search_pat,
     })).scalar_one()
 
+    sort_columns = {
+        "maker": "maker",
+        "model": "model",
+        "component_category": "component_category",
+        "created_at": "created_at",
+    }
+    sort_column = sort_columns.get(sort_by, "maker")
+    sort_direction = "DESC" if str(sort_order).lower() == "desc" else "ASC"
+
     rows_q = text("""
         SELECT id, maker, model, component_category, created_at FROM maker_models
         WHERE tenant_id = :tid AND is_deleted = false
         AND (:search IS NULL OR maker ILIKE :pat1 OR model ILIKE :pat2)
-        ORDER BY maker, model
+        ORDER BY """ + sort_column + " " + sort_direction + """, maker ASC, model ASC
         LIMIT :lim OFFSET :off
     """)
     rows = (await db.execute(rows_q, {
