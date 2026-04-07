@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import String, asc, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -62,24 +62,54 @@ def _enum_value(value: Any) -> str | None:
 
 def _class_society_value(value: Any) -> str:
     raw = (_enum_value(value) or "General").strip()
-    return raw or "General"
+    if not raw:
+        return "General"
+    normalized = _norm_text(raw)
+    for member in ClassSociety:
+        member_tokens = {
+            _norm_text(member.value),
+            _norm_text(member.name),
+            _norm_text(f"{member.__class__.__name__}.{member.name}"),
+        }
+        if normalized in member_tokens:
+            return member.value
+    return raw
 
 
 def _frequency_type_value(value: Any) -> str | None:
     raw = _enum_value(value)
-    return raw.strip() if isinstance(raw, str) and raw.strip() else None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    cleaned = raw.strip()
+    normalized = _norm_text(cleaned).replace(" ", "_")
+    mapped = FREQ_ALIASES.get(normalized.replace("_", " ")) or FREQ_ALIASES.get(normalized.replace("_", ""))
+    if mapped:
+        return mapped
+    for member in FREQ_MAP.values():
+        member_tokens = {
+            _norm_text(member.value).replace(" ", "_"),
+            _norm_text(member.name).replace(" ", "_"),
+            _norm_text(f"{member.__class__.__name__}.{member.name}").replace(" ", "_"),
+        }
+        if normalized in member_tokens:
+            return member.value
+    return cleaned
 
 
 def _job_type_for_standard_job(job: StandardJob) -> str:
     if bool(job.is_critical):
         return "critical"
-    return "standard" if _norm_text(_class_society_value(job.class_society)) == "general" else "class"
+    normalized_society = _norm_text(_class_society_value(job.class_society))
+    return "class" if normalized_society in CLASS_LIBRARY_VALUES else "standard"
 
 
 def _serialize_standard_job(job: StandardJob) -> dict[str, Any]:
     class_society = _class_society_value(job.class_society)
     frequency_type = _frequency_type_value(job.frequency_type)
-    job_type = "critical" if job.is_critical else ("standard" if _norm_text(class_society) == "general" else "class")
+    if job.is_critical:
+        job_type = "critical"
+    else:
+        job_type = "class" if _norm_text(class_society) in CLASS_LIBRARY_VALUES else "standard"
     return {
         "id": str(job.id),
         "class_society": class_society,
@@ -134,6 +164,18 @@ FREQ_ALIASES = {
     "hours": "running_hours",
 }
 CS_MAP = {member.value.lower(): member for member in ClassSociety}
+CLASS_LIBRARY_VALUES = {
+    _norm_text(member.value)
+    for member in ClassSociety
+    if member != ClassSociety.general
+}
+CLASS_LIBRARY_VALUES.update(
+    {
+        _norm_text(f"{member.__class__.__name__}.{member.name}")
+        for member in ClassSociety
+        if member != ClassSociety.general
+    }
+)
 WORKBOOK_SHEETS = {"annex1pmsjobs", "auditstandardjobs", "annexjobtitle", "criticaljobs"}
 IMPORTABLE_JOB_HEADERS = {"jobname", "jobtitle", "jobdescription", "frequencytype", "frequency", "iscritical"}
 
@@ -322,6 +364,32 @@ def _merge_source_reference(existing: Optional[str], new_value: Optional[str]) -
     return " | ".join(merged) if merged else None
 
 
+async def _resolve_component_mapping(
+    *,
+    vessel_id: uuid.UUID,
+    component_id: Optional[str],
+    db: AsyncSession,
+) -> Optional[uuid.UUID]:
+    if not component_id:
+        return None
+    try:
+        component_uuid = uuid.UUID(component_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid component mapping selected") from exc
+
+    result = await db.execute(
+        select(Component).where(
+            Component.id == component_uuid,
+            Component.vessel_id == vessel_id,
+            Component.is_deleted == False,
+        )
+    )
+    component = result.scalar_one_or_none()
+    if component is None:
+        raise HTTPException(status_code=404, detail="Mapped component not found on this vessel")
+    return component_uuid
+
+
 async def _upsert_standard_job_match(
     *,
     vessel_id: uuid.UUID,
@@ -356,6 +424,7 @@ async def _import_standard_job_to_vessel(
     *,
     vessel_id: uuid.UUID,
     std_job: StandardJob,
+    component_id: Optional[uuid.UUID],
     current_user: User,
     db: AsyncSession,
 ) -> tuple[str, Job]:
@@ -382,6 +451,9 @@ async def _import_standard_job_to_vessel(
                 matched_job.source_reference,
                 std_job.library_reference,
             )
+            if component_id is not None:
+                matched_job.component_id = component_id
+                matched_job.is_unmapped = False
             if not matched_job.job_description and std_job.job_description:
                 matched_job.job_description = std_job.job_description
             db.add(matched_job)
@@ -408,6 +480,9 @@ async def _import_standard_job_to_vessel(
             existing_job.source_reference,
             std_job.library_reference,
         )
+        if component_id is not None:
+            existing_job.component_id = component_id
+            existing_job.is_unmapped = False
         if not existing_job.job_description and std_job.job_description:
             existing_job.job_description = std_job.job_description
         db.add(existing_job)
@@ -430,7 +505,8 @@ async def _import_standard_job_to_vessel(
         is_critical=std_job.is_critical,
         source_reference=std_job.library_reference,
         qc_status=QCStatus.pending,
-        is_unmapped=True,
+        component_id=component_id,
+        is_unmapped=component_id is None,
     )
     db.add(new_job)
     await db.flush()
@@ -462,42 +538,90 @@ async def list_standard_jobs(
     machinery_type: Optional[str] = Query(None),
     is_critical: Optional[bool] = Query(None),
     job_type: Optional[str] = Query(None, description="'standard', 'class', or 'critical'"),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("job_name"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
-    conditions = [
+    class_society_expr = func.lower(func.trim(StandardJob.class_society.cast(String)))
+    frequency_type_expr = func.lower(StandardJob.frequency_type.cast(String))
+    query = select(StandardJob).where(
         StandardJob.tenant_id == current_user.tenant_id,
         StandardJob.is_deleted == False,
-    ]
-    if job_type == "standard":
-        conditions.extend([func.lower(StandardJob.class_society) == "general", StandardJob.is_critical == False])
-    elif job_type == "class":
-        conditions.extend([func.lower(StandardJob.class_society) != "general", StandardJob.is_critical == False])
-    elif job_type == "critical":
-        conditions.append(StandardJob.is_critical == True)
-    if class_society:
-        try:
-            conditions.append(StandardJob.class_society == ClassSociety(class_society))
-        except ValueError:
-            pass
-    if machinery_type:
-        conditions.append(StandardJob.machinery_type == machinery_type)
-    if is_critical is not None:
-        conditions.append(StandardJob.is_critical == is_critical)
-
-    total = await db.scalar(select(func.count()).select_from(StandardJob).where(*conditions)) or 0
-    total_pages = max(1, (total + page_size - 1) // page_size)
-    query = (
-        select(StandardJob)
-        .where(*conditions)
-        .order_by(StandardJob.job_name.asc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
     )
-    result = await db.execute(query)
-    jobs = result.scalars().all()
+
+    if job_type == "critical":
+        query = query.where(StandardJob.is_critical.is_(True))
+    elif job_type == "standard":
+        query = query.where(
+            StandardJob.is_critical.is_(False),
+            or_(
+                StandardJob.class_society.is_(None),
+                ~class_society_expr.in_(sorted(CLASS_LIBRARY_VALUES)),
+            ),
+        )
+    elif job_type == "class":
+        query = query.where(
+            StandardJob.is_critical.is_(False),
+            class_society_expr.in_(sorted(CLASS_LIBRARY_VALUES)),
+        )
+
+    if class_society:
+        normalized_society = _norm_text(class_society)
+        mapped_society = CS_MAP.get(normalized_society)
+        if mapped_society is not None:
+            allowed_values = {
+                mapped_society.value.lower(),
+                f"{mapped_society.__class__.__name__}.{mapped_society.name}".lower(),
+            }
+            query = query.where(class_society_expr.in_(sorted(allowed_values)))
+        else:
+            query = query.where(class_society_expr == normalized_society)
+
+    if machinery_type:
+        query = query.where(StandardJob.machinery_type.ilike(f"%{machinery_type.strip()}%"))
+
+    if is_critical is not None:
+        query = query.where(StandardJob.is_critical.is_(is_critical))
+
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.where(
+            or_(
+                StandardJob.job_name.ilike(term),
+                StandardJob.machinery_type.ilike(term),
+                StandardJob.job_description.ilike(term),
+                StandardJob.library_reference.ilike(term),
+                StandardJob.class_society.cast(String).ilike(term),
+                StandardJob.frequency.cast(String).ilike(term),
+                StandardJob.frequency_type.cast(String).ilike(term),
+            )
+        )
+
+    sort_columns = {
+        "job_name": StandardJob.job_name,
+        "machinery_type": StandardJob.machinery_type,
+        "class_society": StandardJob.class_society.cast(String),
+        "frequency": StandardJob.frequency,
+        "frequency_type": StandardJob.frequency_type.cast(String),
+        "critical": StandardJob.is_critical,
+        "reference": StandardJob.library_reference,
+        "job_type": class_society_expr,
+    }
+    order_col = sort_columns.get(sort_by, StandardJob.job_name)
+    order_expr = desc(order_col) if sort_order == "desc" else asc(order_col)
+
+    total = (
+        await db.execute(select(func.count()).select_from(query.order_by(None).subquery()))
+    ).scalar_one()
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    jobs_result = await db.execute(
+        query.order_by(order_expr).offset((page - 1) * page_size).limit(page_size)
+    )
+    jobs = [_serialize_standard_job(job) for job in jobs_result.scalars().all()]
     return {
-        "items": [_serialize_standard_job(j) for j in jobs],
+        "items": jobs,
         "page": page,
         "page_size": page_size,
         "total": total,
@@ -817,6 +941,7 @@ async def get_matches(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     match_status: Optional[str] = Query(None),
+    standard_job_ids: Optional[str] = Query(None, description="Comma separated standard job ids"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
@@ -825,6 +950,18 @@ async def get_matches(
         StandardJobMatch.vessel_id == vessel_id,
         StandardJobMatch.is_deleted == False,
     ]
+    if standard_job_ids:
+        ids: list[uuid.UUID] = []
+        for raw in standard_job_ids.split(","):
+            value = raw.strip()
+            if not value:
+                continue
+            try:
+                ids.append(uuid.UUID(value))
+            except ValueError:
+                continue
+        if ids:
+            conditions.append(StandardJobMatch.standard_job_id.in_(ids))
     if match_status:
         try:
             conditions.append(StandardJobMatch.match_status == MatchStatus(match_status))
@@ -906,6 +1043,7 @@ async def import_standard_job(
     standard_job_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    component_id: Optional[str] = Query(None),
 ) -> dict[str, Any]:
     await _get_vessel_or_404(vessel_id, db)
 
@@ -918,9 +1056,16 @@ async def import_standard_job(
     if std_job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Standard job not found")
 
+    mapped_component_id = await _resolve_component_mapping(
+        vessel_id=vessel_id,
+        component_id=component_id,
+        db=db,
+    )
+
     import_status, job = await _import_standard_job_to_vessel(
         vessel_id=vessel_id,
         std_job=std_job,
+        component_id=mapped_component_id,
         current_user=current_user,
         db=db,
     )
@@ -938,6 +1083,17 @@ async def import_standard_jobs_batch(
     await _get_vessel_or_404(vessel_id, db)
 
     selected_ids = [uuid.UUID(v) for v in body.get("standard_job_ids", []) if v]
+    component_map_raw = body.get("component_map") or {}
+    component_map: dict[str, uuid.UUID | None] = {}
+    if isinstance(component_map_raw, dict):
+        for standard_job_id, component_id in component_map_raw.items():
+            if not isinstance(standard_job_id, str):
+                continue
+            component_map[standard_job_id] = await _resolve_component_mapping(
+                vessel_id=vessel_id,
+                component_id=component_id,
+                db=db,
+            ) if component_id else None
     query = select(StandardJob).where(
         StandardJob.tenant_id == current_user.tenant_id,
         StandardJob.is_deleted == False,
@@ -965,9 +1121,11 @@ async def import_standard_jobs_batch(
     imported = 0
     merged = 0
     for std_job in std_jobs:
+        mapped_component_id = component_map.get(str(std_job.id))
         status_value, _ = await _import_standard_job_to_vessel(
             vessel_id=vessel_id,
             std_job=std_job,
+            component_id=mapped_component_id,
             current_user=current_user,
             db=db,
         )

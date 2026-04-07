@@ -165,6 +165,8 @@ async def list_components(
     search: Optional[str] = Query(None),
     maker_filter: Optional[str] = Query(None),
     model_filter: Optional[str] = Query(None),
+    sort_by: str = Query("component_name"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=5000),
 ) -> dict[str, Any]:
@@ -220,10 +222,25 @@ async def list_components(
     total_result = await db.execute(select(func.count()).select_from(Component).where(*base_where))
     total: int = total_result.scalar_one()
 
+    sort_columns = {
+        "component_name": Component.component_name,
+        "maker": Component.maker,
+        "model": Component.model,
+        "group1": Component.group1,
+        "group2": Component.group2,
+        "main_machinery": Component.main_machinery,
+        "criticality": Component.criticality,
+        "qc_status": Component.qc_status,
+        "confidence": Component.confidence_score,
+        "page_reference": Component.page_reference,
+        "created_at": Component.created_at,
+    }
+    order_col = sort_columns.get(sort_by, Component.component_name)
+    order_expr = order_col.desc() if sort_order == "desc" else order_col.asc()
     query = (
         select(Component)
         .where(*base_where)
-        .order_by(Component.group1, Component.group2, Component.main_machinery, Component.component_name)
+        .order_by(order_expr, Component.component_name.asc(), Component.id.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )

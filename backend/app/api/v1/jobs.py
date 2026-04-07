@@ -230,6 +230,8 @@ async def list_jobs(
     is_unmapped: Optional[bool] = Query(None),
     frequency_type: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    sort_by: str = Query("job_name"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=1000),
 ) -> dict[str, Any]:
@@ -274,7 +276,27 @@ async def list_jobs(
     total_result = await db.execute(select(_func.count()).select_from(Job).where(*base_where))
     total: int = total_result.scalar_one()
 
-    query = select(Job).where(*base_where).order_by(Job.job_name).offset((page - 1) * page_size).limit(page_size)
+    sort_columns = {
+        "job_name": Job.job_name,
+        "component": Job.component_id,
+        "job_code": Job.job_code,
+        "frequency": Job.frequency,
+        "frequency_type": Job.frequency_type,
+        "criticality": Job.is_critical,
+        "qc_status": Job.qc_status,
+        "confidence": Job.confidence_score,
+        "page_reference": Job.page_reference,
+        "created_at": Job.created_at,
+    }
+    order_col = sort_columns.get(sort_by, Job.job_name)
+    order_expr = order_col.desc() if sort_order == "desc" else order_col.asc()
+    query = (
+        select(Job)
+        .where(*base_where)
+        .order_by(order_expr, Job.job_name.asc(), Job.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     result = await db.execute(query)
     jobs = result.scalars().all()
 

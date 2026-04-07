@@ -90,6 +90,19 @@ const QC_COLORS: Record<string, string> = {
 }
 
 const FREQUENCY_OPTIONS = ['daily', 'weekly', 'biweekly', 'monthly', 'quarterly', 'half_yearly', 'yearly', 'biannual', 'running_hours']
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
+const SORT_OPTIONS = [
+  { value: 'job_name', label: 'Job Name' },
+  { value: 'component', label: 'Component' },
+  { value: 'job_code', label: 'Code' },
+  { value: 'frequency', label: 'Frequency' },
+  { value: 'frequency_type', label: 'Frequency Type' },
+  { value: 'criticality', label: 'Criticality' },
+  { value: 'qc_status', label: 'QC Status' },
+  { value: 'confidence', label: 'Confidence' },
+  { value: 'page_reference', label: 'Page Reference' },
+  { value: 'created_at', label: 'Created At' },
+]
 
 function getApiErrorMessage(error: unknown): string {
   const maybeError = error as { response?: { data?: { detail?: unknown } }; message?: string }
@@ -291,6 +304,11 @@ const JobsReview: React.FC = () => {
   const [filterUnmapped, setFilterUnmapped] = useState(false)
   const [filterFreqType, setFilterFreqType] = useState('')
   const [filterNoCMS, setFilterNoCMS] = useState(false)
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState('job_name')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(100)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [editingJob, setEditingJob] = useState<Job | null>(null)
@@ -302,13 +320,18 @@ const JobsReview: React.FC = () => {
   const [batchFields, setBatchFields] = useState<BatchJobFields>({})
 
   const { data, isLoading } = useQuery({
-    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS],
+    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, search, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
       const params: Record<string, string> = {}
       if (filterQC) params.qc_status = filterQC
       if (filterCritical) params.is_critical = filterCritical
       if (filterUnmapped) params.is_unmapped = 'true'
       if (filterFreqType) params.frequency_type = filterFreqType
+      if (search) params.search = search
+      params.sort_by = sortBy
+      params.sort_order = sortOrder
+      params.page = String(page)
+      params.page_size = String(pageSize)
       return apiClient.get(`/vessels/${vesselId}/jobs`, { params }).then((r) => r.data)
     },
     enabled: !!vesselId,
@@ -473,6 +496,16 @@ const JobsReview: React.FC = () => {
     () => (data?.items ?? []).filter((job: Job) => !(filterNoCMS && job.cms_id)),
     [data?.items, filterNoCMS]
   )
+  const total = data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  React.useEffect(() => {
+    setPage(1)
+  }, [filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, search, sortBy, sortOrder, pageSize])
+
+  React.useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
 
   React.useEffect(() => {
     if (!jobs.length) {
@@ -713,6 +746,20 @@ const JobsReview: React.FC = () => {
             <option value="rejected">Rejected</option>
             <option value="modified">Modified</option>
           </select>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search jobs..."
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          />
+          <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none">
+            {SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value as 'asc' | 'desc')} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none">
+            <option value="asc">Sort A-Z / Low-High</option>
+            <option value="desc">Sort Z-A / High-Low</option>
+          </select>
         </div>
 
         <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
@@ -837,6 +884,40 @@ const JobsReview: React.FC = () => {
             </table>
           )}
         </div>
+        {total > 0 ? (
+          <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900 px-4 py-2.5">
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span>{total} total</span>
+              <span>·</span>
+              <span>Show</span>
+              <select
+                value={pageSize}
+                onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }}
+                className="rounded border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300"
+              >
+                {PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
+              </select>
+              <span>per page</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+                disabled={page === 1}
+                className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 disabled:opacity-40"
+              >
+                ← Prev
+              </button>
+              <span className="px-3 text-xs text-slate-500">Page {page} of {totalPages}</span>
+              <button
+                onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
+                disabled={page >= totalPages}
+                className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 disabled:opacity-40"
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       }

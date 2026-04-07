@@ -1,7 +1,7 @@
-import React, { useRef, useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, Play, Upload, XCircle } from 'lucide-react'
+import { AlertCircle, Download, Play, XCircle } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface StandardJob {
@@ -29,6 +29,13 @@ interface Match {
   matched_job_qc_status?: string | null
 }
 
+interface ComponentOption {
+  id: string
+  component_name: string
+  group1: string
+  main_machinery: string
+}
+
 const MATCH_COLORS: Record<string, string> = {
   matched: 'bg-green-700 text-green-100',
   partial: 'bg-amber-700 text-amber-100',
@@ -37,6 +44,49 @@ const MATCH_COLORS: Record<string, string> = {
 }
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
+const SORT_OPTIONS = [
+  { value: 'job_name', label: 'Job Name' },
+  { value: 'machinery_type', label: 'Machinery Type' },
+  { value: 'class_society', label: 'Class Society' },
+  { value: 'frequency', label: 'Frequency' },
+  { value: 'reference', label: 'Reference' },
+]
+
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  const maybeError = error as { response?: { data?: { detail?: unknown } }; message?: string }
+  const detail = maybeError?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  return maybeError?.message ?? fallback
+}
+
+function normalize(value: string | null | undefined): string {
+  return (value ?? '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function suggestComponentId(job: StandardJob, components: ComponentOption[]): string {
+  const machinery = normalize(job.machinery_type)
+  const jobName = normalize(job.job_name)
+  let bestId = ''
+  let bestScore = 0
+
+  for (const component of components) {
+    const componentName = normalize(component.component_name)
+    const mainMachinery = normalize(component.main_machinery)
+    let score = 0
+    if (machinery && mainMachinery === machinery) score += 100
+    if (machinery && componentName === machinery) score += 90
+    if (machinery && mainMachinery.includes(machinery)) score += 55
+    if (machinery && machinery.includes(mainMachinery)) score += 45
+    if (jobName && componentName && jobName.includes(componentName)) score += 30
+    if (jobName && mainMachinery && jobName.includes(mainMachinery)) score += 20
+    if (score > bestScore) {
+      bestScore = score
+      bestId = component.id
+    }
+  }
+
+  return bestScore >= 45 ? bestId : ''
+}
 
 const StandardJobs: React.FC = () => {
   const { vesselId } = useParams<{ vesselId: string }>()
@@ -48,81 +98,115 @@ const StandardJobs: React.FC = () => {
   const [naReason, setNaReason] = useState('')
   const [naMatchId, setNaMatchId] = useState<string | null>(null)
   const [showNaDialog, setShowNaDialog] = useState(false)
-  const [importJobType, setImportJobType] = useState<'standard' | 'class'>('standard')
+  const [libraryType, setLibraryType] = useState<'standard' | 'class'>('standard')
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([])
+  const [componentSelections, setComponentSelections] = useState<Record<string, string>>({})
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState('job_name')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
 
-  const { data: stdJobsData } = useQuery({
-    queryKey: ['standard-jobs', importJobType, filterSociety, filterMachinery],
+  const standardJobsQuery = useQuery({
+    queryKey: ['standard-jobs-comparison', libraryType, filterSociety, filterMachinery, search, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
       const params: Record<string, string> = {
-        page: '1',
-        page_size: '5000',
+        page: String(page),
+        page_size: String(pageSize),
         is_critical: 'false',
-        job_type: importJobType,
+        job_type: libraryType,
+        sort_by: sortBy,
+        sort_order: sortOrder,
       }
-      if (importJobType === 'class' && filterSociety) params.class_society = filterSociety
+      if (libraryType === 'class' && filterSociety) params.class_society = filterSociety
       if (filterMachinery) params.machinery_type = filterMachinery
+      if (search) params.search = search
       return apiClient.get('/standard-jobs', { params }).then((r) => r.data)
     },
   })
 
-  const { data: matchesData } = useQuery({
-    queryKey: ['std-job-matches', vesselId],
+  const componentOptionsQuery = useQuery({
+    queryKey: ['standard-job-components', vesselId],
     queryFn: () =>
-      apiClient.get(`/vessels/${vesselId}/standard-jobs/matches`, { params: { page: 1, page_size: 5000 } }).then((r) => r.data),
+      apiClient.get(`/vessels/${vesselId}/components`, { params: { page: 1, page_size: 5000, is_unmapped: 'false' } }).then((r) => r.data),
     enabled: !!vesselId,
   })
 
+  const pageJobs: StandardJob[] = standardJobsQuery.data?.items ?? []
+  const pageJobIds = pageJobs.map((job) => job.id)
+
+  const matchesQuery = useQuery({
+    queryKey: ['std-job-matches', vesselId, pageJobIds.join(','), filterMatchStatus],
+    queryFn: () =>
+      apiClient
+        .get(`/vessels/${vesselId}/standard-jobs/matches`, {
+          params: {
+            page: 1,
+            page_size: Math.max(1, pageJobIds.length || 1),
+            standard_job_ids: pageJobIds.join(','),
+            ...(filterMatchStatus ? { match_status: filterMatchStatus } : {}),
+          },
+        })
+        .then((r) => r.data),
+    enabled: !!vesselId && pageJobIds.length > 0,
+  })
+
   const runComparisonMutation = useMutation({
-    mutationFn: () =>
-      apiClient.post(`/vessels/${vesselId}/standard-jobs/run-comparison`).then((r) => r.data),
+    mutationFn: () => apiClient.post(`/vessels/${vesselId}/standard-jobs/run-comparison`).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
       setActionMessage('Comparison completed against instruction-manual jobs.')
       setActionError(null)
     },
-    onError: (err: any) => {
-      setActionError(err?.response?.data?.detail || 'Comparison failed')
+    onError: (error: unknown) => {
+      setActionError(getApiErrorMessage(error, 'Comparison failed'))
       setActionMessage(null)
     },
   })
 
-  const importJobMutation = useMutation({
-    mutationFn: (standardJobId: string) =>
-      apiClient.post(`/vessels/${vesselId}/standard-jobs/import/${standardJobId}`).then((r) => r.data),
+  const importSelectedMutation = useMutation({
+    mutationFn: (payload: { standard_job_ids?: string[]; import_all?: boolean; component_map?: Record<string, string> }) =>
+      apiClient
+        .post(`/vessels/${vesselId}/standard-jobs/import-batch`, {
+          standard_job_ids: payload.standard_job_ids ?? [],
+          component_map: payload.component_map ?? {},
+          job_type: libraryType,
+          class_society: filterSociety || null,
+          machinery_type: filterMachinery || null,
+          include_critical: false,
+          import_all: payload.import_all ?? false,
+        })
+        .then((r) => r.data),
+    onSuccess: (data) => {
+      setActionMessage(`Added ${data.imported} and updated ${data.merged} jobs in Jobs Review.`)
+      setActionError(null)
+      setSelectedJobIds([])
+      queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+    },
+    onError: (error: unknown) => {
+      setActionError(getApiErrorMessage(error, 'Failed to add standard jobs to Jobs Review'))
+      setActionMessage(null)
+    },
+  })
+
+  const importSingleMutation = useMutation({
+    mutationFn: ({ standardJobId, componentId }: { standardJobId: string; componentId?: string }) =>
+      apiClient
+        .post(`/vessels/${vesselId}/standard-jobs/import/${standardJobId}`, null, {
+          params: componentId ? { component_id: componentId } : {},
+        })
+        .then((r) => r.data),
     onSuccess: () => {
-      setActionMessage('Library job added to vessel jobs.')
+      setActionMessage('Library job added to Jobs Review.')
       setActionError(null)
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
     },
-    onError: (err: any) => {
-      setActionError(err?.response?.data?.detail || 'Failed to add library job to vessel')
-      setActionMessage(null)
-    },
-  })
-
-  const importLibraryMutation = useMutation({
-    mutationFn: async (file: File) => {
-      const formData = new FormData()
-      formData.append('file', file)
-      const response = await apiClient.post(`/standard-jobs/bulk-import?job_type=${importJobType}`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      })
-      return response.data
-    },
-    onSuccess: () => {
-      setActionMessage('Standard jobs library imported successfully.')
-      setActionError(null)
-      queryClient.invalidateQueries({ queryKey: ['standard-jobs'] })
-    },
-    onError: (err: any) => {
-      setActionError(err?.response?.data?.detail || 'Library import failed')
+    onError: (error: unknown) => {
+      setActionError(getApiErrorMessage(error, 'Failed to add standard job to Jobs Review'))
       setActionMessage(null)
     },
   })
@@ -141,86 +225,44 @@ const StandardJobs: React.FC = () => {
       setNaReason('')
       setNaMatchId(null)
     },
-    onError: (err: any) => {
-      setActionError(err?.response?.data?.detail || 'Unable to update match')
+    onError: (error: unknown) => {
+      setActionError(getApiErrorMessage(error, 'Unable to update match'))
       setActionMessage(null)
     },
   })
 
-  const importSelectedMutation = useMutation({
-    mutationFn: (payload: { standard_job_ids?: string[]; import_all?: boolean }) =>
-      apiClient.post(`/vessels/${vesselId}/standard-jobs/import-batch`, {
-        standard_job_ids: payload.standard_job_ids ?? [],
-        job_type: importJobType,
-        class_society: filterSociety || null,
-        machinery_type: filterMachinery || null,
-        include_critical: false,
-        import_all: payload.import_all ?? false,
-      }).then((r) => r.data),
-    onSuccess: (data) => {
-      setActionMessage(`Imported ${data.imported} and merged ${data.merged} library jobs into the vessel.`)
-      setActionError(null)
-      setSelectedJobIds([])
-      queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
-      queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
-    },
-    onError: (err: any) => {
-      setActionError(err?.response?.data?.detail || 'Failed to apply library jobs to vessel')
-      setActionMessage(null)
-    },
-  })
+  const allJobs: StandardJob[] = standardJobsQuery.data?.items ?? []
+  const total = standardJobsQuery.data?.total ?? 0
+  const totalPages = standardJobsQuery.data?.total_pages ?? 1
+  const components: ComponentOption[] = componentOptionsQuery.data?.items ?? []
+  const matches: Match[] = matchesQuery.data?.items ?? []
+  const matchByStdJobId = Object.fromEntries(matches.map((match) => [match.standard_job_id, match]))
 
-  const removeSelectedMutation = useMutation({
-    mutationFn: (payload: { standard_job_ids?: string[]; remove_all?: boolean }) =>
-      apiClient.post(`/vessels/${vesselId}/standard-jobs/remove-batch`, {
-        standard_job_ids: payload.standard_job_ids ?? [],
-        job_type: importJobType,
-        class_society: filterSociety || null,
-        machinery_type: filterMachinery || null,
-        include_critical: false,
-        remove_all: payload.remove_all ?? false,
-      }).then((r) => r.data),
-    onSuccess: (data) => {
-      setActionMessage(`Removed ${data.removed} vessel-side imported jobs.`)
-      setActionError(null)
-      setSelectedJobIds([])
-      queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
-      queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
-    },
-    onError: (err: any) => {
-      setActionError(err?.response?.data?.detail || 'Failed to remove imported jobs from vessel')
-      setActionMessage(null)
-    },
-  })
-
-  const allJobs: StandardJob[] = stdJobsData?.items ?? []
-  const matches: Match[] = matchesData?.items ?? []
-  const matchByStdJobId = Object.fromEntries(matches.map((m) => [m.standard_job_id, m]))
-
-  const filteredJobs = allJobs.filter((job) => {
-    if (importJobType === 'standard' && (job.class_society !== 'General' || job.is_critical)) return false
-    if (importJobType === 'class' && (job.class_society === 'General' || job.is_critical)) return false
-    if (filterMatchStatus) {
-      const status = matchByStdJobId[job.id]?.match_status ?? 'not_found'
-      if (status !== filterMatchStatus) return false
+  const suggestedComponentMap = useMemo(() => {
+    const next: Record<string, string> = {}
+    for (const job of allJobs) {
+      const suggestion = suggestComponentId(job, components)
+      if (suggestion) next[job.id] = suggestion
     }
-    return true
-  })
+    return next
+  }, [allJobs, components])
+
+  const visibleJobs = useMemo(() => {
+    if (!filterMatchStatus) return allJobs
+    return allJobs.filter((job) => (matchByStdJobId[job.id]?.match_status ?? 'not_found') === filterMatchStatus)
+  }, [allJobs, filterMatchStatus, matchByStdJobId])
 
   const selectedSet = new Set(selectedJobIds)
-  const visibleMatches = matches.filter((match) => filteredJobs.some((job) => job.id === match.standard_job_id))
-  const matchedCount = visibleMatches.filter((m) => m.match_status === 'matched').length
-  const partialCount = visibleMatches.filter((m) => m.match_status === 'partial').length
-  const notFoundCount = visibleMatches.filter((m) => m.match_status === 'not_found').length
-  const total = filteredJobs.length
-  const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const pageJobs = filteredJobs.slice((page - 1) * pageSize, page * pageSize)
-  const allSelected = pageJobs.length > 0 && pageJobs.every((job) => selectedSet.has(job.id))
+  const visibleMatches = visibleJobs.map((job) => matchByStdJobId[job.id]).filter(Boolean) as Match[]
+  const matchedCount = visibleMatches.filter((match) => match.match_status === 'matched').length
+  const partialCount = visibleMatches.filter((match) => match.match_status === 'partial').length
+  const notFoundCount = visibleMatches.filter((match) => match.match_status === 'not_found').length
+  const allSelected = visibleJobs.length > 0 && visibleJobs.every((job) => selectedSet.has(job.id))
 
   React.useEffect(() => {
     setPage(1)
     setSelectedJobIds([])
-  }, [importJobType, filterSociety, filterMachinery, filterMatchStatus, pageSize])
+  }, [libraryType, filterSociety, filterMachinery, search, sortBy, sortOrder, pageSize])
 
   React.useEffect(() => {
     if (page > totalPages) setPage(totalPages)
@@ -231,54 +273,42 @@ const StandardJobs: React.FC = () => {
     setShowNaDialog(true)
   }
 
-  const handleLibraryImport = (file?: File | null) => {
-    if (!file) return
-    setActionError(null)
-    setActionMessage(null)
-    importLibraryMutation.mutate(file)
-  }
-
   const toggleJobSelection = (jobId: string) => {
     setSelectedJobIds((prev) => (
       prev.includes(jobId) ? prev.filter((id) => id !== jobId) : [...prev, jobId]
     ))
   }
 
+  const getMappedComponentId = (jobId: string) => componentSelections[jobId] ?? suggestedComponentMap[jobId] ?? ''
+
+  const buildComponentMapPayload = (jobIds: string[]) =>
+    jobIds.reduce<Record<string, string>>((acc, jobId) => {
+      const componentId = getMappedComponentId(jobId)
+      if (componentId) acc[jobId] = componentId
+      return acc
+    }, {})
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">Standard Jobs Comparison</h1>
           <p className="mt-1 text-sm text-slate-400">
-            Compare instruction-manual vessel jobs against imported company SMS and CMS/class job libraries.
+            Compare instruction-manual jobs against imported company SMS and CMS / class libraries, then send selected library jobs to Jobs Review.
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            Critical jobs are managed separately from Jobs Review and are not part of this comparison run.
+            Library import and library maintenance are handled on the Standard Jobs Library page. Critical jobs are added later from Jobs Review.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <select
-            value={importJobType}
-            onChange={(e) => setImportJobType(e.target.value as 'standard' | 'class')}
+            value={libraryType}
+            onChange={(e) => setLibraryType(e.target.value as 'standard' | 'class')}
             className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200"
           >
             <option value="standard">Company SMS Jobs</option>
             <option value="class">CMS / Class Jobs</option>
           </select>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
-          >
-            <Upload className="h-4 w-4" />
-            {importLibraryMutation.isPending ? 'Importing...' : 'Import Library'}
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            className="hidden"
-            onChange={(e) => handleLibraryImport(e.target.files?.[0])}
-          />
           <button
             onClick={() => runComparisonMutation.mutate()}
             disabled={runComparisonMutation.isPending}
@@ -308,7 +338,7 @@ const StandardJobs: React.FC = () => {
           </div>
           <div className="rounded-xl border border-red-800 bg-red-900/20 p-4 text-center">
             <p className="text-2xl font-bold text-red-400">{notFoundCount}</p>
-            <p className="text-xs text-red-300">Not Found</p>
+            <p className="text-xs text-red-300">Not Matched</p>
           </div>
         </div>
       )}
@@ -317,7 +347,7 @@ const StandardJobs: React.FC = () => {
         <select
           value={filterSociety}
           onChange={(e) => setFilterSociety(e.target.value)}
-          disabled={importJobType !== 'class'}
+          disabled={libraryType !== 'class'}
           className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 disabled:opacity-60"
         >
           <option value="">All Class Societies</option>
@@ -334,6 +364,13 @@ const StandardJobs: React.FC = () => {
           placeholder="Machinery type..."
           className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
         />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search standard jobs..."
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+        />
         <select
           value={filterMatchStatus}
           onChange={(e) => setFilterMatchStatus(e.target.value)}
@@ -345,75 +382,87 @@ const StandardJobs: React.FC = () => {
           <option value="not_found">Not Matched</option>
           <option value="not_applicable">Not Applicable</option>
         </select>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200"
+        >
+          {SORT_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <select
+          value={sortOrder}
+          onChange={(e) => setSortOrder(e.target.value as 'asc' | 'desc')}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200"
+        >
+          <option value="asc">Sort A-Z / Low-High</option>
+          <option value="desc">Sort Z-A / High-Low</option>
+        </select>
       </div>
 
       <div className="rounded-xl border border-sky-900/50 bg-sky-950/20 px-4 py-3 text-xs text-sky-200">
-        Supported workbook import: <span className="font-medium">Audit standard jobs</span>, <span className="font-medium">Annex Job Title</span>, and <span className="font-medium">Critical Jobs</span>. Critical jobs go into the library but are excluded from comparison.
+        Use the Standard Jobs Library page to import or edit library jobs. On this page, compare them against instruction-manual jobs, choose component mappings, and add selected library jobs into Jobs Review for vessel review.
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <button
-          onClick={() => importSelectedMutation.mutate({ standard_job_ids: selectedJobIds })}
+          onClick={() => importSelectedMutation.mutate({
+            standard_job_ids: selectedJobIds,
+            component_map: buildComponentMapPayload(selectedJobIds),
+          })}
           disabled={selectedJobIds.length === 0 || importSelectedMutation.isPending}
           className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
         >
-          Add Selected To Vessel
-        </button>
-        <button
-          onClick={() => importSelectedMutation.mutate({ import_all: true })}
-          disabled={filteredJobs.length === 0 || importSelectedMutation.isPending}
-          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-50"
-        >
-          Add All Filtered
-        </button>
-        <button
-          onClick={() => removeSelectedMutation.mutate({ standard_job_ids: selectedJobIds })}
-          disabled={selectedJobIds.length === 0 || removeSelectedMutation.isPending}
-          className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
-        >
-          Remove Selected From Vessel
-        </button>
-        <button
-          onClick={() => removeSelectedMutation.mutate({ remove_all: true })}
-          disabled={filteredJobs.length === 0 || removeSelectedMutation.isPending}
-          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-50"
-        >
-          Remove All Filtered
+          Add Selected To Jobs Review
         </button>
       </div>
 
+      {standardJobsQuery.isError ? (
+        <div className="rounded-xl border border-red-800 bg-red-950/30 px-4 py-3 text-sm text-red-300">
+          {getApiErrorMessage(standardJobsQuery.error, 'Failed to load standard jobs library for comparison.')}
+        </div>
+      ) : null}
+
       <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[1500px] text-sm">
           <thead>
             <tr className="border-b border-slate-700 text-left text-xs text-slate-500 uppercase">
               <th className="px-4 py-3">
                 <input
                   type="checkbox"
                   checked={allSelected}
-                  onChange={(e) => setSelectedJobIds(e.target.checked ? pageJobs.map((job) => job.id) : [])}
+                  onChange={(e) => setSelectedJobIds(e.target.checked ? visibleJobs.map((job) => job.id) : [])}
                 />
               </th>
               <th className="px-4 py-3">Standard Job</th>
               <th className="px-4 py-3">Class Society</th>
               <th className="px-4 py-3">Machinery Type</th>
+              <th className="px-4 py-3">Suggested Component</th>
               <th className="px-4 py-3">Frequency</th>
-              <th className="px-4 py-3">Critical</th>
               <th className="px-4 py-3">Match Status</th>
-              <th className="px-4 py-3">Matched Vessel Job</th>
+              <th className="px-4 py-3">Matched Manual Job</th>
               <th className="px-4 py-3">Score</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {filteredJobs.length === 0 ? (
+            {standardJobsQuery.isLoading ? (
+              <tr>
+                <td colSpan={10} className="py-12 text-center text-slate-500">
+                  Loading comparison library...
+                </td>
+              </tr>
+            ) : visibleJobs.length === 0 ? (
               <tr>
                 <td colSpan={10} className="py-12 text-center text-slate-500">
                   No jobs found for the selected library and filters.
                 </td>
               </tr>
             ) : (
-              pageJobs.map((job) => {
+              visibleJobs.map((job) => {
                 const match = matchByStdJobId[job.id]
+                const componentId = getMappedComponentId(job.id)
                 return (
                   <tr key={job.id} className="hover:bg-slate-800/50 transition-colors">
                     <td className="px-4 py-2.5">
@@ -426,22 +475,29 @@ const StandardJobs: React.FC = () => {
                     <td className="px-4 py-2.5">
                       <p className="font-medium text-slate-200">{job.job_name}</p>
                       {job.library_reference && (
-                        <p className="text-xs text-slate-500 font-mono">{job.library_reference}</p>
+                        <p className="text-xs font-mono text-slate-500">{job.library_reference}</p>
                       )}
                     </td>
-                    <td className="px-4 py-2.5 text-slate-300 text-xs">{job.class_society}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-300">{job.class_society}</td>
                     <td className="px-4 py-2.5 text-slate-400">{job.machinery_type}</td>
-                    <td className="px-4 py-2.5 text-slate-400 text-xs whitespace-nowrap">
+                    <td className="px-4 py-2.5">
+                      <select
+                        value={componentId}
+                        onChange={(e) => setComponentSelections((prev) => ({ ...prev, [job.id]: e.target.value }))}
+                        className="w-[260px] rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                      >
+                        <option value="">Leave Unmapped For Review</option>
+                        {components.map((component) => (
+                          <option key={component.id} value={component.id}>
+                            {component.component_name} ({component.main_machinery})
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-xs text-slate-400">
                       {job.frequency != null && job.frequency_type
                         ? `${job.frequency} ${job.frequency_type}`
                         : job.frequency_type ?? '—'}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {job.is_critical ? (
-                        <span className="rounded-full bg-red-900/50 px-2 py-0.5 text-xs text-red-300">
-                          Critical
-                        </span>
-                      ) : '—'}
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="flex flex-col gap-1">
@@ -449,20 +505,20 @@ const StandardJobs: React.FC = () => {
                           {match ? match.match_status.replace('_', ' ') : 'Not compared'}
                         </span>
                         <span className="text-xs text-slate-500">
-                          {importJobType === 'class' ? 'CMS / Class' : 'Company SMS'}
+                          {libraryType === 'class' ? 'CMS / Class' : 'Company SMS'}
                         </span>
                       </div>
                     </td>
                     <td className="px-4 py-2.5">
                       {match ? (
-                        <div className="min-w-[190px]">
-                          <p className="text-slate-200">{match.matched_job_name ?? 'No vessel job linked'}</p>
+                        <div className="min-w-[220px]">
+                          <p className="text-slate-200">{match.matched_job_name ?? 'No manual job linked'}</p>
                           <p className="text-xs text-slate-500">
                             {[match.matched_job_code, match.matched_job_qc_status].filter(Boolean).join(' • ') || '—'}
                           </p>
                         </div>
                       ) : (
-                        <span className="text-slate-600 text-xs">Not compared</span>
+                        <span className="text-xs text-slate-600">Not compared</span>
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-slate-400">
@@ -470,11 +526,11 @@ const StandardJobs: React.FC = () => {
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1">
-                        {match && (match.match_status === 'not_found' || match.match_status === 'partial') && (
+                        {(match?.match_status === 'not_found' || match?.match_status === 'partial' || !match) && (
                           <button
-                            onClick={() => importJobMutation.mutate(job.id)}
+                            onClick={() => importSingleMutation.mutate({ standardJobId: job.id, componentId: componentId || undefined })}
                             className="rounded bg-sky-700 px-2 py-1 text-xs text-white hover:bg-sky-600"
-                            title="Add this standard job into vessel jobs for review"
+                            title="Add this library job to Jobs Review"
                           >
                             <Download className="h-3 w-3" />
                           </button>
@@ -501,7 +557,7 @@ const StandardJobs: React.FC = () => {
             )}
           </tbody>
         </table>
-        {filteredJobs.length > 0 && (
+        {total > 0 && (
           <div className="flex items-center justify-between border-t border-slate-800 px-4 py-2.5">
             <div className="flex items-center gap-2 text-xs text-slate-500">
               <span>{total} total</span>
@@ -510,25 +566,25 @@ const StandardJobs: React.FC = () => {
               <select
                 value={pageSize}
                 onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }}
-                className="bg-slate-800 border border-slate-700 rounded px-2 py-0.5 text-slate-300 text-xs"
+                className="rounded border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-300"
               >
-                {PAGE_SIZE_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                {PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
               </select>
               <span>per page</span>
             </div>
             <div className="flex items-center gap-1">
               <button
-                onClick={() => setPage(p => Math.max(1, p - 1))}
+                onClick={() => setPage((prev) => Math.max(1, prev - 1))}
                 disabled={page === 1}
-                className="px-2 py-1 rounded text-xs bg-slate-800 text-slate-400 hover:bg-slate-700 disabled:opacity-40"
+                className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 disabled:opacity-40"
               >
                 ← Prev
               </button>
               <span className="px-3 text-xs text-slate-500">Page {page} of {totalPages}</span>
               <button
-                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}
                 disabled={page >= totalPages}
-                className="px-2 py-1 rounded text-xs bg-slate-800 text-slate-400 hover:bg-slate-700 disabled:opacity-40"
+                className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 disabled:opacity-40"
               >
                 Next →
               </button>

@@ -43,6 +43,13 @@ type TabType = 'standard' | 'class' | 'critical'
 
 const CLASS_SOCIETIES = ['DNV GL', "Lloyd's Register", 'Bureau Veritas', 'ABS', 'ClassNK']
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
+const LIBRARY_SORT_OPTIONS = [
+  { value: 'job_name', label: 'Job Name' },
+  { value: 'machinery_type', label: 'Machinery' },
+  { value: 'class_society', label: 'Class Society' },
+  { value: 'frequency', label: 'Frequency' },
+  { value: 'reference', label: 'Reference' },
+]
 
 // ─── Import Panel ─────────────────────────────────────────────────────────────
 
@@ -180,19 +187,25 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
   const queryClient = useQueryClient()
   const [filterSociety, setFilterSociety] = useState('')
   const [filterMachinery, setFilterMachinery] = useState('')
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState('job_name')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
 
   const { data, isLoading, isError, error } = useQuery({
-    queryKey: ['standard-jobs-library', jobType, filterSociety, filterMachinery, page, pageSize],
+    queryKey: ['standard-jobs-library', jobType, filterSociety, filterMachinery, search, sortBy, sortOrder, page, pageSize],
     queryFn: async () => {
       const params: Record<string, string> = {}
       params.job_type = jobType
       params.page = String(page)
       params.page_size = String(pageSize)
+      params.sort_by = sortBy
+      params.sort_order = sortOrder
       if (jobType === 'class' && filterSociety) params.class_society = filterSociety
       if (filterMachinery) params.machinery_type = filterMachinery
+      if (search) params.search = search
       const res = await apiClient.get('/standard-jobs', { params })
       return res.data as { items: StandardJob[]; total: number; total_pages: number; page: number; page_size: number }
     },
@@ -210,7 +223,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
 
   React.useEffect(() => {
     setPage(1)
-  }, [jobType, filterSociety, filterMachinery, pageSize])
+  }, [jobType, filterSociety, filterMachinery, search, sortBy, sortOrder, pageSize])
 
   React.useEffect(() => {
     if (page > totalPages) setPage(totalPages)
@@ -237,9 +250,33 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
           placeholder="Filter by machinery type..."
           className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-sky-500 w-56"
         />
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+          placeholder="Search jobs..."
+          className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-sky-500 w-56"
+        />
+        <select
+          value={sortBy}
+          onChange={(e) => { setSortBy(e.target.value); setPage(1) }}
+          className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-sky-500"
+        >
+          {LIBRARY_SORT_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <select
+          value={sortOrder}
+          onChange={(e) => { setSortOrder(e.target.value as 'asc' | 'desc'); setPage(1) }}
+          className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-sky-500"
+        >
+          <option value="asc">Sort A-Z / Low-High</option>
+          <option value="desc">Sort Z-A / High-Low</option>
+        </select>
         {(filterSociety || filterMachinery) && (
           <button
-            onClick={() => { setFilterSociety(''); setFilterMachinery('') }}
+            onClick={() => { setFilterSociety(''); setFilterMachinery(''); setSearch(''); setSortBy('job_name'); setSortOrder('asc') }}
             className="text-xs text-slate-400 underline hover:text-slate-200"
           >
             Clear

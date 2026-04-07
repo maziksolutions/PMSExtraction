@@ -276,6 +276,20 @@ const METHOD_COLORS: Record<string, string> = {
   drawing: 'bg-amber-700 text-amber-100',
 }
 
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
+const SORT_OPTIONS = [
+  { value: 'part_name', label: 'Part Name' },
+  { value: 'part_number', label: 'Part Number' },
+  { value: 'drawing_number', label: 'Drawing #' },
+  { value: 'drawing_position', label: 'Drawing Position' },
+  { value: 'spare_maker', label: 'Spare Maker' },
+  { value: 'component', label: 'Component' },
+  { value: 'extraction_method', label: 'Method' },
+  { value: 'criticality', label: 'Criticality' },
+  { value: 'qc_status', label: 'QC Status' },
+  { value: 'page_reference', label: 'Page Reference' },
+]
+
 const SparesReview: React.FC = () => {
   const { vesselId } = useParams<{ vesselId: string }>()
   const queryClient = useQueryClient()
@@ -283,6 +297,11 @@ const SparesReview: React.FC = () => {
   const [filterQC, setFilterQC] = useState('')
   const [filterMethod, setFilterMethod] = useState('')
   const [filterCritical, setFilterCritical] = useState('')
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState('part_name')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedSpare, setSelectedSpare] = useState<Spare | null>(null)
   const [editingSpare, setEditingSpare] = useState<Spare | null>(null)
@@ -294,12 +313,17 @@ const SparesReview: React.FC = () => {
   const [batchFields, setBatchFields] = useState<BatchSpareFields>({})
 
   const { data, isLoading } = useQuery({
-    queryKey: ['spares', vesselId, filterQC, filterMethod, filterCritical],
+    queryKey: ['spares', vesselId, filterQC, filterMethod, filterCritical, search, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
       const params: Record<string, string> = {}
       if (filterQC) params.qc_status = filterQC
       if (filterMethod) params.extraction_method = filterMethod
       if (filterCritical) params.is_critical = filterCritical
+      if (search) params.search = search
+      params.sort_by = sortBy
+      params.sort_order = sortOrder
+      params.page = String(page)
+      params.page_size = String(pageSize)
       return apiClient.get(`/vessels/${vesselId}/spares`, { params }).then((r) => r.data)
     },
     enabled: !!vesselId,
@@ -415,6 +439,8 @@ const SparesReview: React.FC = () => {
   }, [])
 
   const spares: Spare[] = data?.items ?? []
+  const total = data?.total ?? spares.length
+  const totalPages = data?.total_pages ?? 1
   const componentOptions: ComponentOption[] = (componentOptionsQuery.data?.items ?? []).filter((component: ComponentOption) => component.qc_status !== 'rejected')
 
   React.useEffect(() => {
@@ -434,6 +460,16 @@ const SparesReview: React.FC = () => {
       if (refreshed) setEditingSpare(refreshed)
     }
   }, [spares, selectedSpare, editingSpare])
+
+  React.useEffect(() => {
+    setPage(1)
+  }, [filterQC, filterMethod, filterCritical, search, sortBy, sortOrder, pageSize])
+
+  React.useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages)
+    }
+  }, [page, totalPages])
 
   const editorContent = editingSpare ? (
     <SpareEditorModal
@@ -611,6 +647,13 @@ const SparesReview: React.FC = () => {
 
         {/* Filter bar */}
         <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search spares..."
+            className="w-52 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          />
           <select
             value={filterMethod}
             onChange={(e) => setFilterMethod(e.target.value)}
@@ -640,12 +683,38 @@ const SparesReview: React.FC = () => {
             <option value="accepted">Accepted</option>
             <option value="rejected">Rejected</option>
           </select>
-          {(filterQC || filterMethod || filterCritical) && (
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          >
+            {SORT_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                Sort: {option.label}
+              </option>
+            ))}
+          </select>
+          <select
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value as 'asc' | 'desc')}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          >
+            <option value="asc">Ascending</option>
+            <option value="desc">Descending</option>
+          </select>
+          {(filterQC || filterMethod || filterCritical || search || sortBy !== 'part_name' || sortOrder !== 'asc') && (
             <button
-              onClick={() => { setFilterQC(''); setFilterMethod(''); setFilterCritical('') }}
+              onClick={() => {
+                setFilterQC('')
+                setFilterMethod('')
+                setFilterCritical('')
+                setSearch('')
+                setSortBy('part_name')
+                setSortOrder('asc')
+              }}
               className="rounded-lg border border-slate-700 px-2 py-1.5 text-xs text-slate-400 hover:text-slate-200"
             >
-              Clear filters
+              Clear
             </button>
           )}
         </div>
@@ -874,6 +943,43 @@ const SparesReview: React.FC = () => {
               </tbody>
             </table>
           )}
+        </div>
+
+        <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900 px-4 py-2.5 shrink-0">
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <span>{total} total</span>
+            <span>·</span>
+            <span>Show</span>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="rounded border border-slate-700 bg-slate-800 px-2 py-0.5 text-white text-xs"
+            >
+              {PAGE_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+            <span>per page</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              disabled={page === 1}
+              className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-40"
+            >
+              ← Prev
+            </button>
+            <span className="px-3 text-xs text-slate-400">Page {page} of {totalPages}</span>
+            <button
+              onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+              disabled={page >= totalPages}
+              className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-600 disabled:opacity-40"
+            >
+              Next →
+            </button>
+          </div>
         </div>
       </div>
 

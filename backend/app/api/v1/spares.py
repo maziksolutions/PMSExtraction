@@ -173,6 +173,8 @@ async def list_spares(
     qc_status: Optional[str] = Query(None),
     is_critical: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
+    sort_by: str = Query("part_name"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=1000),
 ) -> dict[str, Any]:
@@ -211,7 +213,28 @@ async def list_spares(
     total_result = await db.execute(select(_func.count()).select_from(Spare).where(*base_where))
     total: int = total_result.scalar_one()
 
-    query = select(Spare).where(*base_where).order_by(Spare.part_name).offset((page - 1) * page_size).limit(page_size)
+    sort_columns = {
+        "part_name": Spare.part_name,
+        "part_number": Spare.part_number,
+        "drawing_number": Spare.drawing_number,
+        "drawing_position": Spare.drawing_position,
+        "spare_maker": Spare.spare_maker,
+        "component": Spare.component_id,
+        "extraction_method": Spare.extraction_method,
+        "criticality": Spare.is_critical,
+        "qc_status": Spare.qc_status,
+        "page_reference": Spare.page_reference,
+        "created_at": Spare.created_at,
+    }
+    order_col = sort_columns.get(sort_by, Spare.part_name)
+    order_expr = order_col.desc() if sort_order == "desc" else order_col.asc()
+    query = (
+        select(Spare)
+        .where(*base_where)
+        .order_by(order_expr, Spare.part_name.asc(), Spare.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     result = await db.execute(query)
     spares = result.scalars().all()
 

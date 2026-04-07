@@ -225,6 +225,8 @@ const ComponentReview: React.FC = () => {
   const [filterQC, setFilterQC] = useState('')
   const [searchTable, setSearchTable] = useState('')
   const [searchTree, setSearchTree] = useState('')
+  const [sortBy, setSortBy] = useState('component_name')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
   const [showAddModal, setShowAddModal] = useState(false)
@@ -239,7 +241,7 @@ const ComponentReview: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, page, pageSize],
+    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
       const params: Record<string, string | number> = { page, page_size: pageSize, is_unmapped: showUnmapped ? 'true' : 'false' }
       if (selectedGroup1) params.group1 = selectedGroup1
@@ -247,6 +249,8 @@ const ComponentReview: React.FC = () => {
       if (selectedMachinery) params.main_machinery = selectedMachinery
       if (filterQC) params.qc_status = filterQC
       if (searchTable) params.search = searchTable
+      params.sort_by = sortBy
+      params.sort_order = sortOrder
       return apiClient.get(`/vessels/${vesselId}/components`, { params }).then((r) => r.data)
     },
     enabled: !!vesselId,
@@ -333,7 +337,7 @@ const ComponentReview: React.FC = () => {
   })
 
   // Reset to page 1 when any filter changes
-  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, pageSize])
+  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, sortBy, sortOrder, pageSize])
 
   const handleExcelImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
