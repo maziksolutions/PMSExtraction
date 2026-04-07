@@ -26,6 +26,7 @@ interface Match {
   not_applicable_reason: string | null
   matched_job_name?: string | null
   matched_job_code?: string | null
+  matched_job_description?: string | null
   matched_job_qc_status?: string | null
 }
 
@@ -61,6 +62,21 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
 
 function normalize(value: string | null | undefined): string {
   return (value ?? '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function renderProcedurePreview(value: string | null | undefined): React.ReactNode {
+  if (!value?.trim()) {
+    return <span className="text-xs text-slate-500">No procedure</span>
+  }
+
+  return (
+    <div
+      title={value}
+      className="max-w-[320px] whitespace-pre-wrap break-words text-xs leading-5 text-slate-300 line-clamp-4"
+    >
+      {value}
+    </div>
+  )
 }
 
 function suggestComponentId(job: StandardJob, components: ComponentOption[]): string {
@@ -425,7 +441,7 @@ const StandardJobs: React.FC = () => {
       ) : null}
 
       <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
-        <table className="w-full min-w-[1500px] text-sm">
+        <table className="w-full min-w-[2150px] text-sm">
           <thead>
             <tr className="border-b border-slate-700 text-left text-xs text-slate-500 uppercase">
               <th className="px-4 py-3">
@@ -443,19 +459,21 @@ const StandardJobs: React.FC = () => {
               <th className="px-4 py-3">Match Status</th>
               <th className="px-4 py-3">Matched Manual Job</th>
               <th className="px-4 py-3">Score</th>
+              <th className="px-4 py-3">Standard Library Procedure</th>
+              <th className="px-4 py-3">Instruction Manual Procedure</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
             {standardJobsQuery.isLoading ? (
               <tr>
-                <td colSpan={10} className="py-12 text-center text-slate-500">
+                <td colSpan={12} className="py-12 text-center text-slate-500">
                   Loading comparison library...
                 </td>
               </tr>
             ) : visibleJobs.length === 0 ? (
               <tr>
-                <td colSpan={10} className="py-12 text-center text-slate-500">
+                <td colSpan={12} className="py-12 text-center text-slate-500">
                   No jobs found for the selected library and filters.
                 </td>
               </tr>
@@ -523,6 +541,12 @@ const StandardJobs: React.FC = () => {
                     </td>
                     <td className="px-4 py-2.5 text-slate-400">
                       {match?.match_score != null ? `${match.match_score}%` : '—'}
+                    </td>
+                    <td className="px-4 py-2.5 align-top">
+                      {renderProcedurePreview(job.job_description)}
+                    </td>
+                    <td className="px-4 py-2.5 align-top">
+                      {renderProcedurePreview(match?.matched_job_description)}
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1">

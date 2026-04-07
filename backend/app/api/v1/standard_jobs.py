@@ -994,6 +994,7 @@ async def get_matches(
                 "not_applicable_reason": m.not_applicable_reason,
                 "matched_job_name": job_lookup[m.matched_job_id].job_name if m.matched_job_id in job_lookup else None,
                 "matched_job_code": job_lookup[m.matched_job_id].job_code if m.matched_job_id in job_lookup else None,
+                "matched_job_description": job_lookup[m.matched_job_id].job_description if m.matched_job_id in job_lookup else None,
                 "matched_job_qc_status": job_lookup[m.matched_job_id].qc_status.value if m.matched_job_id in job_lookup and job_lookup[m.matched_job_id].qc_status else None,
             }
             for m in matches
