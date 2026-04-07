@@ -94,6 +94,7 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
           <>
             <p>Supported workbook sheets: <span className="text-slate-400">Audit standard jobs, Annex Job Title, Critical Jobs</span></p>
             <p>The importer auto-detects job title, description, criticality, frequency, and reference fields from the workbook. `Annex 1 PMS_Jobs` is not required.</p>
+            <p>The same workbook can be used in both tabs: the Standard Jobs tab imports non-critical rows, and the Critical Jobs tab imports only rows marked critical.</p>
             {jobType === 'standard' && (
               <p>Critical jobs are stored in the Critical Jobs library and are added later from Jobs Review instead of comparison.</p>
             )}
@@ -203,14 +204,9 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
   })
 
   const jobs: StandardJob[] = data?.items ?? []
-  const visibleJobs = jobs.filter((job) => {
-    if (jobType === 'standard') return job.class_society === 'General' && !job.is_critical
-    if (jobType === 'class') return job.class_society !== 'General' && !job.is_critical
-    return job.is_critical
-  })
-  const total = visibleJobs.length
+  const total = jobs.length
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const pageJobs = visibleJobs.slice((page - 1) * pageSize, page * pageSize)
+  const pageJobs = jobs.slice((page - 1) * pageSize, page * pageSize)
 
   React.useEffect(() => {
     setPage(1)
@@ -257,7 +253,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
           <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" />
           Loading...
         </div>
-      ) : visibleJobs.length === 0 ? (
+      ) : jobs.length === 0 ? (
         <div className="bg-slate-800 border border-slate-700 rounded-xl p-12 text-center">
           <BookOpen className="w-12 h-12 text-slate-600 mx-auto mb-4" />
           <p className="text-slate-400 font-medium">No {jobType === 'standard' ? 'standard' : jobType === 'class' ? 'class society' : 'critical'} jobs imported yet</p>
