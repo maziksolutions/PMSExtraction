@@ -48,7 +48,7 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
 
 const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ jobType, onImported }) => {
   const fileRef = useRef<HTMLInputElement>(null)
-  const [result, setResult] = useState<{ imported: number; skipped: number } | null>(null)
+  const [result, setResult] = useState<{ imported: number; updated: number; skipped: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const importMutation = useMutation({
@@ -61,7 +61,7 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
         fd,
         { headers: { 'Content-Type': 'multipart/form-data' } }
       )
-      return res.data as { imported: number; skipped: number }
+      return res.data as { imported: number; updated: number; skipped: number }
     },
     onSuccess: (data) => {
       setResult(data)
@@ -140,6 +140,11 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
               <CheckCircle className="w-4 h-4" />
               <strong>{result.imported}</strong> imported
             </span>
+            {result.updated > 0 && (
+              <span className="text-sky-400">
+                <strong>{result.updated}</strong> updated
+              </span>
+            )}
             {result.skipped > 0 && (
               <span className="text-slate-400">
                 <strong>{result.skipped}</strong> skipped
@@ -188,9 +193,14 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
   })
 
   const jobs: StandardJob[] = data?.items ?? []
-  const total = jobs.length
+  const visibleJobs = jobs.filter((job) => {
+    if (jobType === 'standard') return job.class_society === 'General' && !job.is_critical
+    if (jobType === 'class') return job.class_society !== 'General' && !job.is_critical
+    return job.is_critical
+  })
+  const total = visibleJobs.length
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const pageJobs = jobs.slice((page - 1) * pageSize, page * pageSize)
+  const pageJobs = visibleJobs.slice((page - 1) * pageSize, page * pageSize)
 
   React.useEffect(() => {
     setPage(1)
@@ -237,7 +247,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
           <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2" />
           Loading...
         </div>
-      ) : jobs.length === 0 ? (
+      ) : visibleJobs.length === 0 ? (
         <div className="bg-slate-800 border border-slate-700 rounded-xl p-12 text-center">
           <BookOpen className="w-12 h-12 text-slate-600 mx-auto mb-4" />
           <p className="text-slate-400 font-medium">No {jobType === 'standard' ? 'standard' : jobType === 'class' ? 'class society' : 'critical'} jobs imported yet</p>

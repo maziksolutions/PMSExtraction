@@ -4,9 +4,12 @@ import re
 from typing import Iterable, Sequence
 
 SOURCE_HEADER = "Source References:"
-_BODY_ACTION_RE = re.compile(r"^\s*(.+?)\s*-\s*(.+?)\s*$")
+_BODY_ACTION_RE = re.compile(r"^\s*(.+?)\s+-\s+(.+?)\s*$")
+_UNMAPPED_PREFIX_RE = re.compile(r"^\s*(?:unmapped component(?:\s*[/,:;|\-]\s*|\s+))*", re.I)
 
 _ACTION_PHRASES = [
+    "alignment",
+    "tension",
     "back wash",
     "backwash",
     "discharge",
@@ -35,6 +38,8 @@ _ACTION_PHRASES = [
     "remove",
 ]
 _ACTION_LABELS = {
+    "alignment": "Adjustment",
+    "tension": "Adjustment",
     "back wash": "Cleaning",
     "backwash": "Cleaning",
     "discharge": "Cleaning",
@@ -62,7 +67,7 @@ _ACTION_LABELS = {
     "adjust": "Adjustment",
     "tighten": "Adjustment",
 }
-_PREPOSITIONS = ("of", "inside", "within", "in", "on", "at")
+_PREPOSITIONS = ("of",)
 _BODY_STOP_PHRASES = (
     " by ",
     " using ",
@@ -79,6 +84,48 @@ _BODY_STOP_PHRASES = (
     " during ",
     " if ",
 )
+_LEADING_NOISE_PHRASES = (
+    "after ",
+    "before ",
+    "then ",
+    "when ",
+    "while ",
+    "if ",
+    "because ",
+    "due to ",
+    "in order to ",
+)
+_GENERIC_BODY_TOKENS = {
+    "1st",
+    "2nd",
+    "3rd",
+    "4th",
+    "5th",
+    "6th",
+    "7th",
+    "8th",
+    "9th",
+    "10th",
+    "all",
+    "any",
+    "another",
+    "other",
+    "unmapped",
+    "times",
+    "time",
+    "minute",
+    "minutes",
+    "hour",
+    "hours",
+    "day",
+    "days",
+    "week",
+    "weeks",
+    "month",
+    "months",
+    "of",
+    "the",
+}
 _REF_RE = re.compile(r"^\s*(.+?)\s*\(p\.(\d+)\)\s*$", re.I)
 
 
@@ -127,6 +174,7 @@ def strip_source_reference_footer(text: str | None) -> str | None:
 def _strip_component_prefix(text: str | None, component_name: str | None) -> str:
     cleaned = strip_source_reference_footer(text) or ""
     component = re.sub(r"\s+", " ", (component_name or "").strip())
+    cleaned = _UNMAPPED_PREFIX_RE.sub("", cleaned).strip(" -:/,.;")
     if not cleaned or not component:
         return cleaned
     pattern = re.compile(
@@ -140,6 +188,73 @@ def _strip_component_prefix(text: str | None, component_name: str | None) -> str
     if _is_component_fragment(stripped, component):
         return ""
     return stripped
+
+
+def _compact_body_phrase(value: str) -> str:
+    body = re.sub(r"\s+", " ", (value or "").strip(" -:/,.;")).strip()
+    if not body:
+        return ""
+    lowered = body.lower()
+    for noise in _LEADING_NOISE_PHRASES:
+        if lowered.startswith(noise):
+            return ""
+    body = re.sub(r"^(the|a|an|all|any)\s+", "", body, flags=re.I)
+    body = re.sub(r"^(&|and|or)\s+", "", body, flags=re.I)
+    body = re.sub(r"^(of|the)\s+", "", body, flags=re.I)
+    changed = True
+    while changed:
+        changed = False
+        for phrase in sorted(_ACTION_PHRASES, key=len, reverse=True):
+            pattern = re.compile(r"^\s*" + re.escape(phrase).replace(r"\ ", r"\s+") + r"\b\s*", flags=re.I)
+            updated = pattern.sub("", body)
+            if updated != body:
+                body = updated
+                changed = True
+                body = re.sub(r"^(&|and|or)\s+", "", body, flags=re.I)
+    body = re.sub(r"\b(?:then|therefore|please|carefully)\b", "", body, flags=re.I)
+    body = re.sub(r"\s+", " ", body).strip(" -:/,.;")
+    body = re.sub(r"(?<=\w)\s*-\s*(?=\w)", "-", body)
+
+    for stop in (",", ";", ":", " then ", " and then ", " followed by "):
+        idx = body.lower().find(stop.strip().lower()) if len(stop.strip()) > 1 else body.find(stop)
+        if idx > 0:
+            candidate = body[:idx].strip(" -:/,.;")
+            if candidate:
+                body = candidate
+                break
+
+    for connector in (" in the ", " in ", " on the ", " on ", " at the ", " at ", " within "):
+        idx = body.lower().find(connector)
+        if idx > 0:
+            candidate = body[:idx].strip(" -:/,.;")
+            if candidate:
+                body = candidate
+                break
+
+    if " of " in body.lower():
+        tail = body.split(" of ", 1)[1].strip(" -:/,.;")
+        if tail:
+            body = tail
+
+    body = re.sub(r"^(the|a|an)\s+", "", body, flags=re.I)
+    body = re.sub(r"^\d+(?:st|nd|rd|th)?\s+", "", body, flags=re.I)
+    tokens = [token for token in body.split() if _normalise_compare_text(token) not in _GENERIC_BODY_TOKENS]
+    if not tokens:
+        return ""
+    if len(tokens) > 2:
+        tokens = tokens[:2]
+    return " ".join(tokens).strip(" -:/,.;")
+
+
+def _join_body_parts(parts: Sequence[str]) -> str:
+    unique_parts = _unique_nonempty(parts)
+    if not unique_parts:
+        return ""
+    if len(unique_parts) == 1:
+        return unique_parts[0]
+    if len(unique_parts) == 2:
+        return f"{unique_parts[0]} and {unique_parts[1]}"
+    return ", ".join(unique_parts[:-1]) + f", and {unique_parts[-1]}"
 
 
 def split_reference_entries(
@@ -202,10 +317,7 @@ def _trim_body_text(value: str) -> str:
             body = body[:idx].rstrip(" -:/,.;")
             break
     body = body.rstrip(" -:/,.;")
-    words = body.split()
-    if len(words) > 7:
-        body = " ".join(words[:7]).rstrip(" -:/,.;")
-    return body
+    return _compact_body_phrase(body)
 
 
 def _normalise_action_label(action: str) -> str:
@@ -227,6 +339,8 @@ def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
     cleaned = re.sub(r"^(item|step|procedure|job)\s*[\d.()-]*\s*[:\-]?\s*", "", cleaned, flags=re.I)
     if not cleaned:
         return [], []
+    if any(cleaned.lower().startswith(prefix) for prefix in _LEADING_NOISE_PHRASES):
+        return [], []
 
     lowered = cleaned.lower()
     actions: list[str] = []
@@ -243,8 +357,9 @@ def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
         )
         match = pattern.match(cleaned)
         if match:
-            body = _trim_body_text(cleaned[match.end():])
-            if body:
+            candidate = _trim_body_text(cleaned[match.end():])
+            if candidate and not re.match(r"^(?:of|the)\b", candidate, flags=re.I):
+                body = candidate
                 break
 
     prep_match = re.search(
@@ -265,13 +380,13 @@ def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
                 body,
                 flags=re.I,
             )
-        body = re.sub(r"^(and|/|,|-|\.)+\s*", "", body, flags=re.I)
+        body = re.sub(r"^(&|and|or|/|,|-|\.)+\s*", "", body, flags=re.I)
         body = _trim_body_text(body)
 
     if not actions and cleaned:
-        first_token = _normalise_action_label(cleaned.split(" ", 1)[0].strip(" -:/"))
-        if first_token:
-            actions = [first_token]
+        first_token_raw = cleaned.split(" ", 1)[0].strip(" -:/").lower()
+        if first_token_raw in _ACTION_LABELS:
+            actions = [_normalise_action_label(first_token_raw)]
 
     if not body:
         body = _trim_body_text(cleaned)
@@ -284,12 +399,12 @@ def build_canonical_job_name(
     job_names: Sequence[str | None] = (),
     job_descriptions: Sequence[str | None] = (),
 ) -> str:
-    component_label = (component_name or "Unmapped Component").strip() or "Unmapped Component"
+    component_label = (component_name or "").strip()
     name_bodies: list[str] = []
     name_actions: list[str] = []
     for source_text in job_names:
         stripped_name = _strip_component_prefix(source_text, component_label)
-        candidate_name = stripped_name if component_name else source_text
+        candidate_name = stripped_name or (None if component_name else _UNMAPPED_PREFIX_RE.sub("", source_text or "").strip())
         body_parts, action_parts = _extract_body_and_actions(candidate_name)
         name_bodies.extend(body_parts)
         name_actions.extend(action_parts)
@@ -301,7 +416,6 @@ def build_canonical_job_name(
         desc_bodies.extend(body_parts)
         desc_actions.extend(action_parts)
 
-    component_key = _normalise_compare_text(component_label)
     filtered_name_bodies = [
         body
         for body in _unique_nonempty(name_bodies)
@@ -315,8 +429,12 @@ def build_canonical_job_name(
 
     bodies = filtered_name_bodies or filtered_desc_bodies
     actions = _unique_nonempty(name_actions) or _unique_nonempty(desc_actions)
-    body_text = " / ".join(_unique_nonempty(bodies))
+    body_text = _join_body_parts(_unique_nonempty(bodies))
     action_text = " / ".join(_unique_nonempty(actions)) or "Maintenance"
-    if body_text:
+    if component_label and body_text:
         return f"{component_label} {body_text} - {action_text}"[:500]
-    return f"{component_label} - {action_text}"[:500]
+    if component_label:
+        return f"{component_label} - {action_text}"[:500]
+    if body_text:
+        return f"{body_text} - {action_text}"[:500]
+    return f"General maintenance - {action_text}"[:500]
