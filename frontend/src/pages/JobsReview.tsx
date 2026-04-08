@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useCallback } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CheckCircle, Copy, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Upload, XCircle } from 'lucide-react'
 import apiClient from '@/api/client'
@@ -309,13 +309,14 @@ function JobEditor({
 
 const JobsReview: React.FC = () => {
   const { vesselId } = useParams<{ vesselId: string }>()
+  const [searchParams, setSearchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const [filterQC, setFilterQC] = useState('')
   const [filterCritical, setFilterCritical] = useState('')
   const [filterUnmapped, setFilterUnmapped] = useState(false)
   const [filterFreqType, setFilterFreqType] = useState('')
   const [filterNoCMS, setFilterNoCMS] = useState(false)
-  const [filterSourceKind, setFilterSourceKind] = useState('')
+  const [filterSourceKind, setFilterSourceKind] = useState(searchParams.get('source_kind') ?? '')
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('job_name')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
@@ -529,6 +530,25 @@ const JobsReview: React.FC = () => {
   React.useEffect(() => {
     setPage(1)
   }, [filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, search, sortBy, sortOrder, pageSize])
+
+  React.useEffect(() => {
+    const sourceKindParam = searchParams.get('source_kind') ?? ''
+    if (sourceKindParam !== filterSourceKind) {
+      setFilterSourceKind(sourceKindParam)
+    }
+  }, [searchParams, filterSourceKind])
+
+  React.useEffect(() => {
+    const next = new URLSearchParams(searchParams)
+    if (filterSourceKind) {
+      next.set('source_kind', filterSourceKind)
+    } else {
+      next.delete('source_kind')
+    }
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true })
+    }
+  }, [filterSourceKind, searchParams, setSearchParams])
 
   React.useEffect(() => {
     if (page > totalPages) setPage(totalPages)

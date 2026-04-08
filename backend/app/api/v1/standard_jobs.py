@@ -1162,9 +1162,11 @@ async def import_standard_jobs_batch(
 
     imported = 0
     merged = 0
+    imported_job_ids: list[str] = []
+    merged_job_ids: list[str] = []
     for std_job in std_jobs:
         mapped_component_id = component_map.get(str(std_job.id))
-        status_value, _ = await _import_standard_job_to_vessel(
+        status_value, job = await _import_standard_job_to_vessel(
             vessel_id=vessel_id,
             std_job=std_job,
             component_id=mapped_component_id,
@@ -1173,10 +1175,18 @@ async def import_standard_jobs_batch(
         )
         if status_value == "imported":
             imported += 1
+            imported_job_ids.append(str(job.id))
         else:
             merged += 1
+            merged_job_ids.append(str(job.id))
     await db.commit()
-    return {"imported": imported, "merged": merged, "total": len(std_jobs)}
+    return {
+        "imported": imported,
+        "merged": merged,
+        "total": len(std_jobs),
+        "imported_job_ids": imported_job_ids,
+        "merged_job_ids": merged_job_ids,
+    }
 
 
 @router.post("/vessels/{vessel_id}/standard-jobs/remove-batch", summary="Remove selected or filtered imported standard jobs from vessel")

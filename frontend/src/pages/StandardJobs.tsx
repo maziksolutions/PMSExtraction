@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Download, Play, XCircle } from 'lucide-react'
 import apiClient from '@/api/client'
@@ -106,6 +106,7 @@ function suggestComponentId(job: StandardJob, components: ComponentOption[]): st
 
 const StandardJobs: React.FC = () => {
   const { vesselId } = useParams<{ vesselId: string }>()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
 
   const [filterSociety, setFilterSociety] = useState('')
@@ -196,11 +197,15 @@ const StandardJobs: React.FC = () => {
         })
         .then((r) => r.data),
     onSuccess: (data) => {
-      setActionMessage(`Added ${data.imported} and updated ${data.merged} jobs in Jobs Review. Use the Jobs Review source filter = Standard Library to review them.`)
+      const totalAffected = (data.imported ?? 0) + (data.merged ?? 0)
+      setActionMessage(`Added ${data.imported} and updated ${data.merged} jobs in Jobs Review. Opening Jobs Review with Standard Library filter.`)
       setActionError(null)
       setSelectedJobIds([])
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+      if (totalAffected > 0) {
+        navigate(`/vessels/${vesselId}/jobs?source_kind=standard_library`)
+      }
     },
     onError: (error: unknown) => {
       setActionError(getApiErrorMessage(error, 'Failed to add standard jobs to Jobs Review'))
@@ -216,10 +221,11 @@ const StandardJobs: React.FC = () => {
         })
         .then((r) => r.data),
     onSuccess: () => {
-      setActionMessage('Library job added to Jobs Review. Use the Jobs Review source filter = Standard Library to review it.')
+      setActionMessage('Library job added to Jobs Review. Opening Jobs Review with Standard Library filter.')
       setActionError(null)
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+      navigate(`/vessels/${vesselId}/jobs?source_kind=standard_library`)
     },
     onError: (error: unknown) => {
       setActionError(getApiErrorMessage(error, 'Failed to add standard job to Jobs Review'))
