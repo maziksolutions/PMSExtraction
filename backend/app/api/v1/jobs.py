@@ -13,6 +13,7 @@ from app.deps import get_current_user
 from app.models.component import QCStatus
 from app.models.feedback import CorrectionType, FeedbackEntry
 from app.models.job import FrequencyType, Job
+from app.models.standard_jobs import StandardJob, StandardJobMatch
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.job import JobCreate, JobOut, JobUpdate
@@ -32,6 +33,14 @@ from app.services.job_naming import (
 router = APIRouter()
 
 
+JOB_SOURCE_KIND_LABELS = {
+    "instruction_manual": "Instruction Manual",
+    "standard_library": "Standard Library",
+    "critical_library": "Critical Jobs Library",
+    "cms_file": "CMS File",
+}
+
+
 def _merge_text_values(*values: Optional[str]) -> Optional[str]:
     seen: set[str] = set()
     merged: list[str] = []
@@ -46,6 +55,29 @@ def _merge_text_values(*values: Optional[str]) -> Optional[str]:
             seen.add(key)
             merged.append(cleaned)
     return "\n\n".join(merged) if merged else None
+
+
+def _job_source_tags(
+    job: Job,
+    *,
+    has_standard_match: bool = False,
+    has_critical_match: bool = False,
+) -> list[str]:
+    tags: list[str] = []
+    if job.source_manual_id:
+        tags.append("instruction_manual")
+    if has_standard_match:
+        tags.append("standard_library")
+    if has_critical_match:
+        tags.append("critical_library")
+    if job.cms_id:
+        tags.append("cms_file")
+    return tags
+
+
+def _job_source_summary(source_tags: list[str]) -> str | None:
+    labels = [JOB_SOURCE_KIND_LABELS[tag] for tag in source_tags if tag in JOB_SOURCE_KIND_LABELS]
+    return " / ".join(labels) if labels else None
 
 
 def _job_out_payload(job: Job) -> dict[str, Any]:
@@ -229,6 +261,7 @@ async def list_jobs(
     is_critical: Optional[bool] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
     frequency_type: Optional[str] = Query(None),
+    source_kind: Optional[str] = Query(None, pattern="^(instruction_manual|standard_library|critical_library|cms_file)$"),
     search: Optional[str] = Query(None),
     sort_by: str = Query("job_name"),
     sort_order: str = Query("asc", pattern="^(asc|desc)$"),
@@ -265,11 +298,32 @@ async def list_jobs(
             base_where.append(Job.frequency_type == FrequencyType(frequency_type))
         except ValueError:
             pass
+    if source_kind == "instruction_manual":
+        base_where.append(Job.source_manual_id.is_not(None))
+    elif source_kind in {"standard_library", "critical_library"}:
+        standard_match_ids = (
+            select(StandardJobMatch.matched_job_id)
+            .join(StandardJob, StandardJob.id == StandardJobMatch.standard_job_id)
+            .where(
+                StandardJobMatch.vessel_id == vessel_id,
+                StandardJobMatch.tenant_id == current_user.tenant_id,
+                StandardJobMatch.is_deleted == False,
+                StandardJob.tenant_id == current_user.tenant_id,
+                StandardJob.is_deleted == False,
+                StandardJob.is_critical.is_(source_kind == "critical_library"),
+                StandardJobMatch.matched_job_id.is_not(None),
+            )
+        )
+        base_where.append(Job.id.in_(standard_match_ids))
+    elif source_kind == "cms_file":
+        base_where.append(Job.cms_id.is_not(None))
     if search:
         base_where.append(
             or_(
                 Job.job_name.ilike(f"%{search}%"),
                 Job.job_code.ilike(f"%{search}%"),
+                Job.source_reference.ilike(f"%{search}%"),
+                Job.pdf_reference.ilike(f"%{search}%"),
             )
         )
 
@@ -286,6 +340,7 @@ async def list_jobs(
         "qc_status": Job.qc_status,
         "confidence": Job.confidence_score,
         "page_reference": Job.page_reference,
+        "source_reference": Job.source_reference,
         "created_at": Job.created_at,
     }
     order_col = sort_columns.get(sort_by, Job.job_name)
@@ -313,17 +368,47 @@ async def list_jobs(
         manual_result = await db.execute(select(Manual).where(Manual.id.in_(manual_ids)))
         manual_lookup = {manual.id: manual for manual in manual_result.scalars().all()}
 
+    job_ids = [job.id for job in jobs]
+    standard_match_lookup: dict[uuid.UUID, set[str]] = {}
+    if job_ids:
+        std_match_result = await db.execute(
+            select(StandardJobMatch.matched_job_id, StandardJob.is_critical)
+            .join(StandardJob, StandardJob.id == StandardJobMatch.standard_job_id)
+            .where(
+                StandardJobMatch.vessel_id == vessel_id,
+                StandardJobMatch.tenant_id == current_user.tenant_id,
+                StandardJobMatch.is_deleted == False,
+                StandardJobMatch.matched_job_id.in_(job_ids),
+                StandardJob.tenant_id == current_user.tenant_id,
+                StandardJob.is_deleted == False,
+            )
+        )
+        for matched_job_id, is_critical_match in std_match_result.all():
+            if matched_job_id is None:
+                continue
+            standard_match_lookup.setdefault(matched_job_id, set()).add(
+                "critical_library" if is_critical_match else "standard_library"
+            )
+
     items = []
     for job in jobs:
         payload = _job_out(job).model_dump()
         component = component_lookup.get(job.component_id) if job.component_id else None
         manual = manual_lookup.get(job.source_manual_id) if job.source_manual_id else None
+        std_tags = standard_match_lookup.get(job.id, set())
+        source_tags = _job_source_tags(
+            job,
+            has_standard_match="standard_library" in std_tags,
+            has_critical_match="critical_library" in std_tags,
+        )
         payload.update(
             {
                 "component_name": component.component_name if component else None,
                 "component_maker": component.maker if component else None,
                 "component_model": component.model if component else None,
                 "source_manual_name": manual.original_filename if manual else None,
+                "source_kinds": source_tags,
+                "source_summary": _job_source_summary(source_tags),
             }
         )
         items.append(payload)

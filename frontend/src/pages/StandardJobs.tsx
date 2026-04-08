@@ -196,7 +196,7 @@ const StandardJobs: React.FC = () => {
         })
         .then((r) => r.data),
     onSuccess: (data) => {
-      setActionMessage(`Added ${data.imported} and updated ${data.merged} jobs in Jobs Review.`)
+      setActionMessage(`Added ${data.imported} and updated ${data.merged} jobs in Jobs Review. Use the Jobs Review source filter = Standard Library to review them.`)
       setActionError(null)
       setSelectedJobIds([])
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
@@ -216,7 +216,7 @@ const StandardJobs: React.FC = () => {
         })
         .then((r) => r.data),
     onSuccess: () => {
-      setActionMessage('Library job added to Jobs Review.')
+      setActionMessage('Library job added to Jobs Review. Use the Jobs Review source filter = Standard Library to review it.')
       setActionError(null)
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
@@ -430,7 +430,7 @@ const StandardJobs: React.FC = () => {
           disabled={selectedJobIds.length === 0 || importSelectedMutation.isPending}
           className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
         >
-          Add Selected To Jobs Review
+          Add Selected To Jobs Review{selectedJobIds.length > 0 ? ` (${selectedJobIds.length})` : ''}
         </button>
       </div>
 

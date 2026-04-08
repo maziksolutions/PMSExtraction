@@ -42,6 +42,8 @@ interface Job {
   source_page_number: number | null
   pdf_reference: string | null
   source_reference?: string | null
+  source_kinds?: string[]
+  source_summary?: string | null
 }
 
 type JobForm = {
@@ -100,8 +102,17 @@ const SORT_OPTIONS = [
   { value: 'criticality', label: 'Criticality' },
   { value: 'qc_status', label: 'QC Status' },
   { value: 'confidence', label: 'Confidence' },
+  { value: 'source_reference', label: 'Source Reference' },
   { value: 'page_reference', label: 'Page Reference' },
   { value: 'created_at', label: 'Created At' },
+]
+
+const SOURCE_FILTER_OPTIONS = [
+  { value: '', label: 'All Sources' },
+  { value: 'instruction_manual', label: 'Instruction Manual' },
+  { value: 'standard_library', label: 'Standard Library' },
+  { value: 'critical_library', label: 'Critical Jobs Library' },
+  { value: 'cms_file', label: 'CMS File' },
 ]
 
 function getApiErrorMessage(error: unknown): string {
@@ -304,6 +315,7 @@ const JobsReview: React.FC = () => {
   const [filterUnmapped, setFilterUnmapped] = useState(false)
   const [filterFreqType, setFilterFreqType] = useState('')
   const [filterNoCMS, setFilterNoCMS] = useState(false)
+  const [filterSourceKind, setFilterSourceKind] = useState('')
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('job_name')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
@@ -320,13 +332,14 @@ const JobsReview: React.FC = () => {
   const [batchFields, setBatchFields] = useState<BatchJobFields>({})
 
   const { data, isLoading } = useQuery({
-    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, search, sortBy, sortOrder, page, pageSize],
+    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, search, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
       const params: Record<string, string> = {}
       if (filterQC) params.qc_status = filterQC
       if (filterCritical) params.is_critical = filterCritical
       if (filterUnmapped) params.is_unmapped = 'true'
       if (filterFreqType) params.frequency_type = filterFreqType
+      if (filterSourceKind) params.source_kind = filterSourceKind
       if (search) params.search = search
       params.sort_by = sortBy
       params.sort_order = sortOrder
@@ -515,7 +528,7 @@ const JobsReview: React.FC = () => {
 
   React.useEffect(() => {
     setPage(1)
-  }, [filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, search, sortBy, sortOrder, pageSize])
+  }, [filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, search, sortBy, sortOrder, pageSize])
 
   React.useEffect(() => {
     if (page > totalPages) setPage(totalPages)
@@ -752,6 +765,11 @@ const JobsReview: React.FC = () => {
           <button onClick={() => setFilterNoCMS(!filterNoCMS)} className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${filterNoCMS ? 'border-sky-600 bg-sky-900/20 text-sky-300' : 'border-slate-700 text-slate-400 hover:bg-slate-800'}`}>
             CMS Codes Pending
           </button>
+          <select value={filterSourceKind} onChange={(e) => setFilterSourceKind(e.target.value)} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none">
+            {SOURCE_FILTER_OPTIONS.map((option) => (
+              <option key={option.value || 'all'} value={option.value}>{option.label}</option>
+            ))}
+          </select>
           <select value={filterFreqType} onChange={(e) => setFilterFreqType(e.target.value)} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none">
             <option value="">All Frequency</option>
             {FREQUENCY_OPTIONS.map((option) => <option key={option} value={option}>{option.replace('_', ' ')}</option>)}
@@ -790,7 +808,7 @@ const JobsReview: React.FC = () => {
           ) : jobs.length === 0 ? (
             <div className="py-16 text-center text-slate-500">No jobs found yet. Extract from Manual Review after component matching is complete.</div>
           ) : (
-            <table className="min-w-[1900px] w-full text-sm">
+            <table className="min-w-[2250px] w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-700 text-left text-xs uppercase text-slate-500">
                   <th className="w-8 px-4 py-3"><input type="checkbox" checked={selectedIds.size === jobs.length && jobs.length > 0} onChange={(e) => setSelectedIds(e.target.checked ? new Set(jobs.map((job) => job.id)) : new Set())} className="h-3.5 w-3.5 rounded" /></th>
@@ -803,6 +821,8 @@ const JobsReview: React.FC = () => {
                   <th className="px-4 py-3">CMS ID</th>
                   <th className="px-4 py-3">Critical</th>
                   <th className="px-4 py-3">Confidence</th>
+                  <th className="px-4 py-3">Source Type</th>
+                  <th className="px-4 py-3">Source Reference</th>
                   <th className="px-4 py-3">Source</th>
                   <th className="px-4 py-3">QC</th>
                   <th className="px-4 py-3">Actions</th>
@@ -812,6 +832,7 @@ const JobsReview: React.FC = () => {
                 {jobs.map((job) => {
                   const pageRef = job.source_page_number ?? job.page_reference
                   const sourceLabel = job.source_manual_name ?? job.pdf_reference ?? 'Manual'
+                  const sourceKinds = job.source_kinds ?? []
                   return (
                     <tr key={job.id} className={`cursor-pointer transition-colors hover:bg-slate-800/60 ${selectedIds.has(job.id) ? 'bg-sky-900/10' : ''} ${selectedJob?.id === job.id ? 'bg-slate-800/70' : ''} ${job.is_unmapped ? 'border-l-2 border-amber-600' : ''}`} onClick={() => { setSelectedJob(job); setEditingJob(null); setCreateDraft(null) }}>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(job.id)} onChange={() => toggleSelect(job.id)} className="h-3.5 w-3.5 rounded" /></td>
@@ -879,6 +900,20 @@ const JobsReview: React.FC = () => {
                         </select>
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">{job.confidence_score != null ? <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${job.confidence_score >= 85 ? 'bg-green-700 text-green-100' : job.confidence_score >= 60 ? 'bg-amber-700 text-amber-100' : 'bg-red-700 text-red-100'}`}>{job.confidence_score}%</span> : '-'}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex max-w-[210px] flex-wrap gap-1">
+                          {sourceKinds.length > 0 ? sourceKinds.map((kind) => (
+                            <span key={kind} className="rounded-full bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300">
+                              {SOURCE_FILTER_OPTIONS.find((option) => option.value === kind)?.label ?? kind}
+                            </span>
+                          )) : <span className="text-xs text-slate-500">-</span>}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="max-w-[280px] truncate whitespace-nowrap text-xs text-slate-400" title={job.source_reference ?? ''}>
+                          {job.source_reference ?? '-'}
+                        </div>
+                      </td>
                       <td className="px-4 py-3"><div className="max-w-[220px] text-xs"><div className="inline-flex items-center gap-1 whitespace-nowrap text-sky-400" title={`${sourceLabel} page ${pageRef ?? '-'}`}><ExternalLink className="h-3 w-3" />{pageRef != null ? `p.${pageRef}` : 'No page'}</div><div className="mt-1 truncate whitespace-nowrap text-slate-500" title={sourceLabel}>{sourceLabel}</div></div></td>
                       <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                         <select
