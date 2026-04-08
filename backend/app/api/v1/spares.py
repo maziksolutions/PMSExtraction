@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Annotated, Any, List, Optional
 
@@ -23,6 +24,19 @@ from app.services.review_workflow import (
 
 router = APIRouter()
 
+CJK_PATTERN = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+PARENTHETICAL_CJK_PATTERN = re.compile(r"[（(][^）)]*[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff][^）)]*[）)]")
+SPARE_TRANSLATIONS = {
+    "ビニル手袋": "Vinyl Gloves",
+    "収納箱": "Storage Box",
+    "塩素系水処理剤": "Chlorine Water Treatment Chemical",
+    "異物取出し用ハサミ": "Foreign Matter Removal Scissors",
+    "ハサミ": "Scissors",
+    "手袋": "Gloves",
+    "収納": "Storage",
+    "箱": "Box",
+}
+
 
 def _format_spare_source_reference(
     manual_name: Optional[str],
@@ -41,6 +55,38 @@ def _fallback_spare_part_number(
     if part_number:
         return part_number
     return _format_spare_source_reference(manual_name, page_reference)
+
+
+def _contains_cjk(value: Optional[str]) -> bool:
+    return bool(value and CJK_PATTERN.search(value))
+
+
+def _normalize_spare_text(
+    value: Optional[str],
+    *,
+    fallback: Optional[str] = None,
+    compact: bool = False,
+) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    translated = SPARE_TRANSLATIONS.get(text)
+    if translated:
+        return translated
+
+    cleaned = PARENTHETICAL_CJK_PATTERN.sub("", text)
+    for source, target in SPARE_TRANSLATIONS.items():
+        cleaned = cleaned.replace(source, f" {target} ")
+    cleaned = cleaned.replace("（", "(").replace("）", ")")
+    cleaned = CJK_PATTERN.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -/,;:")
+
+    if compact:
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+
+    if cleaned and any(ch.isalpha() or ch.isdigit() for ch in cleaned):
+        return cleaned
+    return fallback
 
 
 def _spare_out_payload(spare: Spare) -> dict[str, Any]:
@@ -258,9 +304,10 @@ async def list_spares(
         manual = manual_lookup.get(spare.source_manual_id) if spare.source_manual_id else None
         manual_name = manual.original_filename if manual else None
         source_reference = _format_spare_source_reference(manual_name, spare.page_reference)
+        component_name = component.component_name if component else None
         payload.update(
             {
-                "component_name": component.component_name if component else None,
+                "component_name": component_name,
                 "component_maker": component.maker if component else None,
                 "component_model": component.model if component else None,
                 "source_manual_name": manual_name,
@@ -273,6 +320,27 @@ async def list_spares(
                 ),
             }
         )
+        english_part_number = _normalize_spare_text(
+            payload.get("part_number"),
+            fallback=_fallback_spare_part_number(
+                None,
+                manual_name,
+                spare.page_reference,
+            ),
+            compact=True,
+        )
+        payload["part_number"] = english_part_number
+        payload["part_name"] = _normalize_spare_text(
+            payload.get("part_name"),
+            fallback=(f"Spare Item {english_part_number}" if english_part_number else f"{component_name or 'Spare Item'}"),
+        )
+        payload["specification"] = _normalize_spare_text(payload.get("specification"))
+        payload["drawing_number"] = _normalize_spare_text(payload.get("drawing_number"), compact=True)
+        payload["drawing_position"] = _normalize_spare_text(payload.get("drawing_position"), compact=True)
+        payload["spare_assembly"] = _normalize_spare_text(payload.get("spare_assembly"))
+        payload["assembly_description"] = _normalize_spare_text(payload.get("assembly_description"))
+        payload["spare_maker"] = _normalize_spare_text(payload.get("spare_maker"), compact=True)
+        payload["spare_model"] = _normalize_spare_text(payload.get("spare_model"), compact=True)
         items.append(payload)
 
     return {"items": items, "page": page, "page_size": page_size, "total": total}

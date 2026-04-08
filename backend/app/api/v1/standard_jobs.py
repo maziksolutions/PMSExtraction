@@ -551,6 +551,22 @@ def _job_looks_library_imported(job: Job, std_job: StandardJob) -> bool:
     return False
 
 
+def _job_matches_critical_reference(job: Job, library_reference: Optional[str]) -> bool:
+    source_ref = _norm_text(job.source_reference)
+    std_ref = _norm_text(library_reference)
+    return bool(source_ref and std_ref and std_ref in source_ref)
+
+
+def _job_is_library_added_critical(job: Job, std_job: Optional[StandardJob] = None) -> bool:
+    if job.source_manual_id is not None:
+        return False
+    if std_job is not None and _norm_text(job.job_name) == _norm_text(std_job.job_name):
+        return True
+    if std_job is not None and _job_matches_critical_reference(job, std_job.library_reference):
+        return True
+    return bool(job.source_manual_id is None and job.source_reference and "critical" in _norm_text(job.source_reference))
+
+
 @router.get("/standard-jobs", summary="List standard jobs library")
 async def list_standard_jobs(
     current_user: Annotated[User, Depends(get_current_user)],
@@ -1358,50 +1374,61 @@ async def remove_critical_jobs(
     if not critical_jobs:
         return {"removed": 0, "unmarked": 0, "skipped": 0, "total": 0}
 
+    critical_job_ids = [job.id for job in critical_jobs]
+    critical_ref_map = {
+        job.id: _norm_text(job.library_reference) for job in critical_jobs if job.library_reference
+    }
+
+    match_result = await db.execute(
+        select(StandardJobMatch).where(
+            StandardJobMatch.vessel_id == vessel_id,
+            StandardJobMatch.standard_job_id.in_(critical_job_ids),
+            StandardJobMatch.is_deleted == False,
+        )
+    )
+    matches = match_result.scalars().all()
+    matches_by_standard_job_id = {match.standard_job_id: match for match in matches}
+    matched_job_ids = {match.matched_job_id for match in matches if match.matched_job_id}
+
+    all_jobs_result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.is_deleted == False,
+        )
+    )
+    all_jobs = all_jobs_result.scalars().all()
+    jobs_by_id = {job.id: job for job in all_jobs}
+
     removed = 0
     unmarked = 0
     skipped = 0
+    removed_job_ids: set[uuid.UUID] = set()
 
     for std_job in critical_jobs:
-        match_result = await db.execute(
-            select(StandardJobMatch).where(
-                StandardJobMatch.vessel_id == vessel_id,
-                StandardJobMatch.standard_job_id == std_job.id,
-                StandardJobMatch.is_deleted == False,
-            )
-        )
-        match = match_result.scalar_one_or_none()
+        match = matches_by_standard_job_id.get(std_job.id)
 
         candidate_job: Job | None = None
         if match is not None and match.matched_job_id is not None:
-            job_result = await db.execute(
-                select(Job).where(
-                    Job.id == match.matched_job_id,
-                    Job.vessel_id == vessel_id,
-                    Job.is_deleted == False,
-                )
-            )
-            candidate_job = job_result.scalar_one_or_none()
+            candidate_job = jobs_by_id.get(match.matched_job_id)
 
         if candidate_job is None:
-            fallback_result = await db.execute(
-                select(Job).where(
-                    Job.vessel_id == vessel_id,
-                    Job.is_deleted == False,
-                    or_(
-                        Job.job_name == std_job.job_name,
-                        Job.source_reference.ilike(f"%{std_job.library_reference or ''}%"),
-                    ),
+            fallback_jobs = [
+                job
+                for job in all_jobs
+                if not job.is_deleted
+                and (
+                    _job_looks_library_imported(job, std_job)
+                    or _job_matches_critical_reference(job, std_job.library_reference)
                 )
-            )
-            fallback_jobs = fallback_result.scalars().all()
-            candidate_job = next((job for job in fallback_jobs if _job_looks_library_imported(job, std_job)), None)
+            ]
+            candidate_job = next((job for job in fallback_jobs if _job_is_library_added_critical(job, std_job)), None)
             if candidate_job is None:
                 candidate_job = next(
                     (
-                        job for job in fallback_jobs
+                        job
+                        for job in fallback_jobs
                         if bool(job.is_critical)
-                        and _norm_text(std_job.library_reference) in _norm_text(job.source_reference)
+                        and _job_matches_critical_reference(job, std_job.library_reference)
                     ),
                     None,
                 )
@@ -1415,9 +1442,10 @@ async def remove_critical_jobs(
             skipped += 1
             continue
 
-        if _job_looks_library_imported(candidate_job, std_job):
+        if _job_is_library_added_critical(candidate_job, std_job):
             candidate_job.is_deleted = True
             db.add(candidate_job)
+            removed_job_ids.add(candidate_job.id)
             removed += 1
         else:
             changed = False
@@ -1439,6 +1467,20 @@ async def remove_critical_jobs(
             match.match_status = MatchStatus.not_found
             match.match_score = 0
             db.add(match)
+
+    remaining_critical_refs = set(critical_ref_map.values())
+    for job in all_jobs:
+        if job.id in removed_job_ids or job.is_deleted:
+            continue
+        if not _job_is_library_added_critical(job):
+            continue
+        source_ref = _norm_text(job.source_reference)
+        if not any(ref and ref in source_ref for ref in remaining_critical_refs):
+            continue
+        job.is_deleted = True
+        db.add(job)
+        removed_job_ids.add(job.id)
+        removed += 1
 
     await db.commit()
     return {"removed": removed, "unmarked": unmarked, "skipped": skipped, "total": len(critical_jobs)}
