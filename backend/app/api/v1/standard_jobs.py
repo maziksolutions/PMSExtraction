@@ -45,6 +45,14 @@ def _norm_text(value: Any) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
 
+def _tokenize_text(value: Any) -> set[str]:
+    return {
+        token
+        for token in re.split(r"[^a-z0-9]+", _norm_text(value))
+        if token
+    }
+
+
 def _header_key(value: Any) -> str:
     return "".join(ch for ch in str(value or "").strip().lower() if ch.isalnum())
 
@@ -351,6 +359,32 @@ def _score_standard_job(std_job: StandardJob, vessel_job: Job, component_lookup:
         std_machinery in machinery_context or machinery_context in std_machinery
     ):
         score += 10
+
+    std_tokens = _tokenize_text(std_job.job_name)
+    vessel_tokens = _tokenize_text(vessel_job.job_name)
+    if std_tokens and vessel_tokens:
+        overlap = len(std_tokens & vessel_tokens)
+        if overlap == 0:
+            score -= 35
+        elif overlap == 1:
+            score -= 15
+        else:
+            score += min(15, overlap * 4)
+
+        directional_groups = [
+            {"inside", "outside"},
+            {"open", "close"},
+            {"port", "starboard"},
+            {"left", "right"},
+            {"forward", "aft"},
+            {"upper", "lower"},
+        ]
+        for group in directional_groups:
+            std_dir = std_tokens & group
+            vessel_dir = vessel_tokens & group
+            if std_dir and vessel_dir and std_dir != vessel_dir:
+                score -= 30
+
     return min(score, 100)
 
 
@@ -938,25 +972,47 @@ async def run_comparison(
     existing_matches = {match.standard_job_id: match for match in existing_result.scalars().all()}
 
     matches_created = 0
+    best_scores: dict[uuid.UUID, tuple[Optional[uuid.UUID], int]] = {}
+    candidates: list[tuple[int, uuid.UUID, uuid.UUID]] = []
     for std_job in std_jobs:
-        best_match: Job | None = None
-        best_score = 0
+        top_job_id: Optional[uuid.UUID] = None
+        top_score = 0
         for vessel_job in vessel_jobs:
             score = _score_standard_job(std_job, vessel_job, component_lookup)
-            if score > best_score:
-                best_score = score
-                best_match = vessel_job
+            if score > top_score:
+                top_score = score
+                top_job_id = vessel_job.id
+            if score >= 70:
+                candidates.append((score, std_job.id, vessel_job.id))
+        best_scores[std_job.id] = (top_job_id, top_score)
 
-        if best_score >= 92 and best_match is not None:
+    assigned_std_jobs: set[uuid.UUID] = set()
+    assigned_vessel_jobs: set[uuid.UUID] = set()
+    final_matches: dict[uuid.UUID, tuple[Optional[uuid.UUID], int]] = {}
+    for score, std_job_id, vessel_job_id in sorted(
+        candidates,
+        key=lambda item: (item[0], str(item[1]), str(item[2])),
+        reverse=True,
+    ):
+        if std_job_id in assigned_std_jobs or vessel_job_id in assigned_vessel_jobs:
+            continue
+        assigned_std_jobs.add(std_job_id)
+        assigned_vessel_jobs.add(vessel_job_id)
+        final_matches[std_job_id] = (vessel_job_id, score)
+
+    for std_job in std_jobs:
+        matched_job_id, matched_score = final_matches.get(std_job.id, (None, 0))
+        if matched_job_id is not None and matched_score >= 92:
             match_status = MatchStatus.matched
-            matched_job_id = best_match.id
-        elif best_score >= 70 and best_match is not None:
+        elif matched_job_id is not None and matched_score >= 70:
             match_status = MatchStatus.partial
-            matched_job_id = best_match.id
         else:
-            match_status = MatchStatus.not_found
+            fallback_job_id, fallback_score = best_scores.get(std_job.id, (None, 0))
             matched_job_id = None
-            best_score = 0
+            matched_score = 0
+            match_status = MatchStatus.not_found
+            if fallback_job_id is not None and fallback_score >= 70:
+                match_status = MatchStatus.not_found
 
         match = existing_matches.get(std_job.id)
         if match is None:
@@ -969,7 +1025,7 @@ async def run_comparison(
 
         match.matched_job_id = matched_job_id
         match.match_status = match_status
-        match.match_score = best_score
+        match.match_score = matched_score
         db.add(match)
 
     await db.commit()
@@ -1180,6 +1236,8 @@ async def import_standard_jobs_batch(
             merged += 1
             merged_job_ids.append(str(job.id))
     await db.commit()
+    imported_job_ids = list(dict.fromkeys(imported_job_ids))
+    merged_job_ids = list(dict.fromkeys(merged_job_ids))
     return {
         "imported": imported,
         "merged": merged,

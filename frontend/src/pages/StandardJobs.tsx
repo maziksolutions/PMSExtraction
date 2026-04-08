@@ -198,11 +198,11 @@ const StandardJobs: React.FC = () => {
         .then((r) => r.data),
     onSuccess: (data) => {
       const totalAffected = (data.imported ?? 0) + (data.merged ?? 0)
-      const affectedIds = [
+      const affectedIds = Array.from(new Set([
         ...(((data.imported_job_ids as string[] | undefined) ?? [])),
         ...(((data.merged_job_ids as string[] | undefined) ?? [])),
-      ]
-      setActionMessage(`Added ${data.imported} and updated ${data.merged} jobs in Jobs Review. Opening Jobs Review with Standard Library filter.`)
+      ]))
+      setActionMessage(`Added ${data.imported} and updated ${data.merged} library jobs in Jobs Review. Opening the affected vessel jobs for review.`)
       setActionError(null)
       setSelectedJobIds([])
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
