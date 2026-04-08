@@ -467,6 +467,8 @@ async def _import_standard_job_to_vessel(
         )
         matched_job = matched_job_result.scalar_one_or_none()
         if matched_job is not None:
+            if matched_job.job_name != std_job.job_name:
+                matched_job.job_name = std_job.job_name
             matched_job.is_critical = bool(matched_job.is_critical or std_job.is_critical)
             matched_job.source_reference = _merge_source_reference(
                 matched_job.source_reference,
@@ -496,6 +498,8 @@ async def _import_standard_job_to_vessel(
     )
     existing_job = existing_job_result.scalar_one_or_none()
     if existing_job is not None:
+        if existing_job.job_name != std_job.job_name:
+            existing_job.job_name = std_job.job_name
         existing_job.is_critical = bool(existing_job.is_critical or std_job.is_critical)
         existing_job.source_reference = _merge_source_reference(
             existing_job.source_reference,
@@ -1292,6 +1296,9 @@ async def add_critical_jobs(
 
         if best_match is not None and best_score >= 92:
             changed = False
+            if best_match.job_name != std_job.job_name:
+                best_match.job_name = std_job.job_name
+                changed = True
             if not best_match.is_critical:
                 best_match.is_critical = True
                 changed = True
