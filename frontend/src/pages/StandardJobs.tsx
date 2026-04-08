@@ -198,13 +198,22 @@ const StandardJobs: React.FC = () => {
         .then((r) => r.data),
     onSuccess: (data) => {
       const totalAffected = (data.imported ?? 0) + (data.merged ?? 0)
+      const affectedIds = [
+        ...(((data.imported_job_ids as string[] | undefined) ?? [])),
+        ...(((data.merged_job_ids as string[] | undefined) ?? [])),
+      ]
       setActionMessage(`Added ${data.imported} and updated ${data.merged} jobs in Jobs Review. Opening Jobs Review with Standard Library filter.`)
       setActionError(null)
       setSelectedJobIds([])
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
       if (totalAffected > 0) {
-        navigate(`/vessels/${vesselId}/jobs?source_kind=standard_library`)
+        const params = new URLSearchParams()
+        params.set('source_kind', 'standard_library')
+        if (affectedIds.length > 0) {
+          params.set('job_ids', affectedIds.join(','))
+        }
+        navigate(`/vessels/${vesselId}/jobs?${params.toString()}`)
       }
     },
     onError: (error: unknown) => {
@@ -220,12 +229,17 @@ const StandardJobs: React.FC = () => {
           params: componentId ? { component_id: componentId } : {},
         })
         .then((r) => r.data),
-    onSuccess: () => {
+    onSuccess: (data) => {
       setActionMessage('Library job added to Jobs Review. Opening Jobs Review with Standard Library filter.')
       setActionError(null)
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
-      navigate(`/vessels/${vesselId}/jobs?source_kind=standard_library`)
+      const params = new URLSearchParams()
+      params.set('source_kind', 'standard_library')
+      if (data?.job_id) {
+        params.set('job_ids', data.job_id)
+      }
+      navigate(`/vessels/${vesselId}/jobs?${params.toString()}`)
     },
     onError: (error: unknown) => {
       setActionError(getApiErrorMessage(error, 'Failed to add standard job to Jobs Review'))

@@ -317,6 +317,7 @@ const JobsReview: React.FC = () => {
   const [filterFreqType, setFilterFreqType] = useState('')
   const [filterNoCMS, setFilterNoCMS] = useState(false)
   const [filterSourceKind, setFilterSourceKind] = useState(searchParams.get('source_kind') ?? '')
+  const [filterJobIds, setFilterJobIds] = useState(searchParams.get('job_ids') ?? '')
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('job_name')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
@@ -333,7 +334,7 @@ const JobsReview: React.FC = () => {
   const [batchFields, setBatchFields] = useState<BatchJobFields>({})
 
   const { data, isLoading } = useQuery({
-    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, search, sortBy, sortOrder, page, pageSize],
+    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, filterJobIds, search, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
       const params: Record<string, string> = {}
       if (filterQC) params.qc_status = filterQC
@@ -341,6 +342,7 @@ const JobsReview: React.FC = () => {
       if (filterUnmapped) params.is_unmapped = 'true'
       if (filterFreqType) params.frequency_type = filterFreqType
       if (filterSourceKind) params.source_kind = filterSourceKind
+      if (filterJobIds) params.job_ids = filterJobIds
       if (search) params.search = search
       params.sort_by = sortBy
       params.sort_order = sortOrder
@@ -529,14 +531,18 @@ const JobsReview: React.FC = () => {
 
   React.useEffect(() => {
     setPage(1)
-  }, [filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, search, sortBy, sortOrder, pageSize])
+  }, [filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, filterJobIds, search, sortBy, sortOrder, pageSize])
 
   React.useEffect(() => {
     const sourceKindParam = searchParams.get('source_kind') ?? ''
     if (sourceKindParam !== filterSourceKind) {
       setFilterSourceKind(sourceKindParam)
     }
-  }, [searchParams, filterSourceKind])
+    const jobIdsParam = searchParams.get('job_ids') ?? ''
+    if (jobIdsParam !== filterJobIds) {
+      setFilterJobIds(jobIdsParam)
+    }
+  }, [searchParams, filterSourceKind, filterJobIds])
 
   React.useEffect(() => {
     const next = new URLSearchParams(searchParams)
@@ -545,10 +551,15 @@ const JobsReview: React.FC = () => {
     } else {
       next.delete('source_kind')
     }
+    if (filterJobIds) {
+      next.set('job_ids', filterJobIds)
+    } else {
+      next.delete('job_ids')
+    }
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true })
     }
-  }, [filterSourceKind, searchParams, setSearchParams])
+  }, [filterSourceKind, filterJobIds, searchParams, setSearchParams])
 
   React.useEffect(() => {
     if (page > totalPages) setPage(totalPages)

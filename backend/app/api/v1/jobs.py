@@ -257,6 +257,7 @@ async def list_jobs(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     component_id: Optional[uuid.UUID] = Query(None),
+    job_ids: Optional[str] = Query(None),
     qc_status: Optional[str] = Query(None),
     is_critical: Optional[bool] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
@@ -282,6 +283,18 @@ async def list_jobs(
         Job.tenant_id == current_user.tenant_id,
         Job.is_deleted == False,
     ]
+    if job_ids:
+        parsed_job_ids: list[uuid.UUID] = []
+        for raw_id in job_ids.split(","):
+            raw_id = raw_id.strip()
+            if not raw_id:
+                continue
+            try:
+                parsed_job_ids.append(uuid.UUID(raw_id))
+            except ValueError:
+                continue
+        if parsed_job_ids:
+            base_where.append(Job.id.in_(parsed_job_ids))
     if component_id:
         base_where.append(Job.component_id == component_id)
     if qc_status:
