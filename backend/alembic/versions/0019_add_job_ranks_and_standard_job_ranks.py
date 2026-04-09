@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "0019_add_job_ranks_and_standard_job_ranks"
-down_revision = "0018_remap_frequency_values"
+down_revision = "0018"
 branch_labels = None
 depends_on = None
 
