@@ -589,6 +589,30 @@ const JobsReview: React.FC = () => {
   )
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const hasActiveFilters = Boolean(
+    filterQC ||
+    filterCritical ||
+    filterUnmapped ||
+    filterFreqType ||
+    filterNoCMS ||
+    filterSourceKind ||
+    normalizedJobIds ||
+    search.trim()
+  )
+  const activeSourceFilterLabel =
+    SOURCE_FILTER_OPTIONS.find((option) => option.value === filterSourceKind)?.label ?? filterSourceKind
+
+  const clearFilters = useCallback(() => {
+    setFilterQC('')
+    setFilterCritical('')
+    setFilterUnmapped(false)
+    setFilterFreqType('')
+    setFilterNoCMS(false)
+    setFilterSourceKind('')
+    setFilterJobIds('')
+    setSearch('')
+    setPage(1)
+  }, [])
 
   React.useEffect(() => {
     setPage(1)
@@ -915,7 +939,30 @@ const JobsReview: React.FC = () => {
           {isLoading ? (
             <div className="py-16 text-center text-slate-500">Loading jobs...</div>
           ) : jobs.length === 0 ? (
-            <div className="py-16 text-center text-slate-500">No jobs found yet. Extract from Manual Review after component matching is complete.</div>
+            <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
+              {hasActiveFilters ? (
+                <>
+                  <div className="text-slate-400">
+                    No jobs match the current filters.
+                    {filterSourceKind ? (
+                      <div className="mt-1 text-xs text-slate-500">
+                        Active source filter: {activeSourceFilterLabel}
+                      </div>
+                    ) : null}
+                  </div>
+                  <button
+                    onClick={clearFilters}
+                    className="rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-700"
+                  >
+                    Clear filters
+                  </button>
+                </>
+              ) : (
+                <div className="text-slate-500">
+                  No jobs found yet. Extract from Manual Review after component matching is complete.
+                </div>
+              )}
+            </div>
           ) : (
             <table className="min-w-[2250px] w-full text-sm">
               <thead>
