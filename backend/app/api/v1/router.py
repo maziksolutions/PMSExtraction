@@ -63,3 +63,7 @@ api_router.include_router(precheck.router, prefix="/vessels", tags=["PreCheck"])
 # Maker/Model Library
 from app.api.v1 import maker_models  # noqa: E402
 api_router.include_router(maker_models.router, tags=["MakerModels"])
+
+# Job Rank Library
+from app.api.v1 import job_ranks  # noqa: E402
+api_router.include_router(job_ranks.router, tags=["JobRanks"])

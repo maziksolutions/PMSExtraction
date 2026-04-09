@@ -22,6 +22,8 @@ interface StandardJob {
   machinery_type: string
   job_name: string
   job_description: string | null
+  performing_rank?: string | null
+  verifying_rank?: string | null
   frequency: number | null
   frequency_type: string | null
   is_critical: boolean
@@ -33,6 +35,8 @@ interface StandardJobFormState {
   machinery_type: string
   job_name: string
   job_description: string
+  performing_rank: string
+  verifying_rank: string
   frequency: string
   frequency_type: string
   is_critical: boolean
@@ -46,6 +50,7 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
 const LIBRARY_SORT_OPTIONS = [
   { value: 'job_name', label: 'Job Name' },
   { value: 'machinery_type', label: 'Machinery' },
+  { value: 'performing_rank', label: 'Rank' },
   { value: 'class_society', label: 'Class Society' },
   { value: 'frequency', label: 'Frequency' },
   { value: 'reference', label: 'Reference' },
@@ -317,6 +322,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
                   <th className="w-8 px-4 py-3" />
                   <th className="text-left px-4 py-3 font-medium">Job Name</th>
                   <th className="text-left px-4 py-3 font-medium">Machinery</th>
+                  <th className="text-left px-4 py-3 font-medium">Rank</th>
                   {jobType === 'class' && <th className="text-left px-4 py-3 font-medium">Class Society</th>}
                   <th className="text-left px-4 py-3 font-medium">Frequency</th>
                   <th className="text-left px-4 py-3 font-medium">Critical</th>
@@ -344,6 +350,9 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
                         {job.job_name}
                       </td>
                       <td className="px-4 py-3 text-slate-400">{job.machinery_type}</td>
+                      <td className="px-4 py-3 text-slate-400 text-xs">
+                        {[job.performing_rank, job.verifying_rank].filter(Boolean).join(' / ') || '-'}
+                      </td>
                       {jobType === 'class' && (
                         <td className="px-4 py-3">
                           <span className="px-2 py-0.5 rounded-full text-xs bg-sky-900/50 text-sky-400 border border-sky-700/40">
@@ -352,15 +361,15 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
                         </td>
                       )}
                       <td className="px-4 py-3 text-slate-400 text-xs">
-                        {job.frequency ? `${job.frequency} ${job.frequency_type ?? ''}`.trim() : '—'}
+                        {job.frequency ? `${job.frequency} ${job.frequency_type ?? ''}`.trim() : '-'}
                       </td>
                       <td className="px-4 py-3">
                         {job.is_critical
                           ? <span className="text-red-400 text-xs font-medium">Critical</span>
-                          : <span className="text-slate-600 text-xs">—</span>
+                          : <span className="text-slate-600 text-xs">-</span>
                         }
                       </td>
-                      <td className="px-4 py-3 text-slate-500 text-xs">{job.library_reference ?? '—'}</td>
+                      <td className="px-4 py-3 text-slate-500 text-xs">{job.library_reference ?? '-'}</td>
                       <td className="px-4 py-3">
                         <button
                           onClick={() => {
@@ -405,7 +414,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
                 disabled={page === 1}
                 className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40"
               >
-                ← Prev
+                < Prev
               </button>
               <span className="px-3 text-xs text-slate-400">Page {page} of {totalPages}</span>
               <button
@@ -413,7 +422,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
                 disabled={page >= totalPages}
                 className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40"
               >
-                Next →
+                Next >
               </button>
             </div>
           </div>
@@ -435,6 +444,8 @@ const StandardJobsLibrary: React.FC = () => {
     machinery_type: '',
     job_name: '',
     job_description: '',
+    performing_rank: '',
+    verifying_rank: '',
     frequency: '',
     frequency_type: '',
     is_critical: false,
@@ -458,6 +469,8 @@ const StandardJobsLibrary: React.FC = () => {
         machinery_type: '',
         job_name: '',
         job_description: '',
+        performing_rank: '',
+        verifying_rank: '',
         frequency: '',
         frequency_type: '',
         is_critical: activeTab === 'critical',
@@ -485,10 +498,10 @@ const StandardJobsLibrary: React.FC = () => {
         </h1>
         <p className="text-slate-400 mt-1">
           {activeTab === 'standard'
-            ? 'Global maintenance job standards — imported once, applied to all vessels'
+            ? 'Global maintenance job standards - imported once, applied to all vessels'
             : activeTab === 'class'
-              ? 'Classification society job requirements — DNV GL, Lloyd\'s Register, Bureau Veritas, ABS, ClassNK'
-              : 'Critical maintenance jobs library — added to vessels after Jobs QC.'}
+              ? "Classification society job requirements - DNV GL, Lloyd's Register, Bureau Veritas, ABS, ClassNK"
+              : 'Critical maintenance jobs library - added to vessels after Jobs QC.'}
         </p>
       </div>
 
@@ -582,6 +595,22 @@ const StandardJobsLibrary: React.FC = () => {
                   rows={4}
                   value={form.job_description}
                   onChange={(e) => setForm((prev) => ({ ...prev, job_description: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
+                />
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="text-slate-400">Performing Rank</span>
+                <input
+                  value={form.performing_rank}
+                  onChange={(e) => setForm((prev) => ({ ...prev, performing_rank: e.target.value }))}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
+                />
+              </label>
+              <label className="space-y-1 text-sm">
+                <span className="text-slate-400">Verifying Rank</span>
+                <input
+                  value={form.verifying_rank}
+                  onChange={(e) => setForm((prev) => ({ ...prev, verifying_rank: e.target.value }))}
                   className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
                 />
               </label>

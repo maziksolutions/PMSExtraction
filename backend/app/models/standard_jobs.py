@@ -66,6 +66,8 @@ class StandardJob(TenantBase):
     machinery_type: Mapped[str] = mapped_column(String(200), nullable=False)
     job_name: Mapped[str] = mapped_column(String(500), nullable=False)
     job_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    performing_rank: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    verifying_rank: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     frequency: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     frequency_type: Mapped[Optional[FrequencyType]] = mapped_column(
         Enum(

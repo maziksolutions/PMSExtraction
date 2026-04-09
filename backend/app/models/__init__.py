@@ -14,6 +14,9 @@ from app.models.component import Component, ComponentTemplate
 # Sprint 5
 from app.models.job import Job
 
+# Job Rank Library
+from app.models.job_rank import JobRank
+
 # Sprint 6
 from app.models.spare import Spare
 
@@ -47,6 +50,7 @@ __all__ = [
     "Component",
     "ComponentTemplate",
     "Job",
+    "JobRank",
     "Spare",
     "VesselTypeTemplate",
     "StandardJob",

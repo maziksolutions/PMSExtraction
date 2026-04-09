@@ -15,6 +15,7 @@ from app.models.feedback import CorrectionType, FeedbackEntry
 from app.models.job import FrequencyType, Job
 from app.models.standard_jobs import StandardJob, StandardJobMatch
 from app.models.user import User
+from app.services.job_ranks import ensure_job_rank, infer_rank_from_component, normalize_rank_name
 from app.models.vessel import VesselProject
 from app.schemas.job import JobCreate, JobOut, JobUpdate
 from app.models.component import Component
@@ -283,6 +284,7 @@ async def list_jobs(
         Job.tenant_id == current_user.tenant_id,
         Job.is_deleted == False,
     ]
+    has_job_ids_filter = False
     if job_ids:
         parsed_job_ids: list[uuid.UUID] = []
         for raw_id in job_ids.split(","):
@@ -295,6 +297,7 @@ async def list_jobs(
                 continue
         if parsed_job_ids:
             base_where.append(Job.id.in_(parsed_job_ids))
+            has_job_ids_filter = True
     if component_id:
         base_where.append(Job.component_id == component_id)
     if qc_status:
@@ -311,9 +314,9 @@ async def list_jobs(
             base_where.append(Job.frequency_type == FrequencyType(frequency_type))
         except ValueError:
             pass
-    if source_kind == "instruction_manual":
+    if source_kind == "instruction_manual" and not has_job_ids_filter:
         base_where.append(Job.source_manual_id.is_not(None))
-    elif source_kind in {"standard_library", "critical_library"}:
+    elif source_kind in {"standard_library", "critical_library"} and not has_job_ids_filter:
         standard_match_ids = (
             select(StandardJobMatch.matched_job_id)
             .join(StandardJob, StandardJob.id == StandardJobMatch.standard_job_id)
@@ -328,7 +331,7 @@ async def list_jobs(
             )
         )
         base_where.append(Job.id.in_(standard_match_ids))
-    elif source_kind == "cms_file":
+    elif source_kind == "cms_file" and not has_job_ids_filter:
         base_where.append(Job.cms_id.is_not(None))
     if search:
         base_where.append(
@@ -446,11 +449,21 @@ async def create_job(
         vessel_id=vessel_id,
         **body.model_dump(),
     )
+    if not job.performing_rank and job.component_id:
+        inferred_rank = await infer_rank_from_component(
+            db,
+            vessel_id=vessel_id,
+            component_id=job.component_id,
+        )
+        job.performing_rank = normalize_rank_name(inferred_rank)
     db.add(job)
     await db.commit()
     await _apply_job_name_and_references(db, job)
     await db.commit()
     await db.refresh(job)
+    await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=job.performing_rank)
+    await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=job.verifying_rank)
+    await db.commit()
     await _run_job_side_effects(
         db,
         tenant_id=current_user.tenant_id,
@@ -493,6 +506,17 @@ async def update_job(
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(job, field, value)
+    if "performing_rank" in update_data:
+        job.performing_rank = normalize_rank_name(job.performing_rank)
+    if "verifying_rank" in update_data:
+        job.verifying_rank = normalize_rank_name(job.verifying_rank)
+    if (not job.performing_rank) and job.component_id and ("component_id" in update_data):
+        inferred_rank = await infer_rank_from_component(
+            db,
+            vessel_id=vessel_id,
+            component_id=job.component_id,
+        )
+        job.performing_rank = normalize_rank_name(inferred_rank)
     db.add(job)
 
     if job.source_manual_id and update_data:
@@ -530,6 +554,9 @@ async def update_job(
         else None,
     )
     await db.refresh(job)
+    await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=job.performing_rank)
+    await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=job.verifying_rank)
+    await db.commit()
     return _job_out(job)
 
 
@@ -636,7 +663,22 @@ async def bulk_update_jobs(
     for job in jobs:
         for field, value in update_payload.items():
             setattr(job, field, value)
+        if "performing_rank" in update_payload:
+            job.performing_rank = normalize_rank_name(job.performing_rank)
+        if "verifying_rank" in update_payload:
+            job.verifying_rank = normalize_rank_name(job.verifying_rank)
+        if (not job.performing_rank) and ("component_id" in update_payload) and job.component_id:
+            inferred_rank = await infer_rank_from_component(
+                db,
+                vessel_id=vessel_id,
+                component_id=job.component_id,
+            )
+            job.performing_rank = normalize_rank_name(inferred_rank)
         db.add(job)
+    await db.commit()
+    for job in jobs:
+        await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=job.performing_rank)
+        await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=job.verifying_rank)
     await db.commit()
     await _run_job_side_effects(
         db,
@@ -673,6 +715,13 @@ async def link_component(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     job.component_id = uuid.UUID(body["component_id"])
     job.is_unmapped = False
+    if not job.performing_rank:
+        inferred_rank = await infer_rank_from_component(
+            db,
+            vessel_id=vessel_id,
+            component_id=job.component_id,
+        )
+        job.performing_rank = normalize_rank_name(inferred_rank)
     db.add(job)
     await db.commit()
     await _apply_job_name_and_references(db, job)

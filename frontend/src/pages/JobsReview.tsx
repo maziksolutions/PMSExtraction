@@ -14,6 +14,11 @@ interface ComponentOption {
   qc_status?: string
 }
 
+interface RankOption {
+  id: string
+  rank_name: string
+}
+
 interface Job {
   id: string
   job_name: string
@@ -68,6 +73,8 @@ type InlineJobEdit = Partial<{
   job_name: string
   component_id: string
   job_code: string
+  performing_rank: string
+  verifying_rank: string
   frequency: string
   frequency_type: string
   cms_id: string
@@ -77,6 +84,8 @@ type InlineJobEdit = Partial<{
 
 type BatchJobFields = {
   component_id?: string
+  performing_rank?: string
+  verifying_rank?: string
   frequency?: string
   frequency_type?: string
   cms_id?: string
@@ -127,6 +136,8 @@ function buildJobPayload(edit: InlineJobEdit | BatchJobFields): Record<string, u
   if ('job_name' in edit) payload.job_name = edit.job_name ?? ''
   if ('component_id' in edit) payload.component_id = edit.component_id ? edit.component_id : null
   if ('job_code' in edit) payload.job_code = edit.job_code ? edit.job_code : null
+  if ('performing_rank' in edit) payload.performing_rank = edit.performing_rank ? edit.performing_rank : null
+  if ('verifying_rank' in edit) payload.verifying_rank = edit.verifying_rank ? edit.verifying_rank : null
   if ('frequency' in edit) payload.frequency = edit.frequency ? Number(edit.frequency) : null
   if ('frequency_type' in edit) payload.frequency_type = edit.frequency_type ? edit.frequency_type : null
   if ('cms_id' in edit) payload.cms_id = edit.cms_id ? edit.cms_id : null
@@ -224,11 +235,21 @@ function JobEditor({
         </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">Performing Rank</label>
-          <input value={form.performing_rank} onChange={(e) => set('performing_rank', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          <input
+            value={form.performing_rank}
+            list="rank-options"
+            onChange={(e) => set('performing_rank', e.target.value)}
+            className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none"
+          />
         </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">Verifying Rank</label>
-          <input value={form.verifying_rank} onChange={(e) => set('verifying_rank', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
+          <input
+            value={form.verifying_rank}
+            list="rank-options"
+            onChange={(e) => set('verifying_rank', e.target.value)}
+            className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none"
+          />
         </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">Initial Due</label>
@@ -318,6 +339,11 @@ const JobsReview: React.FC = () => {
   const [filterNoCMS, setFilterNoCMS] = useState(false)
   const [filterSourceKind, setFilterSourceKind] = useState(searchParams.get('source_kind') ?? '')
   const [filterJobIds, setFilterJobIds] = useState(searchParams.get('job_ids') ?? '')
+  const normalizedJobIds = useMemo(() => {
+    if (!filterJobIds) return ''
+    const unique = Array.from(new Set(filterJobIds.split(',').map((id) => id.trim()).filter(Boolean)))
+    return unique.join(',')
+  }, [filterJobIds])
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('job_name')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
@@ -341,8 +367,8 @@ const JobsReview: React.FC = () => {
       if (filterCritical) params.is_critical = filterCritical
       if (filterUnmapped) params.is_unmapped = 'true'
       if (filterFreqType) params.frequency_type = filterFreqType
-      if (filterSourceKind) params.source_kind = filterSourceKind
-      if (filterJobIds) params.job_ids = filterJobIds
+      if (filterSourceKind && !normalizedJobIds) params.source_kind = filterSourceKind
+      if (normalizedJobIds) params.job_ids = normalizedJobIds
       if (search) params.search = search
       params.sort_by = sortBy
       params.sort_order = sortOrder
@@ -358,6 +384,12 @@ const JobsReview: React.FC = () => {
     queryFn: () => apiClient.get(`/vessels/${vesselId}/components`, { params: { page_size: 5000, is_unmapped: 'false' } }).then((r) => r.data),
     enabled: !!vesselId,
   })
+
+  const rankOptionsQuery = useQuery({
+    queryKey: ['job-ranks'],
+    queryFn: () => apiClient.get('/job-ranks', { params: { page: 1, page_size: 1000, sort_by: 'rank_name', sort_order: 'asc' } }).then((r) => r.data),
+  })
+  const rankOptions: RankOption[] = rankOptionsQuery.data?.items ?? []
 
   const refreshJobs = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
@@ -546,15 +578,16 @@ const JobsReview: React.FC = () => {
 
   React.useEffect(() => {
     const next = new URLSearchParams(searchParams)
-    if (filterSourceKind) {
-      next.set('source_kind', filterSourceKind)
-    } else {
-      next.delete('source_kind')
-    }
     if (filterJobIds) {
       next.set('job_ids', filterJobIds)
+      next.delete('source_kind')
     } else {
       next.delete('job_ids')
+      if (filterSourceKind) {
+        next.set('source_kind', filterSourceKind)
+      } else {
+        next.delete('source_kind')
+      }
     }
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true })
@@ -644,7 +677,13 @@ const JobsReview: React.FC = () => {
   )
 
   return (
-    <ResizableSplitView
+    <>
+      <datalist id="rank-options">
+        {rankOptions.map((rank) => (
+          <option key={rank.id} value={rank.rank_name} />
+        ))}
+      </datalist>
+      <ResizableSplitView
       storageKey={`jobs-review-layout:${vesselId ?? 'default'}`}
       initialLeftPercent={58}
       left={
@@ -752,6 +791,8 @@ const JobsReview: React.FC = () => {
                 <option value="">Frequency Type - no change</option>
                 {FREQUENCY_OPTIONS.map((option) => <option key={option} value={option}>{option.replace('_', ' ')}</option>)}
               </select>
+              <input value={batchFields.performing_rank ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, performing_rank: e.target.value }))} list="rank-options" placeholder="Performing Rank" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
+              <input value={batchFields.verifying_rank ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, verifying_rank: e.target.value }))} list="rank-options" placeholder="Verifying Rank" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
               <input value={batchFields.cms_id ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, cms_id: e.target.value }))} placeholder="CMS ID" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
               <select value={batchFields.qc_status ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, qc_status: e.target.value }))} className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none">
                 <option value="">QC - no change</option>
@@ -912,7 +953,24 @@ const JobsReview: React.FC = () => {
                           </select>
                         </div>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-400">{[job.performing_rank, job.verifying_rank].filter(Boolean).join(' / ') || '-'}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-xs" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex flex-col gap-1">
+                          <input
+                            value={edits[job.id]?.performing_rank ?? (job.performing_rank ?? '')}
+                            onChange={(e) => setEdit(job.id, 'performing_rank', e.target.value)}
+                            list="rank-options"
+                            placeholder="Performing"
+                            className="w-40 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                          />
+                          <input
+                            value={edits[job.id]?.verifying_rank ?? (job.verifying_rank ?? '')}
+                            onChange={(e) => setEdit(job.id, 'verifying_rank', e.target.value)}
+                            list="rank-options"
+                            placeholder="Verifying"
+                            className="w-40 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                          />
+                        </div>
+                      </td>
                       <td className="px-4 py-3 whitespace-nowrap text-xs" onClick={(e) => e.stopPropagation()}>
                         <input
                           value={edits[job.id]?.cms_id ?? (job.cms_id ?? '')}
@@ -993,7 +1051,7 @@ const JobsReview: React.FC = () => {
                 disabled={page === 1}
                 className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 disabled:opacity-40"
               >
-                ← Prev
+                < Prev
               </button>
               <span className="px-3 text-xs text-slate-500">Page {page} of {totalPages}</span>
               <button
@@ -1001,7 +1059,7 @@ const JobsReview: React.FC = () => {
                 disabled={page >= totalPages}
                 className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 disabled:opacity-40"
               >
-                Next →
+                Next >
               </button>
             </div>
           </div>
@@ -1015,14 +1073,15 @@ const JobsReview: React.FC = () => {
         manualId={selectedJob?.source_manual_id}
         manualName={selectedJob?.source_manual_name ?? selectedJob?.pdf_reference}
         title="Job Source Preview"
-        subtitle={selectedJob ? [selectedJob.job_name, selectedJob.component_name, selectedJob.component_maker, selectedJob.component_model].filter(Boolean).join(' • ') : null}
+        subtitle={selectedJob ? [selectedJob.job_name, selectedJob.component_name, selectedJob.component_maker, selectedJob.component_model].filter(Boolean).join(' / ') : null}
         defaultPages={selectedJob?.source_page_number ?? selectedJob?.page_reference}
         panelClassName="h-full w-full min-w-0"
         headerContent={editorContent}
         showTextSnippet={false}
       />
       }
-    />
+      />
+    </>
   )
 }
 

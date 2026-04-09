@@ -25,6 +25,7 @@ from app.models.standard_jobs import (
 )
 from app.models.user import User
 from app.models.vessel import VesselProject
+from app.services.job_ranks import ensure_job_rank, infer_rank_from_component, normalize_rank_name
 
 router = APIRouter()
 
@@ -125,6 +126,8 @@ def _serialize_standard_job(job: StandardJob) -> dict[str, Any]:
         "machinery_type": job.machinery_type,
         "job_name": job.job_name,
         "job_description": job.job_description,
+        "performing_rank": job.performing_rank,
+        "verifying_rank": job.verifying_rank,
         "frequency": job.frequency,
         "frequency_type": frequency_type,
         "is_critical": job.is_critical,
@@ -263,11 +266,14 @@ def _canonical_standard_row(sheet_name: str, row: dict[str, Any], *, default_cs:
     if row.get("classsociety"):
         class_society = CS_MAP.get(_norm_text(row.get("classsociety")), default_cs)
 
+    responsibility = _clean_text(row.get("responsibility")) or _clean_text(row.get("responsible"))
     return {
         "class_society": class_society,
         "machinery_type": _derive_machinery_type(raw_name, job_name, _clean_text(row.get("jobgroup"))),
         "job_name": job_name,
         "job_description": _clean_text(row.get("jobdescription")),
+        "performing_rank": responsibility,
+        "verifying_rank": None,
         "frequency": frequency,
         "frequency_type": frequency_type,
         "is_critical": is_critical,
@@ -483,6 +489,13 @@ async def _import_standard_job_to_vessel(
     current_user: User,
     db: AsyncSession,
 ) -> tuple[str, Job]:
+    inferred_rank = None
+    if not std_job.performing_rank and component_id:
+        inferred_rank = await infer_rank_from_component(
+            db,
+            vessel_id=vessel_id,
+            component_id=component_id,
+        )
     existing_match_result = await db.execute(
         select(StandardJobMatch).where(
             StandardJobMatch.vessel_id == vessel_id,
@@ -511,9 +524,15 @@ async def _import_standard_job_to_vessel(
             if component_id is not None:
                 matched_job.component_id = component_id
                 matched_job.is_unmapped = False
+            if not matched_job.performing_rank and (std_job.performing_rank or inferred_rank):
+                matched_job.performing_rank = std_job.performing_rank or inferred_rank
+            if not matched_job.verifying_rank and std_job.verifying_rank:
+                matched_job.verifying_rank = std_job.verifying_rank
             if not matched_job.job_description and std_job.job_description:
                 matched_job.job_description = std_job.job_description
             db.add(matched_job)
+            await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=matched_job.performing_rank)
+            await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=matched_job.verifying_rank)
             await _upsert_standard_job_match(
                 vessel_id=vessel_id,
                 standard_job_id=std_job.id,
@@ -542,9 +561,15 @@ async def _import_standard_job_to_vessel(
         if component_id is not None:
             existing_job.component_id = component_id
             existing_job.is_unmapped = False
+        if not existing_job.performing_rank and (std_job.performing_rank or inferred_rank):
+            existing_job.performing_rank = std_job.performing_rank or inferred_rank
+        if not existing_job.verifying_rank and std_job.verifying_rank:
+            existing_job.verifying_rank = std_job.verifying_rank
         if not existing_job.job_description and std_job.job_description:
             existing_job.job_description = std_job.job_description
         db.add(existing_job)
+        await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=existing_job.performing_rank)
+        await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=existing_job.verifying_rank)
         await _upsert_standard_job_match(
             vessel_id=vessel_id,
             standard_job_id=std_job.id,
@@ -559,6 +584,8 @@ async def _import_standard_job_to_vessel(
         vessel_id=vessel_id,
         job_name=std_job.job_name,
         job_description=std_job.job_description,
+        performing_rank=std_job.performing_rank or inferred_rank,
+        verifying_rank=std_job.verifying_rank,
         frequency=std_job.frequency,
         frequency_type=std_job.frequency_type,
         is_critical=std_job.is_critical,
@@ -568,6 +595,8 @@ async def _import_standard_job_to_vessel(
         is_unmapped=component_id is None,
     )
     db.add(new_job)
+    await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=new_job.performing_rank)
+    await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=new_job.verifying_rank)
     await db.flush()
     await _upsert_standard_job_match(
         vessel_id=vessel_id,
@@ -758,6 +787,7 @@ async def bulk_import_standard_jobs(
             if not job_name or not machinery_type:
                 skipped += 1
                 continue
+            responsibility = _clean_text(row.get("responsibility") or row.get("responsible"))
             cs_raw = _norm_text(row.get("classsociety") or row.get("class_society"))
             class_society = CS_MAP.get(cs_raw, default_cs)
             if class_society is None:
@@ -768,12 +798,17 @@ async def bulk_import_standard_jobs(
                 "machinery_type": machinery_type,
                 "job_name": job_name,
                 "job_description": _clean_text(row.get("jobdescription") or row.get("job_description")),
+                "performing_rank": responsibility,
+                "verifying_rank": None,
                 "frequency": _coerce_int(row.get("frequency")),
                 "frequency_type": _map_frequency_type(row.get("frequencytype") or row.get("frequency_type")),
                 "is_critical": _coerce_bool(row.get("iscritical") or row.get("is_critical")),
                 "library_reference": _clean_text(row.get("libraryreference") or row.get("library_reference")),
                 "is_system": False,
             }
+
+        canonical["performing_rank"] = normalize_rank_name(canonical.get("performing_rank"))
+        canonical["verifying_rank"] = normalize_rank_name(canonical.get("verifying_rank"))
 
         key = _standard_job_key(
             class_society=canonical["class_society"],
@@ -804,12 +839,24 @@ async def bulk_import_standard_jobs(
                     machinery_type=canonical["machinery_type"],
                     job_name=canonical["job_name"],
                     job_description=canonical["job_description"],
+                    performing_rank=canonical.get("performing_rank"),
+                    verifying_rank=canonical.get("verifying_rank"),
                     frequency=canonical["frequency"],
                     frequency_type=canonical["frequency_type"],
                     is_critical=canonical["is_critical"],
                     library_reference=canonical["library_reference"],
                     is_system=False,
                 )
+            )
+            await ensure_job_rank(
+                db,
+                tenant_id=current_user.tenant_id,
+                rank_name=canonical.get("performing_rank"),
+            )
+            await ensure_job_rank(
+                db,
+                tenant_id=current_user.tenant_id,
+                rank_name=canonical.get("verifying_rank"),
             )
             imported += 1
             continue
@@ -827,12 +874,28 @@ async def bulk_import_standard_jobs(
         if canonical["library_reference"] and canonical["library_reference"] != existing.library_reference:
             existing.library_reference = canonical["library_reference"]
             changed = True
+        if canonical.get("performing_rank") and canonical.get("performing_rank") != existing.performing_rank:
+            existing.performing_rank = canonical.get("performing_rank")
+            changed = True
+        if canonical.get("verifying_rank") and canonical.get("verifying_rank") != existing.verifying_rank:
+            existing.verifying_rank = canonical.get("verifying_rank")
+            changed = True
         if canonical["is_critical"] and not existing.is_critical:
             existing.is_critical = True
             changed = True
             existing_jobs[key] = existing
         if changed:
             db.add(existing)
+            await ensure_job_rank(
+                db,
+                tenant_id=current_user.tenant_id,
+                rank_name=existing.performing_rank,
+            )
+            await ensure_job_rank(
+                db,
+                tenant_id=current_user.tenant_id,
+                rank_name=existing.verifying_rank,
+            )
             updated += 1
         else:
             unchanged += 1
@@ -875,6 +938,8 @@ async def create_standard_job(
         machinery_type=machinery_type,
         job_name=job_name,
         job_description=_clean_text(body.get("job_description")),
+        performing_rank=normalize_rank_name(body.get("performing_rank")),
+        verifying_rank=normalize_rank_name(body.get("verifying_rank")),
         frequency=_coerce_int(body.get("frequency")),
         frequency_type=_map_frequency_type(body.get("frequency_type")),
         is_critical=_coerce_bool(body.get("is_critical")),
@@ -882,6 +947,8 @@ async def create_standard_job(
         is_system=False,
     )
     db.add(std_job)
+    await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=std_job.performing_rank)
+    await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=std_job.verifying_rank)
     await db.commit()
     await db.refresh(std_job)
     return _serialize_standard_job(std_job)

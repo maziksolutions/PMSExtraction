@@ -11,6 +11,8 @@ interface StandardJob {
   machinery_type: string
   job_name: string
   job_description: string | null
+  performing_rank?: string | null
+  verifying_rank?: string | null
   frequency: number | null
   frequency_type: string | null
   is_critical: boolean
@@ -474,6 +476,7 @@ const StandardJobs: React.FC = () => {
               <th className="px-4 py-3">Standard Job</th>
               <th className="px-4 py-3">Class Society</th>
               <th className="px-4 py-3">Machinery Type</th>
+              <th className="px-4 py-3">Rank</th>
               <th className="px-4 py-3">Suggested Component</th>
               <th className="px-4 py-3">Frequency</th>
               <th className="px-4 py-3">Match Status</th>
@@ -487,13 +490,13 @@ const StandardJobs: React.FC = () => {
           <tbody className="divide-y divide-slate-800">
             {standardJobsQuery.isLoading ? (
               <tr>
-                <td colSpan={12} className="py-12 text-center text-slate-500">
+                <td colSpan={13} className="py-12 text-center text-slate-500">
                   Loading comparison library...
                 </td>
               </tr>
             ) : visibleJobs.length === 0 ? (
               <tr>
-                <td colSpan={12} className="py-12 text-center text-slate-500">
+                <td colSpan={13} className="py-12 text-center text-slate-500">
                   No jobs found for the selected library and filters.
                 </td>
               </tr>
@@ -518,6 +521,9 @@ const StandardJobs: React.FC = () => {
                     </td>
                     <td className="px-4 py-2.5 text-xs text-slate-300">{job.class_society}</td>
                     <td className="px-4 py-2.5 text-slate-400">{job.machinery_type}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-400">
+                      {[job.performing_rank, job.verifying_rank].filter(Boolean).join(' / ') || '-'}
+                    </td>
                     <td className="px-4 py-2.5">
                       <select
                         value={componentId}
@@ -535,7 +541,7 @@ const StandardJobs: React.FC = () => {
                     <td className="px-4 py-2.5 whitespace-nowrap text-xs text-slate-400">
                       {job.frequency != null && job.frequency_type
                         ? `${job.frequency} ${job.frequency_type}`
-                        : job.frequency_type ?? '—'}
+                        : job.frequency_type ?? '-'}
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="flex flex-col gap-1">
@@ -552,7 +558,7 @@ const StandardJobs: React.FC = () => {
                         <div className="min-w-[220px]">
                           <p className="text-slate-200">{match.matched_job_name ?? 'No manual job linked'}</p>
                           <p className="text-xs text-slate-500">
-                            {[match.matched_job_code, match.matched_job_qc_status].filter(Boolean).join(' • ') || '—'}
+                            {[match.matched_job_code, match.matched_job_qc_status].filter(Boolean).join(' / ') || '-'}
                           </p>
                         </div>
                       ) : (
@@ -560,7 +566,7 @@ const StandardJobs: React.FC = () => {
                       )}
                     </td>
                     <td className="px-4 py-2.5 text-slate-400">
-                      {match?.match_score != null ? `${match.match_score}%` : '—'}
+                      {match?.match_score != null ? `${match.match_score}%` : '-'}
                     </td>
                     <td className="px-4 py-2.5 align-top">
                       {renderProcedurePreview(job.job_description)}
@@ -622,7 +628,7 @@ const StandardJobs: React.FC = () => {
                 disabled={page === 1}
                 className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 disabled:opacity-40"
               >
-                ← Prev
+                < Prev
               </button>
               <span className="px-3 text-xs text-slate-500">Page {page} of {totalPages}</span>
               <button
@@ -630,7 +636,7 @@ const StandardJobs: React.FC = () => {
                 disabled={page >= totalPages}
                 className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 disabled:opacity-40"
               >
-                Next →
+                Next >
               </button>
             </div>
           </div>
