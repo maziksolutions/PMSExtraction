@@ -1,6 +1,6 @@
 """Add job rank library and rank fields on standard jobs.
 
-Revision ID: 0019_add_job_ranks_and_standard_job_ranks
+Revision ID: 0019_job_ranks
 Revises: 0018
 Create Date: 2026-04-09
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = "0019_add_job_ranks_and_standard_job_ranks"
+revision = "0019_job_ranks"
 down_revision = "0018"
 branch_labels = None
 depends_on = None
