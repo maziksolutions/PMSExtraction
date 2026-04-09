@@ -414,7 +414,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
                 disabled={page === 1}
                 className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40"
               >
-                < Prev
+                {'<'} Prev
               </button>
               <span className="px-3 text-xs text-slate-400">Page {page} of {totalPages}</span>
               <button
@@ -422,7 +422,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
                 disabled={page >= totalPages}
                 className="px-2 py-1 rounded text-xs bg-slate-700 text-slate-300 hover:bg-slate-600 disabled:opacity-40"
               >
-                Next >
+                Next {'>'}
               </button>
             </div>
           </div>

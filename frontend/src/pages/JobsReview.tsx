@@ -1051,7 +1051,7 @@ const JobsReview: React.FC = () => {
                 disabled={page === 1}
                 className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 disabled:opacity-40"
               >
-                < Prev
+                {'<'} Prev
               </button>
               <span className="px-3 text-xs text-slate-500">Page {page} of {totalPages}</span>
               <button
@@ -1059,7 +1059,7 @@ const JobsReview: React.FC = () => {
                 disabled={page >= totalPages}
                 className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 disabled:opacity-40"
               >
-                Next >
+                Next {'>'}
               </button>
             </div>
           </div>
