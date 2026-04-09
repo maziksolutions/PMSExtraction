@@ -187,14 +187,41 @@ async def _hydrate_standard_job_ranks(
         performing_candidates.setdefault(standard_job_id, []).append(performing_rank)
         verifying_candidates.setdefault(standard_job_id, []).append(verifying_rank)
 
+    job_names = list({job.job_name for job in target_jobs if job.job_name})
+    if job_names:
+        name_match_result = await db.execute(
+            select(
+                Job.job_name,
+                Job.performing_rank,
+                Job.verifying_rank,
+            )
+            .where(
+                Job.tenant_id == tenant_id,
+                Job.is_deleted == False,
+                Job.job_name.in_(job_names),
+            )
+        )
+        performing_by_name: dict[str, list[Optional[str]]] = {}
+        verifying_by_name: dict[str, list[Optional[str]]] = {}
+        for job_name, performing_rank, verifying_rank in name_match_result.all():
+            performing_by_name.setdefault(job_name, []).append(performing_rank)
+            verifying_by_name.setdefault(job_name, []).append(verifying_rank)
+    else:
+        performing_by_name = {}
+        verifying_by_name = {}
+
     changed = False
     for job in target_jobs:
         job_changed = False
         next_performing_rank = job.performing_rank or _most_common_rank(
             performing_candidates.get(job.id, [])
+        ) or _most_common_rank(
+            performing_by_name.get(job.job_name, [])
         )
         next_verifying_rank = job.verifying_rank or _most_common_rank(
             verifying_candidates.get(job.id, [])
+        ) or _most_common_rank(
+            verifying_by_name.get(job.job_name, [])
         )
 
         if next_performing_rank and next_performing_rank != job.performing_rank:

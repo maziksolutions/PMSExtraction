@@ -5,7 +5,7 @@ import uuid
 from typing import Annotated, Any, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Response, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -13,7 +13,7 @@ from app.deps import get_current_user
 from app.models.component import QCStatus
 from app.models.feedback import CorrectionType, FeedbackEntry
 from app.models.job import FrequencyType, Job
-from app.models.standard_jobs import StandardJob, StandardJobMatch
+from app.models.standard_jobs import StandardJob
 from app.models.user import User
 from app.services.job_ranks import ensure_job_rank, infer_rank_from_component, normalize_rank_name
 from app.models.vessel import VesselProject
@@ -79,6 +79,20 @@ def _job_source_tags(
 def _job_source_summary(source_tags: list[str]) -> str | None:
     labels = [JOB_SOURCE_KIND_LABELS[tag] for tag in source_tags if tag in JOB_SOURCE_KIND_LABELS]
     return " / ".join(labels) if labels else None
+
+
+def _normalize_text(value: Optional[str]) -> str:
+    return " ".join((value or "").strip().lower().split())
+
+
+def _job_has_library_source(job: Job, standard_job: StandardJob) -> bool:
+    library_reference = _normalize_text(standard_job.library_reference)
+    source_reference = _normalize_text(job.source_reference)
+    if library_reference and source_reference and library_reference in source_reference:
+        return True
+    if job.source_manual_id is None and _normalize_text(job.job_name) == _normalize_text(standard_job.job_name):
+        return True
+    return False
 
 
 def _job_out_payload(job: Job) -> dict[str, Any]:
@@ -270,7 +284,7 @@ async def list_jobs(
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=1000),
 ) -> dict[str, Any]:
-    from sqlalchemy import func as _func, or_
+    from sqlalchemy import func as _func
     from app.models.component import Component
     from app.models.ingestion import Manual
     await _get_vessel_or_404(vessel_id, db)
@@ -317,20 +331,27 @@ async def list_jobs(
     if source_kind == "instruction_manual" and not has_job_ids_filter:
         base_where.append(Job.source_manual_id.is_not(None))
     elif source_kind in {"standard_library", "critical_library"} and not has_job_ids_filter:
-        standard_match_ids = (
-            select(StandardJobMatch.matched_job_id)
-            .join(StandardJob, StandardJob.id == StandardJobMatch.standard_job_id)
+        library_job_exists = (
+            select(StandardJob.id)
             .where(
-                StandardJobMatch.vessel_id == vessel_id,
-                StandardJobMatch.tenant_id == current_user.tenant_id,
-                StandardJobMatch.is_deleted == False,
                 StandardJob.tenant_id == current_user.tenant_id,
                 StandardJob.is_deleted == False,
                 StandardJob.is_critical.is_(source_kind == "critical_library"),
-                StandardJobMatch.matched_job_id.is_not(None),
+                or_(
+                    (
+                        StandardJob.library_reference.is_not(None)
+                        & Job.source_reference.is_not(None)
+                        & Job.source_reference.ilike(_func.concat("%", StandardJob.library_reference, "%"))
+                    ),
+                    (
+                        Job.source_manual_id.is_(None)
+                        & (Job.job_name == StandardJob.job_name)
+                    ),
+                ),
             )
+            .limit(1)
         )
-        base_where.append(Job.id.in_(standard_match_ids))
+        base_where.append(exists(library_job_exists))
     elif source_kind == "cms_file" and not has_job_ids_filter:
         base_where.append(Job.cms_id.is_not(None))
     if search:
@@ -385,33 +406,26 @@ async def list_jobs(
         manual_lookup = {manual.id: manual for manual in manual_result.scalars().all()}
 
     job_ids = [job.id for job in jobs]
-    standard_match_lookup: dict[uuid.UUID, set[str]] = {}
+    standard_jobs_lookup: list[StandardJob] = []
     if job_ids:
-        std_match_result = await db.execute(
-            select(StandardJobMatch.matched_job_id, StandardJob.is_critical)
-            .join(StandardJob, StandardJob.id == StandardJobMatch.standard_job_id)
-            .where(
-                StandardJobMatch.vessel_id == vessel_id,
-                StandardJobMatch.tenant_id == current_user.tenant_id,
-                StandardJobMatch.is_deleted == False,
-                StandardJobMatch.matched_job_id.in_(job_ids),
+        std_jobs_result = await db.execute(
+            select(StandardJob).where(
                 StandardJob.tenant_id == current_user.tenant_id,
                 StandardJob.is_deleted == False,
             )
         )
-        for matched_job_id, is_critical_match in std_match_result.all():
-            if matched_job_id is None:
-                continue
-            standard_match_lookup.setdefault(matched_job_id, set()).add(
-                "critical_library" if is_critical_match else "standard_library"
-            )
+        standard_jobs_lookup = std_jobs_result.scalars().all()
 
     items = []
     for job in jobs:
         payload = _job_out(job).model_dump()
         component = component_lookup.get(job.component_id) if job.component_id else None
         manual = manual_lookup.get(job.source_manual_id) if job.source_manual_id else None
-        std_tags = standard_match_lookup.get(job.id, set())
+        std_tags: set[str] = set()
+        for standard_job in standard_jobs_lookup:
+            if not _job_has_library_source(job, standard_job):
+                continue
+            std_tags.add("critical_library" if bool(standard_job.is_critical) else "standard_library")
         source_tags = _job_source_tags(
             job,
             has_standard_match="standard_library" in std_tags,
