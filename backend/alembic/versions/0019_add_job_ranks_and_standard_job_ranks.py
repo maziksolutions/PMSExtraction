@@ -1,7 +1,7 @@
 """Add job rank library and rank fields on standard jobs.
 
 Revision ID: 0019_add_job_ranks_and_standard_job_ranks
-Revises: 0018_remap_frequency_values
+Revises: 0018
 Create Date: 2026-04-09
 """
 
