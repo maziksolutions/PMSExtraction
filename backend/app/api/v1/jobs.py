@@ -15,7 +15,13 @@ from app.models.feedback import CorrectionType, FeedbackEntry
 from app.models.job import FrequencyType, Job
 from app.models.standard_jobs import StandardJob
 from app.models.user import User
-from app.services.job_ranks import ensure_job_rank, infer_rank_from_component, normalize_rank_name
+from app.services.job_ranks import (
+    backfill_standard_job_ranks_from_audit_seed,
+    backfill_vessel_job_ranks_from_library_data,
+    ensure_job_rank,
+    infer_rank_from_component,
+    normalize_rank_name,
+)
 from app.models.vessel import VesselProject
 from app.schemas.job import JobCreate, JobOut, JobUpdate
 from app.models.component import Component
@@ -288,10 +294,19 @@ async def list_jobs(
     from app.models.component import Component
     from app.models.ingestion import Manual
     await _get_vessel_or_404(vessel_id, db)
+    await backfill_standard_job_ranks_from_audit_seed(
+        db,
+        tenant_id=current_user.tenant_id,
+    )
     await _normalize_vessel_job_names(
         db,
         vessel_id=vessel_id,
         tenant_id=current_user.tenant_id,
+    )
+    await backfill_vessel_job_ranks_from_library_data(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
     )
     base_where = [
         Job.vessel_id == vessel_id,

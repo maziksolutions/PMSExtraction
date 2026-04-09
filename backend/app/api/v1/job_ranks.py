@@ -11,9 +11,11 @@ from app.deps import get_current_user
 from app.models.job_rank import JobRank
 from app.models.user import User
 from app.services.job_ranks import (
+    backfill_standard_job_ranks_from_audit_seed,
     backfill_job_ranks_from_existing_data,
     ensure_job_rank,
     normalize_rank_name,
+    seed_rank_library_from_audit_sample,
 )
 
 router = APIRouter()
@@ -29,6 +31,8 @@ async def list_job_ranks(
     page: int = Query(1, ge=1),
     page_size: int = Query(200, ge=1, le=1000),
 ) -> dict[str, object]:
+    await seed_rank_library_from_audit_sample(db, tenant_id=current_user.tenant_id)
+    await backfill_standard_job_ranks_from_audit_seed(db, tenant_id=current_user.tenant_id)
     await backfill_job_ranks_from_existing_data(db, tenant_id=current_user.tenant_id)
     await db.commit()
 

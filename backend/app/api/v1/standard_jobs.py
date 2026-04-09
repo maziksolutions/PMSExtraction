@@ -25,7 +25,12 @@ from app.models.standard_jobs import (
 )
 from app.models.user import User
 from app.models.vessel import VesselProject
-from app.services.job_ranks import ensure_job_rank, infer_rank_from_component, normalize_rank_name
+from app.services.job_ranks import (
+    backfill_standard_job_ranks_from_audit_seed,
+    ensure_job_rank,
+    infer_rank_from_component,
+    normalize_rank_name,
+)
 
 router = APIRouter()
 
@@ -783,6 +788,11 @@ async def list_standard_jobs(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
+    await backfill_standard_job_ranks_from_audit_seed(
+        db,
+        tenant_id=current_user.tenant_id,
+    )
+
     class_society_expr = func.lower(func.trim(StandardJob.class_society.cast(String)))
     frequency_type_expr = func.lower(StandardJob.frequency_type.cast(String))
     query = select(StandardJob).where(

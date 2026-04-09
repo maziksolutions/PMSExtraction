@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+import re
 import uuid
-from typing import Optional
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import Job
@@ -21,6 +25,156 @@ def normalize_rank_name(value: Optional[str]) -> Optional[str]:
 def _rank_key(value: Optional[str]) -> Optional[str]:
     cleaned = normalize_rank_name(value)
     return cleaned.lower() if cleaned else None
+
+
+def _seed_text_key(value: Optional[str]) -> str:
+    return " ".join(
+        token for token in re.split(r"[^a-z0-9]+", str(value or "").strip().lower()) if token
+    )
+
+
+@lru_cache(maxsize=1)
+def _load_audit_rank_seed() -> dict[str, Any]:
+    seed_path = Path(__file__).resolve().parents[1] / "data" / "audit_rank_seed.json"
+    if not seed_path.exists():
+        return {
+            "known_ranks": [],
+            "performing_by_reference": {},
+            "performing_by_job_name": {},
+        }
+    try:
+        return json.loads(seed_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "known_ranks": [],
+            "performing_by_reference": {},
+            "performing_by_job_name": {},
+        }
+
+
+DECK_RANK_KEYS = {
+    "master",
+    "chief officer",
+    "second officer",
+    "third officer",
+    "deck cadet",
+    "boatswain",
+    "bosun",
+    "able seaman",
+}
+
+ENGINE_RANK_KEYS = {
+    "chief engineer",
+    "second engineer",
+    "third engineer",
+    "fourth engineer",
+    "fifth engineer",
+    "electrical officer",
+    "electrical engineer",
+    "eto",
+    "motorman",
+    "oiler",
+    "fitter",
+    "wiper",
+}
+
+DECK_HINTS = {
+    "accommodation",
+    "cargo",
+    "deck",
+    "eboats",
+    "embarkation",
+    "hatch",
+    "lifeboat",
+    "liferaft",
+    "lighting",
+    "lashing",
+    "ladder",
+    "mast",
+    "mooring",
+    "navigation",
+    "paint",
+    "pilot",
+    "pv",
+    "raft",
+    "steering",
+    "winch",
+}
+
+ENGINE_HINTS = {
+    "air",
+    "auxiliary",
+    "bearing",
+    "boiler",
+    "compressor",
+    "cooler",
+    "diesel",
+    "electrical",
+    "engine",
+    "exhaust",
+    "fuel",
+    "generator",
+    "governor",
+    "hydraulic",
+    "lube",
+    "machinery",
+    "main",
+    "motor",
+    "oil",
+    "overhaul",
+    "pump",
+    "purifier",
+    "shaft",
+    "turbocharger",
+    "valve",
+}
+
+
+def _audit_seed_performing_rank(
+    *,
+    job_name: Optional[str] = None,
+    library_reference: Optional[str] = None,
+) -> Optional[str]:
+    seed = _load_audit_rank_seed()
+    ref_key = _seed_text_key(library_reference)
+    if ref_key:
+        match = seed.get("performing_by_reference", {}).get(ref_key)
+        if match:
+            return normalize_rank_name(match)
+    name_key = _seed_text_key(job_name)
+    if name_key:
+        match = seed.get("performing_by_job_name", {}).get(name_key)
+        if match:
+            return normalize_rank_name(match)
+    return None
+
+
+def infer_verifying_rank(
+    performing_rank: Optional[str],
+    *,
+    job_name: Optional[str] = None,
+    machinery_type: Optional[str] = None,
+) -> Optional[str]:
+    performer_key = _rank_key(performing_rank)
+    if performer_key in DECK_RANK_KEYS:
+        return "Master"
+    if performer_key in ENGINE_RANK_KEYS:
+        return "Chief Engineer"
+
+    token_set = {
+        token
+        for token in (
+            f"{_seed_text_key(job_name)} {_seed_text_key(machinery_type)}"
+        ).split()
+        if token
+    }
+    has_deck_hints = bool(token_set.intersection(DECK_HINTS))
+    has_engine_hints = bool(token_set.intersection(ENGINE_HINTS))
+    if has_deck_hints and not has_engine_hints:
+        return "Master"
+    if has_engine_hints:
+        return "Chief Engineer"
+    return None
 
 
 async def ensure_job_rank(db: AsyncSession, *, tenant_id: uuid.UUID, rank_name: Optional[str]) -> None:
@@ -79,11 +233,179 @@ async def infer_rank_from_component(
     return row[0] if row else None
 
 
+async def seed_rank_library_from_audit_sample(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+) -> None:
+    seed = _load_audit_rank_seed()
+    known_ranks = {
+        normalize_rank_name(rank_name)
+        for rank_name in seed.get("known_ranks", [])
+    }
+    known_ranks.update({"Chief Engineer", "Master"})
+    for rank_name in sorted(rank_name for rank_name in known_ranks if rank_name):
+        await ensure_job_rank(db, tenant_id=tenant_id, rank_name=rank_name)
+
+
+async def backfill_standard_job_ranks_from_audit_seed(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+) -> bool:
+    result = await db.execute(
+        select(StandardJob).where(
+            StandardJob.tenant_id == tenant_id,
+            StandardJob.is_deleted == False,
+            or_(
+                StandardJob.performing_rank.is_(None),
+                StandardJob.verifying_rank.is_(None),
+            ),
+        )
+    )
+    jobs = result.scalars().all()
+    if not jobs:
+        return False
+
+    changed = False
+    for job in jobs:
+        next_performing_rank = normalize_rank_name(job.performing_rank) or _audit_seed_performing_rank(
+            job_name=job.job_name,
+            library_reference=job.library_reference,
+        )
+        next_verifying_rank = normalize_rank_name(job.verifying_rank) or infer_verifying_rank(
+            next_performing_rank,
+            job_name=job.job_name,
+            machinery_type=job.machinery_type,
+        )
+
+        if next_performing_rank != job.performing_rank:
+            job.performing_rank = next_performing_rank
+            db.add(job)
+            changed = True
+        if next_verifying_rank != job.verifying_rank:
+            job.verifying_rank = next_verifying_rank
+            db.add(job)
+            changed = True
+
+    if not changed:
+        return False
+
+    for job in jobs:
+        await ensure_job_rank(db, tenant_id=tenant_id, rank_name=job.performing_rank)
+        await ensure_job_rank(db, tenant_id=tenant_id, rank_name=job.verifying_rank)
+    await db.commit()
+    return True
+
+
+def _reference_match_key(
+    source_reference: Optional[str],
+    reference_keys: list[str],
+) -> Optional[str]:
+    haystack = _seed_text_key(source_reference)
+    if not haystack:
+        return None
+    for reference_key in reference_keys:
+        if reference_key and reference_key in haystack:
+            return reference_key
+    return None
+
+
+async def backfill_vessel_job_ranks_from_library_data(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    vessel_id: uuid.UUID,
+) -> bool:
+    jobs_result = await db.execute(
+        select(Job).where(
+            Job.tenant_id == tenant_id,
+            Job.vessel_id == vessel_id,
+            Job.is_deleted == False,
+            or_(
+                Job.performing_rank.is_(None),
+                Job.verifying_rank.is_(None),
+            ),
+        )
+    )
+    jobs = jobs_result.scalars().all()
+    if not jobs:
+        return False
+
+    standards_result = await db.execute(
+        select(StandardJob).where(
+            StandardJob.tenant_id == tenant_id,
+            StandardJob.is_deleted == False,
+        )
+    )
+    standard_jobs = standards_result.scalars().all()
+    standards_by_name = {
+        _seed_text_key(standard_job.job_name): standard_job
+        for standard_job in standard_jobs
+        if _seed_text_key(standard_job.job_name)
+    }
+    standards_by_reference = {
+        _seed_text_key(standard_job.library_reference): standard_job
+        for standard_job in standard_jobs
+        if _seed_text_key(standard_job.library_reference)
+    }
+    reference_keys = sorted(standards_by_reference, key=len, reverse=True)
+
+    changed = False
+    for job in jobs:
+        matched_standard = None
+        matched_reference = _reference_match_key(job.source_reference, reference_keys)
+        if matched_reference:
+            matched_standard = standards_by_reference.get(matched_reference)
+        if matched_standard is None and job.source_manual_id is None:
+            matched_standard = standards_by_name.get(_seed_text_key(job.job_name))
+
+        next_performing_rank = normalize_rank_name(job.performing_rank)
+        next_verifying_rank = normalize_rank_name(job.verifying_rank)
+
+        if not next_performing_rank and matched_standard is not None:
+            next_performing_rank = normalize_rank_name(matched_standard.performing_rank)
+        if not next_performing_rank:
+            next_performing_rank = _audit_seed_performing_rank(
+                job_name=job.job_name,
+                library_reference=job.source_reference,
+            )
+
+        if not next_verifying_rank and matched_standard is not None:
+            next_verifying_rank = normalize_rank_name(matched_standard.verifying_rank)
+        if not next_verifying_rank:
+            next_verifying_rank = infer_verifying_rank(
+                next_performing_rank,
+                job_name=job.job_name,
+                machinery_type=matched_standard.machinery_type if matched_standard is not None else None,
+            )
+
+        if next_performing_rank != job.performing_rank:
+            job.performing_rank = next_performing_rank
+            db.add(job)
+            changed = True
+        if next_verifying_rank != job.verifying_rank:
+            job.verifying_rank = next_verifying_rank
+            db.add(job)
+            changed = True
+
+    if not changed:
+        return False
+
+    for job in jobs:
+        await ensure_job_rank(db, tenant_id=tenant_id, rank_name=job.performing_rank)
+        await ensure_job_rank(db, tenant_id=tenant_id, rank_name=job.verifying_rank)
+    await db.commit()
+    return True
+
+
 async def backfill_job_ranks_from_existing_data(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID,
 ) -> None:
+    await seed_rank_library_from_audit_sample(db, tenant_id=tenant_id)
+
     rank_queries = [
         select(Job.performing_rank).where(
             Job.tenant_id == tenant_id,
