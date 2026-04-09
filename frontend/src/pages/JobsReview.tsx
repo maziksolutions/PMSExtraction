@@ -603,7 +603,7 @@ const JobsReview: React.FC = () => {
     if (jobIdsParam !== filterJobIds) {
       setFilterJobIds(jobIdsParam)
     }
-  }, [searchParams, filterSourceKind, filterJobIds])
+  }, [searchParams])
 
   React.useEffect(() => {
     const next = new URLSearchParams(searchParams)

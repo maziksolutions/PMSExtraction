@@ -143,6 +143,81 @@ def _serialize_standard_job(job: StandardJob) -> dict[str, Any]:
     }
 
 
+def _most_common_rank(values: list[Optional[str]]) -> Optional[str]:
+    counts: dict[str, int] = {}
+    for value in values:
+        cleaned = normalize_rank_name(value)
+        if not cleaned:
+            continue
+        counts[cleaned] = counts.get(cleaned, 0) + 1
+    if not counts:
+        return None
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
+async def _hydrate_standard_job_ranks(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    jobs: list[StandardJob],
+) -> None:
+    target_jobs = [job for job in jobs if not job.performing_rank or not job.verifying_rank]
+    if not target_jobs:
+        return
+
+    result = await db.execute(
+        select(
+            StandardJobMatch.standard_job_id,
+            Job.performing_rank,
+            Job.verifying_rank,
+        )
+        .join(Job, Job.id == StandardJobMatch.matched_job_id)
+        .where(
+            StandardJobMatch.tenant_id == tenant_id,
+            StandardJobMatch.is_deleted == False,
+            StandardJobMatch.standard_job_id.in_([job.id for job in target_jobs]),
+            Job.tenant_id == tenant_id,
+            Job.is_deleted == False,
+        )
+    )
+
+    performing_candidates: dict[uuid.UUID, list[Optional[str]]] = {}
+    verifying_candidates: dict[uuid.UUID, list[Optional[str]]] = {}
+    for standard_job_id, performing_rank, verifying_rank in result.all():
+        performing_candidates.setdefault(standard_job_id, []).append(performing_rank)
+        verifying_candidates.setdefault(standard_job_id, []).append(verifying_rank)
+
+    changed = False
+    for job in target_jobs:
+        job_changed = False
+        next_performing_rank = job.performing_rank or _most_common_rank(
+            performing_candidates.get(job.id, [])
+        )
+        next_verifying_rank = job.verifying_rank or _most_common_rank(
+            verifying_candidates.get(job.id, [])
+        )
+
+        if next_performing_rank and next_performing_rank != job.performing_rank:
+            job.performing_rank = next_performing_rank
+            changed = True
+            job_changed = True
+        if next_verifying_rank and next_verifying_rank != job.verifying_rank:
+            job.verifying_rank = next_verifying_rank
+            changed = True
+            job_changed = True
+
+        if job_changed:
+            db.add(job)
+
+    if not changed:
+        return
+
+    for job in target_jobs:
+        await ensure_job_rank(db, tenant_id=tenant_id, rank_name=job.performing_rank)
+        await ensure_job_rank(db, tenant_id=tenant_id, rank_name=job.verifying_rank)
+    await db.commit()
+
+
 def _coerce_bool(value: Any) -> bool:
     return _norm_text(value) in {"yes", "true", "1", "y"}
 
@@ -524,6 +599,11 @@ async def _import_standard_job_to_vessel(
             vessel_id=vessel_id,
             component_id=component_id,
         )
+        inferred_rank = normalize_rank_name(inferred_rank)
+        if inferred_rank and inferred_rank != std_job.performing_rank:
+            std_job.performing_rank = inferred_rank
+            db.add(std_job)
+            await ensure_job_rank(db, tenant_id=current_user.tenant_id, rank_name=std_job.performing_rank)
     existing_match_result = await db.execute(
         select(StandardJobMatch).where(
             StandardJobMatch.vessel_id == vessel_id,
@@ -751,7 +831,13 @@ async def list_standard_jobs(
     jobs_result = await db.execute(
         query.order_by(order_expr).offset((page - 1) * page_size).limit(page_size)
     )
-    jobs = [_serialize_standard_job(job) for job in jobs_result.scalars().all()]
+    page_jobs = jobs_result.scalars().all()
+    await _hydrate_standard_job_ranks(
+        db,
+        tenant_id=current_user.tenant_id,
+        jobs=page_jobs,
+    )
+    jobs = [_serialize_standard_job(job) for job in page_jobs]
     return {
         "items": jobs,
         "page": page,
@@ -815,7 +901,27 @@ async def bulk_import_standard_jobs(
             if not job_name or not machinery_type:
                 skipped += 1
                 continue
-            responsibility = _clean_text(row.get("responsibility") or row.get("responsible"))
+            responsibility = _first_text(
+                row,
+                "performingrank",
+                "performing_rank",
+                "performerank",
+                "rank",
+                "rankname",
+                "responsibility",
+                "responsible",
+                "performedby",
+            )
+            verifying_rank = _first_text(
+                row,
+                "verifyingrank",
+                "verifying_rank",
+                "verifierrank",
+                "verifier",
+                "verifiedby",
+                "checkedby",
+                "approvedby",
+            )
             cs_raw = _norm_text(row.get("classsociety") or row.get("class_society"))
             class_society = CS_MAP.get(cs_raw, default_cs)
             if class_society is None:
@@ -827,7 +933,7 @@ async def bulk_import_standard_jobs(
                 "job_name": job_name,
                 "job_description": _clean_text(row.get("jobdescription") or row.get("job_description")),
                 "performing_rank": responsibility,
-                "verifying_rank": None,
+                "verifying_rank": verifying_rank,
                 "frequency": _coerce_int(row.get("frequency")),
                 "frequency_type": _map_frequency_type(row.get("frequencytype") or row.get("frequency_type")),
                 "is_critical": _coerce_bool(row.get("iscritical") or row.get("is_critical")),

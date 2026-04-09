@@ -176,6 +176,7 @@ const StandardJobs: React.FC = () => {
     mutationFn: () => apiClient.post(`/vessels/${vesselId}/standard-jobs/run-comparison`).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['standard-jobs-comparison'] })
       setActionMessage('Comparison completed against instruction-manual jobs.')
       setActionError(null)
     },
@@ -200,22 +201,14 @@ const StandardJobs: React.FC = () => {
         .then((r) => r.data),
     onSuccess: (data) => {
       const totalAffected = (data.imported ?? 0) + (data.merged ?? 0)
-      const affectedIds = Array.from(new Set([
-        ...(((data.imported_job_ids as string[] | undefined) ?? [])),
-        ...(((data.merged_job_ids as string[] | undefined) ?? [])),
-      ]))
       setActionMessage(`Added ${data.imported} and updated ${data.merged} library jobs in Jobs Review. Opening the affected vessel jobs for review.`)
       setActionError(null)
       setSelectedJobIds([])
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['standard-jobs-comparison'] })
       if (totalAffected > 0) {
-        const params = new URLSearchParams()
-        params.set('source_kind', 'standard_library')
-        if (affectedIds.length > 0) {
-          params.set('job_ids', affectedIds.join(','))
-        }
-        navigate(`/vessels/${vesselId}/jobs?${params.toString()}`)
+        navigate(`/vessels/${vesselId}/jobs?source_kind=standard_library`)
       }
     },
     onError: (error: unknown) => {
@@ -236,12 +229,8 @@ const StandardJobs: React.FC = () => {
       setActionError(null)
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
-      const params = new URLSearchParams()
-      params.set('source_kind', 'standard_library')
-      if (data?.job_id) {
-        params.set('job_ids', data.job_id)
-      }
-      navigate(`/vessels/${vesselId}/jobs?${params.toString()}`)
+      queryClient.invalidateQueries({ queryKey: ['standard-jobs-comparison'] })
+      navigate(`/vessels/${vesselId}/jobs?source_kind=standard_library`)
     },
     onError: (error: unknown) => {
       setActionError(getApiErrorMessage(error, 'Failed to add standard job to Jobs Review'))
