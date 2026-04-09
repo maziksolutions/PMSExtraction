@@ -16,8 +16,7 @@ from app.models.job import FrequencyType, Job
 from app.models.standard_jobs import StandardJob
 from app.models.user import User
 from app.services.job_ranks import (
-    backfill_standard_job_ranks_from_audit_seed,
-    backfill_vessel_job_ranks_from_library_data,
+    derive_job_ranks_from_library_context,
     ensure_job_rank,
     infer_rank_from_component,
     normalize_rank_name,
@@ -294,19 +293,10 @@ async def list_jobs(
     from app.models.component import Component
     from app.models.ingestion import Manual
     await _get_vessel_or_404(vessel_id, db)
-    await backfill_standard_job_ranks_from_audit_seed(
-        db,
-        tenant_id=current_user.tenant_id,
-    )
     await _normalize_vessel_job_names(
         db,
         vessel_id=vessel_id,
         tenant_id=current_user.tenant_id,
-    )
-    await backfill_vessel_job_ranks_from_library_data(
-        db,
-        tenant_id=current_user.tenant_id,
-        vessel_id=vessel_id,
     )
     base_where = [
         Job.vessel_id == vessel_id,
@@ -437,10 +427,22 @@ async def list_jobs(
         component = component_lookup.get(job.component_id) if job.component_id else None
         manual = manual_lookup.get(job.source_manual_id) if job.source_manual_id else None
         std_tags: set[str] = set()
+        matched_standard_job: StandardJob | None = None
         for standard_job in standard_jobs_lookup:
             if not _job_has_library_source(job, standard_job):
                 continue
+            if matched_standard_job is None:
+                matched_standard_job = standard_job
             std_tags.add("critical_library" if bool(standard_job.is_critical) else "standard_library")
+        performing_rank, verifying_rank = derive_job_ranks_from_library_context(
+            job_name=job.job_name,
+            source_reference=job.source_reference,
+            existing_performing_rank=job.performing_rank,
+            existing_verifying_rank=job.verifying_rank,
+            matched_standard_job=matched_standard_job,
+        )
+        payload["performing_rank"] = performing_rank
+        payload["verifying_rank"] = verifying_rank
         source_tags = _job_source_tags(
             job,
             has_standard_match="standard_library" in std_tags,

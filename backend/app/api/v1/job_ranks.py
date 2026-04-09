@@ -3,19 +3,15 @@ from __future__ import annotations
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.deps import get_current_user
-from app.models.job_rank import JobRank
 from app.models.user import User
 from app.services.job_ranks import (
-    backfill_standard_job_ranks_from_audit_seed,
-    backfill_job_ranks_from_existing_data,
     ensure_job_rank,
+    list_rank_names_from_seed_and_existing_data,
     normalize_rank_name,
-    seed_rank_library_from_audit_sample,
 )
 
 router = APIRouter()
@@ -31,37 +27,24 @@ async def list_job_ranks(
     page: int = Query(1, ge=1),
     page_size: int = Query(200, ge=1, le=1000),
 ) -> dict[str, object]:
-    await seed_rank_library_from_audit_sample(db, tenant_id=current_user.tenant_id)
-    await backfill_standard_job_ranks_from_audit_seed(db, tenant_id=current_user.tenant_id)
-    await backfill_job_ranks_from_existing_data(db, tenant_id=current_user.tenant_id)
-    await db.commit()
-
-    base_where = [
-        JobRank.tenant_id == current_user.tenant_id,
-        JobRank.is_deleted == False,
-    ]
-    if search:
-        base_where.append(JobRank.rank_name.ilike(f"%{search}%"))
-
-    total_result = await db.execute(select(func.count()).select_from(JobRank).where(*base_where))
-    total: int = total_result.scalar_one()
-
-    sort_columns = {
-        "rank_name": JobRank.rank_name,
-        "created_at": JobRank.created_at,
-    }
-    order_col = sort_columns.get(sort_by, JobRank.rank_name)
-    order_expr = order_col.desc() if sort_order == "desc" else order_col.asc()
-    query = (
-        select(JobRank)
-        .where(*base_where)
-        .order_by(order_expr, JobRank.rank_name.asc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
+    rank_names = await list_rank_names_from_seed_and_existing_data(
+        db,
+        tenant_id=current_user.tenant_id,
     )
-    result = await db.execute(query)
-    ranks = result.scalars().all()
-    items = [{"id": str(rank.id), "rank_name": rank.rank_name} for rank in ranks]
+
+    if search:
+        needle = search.strip().lower()
+        rank_names = [rank_name for rank_name in rank_names if needle in rank_name.lower()]
+
+    reverse = sort_order == "desc"
+    rank_names = sorted(rank_names, key=lambda value: value.lower(), reverse=reverse)
+    total = len(rank_names)
+    start = (page - 1) * page_size
+    end = start + page_size
+    items = [
+        {"id": normalize_rank_name(rank_name) or rank_name, "rank_name": rank_name}
+        for rank_name in rank_names[start:end]
+    ]
     return {"items": items, "page": page, "page_size": page_size, "total": total}
 
 

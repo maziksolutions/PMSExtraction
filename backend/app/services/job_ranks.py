@@ -248,6 +248,26 @@ async def seed_rank_library_from_audit_sample(
         await ensure_job_rank(db, tenant_id=tenant_id, rank_name=rank_name)
 
 
+def derive_standard_job_ranks(
+    *,
+    job_name: Optional[str],
+    machinery_type: Optional[str],
+    library_reference: Optional[str],
+    performing_rank: Optional[str],
+    verifying_rank: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    next_performing_rank = normalize_rank_name(performing_rank) or _audit_seed_performing_rank(
+        job_name=job_name,
+        library_reference=library_reference,
+    )
+    next_verifying_rank = normalize_rank_name(verifying_rank) or infer_verifying_rank(
+        next_performing_rank,
+        job_name=job_name,
+        machinery_type=machinery_type,
+    )
+    return next_performing_rank, next_verifying_rank
+
+
 async def backfill_standard_job_ranks_from_audit_seed(
     db: AsyncSession,
     *,
@@ -269,14 +289,12 @@ async def backfill_standard_job_ranks_from_audit_seed(
 
     changed = False
     for job in jobs:
-        next_performing_rank = normalize_rank_name(job.performing_rank) or _audit_seed_performing_rank(
-            job_name=job.job_name,
-            library_reference=job.library_reference,
-        )
-        next_verifying_rank = normalize_rank_name(job.verifying_rank) or infer_verifying_rank(
-            next_performing_rank,
+        next_performing_rank, next_verifying_rank = derive_standard_job_ranks(
             job_name=job.job_name,
             machinery_type=job.machinery_type,
+            library_reference=job.library_reference,
+            performing_rank=job.performing_rank,
+            verifying_rank=job.verifying_rank,
         )
 
         if next_performing_rank != job.performing_rank:
@@ -309,6 +327,37 @@ def _reference_match_key(
         if reference_key and reference_key in haystack:
             return reference_key
     return None
+
+
+def derive_job_ranks_from_library_context(
+    *,
+    job_name: Optional[str],
+    source_reference: Optional[str],
+    existing_performing_rank: Optional[str],
+    existing_verifying_rank: Optional[str],
+    matched_standard_job: Optional[StandardJob],
+) -> tuple[Optional[str], Optional[str]]:
+    next_performing_rank = normalize_rank_name(existing_performing_rank)
+    next_verifying_rank = normalize_rank_name(existing_verifying_rank)
+
+    if not next_performing_rank and matched_standard_job is not None:
+        next_performing_rank = normalize_rank_name(matched_standard_job.performing_rank)
+    if not next_performing_rank:
+        next_performing_rank = _audit_seed_performing_rank(
+            job_name=job_name,
+            library_reference=source_reference,
+        )
+
+    if not next_verifying_rank and matched_standard_job is not None:
+        next_verifying_rank = normalize_rank_name(matched_standard_job.verifying_rank)
+    if not next_verifying_rank:
+        next_verifying_rank = infer_verifying_rank(
+            next_performing_rank,
+            job_name=job_name,
+            machinery_type=matched_standard_job.machinery_type if matched_standard_job is not None else None,
+        )
+
+    return next_performing_rank, next_verifying_rank
 
 
 async def backfill_vessel_job_ranks_from_library_data(
@@ -360,25 +409,13 @@ async def backfill_vessel_job_ranks_from_library_data(
         if matched_standard is None and job.source_manual_id is None:
             matched_standard = standards_by_name.get(_seed_text_key(job.job_name))
 
-        next_performing_rank = normalize_rank_name(job.performing_rank)
-        next_verifying_rank = normalize_rank_name(job.verifying_rank)
-
-        if not next_performing_rank and matched_standard is not None:
-            next_performing_rank = normalize_rank_name(matched_standard.performing_rank)
-        if not next_performing_rank:
-            next_performing_rank = _audit_seed_performing_rank(
-                job_name=job.job_name,
-                library_reference=job.source_reference,
-            )
-
-        if not next_verifying_rank and matched_standard is not None:
-            next_verifying_rank = normalize_rank_name(matched_standard.verifying_rank)
-        if not next_verifying_rank:
-            next_verifying_rank = infer_verifying_rank(
-                next_performing_rank,
-                job_name=job.job_name,
-                machinery_type=matched_standard.machinery_type if matched_standard is not None else None,
-            )
+        next_performing_rank, next_verifying_rank = derive_job_ranks_from_library_context(
+            job_name=job.job_name,
+            source_reference=job.source_reference,
+            existing_performing_rank=job.performing_rank,
+            existing_verifying_rank=job.verifying_rank,
+            matched_standard_job=matched_standard,
+        )
 
         if next_performing_rank != job.performing_rank:
             job.performing_rank = next_performing_rank
@@ -433,3 +470,59 @@ async def backfill_job_ranks_from_existing_data(
         result = await db.execute(query.distinct())
         for (rank_name,) in result.all():
             await ensure_job_rank(db, tenant_id=tenant_id, rank_name=rank_name)
+
+
+async def list_rank_names_from_seed_and_existing_data(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+) -> list[str]:
+    rank_names: dict[str, str] = {}
+
+    for rank_name in _load_audit_rank_seed().get("known_ranks", []):
+        cleaned = normalize_rank_name(rank_name)
+        key = _rank_key(cleaned)
+        if cleaned and key and key not in rank_names:
+            rank_names[key] = cleaned
+
+    rank_queries = [
+        select(JobRank.rank_name).where(
+            JobRank.tenant_id == tenant_id,
+            JobRank.is_deleted == False,
+        ),
+        select(Job.performing_rank).where(
+            Job.tenant_id == tenant_id,
+            Job.is_deleted == False,
+            Job.performing_rank.is_not(None),
+        ),
+        select(Job.verifying_rank).where(
+            Job.tenant_id == tenant_id,
+            Job.is_deleted == False,
+            Job.verifying_rank.is_not(None),
+        ),
+        select(StandardJob.performing_rank).where(
+            StandardJob.tenant_id == tenant_id,
+            StandardJob.is_deleted == False,
+            StandardJob.performing_rank.is_not(None),
+        ),
+        select(StandardJob.verifying_rank).where(
+            StandardJob.tenant_id == tenant_id,
+            StandardJob.is_deleted == False,
+            StandardJob.verifying_rank.is_not(None),
+        ),
+    ]
+
+    for query in rank_queries:
+        result = await db.execute(query.distinct())
+        for (rank_name,) in result.all():
+            cleaned = normalize_rank_name(rank_name)
+            key = _rank_key(cleaned)
+            if cleaned and key and key not in rank_names:
+                rank_names[key] = cleaned
+
+    for rank_name in ("Chief Engineer", "Master"):
+        key = _rank_key(rank_name)
+        if key and key not in rank_names:
+            rank_names[key] = rank_name
+
+    return sorted(rank_names.values(), key=lambda value: value.lower())

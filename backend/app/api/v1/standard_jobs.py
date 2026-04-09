@@ -26,7 +26,7 @@ from app.models.standard_jobs import (
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.services.job_ranks import (
-    backfill_standard_job_ranks_from_audit_seed,
+    derive_standard_job_ranks,
     ensure_job_rank,
     infer_rank_from_component,
     normalize_rank_name,
@@ -126,6 +126,13 @@ def _job_type_for_standard_job(job: StandardJob) -> str:
 
 
 def _serialize_standard_job(job: StandardJob) -> dict[str, Any]:
+    performing_rank, verifying_rank = derive_standard_job_ranks(
+        job_name=job.job_name,
+        machinery_type=job.machinery_type,
+        library_reference=job.library_reference,
+        performing_rank=job.performing_rank,
+        verifying_rank=job.verifying_rank,
+    )
     class_society = _class_society_value(job.class_society)
     frequency_type = _frequency_type_value(job.frequency_type)
     if job.is_critical:
@@ -139,8 +146,8 @@ def _serialize_standard_job(job: StandardJob) -> dict[str, Any]:
         "machinery_type": job.machinery_type,
         "job_name": job.job_name,
         "job_description": job.job_description,
-        "performing_rank": job.performing_rank,
-        "verifying_rank": job.verifying_rank,
+        "performing_rank": performing_rank,
+        "verifying_rank": verifying_rank,
         "frequency": job.frequency,
         "frequency_type": frequency_type,
         "is_critical": job.is_critical,
@@ -788,11 +795,6 @@ async def list_standard_jobs(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
-    await backfill_standard_job_ranks_from_audit_seed(
-        db,
-        tenant_id=current_user.tenant_id,
-    )
-
     class_society_expr = func.lower(func.trim(StandardJob.class_society.cast(String)))
     frequency_type_expr = func.lower(StandardJob.frequency_type.cast(String))
     query = select(StandardJob).where(
@@ -869,11 +871,6 @@ async def list_standard_jobs(
         query.order_by(order_expr).offset((page - 1) * page_size).limit(page_size)
     )
     page_jobs = jobs_result.scalars().all()
-    await _hydrate_standard_job_ranks(
-        db,
-        tenant_id=current_user.tenant_id,
-        jobs=page_jobs,
-    )
     jobs = [_serialize_standard_job(job) for job in page_jobs]
     return {
         "items": jobs,
