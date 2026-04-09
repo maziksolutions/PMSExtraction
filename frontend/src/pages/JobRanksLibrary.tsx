@@ -15,7 +15,7 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
   return maybeError?.message ?? fallback
 }
 
-const JobRanksLibrary: React.FC = () => {
+const JobRanksLibrary: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [newRank, setNewRank] = useState('')
@@ -50,15 +50,17 @@ const JobRanksLibrary: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="flex items-center gap-3 text-2xl font-bold text-white">
-          <BookOpen className="h-7 w-7 text-sky-400" />
-          Rank Library
-        </h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Manage the performing and verifying rank options used across Standard Jobs and Jobs Review.
-        </p>
-      </div>
+      {!embedded && (
+        <div>
+          <h1 className="flex items-center gap-3 text-2xl font-bold text-white">
+            <BookOpen className="h-7 w-7 text-sky-400" />
+            Rank Library
+          </h1>
+          <p className="mt-1 text-sm text-slate-400">
+            Manage the performing and verifying rank options used across Standard Jobs and Jobs Review.
+          </p>
+        </div>
+      )}
 
       {(actionMessage || actionError) && (
         <div className={`rounded-xl border px-4 py-3 text-sm ${actionError ? 'border-red-800 bg-red-950/30 text-red-300' : 'border-emerald-800 bg-emerald-950/30 text-emerald-300'}`}>

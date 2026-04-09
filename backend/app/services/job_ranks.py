@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import Job
 from app.models.job_rank import JobRank
+from app.models.standard_jobs import StandardJob
 
 
 def normalize_rank_name(value: Optional[str]) -> Optional[str]:
@@ -76,3 +77,37 @@ async def infer_rank_from_component(
     )
     row = result.first()
     return row[0] if row else None
+
+
+async def backfill_job_ranks_from_existing_data(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+) -> None:
+    rank_queries = [
+        select(Job.performing_rank).where(
+            Job.tenant_id == tenant_id,
+            Job.is_deleted == False,
+            Job.performing_rank.is_not(None),
+        ),
+        select(Job.verifying_rank).where(
+            Job.tenant_id == tenant_id,
+            Job.is_deleted == False,
+            Job.verifying_rank.is_not(None),
+        ),
+        select(StandardJob.performing_rank).where(
+            StandardJob.tenant_id == tenant_id,
+            StandardJob.is_deleted == False,
+            StandardJob.performing_rank.is_not(None),
+        ),
+        select(StandardJob.verifying_rank).where(
+            StandardJob.tenant_id == tenant_id,
+            StandardJob.is_deleted == False,
+            StandardJob.verifying_rank.is_not(None),
+        ),
+    ]
+
+    for query in rank_queries:
+        result = await db.execute(query.distinct())
+        for (rank_name,) in result.all():
+            await ensure_job_rank(db, tenant_id=tenant_id, rank_name=rank_name)

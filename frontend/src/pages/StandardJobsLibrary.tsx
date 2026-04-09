@@ -541,7 +541,7 @@ const StandardJobsLibrary: React.FC = () => {
       <div className="flex justify-end">
         <div className="flex items-center gap-2">
           <button
-            onClick={() => navigate('/job-ranks-library')}
+            onClick={() => navigate('/library/global?section=ranks')}
             className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
           >
             <BookOpen className="h-4 w-4" />

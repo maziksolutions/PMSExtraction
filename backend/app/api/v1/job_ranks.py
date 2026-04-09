@@ -10,7 +10,11 @@ from app.core.database import get_db
 from app.deps import get_current_user
 from app.models.job_rank import JobRank
 from app.models.user import User
-from app.services.job_ranks import ensure_job_rank, normalize_rank_name
+from app.services.job_ranks import (
+    backfill_job_ranks_from_existing_data,
+    ensure_job_rank,
+    normalize_rank_name,
+)
 
 router = APIRouter()
 
@@ -25,6 +29,9 @@ async def list_job_ranks(
     page: int = Query(1, ge=1),
     page_size: int = Query(200, ge=1, le=1000),
 ) -> dict[str, object]:
+    await backfill_job_ranks_from_existing_data(db, tenant_id=current_user.tenant_id)
+    await db.commit()
+
     base_where = [
         JobRank.tenant_id == current_user.tenant_id,
         JobRank.is_deleted == False,

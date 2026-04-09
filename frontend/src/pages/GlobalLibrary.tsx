@@ -1,4 +1,5 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import {
   RefreshCw,
@@ -11,10 +12,12 @@ import {
   Search,
 } from 'lucide-react'
 import apiClient from '@/api/client'
+import JobRanksLibrary from '@/pages/JobRanksLibrary'
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 
 type EntityType = 'component' | 'job' | 'spare'
+type GlobalSection = EntityType | 'rank'
 
 interface GlobalLibraryEntry {
   id: string
@@ -35,10 +38,18 @@ const ENTITY_OPTIONS: { value: EntityType; label: string }[] = [
   { value: 'spare', label: 'Spares' },
 ]
 
-const ENTITY_DESCRIPTION: Record<EntityType, string> = {
+const SECTION_OPTIONS: { value: GlobalSection; label: string }[] = [
+  { value: 'component', label: 'Components' },
+  { value: 'job', label: 'Jobs' },
+  { value: 'spare', label: 'Spares' },
+  { value: 'rank', label: 'Ranks' },
+]
+
+const ENTITY_DESCRIPTION: Record<GlobalSection, string> = {
   component: 'Canonical component definitions aggregated across all vessels',
   job: 'Standardised maintenance job definitions from all vessel data',
   spare: 'Global spare parts catalogue built from vessel-level extractions',
+  rank: 'Performing and verifying rank options shared across jobs and standard job libraries',
 }
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
 const SORT_OPTIONS = [
@@ -405,7 +416,38 @@ const LibraryTable: React.FC<LibraryTableProps> = ({ entityType }) => {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 const GlobalLibrary: React.FC = () => {
-  const [activeEntity, setActiveEntity] = useState<EntityType>('component')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const initialSection = (searchParams.get('section') ?? '').toLowerCase()
+  const [activeEntity, setActiveEntity] = useState<GlobalSection>(
+    initialSection === 'ranks' || initialSection === 'rank'
+      ? 'rank'
+      : (ENTITY_OPTIONS.some((option) => option.value === initialSection) ? (initialSection as EntityType) : 'component')
+  )
+
+  useEffect(() => {
+    const sectionParam = (searchParams.get('section') ?? '').toLowerCase()
+    const nextSection: GlobalSection =
+      sectionParam === 'ranks' || sectionParam === 'rank'
+        ? 'rank'
+        : (ENTITY_OPTIONS.some((option) => option.value === sectionParam) ? (sectionParam as EntityType) : 'component')
+    if (nextSection !== activeEntity) {
+      setActiveEntity(nextSection)
+    }
+  }, [searchParams])
+
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams)
+    if (activeEntity === 'component') {
+      next.delete('section')
+    } else if (activeEntity === 'rank') {
+      next.set('section', 'ranks')
+    } else {
+      next.set('section', activeEntity)
+    }
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true })
+    }
+  }, [activeEntity, searchParams, setSearchParams])
 
   return (
     <div className="space-y-6">
@@ -419,11 +461,13 @@ const GlobalLibrary: React.FC = () => {
       </div>
 
       {/* Populate Panel */}
-      <PopulatePanel activeEntity={activeEntity} onEntityChange={setActiveEntity} />
+      {activeEntity !== 'rank' && (
+        <PopulatePanel activeEntity={activeEntity} onEntityChange={(value) => setActiveEntity(value)} />
+      )}
 
       {/* Tab Bar */}
       <div className="flex gap-1 border-b border-slate-700">
-        {ENTITY_OPTIONS.map(({ value, label }) => (
+        {SECTION_OPTIONS.map(({ value, label }) => (
           <button
             key={value}
             onClick={() => setActiveEntity(value)}
@@ -438,8 +482,11 @@ const GlobalLibrary: React.FC = () => {
         ))}
       </div>
 
-      {/* Library Table */}
-      <LibraryTable entityType={activeEntity} />
+      {activeEntity === 'rank' ? (
+        <JobRanksLibrary embedded />
+      ) : (
+        <LibraryTable entityType={activeEntity} />
+      )}
     </div>
   )
 }

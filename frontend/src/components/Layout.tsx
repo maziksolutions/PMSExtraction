@@ -51,7 +51,6 @@ const topNavItems = [
   { to: '/vessels', label: 'Vessels', icon: Ship },
   { to: '/library', label: 'Library', icon: Library },
   { to: '/standard-jobs-library', label: 'Standard Jobs', icon: Layers },
-  { to: '/job-ranks-library', label: 'Rank Library', icon: BookOpen },
   { to: '/users', label: 'Users', icon: Users, requiredRole: UserRole.SuperAdmin },
   { to: '/feedback', label: 'Feedback', icon: BarChart2, requiredRole: UserRole.SuperAdmin },
   { to: '/admin', label: 'Admin', icon: Shield, requiredRole: UserRole.SuperAdmin },
