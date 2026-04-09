@@ -63,6 +63,14 @@ def _clean_text(value: Any) -> Optional[str]:
     return text or None
 
 
+def _first_text(row: dict[str, Any], *keys: str) -> Optional[str]:
+    for key in keys:
+        value = _clean_text(row.get(key))
+        if value:
+            return value
+    return None
+
+
 def _enum_value(value: Any) -> str | None:
     if value is None:
         return None
@@ -266,14 +274,34 @@ def _canonical_standard_row(sheet_name: str, row: dict[str, Any], *, default_cs:
     if row.get("classsociety"):
         class_society = CS_MAP.get(_norm_text(row.get("classsociety")), default_cs)
 
-    responsibility = _clean_text(row.get("responsibility")) or _clean_text(row.get("responsible"))
+    responsibility = _first_text(
+        row,
+        "performingrank",
+        "performing_rank",
+        "performerank",
+        "rank",
+        "rankname",
+        "responsibility",
+        "responsible",
+        "performedby",
+    )
+    verifying_rank = _first_text(
+        row,
+        "verifyingrank",
+        "verifying_rank",
+        "verifierrank",
+        "verifier",
+        "verifiedby",
+        "checkedby",
+        "approvedby",
+    )
     return {
         "class_society": class_society,
         "machinery_type": _derive_machinery_type(raw_name, job_name, _clean_text(row.get("jobgroup"))),
         "job_name": job_name,
         "job_description": _clean_text(row.get("jobdescription")),
         "performing_rank": responsibility,
-        "verifying_rank": None,
+        "verifying_rank": verifying_rank,
         "frequency": frequency,
         "frequency_type": frequency_type,
         "is_critical": is_critical,

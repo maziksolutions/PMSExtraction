@@ -366,9 +366,12 @@ export interface VesselTypeTemplate {
 export interface StandardJob {
   id: string
   class_society: ClassSociety
+  job_type?: 'standard' | 'class' | 'critical'
   machinery_type: string
   job_name: string
   job_description: string | null
+  performing_rank: string | null
+  verifying_rank: string | null
   frequency: number | null
   frequency_type: FrequencyType | null
   is_critical: boolean

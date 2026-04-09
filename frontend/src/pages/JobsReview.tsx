@@ -93,6 +93,31 @@ type BatchJobFields = {
   is_critical?: string
 }
 
+function RankSelect({
+  value,
+  options,
+  onChange,
+  placeholder,
+  className,
+}: {
+  value: string
+  options: RankOption[]
+  onChange: (value: string) => void
+  placeholder: string
+  className: string
+}) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} className={className}>
+      <option value="">{placeholder}</option>
+      {options.map((option) => (
+        <option key={option.id} value={option.rank_name}>
+          {option.rank_name}
+        </option>
+      ))}
+    </select>
+  )
+}
+
 const QC_COLORS: Record<string, string> = {
   pending: 'bg-slate-600 text-slate-200',
   accepted: 'bg-green-700 text-green-100',
@@ -176,6 +201,7 @@ function JobEditor({
   submitLabel,
   initial,
   components,
+  rankOptions,
   isPending,
   onSubmit,
   onCancel,
@@ -185,6 +211,7 @@ function JobEditor({
   submitLabel: string
   initial?: Partial<Job>
   components: ComponentOption[]
+  rankOptions: RankOption[]
   isPending: boolean
   onSubmit: (payload: Record<string, unknown>) => void
   onCancel?: () => void
@@ -235,19 +262,21 @@ function JobEditor({
         </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">Performing Rank</label>
-          <input
+          <RankSelect
             value={form.performing_rank}
-            list="rank-options"
-            onChange={(e) => set('performing_rank', e.target.value)}
+            options={rankOptions}
+            onChange={(value) => set('performing_rank', value)}
+            placeholder="Select rank"
             className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none"
           />
         </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">Verifying Rank</label>
-          <input
+          <RankSelect
             value={form.verifying_rank}
-            list="rank-options"
-            onChange={(e) => set('verifying_rank', e.target.value)}
+            options={rankOptions}
+            onChange={(value) => set('verifying_rank', value)}
+            placeholder="Select rank"
             className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none"
           />
         </div>
@@ -580,14 +609,13 @@ const JobsReview: React.FC = () => {
     const next = new URLSearchParams(searchParams)
     if (filterJobIds) {
       next.set('job_ids', filterJobIds)
-      next.delete('source_kind')
     } else {
       next.delete('job_ids')
-      if (filterSourceKind) {
-        next.set('source_kind', filterSourceKind)
-      } else {
-        next.delete('source_kind')
-      }
+    }
+    if (filterSourceKind) {
+      next.set('source_kind', filterSourceKind)
+    } else {
+      next.delete('source_kind')
     }
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true })
@@ -632,6 +660,7 @@ const JobsReview: React.FC = () => {
       submitLabel="Save Changes"
       initial={editingJob}
       components={componentOptions}
+      rankOptions={rankOptions}
       isPending={saveJobMutation.isPending}
       onCancel={() => setEditingJob(null)}
       onSplit={() => setCreateDraft(editingJob)}
@@ -643,6 +672,7 @@ const JobsReview: React.FC = () => {
       submitLabel="Create Job"
       initial={createDraft}
       components={componentOptions}
+      rankOptions={rankOptions}
       isPending={createJobMutation.isPending}
       onCancel={() => setCreateDraft(null)}
       onSubmit={(payload) => createJobMutation.mutate(payload)}
@@ -678,11 +708,6 @@ const JobsReview: React.FC = () => {
 
   return (
     <>
-      <datalist id="rank-options">
-        {rankOptions.map((rank) => (
-          <option key={rank.id} value={rank.rank_name} />
-        ))}
-      </datalist>
       <ResizableSplitView
       storageKey={`jobs-review-layout:${vesselId ?? 'default'}`}
       initialLeftPercent={58}
@@ -791,8 +816,20 @@ const JobsReview: React.FC = () => {
                 <option value="">Frequency Type - no change</option>
                 {FREQUENCY_OPTIONS.map((option) => <option key={option} value={option}>{option.replace('_', ' ')}</option>)}
               </select>
-              <input value={batchFields.performing_rank ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, performing_rank: e.target.value }))} list="rank-options" placeholder="Performing Rank" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
-              <input value={batchFields.verifying_rank ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, verifying_rank: e.target.value }))} list="rank-options" placeholder="Verifying Rank" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
+              <RankSelect
+                value={batchFields.performing_rank ?? ''}
+                options={rankOptions}
+                onChange={(value) => setBatchFields((prev) => ({ ...prev, performing_rank: value }))}
+                placeholder="Performing Rank - no change"
+                className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none"
+              />
+              <RankSelect
+                value={batchFields.verifying_rank ?? ''}
+                options={rankOptions}
+                onChange={(value) => setBatchFields((prev) => ({ ...prev, verifying_rank: value }))}
+                placeholder="Verifying Rank - no change"
+                className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none"
+              />
               <input value={batchFields.cms_id ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, cms_id: e.target.value }))} placeholder="CMS ID" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
               <select value={batchFields.qc_status ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, qc_status: e.target.value }))} className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none">
                 <option value="">QC - no change</option>
@@ -837,7 +874,7 @@ const JobsReview: React.FC = () => {
           <button onClick={() => setFilterNoCMS(!filterNoCMS)} className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${filterNoCMS ? 'border-sky-600 bg-sky-900/20 text-sky-300' : 'border-slate-700 text-slate-400 hover:bg-slate-800'}`}>
             CMS Codes Pending
           </button>
-          <select value={filterSourceKind} onChange={(e) => setFilterSourceKind(e.target.value)} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none">
+          <select value={filterSourceKind} onChange={(e) => { setFilterJobIds(''); setFilterSourceKind(e.target.value) }} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none">
             {SOURCE_FILTER_OPTIONS.map((option) => (
               <option key={option.value || 'all'} value={option.value}>{option.label}</option>
             ))}
@@ -955,17 +992,17 @@ const JobsReview: React.FC = () => {
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-xs" onClick={(e) => e.stopPropagation()}>
                         <div className="flex flex-col gap-1">
-                          <input
+                          <RankSelect
                             value={edits[job.id]?.performing_rank ?? (job.performing_rank ?? '')}
-                            onChange={(e) => setEdit(job.id, 'performing_rank', e.target.value)}
-                            list="rank-options"
+                            options={rankOptions}
+                            onChange={(value) => setEdit(job.id, 'performing_rank', value)}
                             placeholder="Performing"
                             className="w-40 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                           />
-                          <input
+                          <RankSelect
                             value={edits[job.id]?.verifying_rank ?? (job.verifying_rank ?? '')}
-                            onChange={(e) => setEdit(job.id, 'verifying_rank', e.target.value)}
-                            list="rank-options"
+                            options={rankOptions}
+                            onChange={(value) => setEdit(job.id, 'verifying_rank', value)}
                             placeholder="Verifying"
                             className="w-40 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                           />

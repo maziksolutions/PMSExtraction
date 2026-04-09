@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BookOpen,
@@ -28,6 +29,11 @@ interface StandardJob {
   frequency_type: string | null
   is_critical: boolean
   library_reference: string | null
+}
+
+interface RankOption {
+  id: string
+  rank_name: string
 }
 
 interface StandardJobFormState {
@@ -435,10 +441,16 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 const StandardJobsLibrary: React.FC = () => {
+  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<TabType>('standard')
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
   const queryClient = useQueryClient()
+  const rankOptionsQuery = useQuery({
+    queryKey: ['job-ranks'],
+    queryFn: () => apiClient.get('/job-ranks', { params: { page: 1, page_size: 1000, sort_by: 'rank_name', sort_order: 'asc' } }).then((r) => r.data),
+  })
+  const rankOptions: RankOption[] = rankOptionsQuery.data?.items ?? []
   const [form, setForm] = useState<StandardJobFormState>({
     class_society: 'General',
     machinery_type: '',
@@ -527,21 +539,30 @@ const StandardJobsLibrary: React.FC = () => {
       </div>
 
       <div className="flex justify-end">
-        <button
-          onClick={() => {
-            setAddError(null)
-            setForm((prev) => ({
-              ...prev,
-              class_society: activeTab === 'class' ? (prev.class_society === 'General' ? 'DNV GL' : prev.class_society) : 'General',
-              is_critical: activeTab === 'critical',
-            }))
-            setShowAddDialog(true)
-          }}
-          className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500"
-        >
-          <Plus className="h-4 w-4" />
-          Add Job
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => navigate('/job-ranks-library')}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+          >
+            <BookOpen className="h-4 w-4" />
+            Rank Library
+          </button>
+          <button
+            onClick={() => {
+              setAddError(null)
+              setForm((prev) => ({
+                ...prev,
+                class_society: activeTab === 'class' ? (prev.class_society === 'General' ? 'DNV GL' : prev.class_society) : 'General',
+                is_critical: activeTab === 'critical',
+              }))
+              setShowAddDialog(true)
+            }}
+            className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500"
+          >
+            <Plus className="h-4 w-4" />
+            Add Job
+          </button>
+        </div>
       </div>
 
       {/* Import Panel */}
@@ -600,19 +621,29 @@ const StandardJobsLibrary: React.FC = () => {
               </label>
               <label className="space-y-1 text-sm">
                 <span className="text-slate-400">Performing Rank</span>
-                <input
+                <select
                   value={form.performing_rank}
                   onChange={(e) => setForm((prev) => ({ ...prev, performing_rank: e.target.value }))}
                   className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
-                />
+                >
+                  <option value="">Select rank</option>
+                  {rankOptions.map((option) => (
+                    <option key={option.id} value={option.rank_name}>{option.rank_name}</option>
+                  ))}
+                </select>
               </label>
               <label className="space-y-1 text-sm">
                 <span className="text-slate-400">Verifying Rank</span>
-                <input
+                <select
                   value={form.verifying_rank}
                   onChange={(e) => setForm((prev) => ({ ...prev, verifying_rank: e.target.value }))}
                   className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-200"
-                />
+                >
+                  <option value="">Select rank</option>
+                  {rankOptions.map((option) => (
+                    <option key={option.id} value={option.rank_name}>{option.rank_name}</option>
+                  ))}
+                </select>
               </label>
               <label className="space-y-1 text-sm">
                 <span className="text-slate-400">Frequency</span>
@@ -656,6 +687,11 @@ const StandardJobsLibrary: React.FC = () => {
               </label>
             </div>
             {addError && <p className="mt-4 text-sm text-red-400">{addError}</p>}
+            {!rankOptions.length && (
+              <p className="mt-4 text-sm text-amber-300">
+                No ranks are available yet. Add them in Rank Library, then come back here.
+              </p>
+            )}
             <div className="mt-6 flex justify-end gap-3">
               <button
                 onClick={() => setShowAddDialog(false)}
