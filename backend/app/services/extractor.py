@@ -14,6 +14,7 @@ from typing import Any, Optional
 import anthropic
 
 from app.core.config import settings
+from app.services.job_ranks import backfill_manual_job_ranks
 from app.services.job_naming import (
     append_source_references_to_description,
     build_canonical_job_name,
@@ -1847,14 +1848,21 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 vessel_id=vessel_id,
                 tenant_id=tenant_id,
             )
+            manual_job_ranks_updated = await backfill_manual_job_ranks(
+                db=db,
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                manual_id=manual.id,
+            )
             await db.commit()
             logger.warning(
-                "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d merged_jobs=%d",
+                "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d merged_jobs=%d manual_job_ranks=%s",
                 vessel_id_str,
                 component_ref_updates,
                 jobs_linked,
                 spares_linked,
                 merged_jobs,
+                manual_job_ranks_updated,
             )
         except Exception as link_exc:
             logger.warning("auto_extract_from_manual: manual sync failed: %s", link_exc)

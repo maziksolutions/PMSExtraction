@@ -16,6 +16,7 @@ from app.models.job import FrequencyType, Job
 from app.models.standard_jobs import StandardJob
 from app.models.user import User
 from app.services.job_ranks import (
+    backfill_manual_job_ranks,
     derive_job_ranks_from_library_context,
     ensure_job_rank,
     infer_rank_from_component,
@@ -297,6 +298,11 @@ async def list_jobs(
         db,
         vessel_id=vessel_id,
         tenant_id=current_user.tenant_id,
+    )
+    await backfill_manual_job_ranks(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
     )
     base_where = [
         Job.vessel_id == vessel_id,

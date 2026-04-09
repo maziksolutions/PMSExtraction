@@ -10,6 +10,7 @@ from typing import Any, Optional
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.component import Component
 from app.models.job import Job
 from app.models.job_rank import JobRank
 from app.models.standard_jobs import StandardJob
@@ -117,7 +118,6 @@ ENGINE_HINTS = {
     "governor",
     "hydraulic",
     "lube",
-    "machinery",
     "main",
     "motor",
     "oil",
@@ -127,6 +127,21 @@ ENGINE_HINTS = {
     "shaft",
     "turbocharger",
     "valve",
+}
+
+ELECTRICAL_HINTS = {
+    "alarm",
+    "battery",
+    "breaker",
+    "circuit",
+    "electrical",
+    "generator",
+    "lighting",
+    "sensor",
+    "starter",
+    "switchboard",
+    "uv",
+    "wiring",
 }
 
 
@@ -174,6 +189,71 @@ def infer_verifying_rank(
         return "Master"
     if has_engine_hints:
         return "Chief Engineer"
+    return None
+
+
+def _text_tokens(*values: Optional[str]) -> set[str]:
+    token_set: set[str] = set()
+    for value in values:
+        token_set.update(token for token in _seed_text_key(value).split() if token)
+    return token_set
+
+
+def _manual_job_name_variants(
+    job_name: Optional[str],
+    component_name: Optional[str],
+) -> list[str]:
+    full_name = _seed_text_key(job_name)
+    component_key = _seed_text_key(component_name)
+    candidates: list[str] = []
+    if full_name:
+        candidates.append(full_name)
+    if full_name and component_key:
+        if full_name.startswith(component_key):
+            stripped = full_name[len(component_key):].strip()
+            if stripped:
+                candidates.append(stripped)
+        for separator in (" inspect ", " inspection ", " overhaul ", " routine ", " check ", " clean "):
+            if separator in full_name:
+                candidates.append(full_name.split(separator, 1)[0].strip())
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            ordered.append(candidate)
+    return ordered
+
+
+def infer_manual_performing_rank(
+    *,
+    job_name: Optional[str],
+    component_name: Optional[str] = None,
+    main_machinery: Optional[str] = None,
+    group1: Optional[str] = None,
+    group2: Optional[str] = None,
+    inferred_component_rank: Optional[str] = None,
+    matched_standard_job: Optional[StandardJob] = None,
+) -> Optional[str]:
+    if matched_standard_job is not None and matched_standard_job.performing_rank:
+        return normalize_rank_name(matched_standard_job.performing_rank)
+
+    from_seed = _audit_seed_performing_rank(job_name=job_name)
+    if from_seed:
+        return from_seed
+
+    if inferred_component_rank:
+        return normalize_rank_name(inferred_component_rank)
+
+    tokens = _text_tokens(job_name, component_name, main_machinery, group1, group2)
+    if tokens.intersection(ELECTRICAL_HINTS):
+        return "Electrical Officer"
+    has_deck_hints = bool(tokens.intersection(DECK_HINTS))
+    has_engine_hints = bool(tokens.intersection(ENGINE_HINTS))
+    if has_deck_hints and not has_engine_hints:
+        return "Chief Officer"
+    if has_engine_hints:
+        return "Second Engineer"
     return None
 
 
@@ -417,6 +497,148 @@ async def backfill_vessel_job_ranks_from_library_data(
             matched_standard_job=matched_standard,
         )
 
+        if next_performing_rank != job.performing_rank:
+            job.performing_rank = next_performing_rank
+            db.add(job)
+            changed = True
+        if next_verifying_rank != job.verifying_rank:
+            job.verifying_rank = next_verifying_rank
+            db.add(job)
+            changed = True
+
+    if not changed:
+        return False
+
+    for job in jobs:
+        await ensure_job_rank(db, tenant_id=tenant_id, rank_name=job.performing_rank)
+        await ensure_job_rank(db, tenant_id=tenant_id, rank_name=job.verifying_rank)
+    await db.commit()
+    return True
+
+
+def derive_manual_job_ranks(
+    *,
+    job: Job,
+    component: Optional[Component] = None,
+    matched_standard_job: Optional[StandardJob] = None,
+    inferred_component_rank: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    next_performing_rank = normalize_rank_name(job.performing_rank) or infer_manual_performing_rank(
+        job_name=job.job_name,
+        component_name=getattr(component, "component_name", None),
+        main_machinery=getattr(component, "main_machinery", None),
+        group1=getattr(component, "group1", None),
+        group2=getattr(component, "group2", None),
+        inferred_component_rank=inferred_component_rank,
+        matched_standard_job=matched_standard_job,
+    )
+    next_verifying_rank = normalize_rank_name(job.verifying_rank)
+    if not next_verifying_rank and matched_standard_job is not None:
+        next_verifying_rank = normalize_rank_name(matched_standard_job.verifying_rank)
+    if not next_verifying_rank:
+        next_verifying_rank = infer_verifying_rank(
+            next_performing_rank,
+            job_name=job.job_name,
+            machinery_type=" ".join(
+                filter(
+                    None,
+                    [
+                        getattr(component, "component_name", None),
+                        getattr(component, "main_machinery", None),
+                        getattr(component, "group1", None),
+                        getattr(component, "group2", None),
+                    ],
+                )
+            ),
+        )
+    return next_performing_rank, next_verifying_rank
+
+
+async def backfill_manual_job_ranks(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    vessel_id: uuid.UUID,
+    manual_id: Optional[uuid.UUID] = None,
+) -> bool:
+    where_clauses = [
+        Job.tenant_id == tenant_id,
+        Job.vessel_id == vessel_id,
+        Job.is_deleted == False,
+        Job.source_manual_id.is_not(None),
+        or_(
+            Job.performing_rank.is_(None),
+            Job.verifying_rank.is_(None),
+        ),
+    ]
+    if manual_id is not None:
+        where_clauses.append(Job.source_manual_id == manual_id)
+
+    jobs_result = await db.execute(select(Job).where(*where_clauses))
+    jobs = jobs_result.scalars().all()
+    if not jobs:
+        return False
+
+    component_ids = {job.component_id for job in jobs if job.component_id}
+    components_by_id: dict[uuid.UUID, Component] = {}
+    if component_ids:
+        component_result = await db.execute(
+            select(Component).where(
+                Component.id.in_(component_ids),
+                Component.is_deleted == False,
+            )
+        )
+        components_by_id = {component.id: component for component in component_result.scalars().all()}
+
+    standard_jobs_result = await db.execute(
+        select(StandardJob).where(
+            StandardJob.tenant_id == tenant_id,
+            StandardJob.is_deleted == False,
+            StandardJob.performing_rank.is_not(None),
+        )
+    )
+    standard_jobs = standard_jobs_result.scalars().all()
+    standard_by_name: dict[str, StandardJob] = {}
+    for standard_job in standard_jobs:
+        key = _seed_text_key(standard_job.job_name)
+        if key and key not in standard_by_name:
+            standard_by_name[key] = standard_job
+
+    component_rank_result = await db.execute(
+        select(
+            Job.component_id,
+            Job.performing_rank,
+            func.count(Job.id),
+        )
+        .where(
+            Job.tenant_id == tenant_id,
+            Job.vessel_id == vessel_id,
+            Job.is_deleted == False,
+            Job.component_id.is_not(None),
+            Job.performing_rank.is_not(None),
+        )
+        .group_by(Job.component_id, Job.performing_rank)
+        .order_by(Job.component_id, func.count(Job.id).desc(), Job.performing_rank.asc())
+    )
+    inferred_component_ranks: dict[uuid.UUID, str] = {}
+    for component_id, performing_rank, _count in component_rank_result.all():
+        if component_id not in inferred_component_ranks and performing_rank:
+            inferred_component_ranks[component_id] = performing_rank
+
+    changed = False
+    for job in jobs:
+        component = components_by_id.get(job.component_id) if job.component_id else None
+        matched_standard_job = None
+        for name_variant in _manual_job_name_variants(job.job_name, getattr(component, "component_name", None)):
+            matched_standard_job = standard_by_name.get(name_variant)
+            if matched_standard_job is not None:
+                break
+        next_performing_rank, next_verifying_rank = derive_manual_job_ranks(
+            job=job,
+            component=component,
+            matched_standard_job=matched_standard_job,
+            inferred_component_rank=inferred_component_ranks.get(job.component_id) if job.component_id else None,
+        )
         if next_performing_rank != job.performing_rank:
             job.performing_rank = next_performing_rank
             db.add(job)
