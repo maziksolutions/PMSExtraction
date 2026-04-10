@@ -238,7 +238,6 @@ const ComponentReview: React.FC = () => {
   const [batchFields, setBatchFields] = useState<Record<string, string>>({})
   const [selectedComponent, setSelectedComponent] = useState<Component | null>(null)
   const [mergeSource, setMergeSource] = useState<Component | null>(null)
-  const [keepSource, setKeepSource] = useState<Component | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data, isLoading } = useQuery({
@@ -318,22 +317,6 @@ const ComponentReview: React.FC = () => {
       refreshComponentQueries()
       setImportResult('Merged extracted component into the selected vessel component.')
       setMergeSource(null)
-      setSelectedComponent(null)
-    },
-  })
-
-  const keepAsMappedMutation = useMutation({
-    mutationFn: async ({
-      sourceId,
-      payload,
-    }: {
-      sourceId: string
-      payload: { component_name: string; group1: string; group2: string; main_machinery: string; qc_status: string }
-    }) => apiClient.post(`/vessels/${vesselId}/components/${sourceId}/remap`, payload).then((r) => r.data),
-    onSuccess: () => {
-      refreshComponentQueries()
-      setImportResult('Accepted extracted component into the vessel structure.')
-      setKeepSource(null)
       setSelectedComponent(null)
     },
   })
@@ -433,15 +416,16 @@ const ComponentReview: React.FC = () => {
           candidates={mappedComponentOptions}
           isPending={mergeIntoExistingMutation.isPending}
           onClose={() => setMergeSource(null)}
+          onCreateNew={() => {
+            setAddContext({
+              group1: mergeSource.group1,
+              group2: mergeSource.group2,
+              machinery: mergeSource.main_machinery,
+            })
+            setMergeSource(null)
+            setShowAddModal(true)
+          }}
           onConfirm={(targetComponentId) => mergeIntoExistingMutation.mutate({ sourceId: mergeSource.id, targetId: targetComponentId })}
-        />
-      )}
-      {keepSource && (
-        <KeepComponentModal
-          source={keepSource}
-          isPending={keepAsMappedMutation.isPending}
-          onClose={() => setKeepSource(null)}
-          onConfirm={(payload) => keepAsMappedMutation.mutate({ sourceId: keepSource.id, payload })}
         />
       )}
       <ResizableSplitView
@@ -1092,16 +1076,6 @@ const ComponentReview: React.FC = () => {
                                   Map
                                 </button>
                                 <button
-                                  onClick={() => {
-                                    setSelectedComponent(comp)
-                                    setKeepSource(comp)
-                                  }}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-700 px-2 py-1 text-xs text-emerald-300 hover:bg-slate-800"
-                                >
-                                  <Plus className="h-3.5 w-3.5" />
-                                  Keep
-                                </button>
-                                <button
                                   onClick={() => bulkRejectMutation.mutate([comp.id])}
                                   className="inline-flex items-center gap-1 rounded-lg border border-red-800 px-2 py-1 text-xs text-red-300 hover:bg-slate-800"
                                 >
@@ -1201,10 +1175,11 @@ interface MergeModalProps {
   candidates: Component[]
   isPending: boolean
   onClose: () => void
+  onCreateNew: () => void
   onConfirm: (targetComponentId: string) => void
 }
 
-function MergeComponentModal({ source, candidates, isPending, onClose, onConfirm }: MergeModalProps) {
+function MergeComponentModal({ source, candidates, isPending, onClose, onCreateNew, onConfirm }: MergeModalProps) {
   const [search, setSearch] = useState(source.component_name)
   const [selectedId, setSelectedId] = useState('')
 
@@ -1227,6 +1202,9 @@ function MergeComponentModal({ source, candidates, isPending, onClose, onConfirm
           <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
         </div>
         <div className="space-y-4 px-6 py-4">
+          <div className="rounded-lg border border-amber-700/40 bg-amber-900/10 px-3 py-2 text-xs text-amber-300">
+            If the right component is not in the vessel structure yet, add it first and then come back here to map this extracted record into that new component.
+          </div>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -1256,6 +1234,12 @@ function MergeComponentModal({ source, candidates, isPending, onClose, onConfirm
           </div>
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-slate-700 px-6 py-4">
+          <button
+            onClick={onCreateNew}
+            className="rounded-lg border border-emerald-700 px-4 py-2 text-sm text-emerald-300 hover:bg-slate-800"
+          >
+            Add Component First
+          </button>
           <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
           <button
             onClick={() => onConfirm(selectedId)}
@@ -1263,74 +1247,6 @@ function MergeComponentModal({ source, candidates, isPending, onClose, onConfirm
             className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
           >
             Merge Into Selected Component
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-interface KeepModalProps {
-  source: Component
-  isPending: boolean
-  onClose: () => void
-  onConfirm: (payload: { component_name: string; group1: string; group2: string; main_machinery: string; qc_status: string }) => void
-}
-
-function KeepComponentModal({ source, isPending, onClose, onConfirm }: KeepModalProps) {
-  const [form, setForm] = useState({
-    component_name: source.component_name,
-    group1: source.group1,
-    group2: source.group2,
-    main_machinery: source.main_machinery,
-    qc_status: 'accepted',
-  })
-
-  const set = (key: keyof typeof form, value: string) => setForm((prev) => ({ ...prev, [key]: value }))
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="w-full max-w-xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
-        <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4">
-          <div>
-            <h2 className="text-base font-semibold text-white">Keep As Vessel Component</h2>
-            <p className="mt-1 text-sm text-slate-400">This moves the extracted component into All Components.</p>
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
-        </div>
-        <div className="grid gap-4 px-6 py-4 md:grid-cols-2">
-          <div className="md:col-span-2">
-            <label className="mb-1 block text-xs text-slate-400">Component Name</label>
-            <input value={form.component_name} onChange={(e) => set('component_name', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-slate-400">Group</label>
-            <input value={form.group1} onChange={(e) => set('group1', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-slate-400">Sub-Group</label>
-            <input value={form.group2} onChange={(e) => set('group2', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-slate-400">Main Machinery</label>
-            <input value={form.main_machinery} onChange={(e) => set('main_machinery', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-slate-400">QC Status</label>
-            <select value={form.qc_status} onChange={(e) => set('qc_status', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
-              <option value="accepted">Accepted</option>
-              <option value="modified">Modified</option>
-            </select>
-          </div>
-        </div>
-        <div className="flex items-center justify-end gap-2 border-t border-slate-700 px-6 py-4">
-          <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-white">Cancel</button>
-          <button
-            onClick={() => onConfirm(form)}
-            disabled={!form.component_name || !form.group1 || !form.group2 || !form.main_machinery || isPending}
-            className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
-          >
-            Save To Vessel Structure
           </button>
         </div>
       </div>

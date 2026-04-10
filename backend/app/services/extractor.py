@@ -1370,6 +1370,15 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 manual_id_str,
             )
 
+        entity_pages = {
+            entity_type: _selected_manual_pages(manual, entity_type)
+            for entity_type in ("component", "job", "spare")
+        }
+        selected_extraction_types = [
+            entity_type for entity_type, pages in entity_pages.items() if pages
+        ]
+        remaining_extraction_types: list[str] | None = None
+
         try:
             from app.services.manual_match_reuse import (
                 find_best_manual_match_for_source,
@@ -1400,21 +1409,41 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                         match_score=best_match.get("match_score"),
                         auto_merge_components=True,
                     )
-                    await db.execute(
-                        update(Manual)
-                        .where(Manual.id == manual_id)
-                        .values(status=ManualStatus.classified)
-                    )
-                    await db.commit()
-                    logger.warning(
-                        "auto_extract_from_manual: reused matched manual for %s exact=%s components=%d jobs=%d spares=%d",
-                        manual_id_str,
-                        payload.get("exact_match"),
-                        payload.get("copied_components", 0),
-                        payload.get("copied_jobs", 0),
-                        payload.get("copied_spares", 0),
-                    )
-                    return
+                    copied_by_type = {
+                        "component": int(payload.get("copied_components", 0) or 0),
+                        "job": int(payload.get("copied_jobs", 0) or 0),
+                        "spare": int(payload.get("copied_spares", 0) or 0),
+                    }
+                    remaining_extraction_types = [
+                        entity_type
+                        for entity_type in selected_extraction_types
+                        if copied_by_type.get(entity_type, 0) <= 0
+                    ]
+                    if remaining_extraction_types:
+                        logger.warning(
+                            "auto_extract_from_manual: partial manual-match reuse for %s; copied components=%d jobs=%d spares=%d, extracting remaining=%s",
+                            manual_id_str,
+                            copied_by_type["component"],
+                            copied_by_type["job"],
+                            copied_by_type["spare"],
+                            ",".join(remaining_extraction_types),
+                        )
+                    else:
+                        await db.execute(
+                            update(Manual)
+                            .where(Manual.id == manual_id)
+                            .values(status=ManualStatus.classified)
+                        )
+                        await db.commit()
+                        logger.warning(
+                            "auto_extract_from_manual: reused matched manual for %s exact=%s components=%d jobs=%d spares=%d",
+                            manual_id_str,
+                            payload.get("exact_match"),
+                            payload.get("copied_components", 0),
+                            payload.get("copied_jobs", 0),
+                            payload.get("copied_spares", 0),
+                        )
+                        return
         except Exception as manual_match_err:
             logger.warning("auto_extract_from_manual: matched-manual reuse failed: %s", manual_match_err)
 
@@ -1541,11 +1570,11 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         # Determine which entity types to extract strictly from screened page refs.
         # This keeps extraction cost aligned to what reviewers selected.
         # ------------------------------------------------------------------
-        entity_pages = {
-            entity_type: _selected_manual_pages(manual, entity_type)
-            for entity_type in ("component", "job", "spare")
-        }
         extraction_types = [entity_type for entity_type, pages in entity_pages.items() if pages]
+        if remaining_extraction_types is not None:
+            extraction_types = [
+                entity_type for entity_type in extraction_types if entity_type in remaining_extraction_types
+            ]
 
         if not extraction_types:
             logger.warning(
@@ -1666,6 +1695,27 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         jobs_to_add: list[Job] = []
         spares_to_add: list[Spare] = []
         extracted_component_context: list[dict[str, Any]] = []
+        existing_manual_component_context: list[dict[str, Any]] = []
+
+        if any(entity_type in {"job", "spare"} for entity_type in extraction_types):
+            existing_component_result = await db.execute(
+                select(Component).where(
+                    Component.vessel_id == vessel_id,
+                    Component.tenant_id == tenant_id,
+                    Component.source_manual_id == manual.id,
+                    Component.is_deleted == False,
+                )
+            )
+            existing_manual_component_context = [
+                {
+                    "component_name": component.component_name,
+                    "main_machinery": component.main_machinery,
+                    "maker": component.maker,
+                    "model": component.model,
+                    "source_page_number": component.page_reference,
+                }
+                for component in existing_component_result.scalars().all()
+            ]
 
         for etype in extraction_types:
             source_text = type_to_text.get(etype) or full_text
@@ -1681,8 +1731,10 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             for chunk_idx, chunk in enumerate(text_chunks):
                 chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
                 context_note = None
-                if etype in {"job", "spare"} and extracted_component_context:
-                    context_note = _build_component_context_text(extracted_component_context, manual)
+                if etype in {"job", "spare"}:
+                    context_components = extracted_component_context or existing_manual_component_context
+                    if context_components:
+                        context_note = _build_component_context_text(context_components, manual)
                 records = await extract_entities(chunk, etype, chunk_label, context_note=context_note)
                 all_records.extend(records)
 
@@ -1695,8 +1747,10 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 )
                 if rendered_pages:
                     context_note = None
-                    if etype in {"job", "spare"} and extracted_component_context:
-                        context_note = _build_component_context_text(extracted_component_context, manual)
+                    if etype in {"job", "spare"}:
+                        context_components = extracted_component_context or existing_manual_component_context
+                        if context_components:
+                            context_note = _build_component_context_text(context_components, manual)
                     for page_no in selected_pages:
                         image_bytes = rendered_pages.get(page_no)
                         if not image_bytes:
