@@ -264,18 +264,33 @@ async def ensure_job_rank(db: AsyncSession, *, tenant_id: uuid.UUID, rank_name: 
     key = _rank_key(cleaned)
     if not key:
         return
+
+    # Avoid queuing duplicate inserts within the current unit of work before a
+    # flush happens. This was causing unique-index violations on commit when
+    # the same rank was ensured multiple times in one request.
+    for pending in db.sync_session.new:
+        if not isinstance(pending, JobRank):
+            continue
+        if pending.tenant_id == tenant_id and pending.normalized_name == key:
+            if pending.rank_name != cleaned:
+                pending.rank_name = cleaned
+            if getattr(pending, "is_deleted", False):
+                pending.is_deleted = False
+            return
+
     result = await db.execute(
         select(JobRank).where(
             JobRank.tenant_id == tenant_id,
             JobRank.normalized_name == key,
-            JobRank.is_deleted == False,
         )
     )
     existing = result.scalar_one_or_none()
     if existing:
         if existing.rank_name != cleaned:
             existing.rank_name = cleaned
-            db.add(existing)
+        if existing.is_deleted:
+            existing.is_deleted = False
+        db.add(existing)
         return
     db.add(
         JobRank(
