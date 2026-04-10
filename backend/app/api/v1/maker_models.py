@@ -52,6 +52,7 @@ async def _bootstrap(db: AsyncSession) -> None:
                     maker            VARCHAR(255) NOT NULL,
                     model            VARCHAR(255),
                     component_category VARCHAR(100),
+                    is_system_generated BOOLEAN NOT NULL DEFAULT false,
                     is_deleted       BOOLEAN NOT NULL DEFAULT false,
                     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -62,7 +63,11 @@ async def _bootstrap(db: AsyncSession) -> None:
                 ON maker_models (tenant_id, maker, COALESCE(model, ''))
                 WHERE is_deleted = false
             """))
-            await db.commit()
+        await db.execute(text("""
+            ALTER TABLE maker_models
+            ADD COLUMN IF NOT EXISTS is_system_generated BOOLEAN NOT NULL DEFAULT false
+        """))
+        await db.commit()
     except Exception:
         # Rollback is CRITICAL here — without it the session stays in an
         # "aborted transaction" state and every subsequent query returns 500.
@@ -235,8 +240,8 @@ async def add_maker_model(
     # ON CONFLICT DO NOTHING handles the partial unique index (is_deleted=false)
     # without repeating named params (which breaks asyncpg's positional mapping)
     await db.execute(text("""
-        INSERT INTO maker_models (id, tenant_id, maker, model, component_category)
-        VALUES (gen_random_uuid(), :tid, :maker, :model, :cat)
+        INSERT INTO maker_models (id, tenant_id, maker, model, component_category, is_system_generated)
+        VALUES (gen_random_uuid(), :tid, :maker, :model, :cat, false)
         ON CONFLICT DO NOTHING
     """), {"tid": str(current_user.tenant_id), "maker": maker, "model": model, "cat": category})
     await db.commit()
@@ -298,8 +303,8 @@ async def import_maker_models(
             continue
 
         result = await db.execute(text("""
-            INSERT INTO maker_models (id, tenant_id, maker, model, component_category)
-            VALUES (gen_random_uuid(), :tid, :maker, :model, :cat)
+            INSERT INTO maker_models (id, tenant_id, maker, model, component_category, is_system_generated)
+            VALUES (gen_random_uuid(), :tid, :maker, :model, :cat, false)
             ON CONFLICT DO NOTHING
         """), {"tid": tid, "maker": maker, "model": model, "cat": category})
         if result.rowcount > 0:

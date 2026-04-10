@@ -727,6 +727,20 @@ const GLOBAL_ENTITY_LABELS: Record<GlobalEntity, string> = {
   spare: 'Spares',
 }
 
+const GLOBAL_LIBRARY_PREFERRED_KEYS: Record<GlobalEntity, string[]> = {
+  component: ['component_name', 'main_machinery', 'group1', 'group2', 'maker', 'model'],
+  job: ['job_name', 'job_description', 'job_code', 'frequency', 'frequency_type', 'cms_id'],
+  spare: ['part_name', 'part_number', 'spare_maker', 'spare_model', 'spare_assembly', 'assembly_description'],
+}
+
+const orderCanonicalKeys = (entity: GlobalEntity, data: Record<string, unknown>) => {
+  const keys = Object.keys(data)
+  const preferred = GLOBAL_LIBRARY_PREFERRED_KEYS[entity] ?? []
+  const preferredKeys = preferred.filter((key) => keys.includes(key))
+  const remainingKeys = keys.filter((key) => !preferredKeys.includes(key)).sort()
+  return [...preferredKeys, ...remainingKeys]
+}
+
 const GlobalLibrariesTab: React.FC = () => {
   const queryClient = useQueryClient()
   const [activeSub, setActiveSub] = useState<'makers' | 'component' | 'job' | 'spare' | 'rank'>('makers')
@@ -922,7 +936,7 @@ const GlobalLibrariesTab: React.FC = () => {
                     </td></tr>
                   ) : entries.map((entry) => {
                     const isExpanded = expandedRows.has(entry.id)
-                    const dataKeys = Object.keys(entry.canonical_data)
+                    const dataKeys = orderCanonicalKeys(activeEntity, entry.canonical_data)
                     const previewKey = dataKeys[0]
                     const previewValue = previewKey ? String(entry.canonical_data[previewKey]) : ''
                     return (

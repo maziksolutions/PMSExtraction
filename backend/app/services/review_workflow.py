@@ -77,22 +77,29 @@ async def ensure_maker_models_table(db: AsyncSession) -> None:
             "WHERE table_schema = 'public' AND table_name = 'maker_models'"
         )
     )
-    if result.scalar_one_or_none() is not None:
-        return
-
+    if result.scalar_one_or_none() is None:
+        await db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS maker_models (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id UUID NOT NULL,
+                    maker VARCHAR(255) NOT NULL,
+                    model VARCHAR(255),
+                    component_category VARCHAR(100),
+                    is_system_generated BOOLEAN NOT NULL DEFAULT false,
+                    is_deleted BOOLEAN NOT NULL DEFAULT false,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+        )
     await db.execute(
         text(
             """
-            CREATE TABLE IF NOT EXISTS maker_models (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tenant_id UUID NOT NULL,
-                maker VARCHAR(255) NOT NULL,
-                model VARCHAR(255),
-                component_category VARCHAR(100),
-                is_deleted BOOLEAN NOT NULL DEFAULT false,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
+            ALTER TABLE maker_models
+            ADD COLUMN IF NOT EXISTS is_system_generated BOOLEAN NOT NULL DEFAULT false
             """
         )
     )
@@ -144,6 +151,7 @@ async def upsert_maker_model_library_entry(
     maker: Optional[str],
     model: Optional[str],
     component_category: Optional[str] = None,
+    is_system_generated: bool = True,
 ) -> None:
     maker_value = (maker or "").strip()
     model_value = (model or "").strip() or None
@@ -172,11 +180,53 @@ async def upsert_maker_model_library_entry(
     )
     if deleted_match.scalar_one_or_none() is not None:
         return
+    active_match = await db.execute(
+        text(
+            """
+            SELECT id, component_category, is_system_generated
+            FROM maker_models
+            WHERE tenant_id = :tid
+              AND maker = :maker
+              AND COALESCE(model, '') = COALESCE(:model, '')
+              AND is_deleted = false
+            LIMIT 1
+            """
+        ),
+        {
+            "tid": _as_uuid_str(tenant_id),
+            "maker": maker_value,
+            "model": model_value,
+        },
+    )
+    active_row = active_match.mappings().first()
+    if active_row is not None:
+        should_update = bool(active_row["is_system_generated"]) and (
+            active_row["component_category"] != category_value
+            or bool(active_row["is_system_generated"]) != is_system_generated
+        )
+        if should_update:
+            await db.execute(
+                text(
+                    """
+                    UPDATE maker_models
+                    SET component_category = :category,
+                        is_system_generated = :is_system_generated,
+                        updated_at = NOW()
+                    WHERE id = :id
+                    """
+                ),
+                {
+                    "id": str(active_row["id"]),
+                    "category": category_value,
+                    "is_system_generated": is_system_generated,
+                },
+            )
+        return
     await db.execute(
         text(
             """
-            INSERT INTO maker_models (id, tenant_id, maker, model, component_category)
-            VALUES (gen_random_uuid(), :tid, :maker, :model, :category)
+            INSERT INTO maker_models (id, tenant_id, maker, model, component_category, is_system_generated)
+            VALUES (gen_random_uuid(), :tid, :maker, :model, :category, :is_system_generated)
             ON CONFLICT DO NOTHING
             """
         ),
@@ -185,8 +235,123 @@ async def upsert_maker_model_library_entry(
             "maker": maker_value,
             "model": model_value,
             "category": category_value,
+            "is_system_generated": is_system_generated,
         },
     )
+
+
+def _maker_model_signature(maker: Optional[str], model: Optional[str]) -> str:
+    return json.dumps(
+        {
+            "maker": " ".join((maker or "").strip().lower().split()),
+            "model": " ".join((model or "").strip().lower().split()),
+        },
+        sort_keys=True,
+    )
+
+
+async def _reconcile_maker_model_library(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    desired_entries: list[dict[str, Optional[str]]],
+) -> None:
+    await ensure_maker_models_table(db)
+    active_result = await db.execute(
+        text(
+            """
+            SELECT id, maker, model, component_category
+            FROM maker_models
+            WHERE tenant_id = :tid
+              AND is_deleted = false
+              AND is_system_generated = true
+            """
+        ),
+        {"tid": _as_uuid_str(tenant_id)},
+    )
+    active_rows = {
+        _maker_model_signature(row["maker"], row["model"]): row
+        for row in active_result.mappings().all()
+    }
+    deleted_result = await db.execute(
+        text(
+            """
+            SELECT maker, model
+            FROM maker_models
+            WHERE tenant_id = :tid
+              AND is_deleted = true
+            """
+        ),
+        {"tid": _as_uuid_str(tenant_id)},
+    )
+    deleted_signatures = {
+        _maker_model_signature(row["maker"], row["model"])
+        for row in deleted_result.mappings().all()
+    }
+
+    desired_map: dict[str, dict[str, Optional[str]]] = {}
+    for entry in desired_entries:
+        maker = (entry.get("maker") or "").strip()
+        model = (entry.get("model") or "").strip() or None
+        if not maker:
+            continue
+        signature = _maker_model_signature(maker, model)
+        if signature in deleted_signatures:
+            continue
+        desired_map[signature] = {
+            "maker": maker,
+            "model": model,
+            "component_category": (entry.get("component_category") or "").strip() or None,
+        }
+
+    for signature, desired in desired_map.items():
+        active = active_rows.pop(signature, None)
+        if active is None:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO maker_models (id, tenant_id, maker, model, component_category, is_system_generated)
+                    VALUES (gen_random_uuid(), :tid, :maker, :model, :category, true)
+                    ON CONFLICT DO NOTHING
+                    """
+                ),
+                {
+                    "tid": _as_uuid_str(tenant_id),
+                    "maker": desired["maker"],
+                    "model": desired["model"],
+                    "category": desired["component_category"],
+                },
+            )
+            continue
+
+        if active["component_category"] != desired["component_category"]:
+            await db.execute(
+                text(
+                    """
+                    UPDATE maker_models
+                    SET component_category = :category,
+                        updated_at = NOW()
+                    WHERE id = :id
+                    """
+                ),
+                {
+                    "id": str(active["id"]),
+                    "category": desired["component_category"],
+                },
+            )
+
+    for stale in active_rows.values():
+        await db.execute(
+            text(
+                """
+                UPDATE maker_models
+                SET is_deleted = true,
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {"id": str(stale["id"])},
+        )
 
 
 async def log_activity(
@@ -576,6 +741,7 @@ async def sync_components_to_global_library(
             model=component.model,
             component_category=component.group1,
         )
+    await backfill_maker_models_from_accepted_records(db, tenant_id=tenant_id)
     return await backfill_global_library_from_accepted_records(
         db,
         tenant_id=tenant_id,
@@ -612,6 +778,7 @@ async def sync_spares_to_global_library(
             model=spare.spare_model,
             component_category="spare",
         )
+    await backfill_maker_models_from_accepted_records(db, tenant_id=tenant_id)
     return await backfill_global_library_from_accepted_records(
         db,
         tenant_id=tenant_id,
@@ -624,37 +791,46 @@ async def backfill_maker_models_from_accepted_records(
     *,
     tenant_id: uuid.UUID,
 ) -> None:
+    desired_entries: list[dict[str, Optional[str]]] = []
     component_result = await db.execute(
         select(Component).where(
             Component.tenant_id == tenant_id,
             Component.qc_status == QCStatus.accepted,
+            Component.source_manual_id.is_not(None),
             Component.is_deleted == False,
         )
     )
     for component in component_result.scalars().all():
-        await upsert_maker_model_library_entry(
-            db,
-            tenant_id=tenant_id,
-            maker=component.maker,
-            model=component.model,
-            component_category=component.group1,
+        desired_entries.append(
+            {
+                "maker": component.maker,
+                "model": component.model,
+                "component_category": component.group1,
+            }
         )
 
     spare_result = await db.execute(
         select(Spare).where(
             Spare.tenant_id == tenant_id,
             Spare.qc_status == QCStatus.accepted,
+            Spare.source_manual_id.is_not(None),
             Spare.is_deleted == False,
         )
     )
     for spare in spare_result.scalars().all():
-        await upsert_maker_model_library_entry(
-            db,
-            tenant_id=tenant_id,
-            maker=spare.spare_maker,
-            model=spare.spare_model,
-            component_category="spare",
+        desired_entries.append(
+            {
+                "maker": spare.spare_maker,
+                "model": spare.spare_model,
+                "component_category": "spare",
+            }
         )
+
+    await _reconcile_maker_model_library(
+        db,
+        tenant_id=tenant_id,
+        desired_entries=desired_entries,
+    )
 
 
 async def backfill_global_library_from_accepted_records(
@@ -669,6 +845,7 @@ async def backfill_global_library_from_accepted_records(
             select(Component).where(
                 Component.tenant_id == tenant_id,
                 Component.qc_status == QCStatus.accepted,
+                Component.source_manual_id.is_not(None),
                 Component.is_deleted == False,
             )
         )
@@ -694,6 +871,7 @@ async def backfill_global_library_from_accepted_records(
             select(Job).where(
                 Job.tenant_id == tenant_id,
                 Job.qc_status == QCStatus.accepted,
+                Job.source_manual_id.is_not(None),
                 Job.is_deleted == False,
             )
         )
@@ -719,6 +897,7 @@ async def backfill_global_library_from_accepted_records(
             select(Spare).where(
                 Spare.tenant_id == tenant_id,
                 Spare.qc_status == QCStatus.accepted,
+                Spare.source_manual_id.is_not(None),
                 Spare.is_deleted == False,
             )
         )

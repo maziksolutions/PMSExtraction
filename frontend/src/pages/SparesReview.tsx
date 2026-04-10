@@ -747,6 +747,7 @@ const SparesReview: React.FC = () => {
                   <th className="px-4 py-3">Drawing #</th>
                   <th className="px-4 py-3">Pos</th>
                   <th className="px-4 py-3">Maker</th>
+                  <th className="px-4 py-3">Model</th>
                   <th className="px-4 py-3">Specification / Particulars</th>
                   <th className="px-4 py-3">Assembly</th>
                   <th className="px-4 py-3">Assembly Description</th>
@@ -812,6 +813,14 @@ const SparesReview: React.FC = () => {
                         onChange={(e) => setEdit(spare.id, 'spare_maker', e.target.value)}
                         className="w-40 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                         title={spare.spare_maker ?? ''}
+                      />
+                    </td>
+                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        value={edits[spare.id]?.spare_model ?? (spare.spare_model ?? '')}
+                        onChange={(e) => setEdit(spare.id, 'spare_model', e.target.value)}
+                        className="w-[180px] rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                        title={spare.spare_model ?? ''}
                       />
                     </td>
                     <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>

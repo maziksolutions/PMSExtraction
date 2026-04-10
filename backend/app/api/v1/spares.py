@@ -615,11 +615,20 @@ async def merge_spare(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spare not found")
 
     target_id = uuid.UUID(body["target_spare_id"])
+    needs_sync = spare.qc_status == QCStatus.accepted
     spare.merged_into_id = target_id
     spare.is_duplicate = True
     spare.is_deleted = True
     db.add(spare)
     await db.commit()
+    if needs_sync:
+        await sync_spares_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            spares=[],
+        )
+        await db.commit()
     await db.refresh(spare)
     return _spare_out(spare)
 
