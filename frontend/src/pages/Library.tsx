@@ -793,7 +793,9 @@ const GlobalLibrariesTab: React.FC = () => {
               setPage(1)
             }}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-              activeSub === key ? 'bg-sky-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'
+              activeSub === key
+                ? 'border border-[#d4537e] bg-[#d4537e] text-white shadow-sm'
+                : 'border border-transparent text-[#72243e] hover:border-[#ed93b1] hover:bg-[#fff3f7] hover:text-[#4b1528]'
             }`}
           >
             {icon}
@@ -1205,10 +1207,10 @@ const Library: React.FC = () => {
           <button
             key={key}
             onClick={() => setActiveTab(key)}
-            className={`flex items-center gap-2 px-5 py-3 text-sm font-medium border-b-2 transition-colors -mb-px ${
+            className={`flex items-center gap-2 rounded-t-lg px-5 py-3 text-sm font-semibold border-b-2 transition-colors -mb-px ${
               activeTab === key
-                ? 'border-sky-500 text-sky-400'
-                : 'border-transparent text-slate-400 hover:text-white hover:border-slate-500'
+                ? 'border-[#d4537e] bg-[#fff3f7] text-[#4b1528]'
+                : 'border-transparent text-[#72243e] hover:border-[#ed93b1] hover:bg-[#fff7fa] hover:text-[#4b1528]'
             }`}
           >
             {icon}
