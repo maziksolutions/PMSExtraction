@@ -796,7 +796,7 @@ const GlobalLibrariesTab: React.FC = () => {
             }}
             className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
               activeSub === key
-                ? 'border border-[#d4537e] bg-[#d4537e] text-white shadow-sm'
+                ? 'border border-[#d4537e] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.22)]'
                 : 'border border-transparent text-[#72243e] hover:border-[#ed93b1] hover:bg-[#fff3f7] hover:text-[#4b1528]'
             }`}
           >
@@ -1214,7 +1214,7 @@ const Library: React.FC = () => {
             onClick={() => setActiveTab(key)}
             className={`flex items-center gap-2 rounded-t-lg px-5 py-3 text-sm font-semibold border-b-2 transition-colors -mb-px ${
               activeTab === key
-                ? 'border-[#d4537e] bg-[#fff3f7] text-[#4b1528]'
+                ? 'border-[#d4537e] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
                 : 'border-transparent text-[#72243e] hover:border-[#ed93b1] hover:bg-[#fff7fa] hover:text-[#4b1528]'
             }`}
           >
