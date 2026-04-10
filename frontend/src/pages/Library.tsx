@@ -281,12 +281,18 @@ const ComponentStructureTab: React.FC = () => {
               onClick={() => { setSelectedVesselTypeId(vt.id); setPage(1) }}
               className={`w-full flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-sm text-left transition-colors ${
                 selectedVesselTypeId === vt.id
-                  ? 'bg-sky-600/20 text-sky-300 border border-sky-600/30'
-                  : 'text-slate-300 hover:bg-slate-800'
+                  ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
+                  : 'border border-transparent text-[#72243e] hover:bg-[#fff3f7] hover:text-[#4b1528]'
               }`}
             >
               <span className="flex-1 truncate">{vt.name}</span>
-              <span className="text-xs text-slate-500 bg-slate-800 rounded-full px-1.5 py-0.5 shrink-0">
+              <span
+                className={`rounded-full px-1.5 py-0.5 text-xs shrink-0 ${
+                  selectedVesselTypeId === vt.id
+                    ? 'bg-[#fff3f7] text-[#8c2f52]'
+                    : 'bg-slate-800 text-slate-500'
+                }`}
+              >
                 {vt.component_count}
               </span>
             </button>

@@ -479,10 +479,14 @@ const ComponentReview: React.FC = () => {
         {/* All Components */}
         <button
           onClick={() => { setSelectedGroup1(null); setSelectedGroup2(null); setSelectedMachinery(null); setShowUnmapped(false) }}
-          className={`mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors ${!selectedGroup1 && !showUnmapped ? 'bg-sky-600/20 text-sky-300' : 'text-slate-300 hover:bg-slate-800'}`}
+          className={`mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors ${
+            !selectedGroup1 && !showUnmapped
+              ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
+              : 'border border-transparent text-[#72243e] hover:bg-[#fff3f7] hover:text-[#4b1528]'
+          }`}
         >
           All Components
-          <span className="ml-auto rounded-full bg-slate-700 px-1.5 text-xs text-slate-400">
+          <span className={`ml-auto rounded-full px-1.5 text-xs ${!selectedGroup1 && !showUnmapped ? 'bg-[#fff3f7] text-[#8c2f52]' : 'bg-slate-700 text-slate-400'}`}>
             {allComponentsQuery.data?.total ?? allComponentsQuery.data?.items?.length ?? 0}
           </span>
         </button>
@@ -507,11 +511,15 @@ const ComponentReview: React.FC = () => {
               </button>
               <button
                 onClick={() => { setSelectedGroup1(node.group1); setSelectedGroup2(null); setSelectedMachinery(null); setShowUnmapped(false) }}
-                className={`flex flex-1 items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm transition-colors ${selectedGroup1 === node.group1 && !selectedGroup2 ? 'bg-sky-600/20 text-sky-300' : 'text-slate-300 hover:bg-slate-800'}`}
+                className={`flex flex-1 items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm transition-colors ${
+                  selectedGroup1 === node.group1 && !selectedGroup2
+                    ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
+                    : 'border border-transparent text-[#72243e] hover:bg-[#fff3f7] hover:text-[#4b1528]'
+                }`}
               >
                 <FolderPlus className="h-3.5 w-3.5 shrink-0 text-amber-500" />
                 <span className="flex-1 truncate text-left">{node.group1}</span>
-                <span className="rounded-full bg-slate-700 px-1.5 text-xs text-slate-400">{node.count}</span>
+                <span className={`rounded-full px-1.5 text-xs ${selectedGroup1 === node.group1 && !selectedGroup2 ? 'bg-[#fff3f7] text-[#8c2f52]' : 'bg-slate-700 text-slate-400'}`}>{node.count}</span>
               </button>
               <button
                 onClick={() => { setAddContext({ group1: node.group1 }); setShowAddModal(true) }}
@@ -534,10 +542,14 @@ const ComponentReview: React.FC = () => {
                   </button>
                   <button
                     onClick={() => { setSelectedGroup1(node.group1); setSelectedGroup2(g2); setSelectedMachinery(null); setShowUnmapped(false) }}
-                    className={`flex flex-1 items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${selectedGroup2 === g2 && !selectedMachinery ? 'bg-sky-600/20 text-sky-300' : 'text-slate-400 hover:bg-slate-800'}`}
+                    className={`flex flex-1 items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
+                      selectedGroup2 === g2 && !selectedMachinery
+                        ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
+                        : 'border border-transparent text-[#8f4a64] hover:bg-[#fff3f7] hover:text-[#4b1528]'
+                    }`}
                   >
                     <span className="flex-1 truncate text-left">{g2}</span>
-                    <span className="text-slate-500">{g2data.count}</span>
+                    <span className={selectedGroup2 === g2 && !selectedMachinery ? 'text-[#fff3f7]' : 'text-slate-500'}>{g2data.count}</span>
                   </button>
                   <button
                     onClick={() => { setAddContext({ group1: node.group1, group2: g2 }); setShowAddModal(true) }}
@@ -553,11 +565,15 @@ const ComponentReview: React.FC = () => {
                   <div key={mm} className="ml-5 flex items-center gap-1">
                     <button
                       onClick={() => { setSelectedGroup1(node.group1); setSelectedGroup2(g2); setSelectedMachinery(mm); setShowUnmapped(false) }}
-                      className={`flex flex-1 items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${selectedMachinery === mm ? 'bg-sky-600/20 text-sky-300' : 'text-slate-500 hover:bg-slate-800'}`}
+                      className={`flex flex-1 items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
+                        selectedMachinery === mm
+                          ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
+                          : 'border border-transparent text-[#8f4a64] hover:bg-[#fff3f7] hover:text-[#4b1528]'
+                      }`}
                     >
-                      <Wrench className="h-3 w-3 shrink-0 text-slate-500" />
+                      <Wrench className={`h-3 w-3 shrink-0 ${selectedMachinery === mm ? 'text-[#fff3f7]' : 'text-slate-500'}`} />
                       <span className="flex-1 truncate text-left">{mm}</span>
-                      <span className="text-slate-600">{count}</span>
+                      <span className={selectedMachinery === mm ? 'text-[#fff3f7]' : 'text-slate-600'}>{count}</span>
                     </button>
                     <button
                       onClick={() => { setAddContext({ group1: node.group1, group2: g2, machinery: mm }); setShowAddModal(true) }}
@@ -575,9 +591,13 @@ const ComponentReview: React.FC = () => {
 
         <button
           onClick={() => { setSelectedGroup1(null); setSelectedGroup2(null); setSelectedMachinery(null); setShowUnmapped(true) }}
-          className={`mt-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors ${showUnmapped ? 'bg-amber-600/20 text-amber-300' : 'text-amber-400 hover:bg-slate-800'}`}
+          className={`mt-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors ${
+            showUnmapped
+              ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
+              : 'border border-transparent text-[#8f4a64] hover:bg-[#fff3f7] hover:text-[#4b1528]'
+          }`}
         >
-          <AlertCircle className="h-3.5 w-3.5" />
+          <AlertCircle className={`h-3.5 w-3.5 ${showUnmapped ? 'text-[#fff3f7]' : ''}`} />
           Unmapped
         </button>
       </aside>
