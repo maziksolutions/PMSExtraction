@@ -443,6 +443,16 @@ def _spare_record(spare: Spare) -> dict[str, Any]:
     }
 
 
+def _component_is_manual_derived(component: Component) -> bool:
+    return bool(
+        component.source_manual_id
+        or component.pdf_reference
+        or component.page_reference is not None
+        or component.job_pages
+        or component.spare_pages
+    )
+
+
 async def _load_existing_global_entries(
     db: AsyncSession,
     *,
@@ -796,11 +806,12 @@ async def backfill_maker_models_from_accepted_records(
         select(Component).where(
             Component.tenant_id == tenant_id,
             Component.qc_status == QCStatus.accepted,
-            Component.source_manual_id.is_not(None),
             Component.is_deleted == False,
         )
     )
     for component in component_result.scalars().all():
+        if not _component_is_manual_derived(component):
+            continue
         desired_entries.append(
             {
                 "maker": component.maker,
@@ -845,15 +856,19 @@ async def backfill_global_library_from_accepted_records(
             select(Component).where(
                 Component.tenant_id == tenant_id,
                 Component.qc_status == QCStatus.accepted,
-                Component.source_manual_id.is_not(None),
                 Component.is_deleted == False,
             )
         )
+        components = [
+            component
+            for component in result.scalars().all()
+            if _component_is_manual_derived(component)
+        ]
         collapsed = _collapse_records_for_library(
             entity_type="component",
             records=[
                 {"vessel_id": _as_uuid_str(component.vessel_id), "data": _component_record(component)}
-                for component in result.scalars().all()
+                for component in components
             ],
         )
         totals = await _reconcile_global_library_records(

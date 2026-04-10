@@ -881,11 +881,18 @@ async def populate_global_library(
                 Component.vessel_id == vessel_id,
                 Component.tenant_id == current_user.tenant_id,
                 Component.qc_status == CompQCStatus.accepted,
-                Component.source_manual_id.is_not(None),
                 Component.is_deleted == False,
             )
         )
         for c in result.scalars().all():
+            if not (
+                c.source_manual_id
+                or c.pdf_reference
+                or c.page_reference is not None
+                or c.job_pages
+                or c.spare_pages
+            ):
+                continue
             accepted_records.append(
                 {
                     "id": str(c.id),
