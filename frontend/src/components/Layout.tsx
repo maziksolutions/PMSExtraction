@@ -88,10 +88,10 @@ const Layout: React.FC = () => {
 
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     [
-      'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-150',
+      'group flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-150',
       isActive
-        ? 'bg-sky-500/20 text-sky-400 shadow-inner'
-        : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100',
+        ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]'
+        : 'border border-transparent text-[#72243e] hover:bg-[#fff3f7] hover:text-[#4b1528]',
     ].join(' ')
 
   const SidebarContent = () => (

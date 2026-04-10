@@ -110,12 +110,6 @@
   color: var(--text-strong) !important;
 }
 
-[class*="bg-sky-950/20"],
-[class*="bg-sky-900/20"],
-[class*="bg-sky-500/20"] {
-  background-color: var(--accent-soft) !important;
-}
-
 [class*="bg-sky-600"],
 [class*="bg-sky-500"],
 [class*="bg-sky-700"] {
@@ -147,6 +141,12 @@
 [class*="focus:border-sky-500"]:focus,
 [class*="focus:border-sky-700"]:focus {
   border-color: var(--accent) !important;
+}
+
+[class*="bg-sky-950/20"],
+[class*="bg-sky-900/20"],
+[class*="bg-sky-500/20"] {
+  background-color: var(--accent-soft) !important;
 }
 
 [class*="shadow-xl"],
