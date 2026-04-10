@@ -30,6 +30,17 @@ interface Match {
   matched_job_code?: string | null
   matched_job_description?: string | null
   matched_job_qc_status?: string | null
+  matched_job_origin?: 'manual' | 'review' | null
+  jobs_review_job_id?: string | null
+  jobs_review_job_name?: string | null
+  jobs_review_job_qc_status?: string | null
+}
+
+interface ComparisonSummary {
+  library_total: number
+  added_to_review_total: number
+  not_applicable_total: number
+  manual_linked_total: number
 }
 
 interface ComponentOption {
@@ -120,6 +131,7 @@ const StandardJobs: React.FC = () => {
   const [libraryType, setLibraryType] = useState<'standard' | 'class'>('standard')
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([])
   const [componentSelections, setComponentSelections] = useState<Record<string, string>>({})
+  const [batchComponentId, setBatchComponentId] = useState('')
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -127,6 +139,7 @@ const StandardJobs: React.FC = () => {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
+  const [naMatchIds, setNaMatchIds] = useState<string[]>([])
 
   const standardJobsQuery = useQuery({
     queryKey: ['standard-jobs-comparison', libraryType, filterSociety, filterMachinery, search, sortBy, sortOrder, page, pageSize],
@@ -150,6 +163,21 @@ const StandardJobs: React.FC = () => {
     queryKey: ['standard-job-components', vesselId],
     queryFn: () =>
       apiClient.get(`/vessels/${vesselId}/components`, { params: { page: 1, page_size: 5000, is_unmapped: 'false' } }).then((r) => r.data),
+    enabled: !!vesselId,
+  })
+
+  const summaryQuery = useQuery({
+    queryKey: ['std-job-summary', vesselId, libraryType, filterSociety, filterMachinery, search],
+    queryFn: () =>
+      apiClient.get(`/vessels/${vesselId}/standard-jobs/summary`, {
+        params: {
+          job_type: libraryType,
+          class_society: filterSociety || undefined,
+          machinery_type: filterMachinery || undefined,
+          search: search || undefined,
+          is_critical: false,
+        },
+      }).then((r) => r.data),
     enabled: !!vesselId,
   })
 
@@ -177,6 +205,7 @@ const StandardJobs: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['standard-jobs-comparison'] })
+      queryClient.invalidateQueries({ queryKey: ['std-job-summary', vesselId] })
       setActionMessage('Comparison completed against instruction-manual jobs.')
       setActionError(null)
     },
@@ -201,15 +230,14 @@ const StandardJobs: React.FC = () => {
         .then((r) => r.data),
     onSuccess: (data) => {
       const totalAffected = (data.imported ?? 0) + (data.merged ?? 0)
-      setActionMessage(`Added ${data.imported} and updated ${data.merged} library jobs in Jobs Review. Opening the affected vessel jobs for review.`)
+      setActionMessage(`Added ${data.imported} and updated ${data.merged} library jobs in Jobs Review. The comparison view has been refreshed so you can verify what moved.`)
       setActionError(null)
       setSelectedJobIds([])
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['standard-jobs-comparison'] })
-      if (totalAffected > 0) {
-        navigate(`/vessels/${vesselId}/jobs?source_kind=standard_library`)
-      }
+      queryClient.invalidateQueries({ queryKey: ['std-job-summary', vesselId] })
+      if (totalAffected > 0) setPage(1)
     },
     onError: (error: unknown) => {
       setActionError(getApiErrorMessage(error, 'Failed to add standard jobs to Jobs Review'))
@@ -225,12 +253,12 @@ const StandardJobs: React.FC = () => {
         })
         .then((r) => r.data),
     onSuccess: (data) => {
-      setActionMessage('Library job added to Jobs Review. Opening Jobs Review with Standard Library filter.')
+      setActionMessage('Library job added to Jobs Review. The row will now show its Jobs Review linkage here.')
       setActionError(null)
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['standard-jobs-comparison'] })
-      navigate(`/vessels/${vesselId}/jobs?source_kind=standard_library`)
+      queryClient.invalidateQueries({ queryKey: ['std-job-summary', vesselId] })
     },
     onError: (error: unknown) => {
       setActionError(getApiErrorMessage(error, 'Failed to add standard job to Jobs Review'))
@@ -248,9 +276,11 @@ const StandardJobs: React.FC = () => {
       setActionMessage('Standard job marked as not applicable.')
       setActionError(null)
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['std-job-summary', vesselId] })
       setShowNaDialog(false)
       setNaReason('')
       setNaMatchId(null)
+      setNaMatchIds([])
     },
     onError: (error: unknown) => {
       setActionError(getApiErrorMessage(error, 'Unable to update match'))
@@ -258,9 +288,37 @@ const StandardJobs: React.FC = () => {
     },
   })
 
+  const batchMarkNaMutation = useMutation({
+    mutationFn: async ({ matchIds, reason }: { matchIds: string[]; reason: string }) => {
+      await Promise.all(
+        matchIds.map((matchId) =>
+          apiClient.patch(`/vessels/${vesselId}/standard-jobs/matches/${matchId}`, {
+            match_status: 'not_applicable',
+            not_applicable_reason: reason,
+          })
+        )
+      )
+    },
+    onSuccess: () => {
+      setActionMessage(`Marked ${naMatchIds.length} selected library job(s) as not applicable.`)
+      setActionError(null)
+      queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['std-job-summary', vesselId] })
+      setShowNaDialog(false)
+      setNaReason('')
+      setNaMatchId(null)
+      setNaMatchIds([])
+    },
+    onError: (error: unknown) => {
+      setActionError(getApiErrorMessage(error, 'Unable to update selected matches'))
+      setActionMessage(null)
+    },
+  })
+
   const allJobs: StandardJob[] = standardJobsQuery.data?.items ?? []
   const total = standardJobsQuery.data?.total ?? 0
   const totalPages = standardJobsQuery.data?.total_pages ?? 1
+  const summary: ComparisonSummary | undefined = summaryQuery.data
   const components: ComponentOption[] = componentOptionsQuery.data?.items ?? []
   const matches: Match[] = matchesQuery.data?.items ?? []
   const matchByStdJobId = Object.fromEntries(matches.map((match) => [match.standard_job_id, match]))
@@ -281,14 +339,18 @@ const StandardJobs: React.FC = () => {
 
   const selectedSet = new Set(selectedJobIds)
   const visibleMatches = visibleJobs.map((job) => matchByStdJobId[job.id]).filter(Boolean) as Match[]
+  const selectedMatches = selectedJobIds.map((jobId) => matchByStdJobId[jobId]).filter(Boolean) as Match[]
+  const selectedMatchIds = selectedMatches.map((match) => match.id)
   const matchedCount = visibleMatches.filter((match) => match.match_status === 'matched').length
   const partialCount = visibleMatches.filter((match) => match.match_status === 'partial').length
   const notFoundCount = visibleMatches.filter((match) => match.match_status === 'not_found').length
+  const notApplicableCount = visibleMatches.filter((match) => match.match_status === 'not_applicable').length
   const allSelected = visibleJobs.length > 0 && visibleJobs.every((job) => selectedSet.has(job.id))
 
   React.useEffect(() => {
     setPage(1)
     setSelectedJobIds([])
+    setBatchComponentId('')
   }, [libraryType, filterSociety, filterMachinery, search, sortBy, sortOrder, pageSize])
 
   React.useEffect(() => {
@@ -297,6 +359,14 @@ const StandardJobs: React.FC = () => {
 
   const handleMarkNA = (matchId: string) => {
     setNaMatchId(matchId)
+    setNaMatchIds([])
+    setShowNaDialog(true)
+  }
+
+  const handleBatchMarkNA = () => {
+    if (!selectedMatchIds.length) return
+    setNaMatchId(null)
+    setNaMatchIds(selectedMatchIds)
     setShowNaDialog(true)
   }
 
@@ -314,6 +384,17 @@ const StandardJobs: React.FC = () => {
       if (componentId) acc[jobId] = componentId
       return acc
     }, {})
+
+  const applyBatchComponentSelection = () => {
+    if (!batchComponentId || selectedJobIds.length === 0) return
+    setComponentSelections((prev) => {
+      const next = { ...prev }
+      for (const jobId of selectedJobIds) {
+        next[jobId] = batchComponentId
+      }
+      return next
+    })
+  }
 
   return (
     <div className="space-y-6">
@@ -353,8 +434,29 @@ const StandardJobs: React.FC = () => {
         </div>
       )}
 
+      {summary && (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-sky-800 bg-sky-900/20 p-4 text-center">
+            <p className="text-2xl font-bold text-sky-300">{summary.library_total}</p>
+            <p className="text-xs text-sky-200">Library Jobs In Scope</p>
+          </div>
+          <div className="rounded-xl border border-emerald-800 bg-emerald-900/20 p-4 text-center">
+            <p className="text-2xl font-bold text-emerald-300">{summary.added_to_review_total}</p>
+            <p className="text-xs text-emerald-200">Added To Jobs Review</p>
+          </div>
+          <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-4 text-center">
+            <p className="text-2xl font-bold text-slate-200">{summary.not_applicable_total}</p>
+            <p className="text-xs text-slate-300">Marked Not Applicable</p>
+          </div>
+          <div className="rounded-xl border border-violet-800 bg-violet-900/20 p-4 text-center">
+            <p className="text-2xl font-bold text-violet-300">{summary.manual_linked_total}</p>
+            <p className="text-xs text-violet-200">Linked To Manual Jobs</p>
+          </div>
+        </div>
+      )}
+
       {visibleMatches.length > 0 && (
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-xl border border-green-800 bg-green-900/20 p-4 text-center">
             <p className="text-2xl font-bold text-green-400">{matchedCount}</p>
             <p className="text-xs text-green-300">Matched</p>
@@ -366,6 +468,10 @@ const StandardJobs: React.FC = () => {
           <div className="rounded-xl border border-red-800 bg-red-900/20 p-4 text-center">
             <p className="text-2xl font-bold text-red-400">{notFoundCount}</p>
             <p className="text-xs text-red-300">Not Matched</p>
+          </div>
+          <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-4 text-center">
+            <p className="text-2xl font-bold text-slate-200">{notApplicableCount}</p>
+            <p className="text-xs text-slate-300">Not Applicable</p>
           </div>
         </div>
       )}
@@ -443,7 +549,56 @@ const StandardJobs: React.FC = () => {
         >
           Add Selected To Jobs Review{selectedJobIds.length > 0 ? ` (${selectedJobIds.length})` : ''}
         </button>
+        <button
+          onClick={() => navigate(`/vessels/${vesselId}/jobs?source_kind=standard_library`)}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-700"
+        >
+          Open Jobs Review
+        </button>
       </div>
+
+      {selectedJobIds.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900 p-3">
+          <div className="text-sm text-slate-300">
+            {selectedJobIds.length} selected
+          </div>
+          <select
+            value={batchComponentId}
+            onChange={(e) => setBatchComponentId(e.target.value)}
+            className="w-[280px] rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200"
+          >
+            <option value="">Batch component mapping...</option>
+            {components.map((component) => (
+              <option key={component.id} value={component.id}>
+                {component.component_name} ({component.main_machinery})
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={applyBatchComponentSelection}
+            disabled={!batchComponentId}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+          >
+            Apply Component To Selected
+          </button>
+          <button
+            onClick={handleBatchMarkNA}
+            disabled={selectedMatchIds.length === 0 || batchMarkNaMutation.isPending}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+          >
+            Mark Selected Not Applicable
+          </button>
+          <button
+            onClick={() => setSelectedJobIds([])}
+            className="text-xs text-slate-500 hover:text-slate-300"
+          >
+            Clear selection
+          </button>
+          <div className="text-xs text-slate-500">
+            {selectedMatchIds.length} selected row(s) already have comparison records.
+          </div>
+        </div>
+      )}
 
       {standardJobsQuery.isError ? (
         <div className="rounded-xl border border-red-800 bg-red-950/30 px-4 py-3 text-sm text-red-300">
@@ -537,6 +692,11 @@ const StandardJobs: React.FC = () => {
                         <span className={`w-fit rounded-full px-2 py-0.5 text-xs font-medium ${MATCH_COLORS[match?.match_status ?? ''] ?? 'bg-slate-700 text-slate-300'}`}>
                           {match ? match.match_status.replace('_', ' ') : 'Not compared'}
                         </span>
+                        {match?.jobs_review_job_id && (
+                          <span className="w-fit rounded-full bg-emerald-900/40 px-2 py-0.5 text-xs font-medium text-emerald-300">
+                            In Jobs Review
+                          </span>
+                        )}
                         <span className="text-xs text-slate-500">
                           {libraryType === 'class' ? 'CMS / Class' : 'Company SMS'}
                         </span>
@@ -549,6 +709,12 @@ const StandardJobs: React.FC = () => {
                           <p className="text-xs text-slate-500">
                             {[match.matched_job_code, match.matched_job_qc_status].filter(Boolean).join(' / ') || '-'}
                           </p>
+                          {match.jobs_review_job_name && (
+                            <p className="mt-1 text-xs text-emerald-300">
+                              Jobs Review: {match.jobs_review_job_name}
+                              {match.jobs_review_job_qc_status ? ` / ${match.jobs_review_job_qc_status}` : ''}
+                            </p>
+                          )}
                         </div>
                       ) : (
                         <span className="text-xs text-slate-600">Not compared</span>
@@ -565,13 +731,22 @@ const StandardJobs: React.FC = () => {
                     </td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1">
-                        {(match?.match_status === 'not_found' || match?.match_status === 'partial' || !match) && (
+                        {!match?.jobs_review_job_id && (match?.match_status === 'not_found' || match?.match_status === 'partial' || !match) && (
                           <button
                             onClick={() => importSingleMutation.mutate({ standardJobId: job.id, componentId: componentId || undefined })}
                             className="rounded bg-sky-700 px-2 py-1 text-xs text-white hover:bg-sky-600"
                             title="Add this library job to Jobs Review"
                           >
                             <Download className="h-3 w-3" />
+                          </button>
+                        )}
+                        {match?.jobs_review_job_id && (
+                          <button
+                            onClick={() => navigate(`/vessels/${vesselId}/jobs?job_ids=${match.jobs_review_job_id}`)}
+                            className="rounded bg-emerald-700 px-2 py-1 text-xs text-white hover:bg-emerald-600"
+                            title="Open linked Jobs Review record"
+                          >
+                            Open
                           </button>
                         )}
                         {match && match.match_status !== 'not_applicable' && (
@@ -657,11 +832,17 @@ const StandardJobs: React.FC = () => {
                 Cancel
               </button>
               <button
-                onClick={() => naMatchId && markNaMutation.mutate({ matchId: naMatchId, reason: naReason })}
-                disabled={!naReason || markNaMutation.isPending}
+                onClick={() => {
+                  if (naMatchIds.length > 0) {
+                    batchMarkNaMutation.mutate({ matchIds: naMatchIds, reason: naReason })
+                    return
+                  }
+                  if (naMatchId) markNaMutation.mutate({ matchId: naMatchId, reason: naReason })
+                }}
+                disabled={!naReason || markNaMutation.isPending || batchMarkNaMutation.isPending}
                 className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
               >
-                Confirm
+                {naMatchIds.length > 0 ? `Confirm (${naMatchIds.length})` : 'Confirm'}
               </button>
             </div>
           </div>

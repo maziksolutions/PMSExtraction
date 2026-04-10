@@ -315,6 +315,116 @@ CLASS_LIBRARY_VALUES.update(
         if member != ClassSociety.general
     }
 )
+
+
+def _build_standard_jobs_query(
+    *,
+    tenant_id: uuid.UUID,
+    class_society: Optional[str] = None,
+    machinery_type: Optional[str] = None,
+    is_critical: Optional[bool] = None,
+    job_type: Optional[str] = None,
+    search: Optional[str] = None,
+) -> tuple[Any, Any]:
+    class_society_expr = func.lower(func.trim(StandardJob.class_society.cast(String)))
+    query = select(StandardJob).where(
+        StandardJob.tenant_id == tenant_id,
+        StandardJob.is_deleted == False,
+    )
+
+    if job_type == "critical":
+        query = query.where(StandardJob.is_critical.is_(True))
+    elif job_type == "standard":
+        query = query.where(
+            StandardJob.is_critical.is_(False),
+            or_(
+                StandardJob.class_society.is_(None),
+                ~class_society_expr.in_(sorted(CLASS_LIBRARY_VALUES)),
+            ),
+        )
+    elif job_type == "class":
+        query = query.where(
+            StandardJob.is_critical.is_(False),
+            class_society_expr.in_(sorted(CLASS_LIBRARY_VALUES)),
+        )
+
+    if class_society:
+        normalized_society = _norm_text(class_society)
+        mapped_society = CS_MAP.get(normalized_society)
+        if mapped_society is not None:
+            allowed_values = {
+                mapped_society.value.lower(),
+                f"{mapped_society.__class__.__name__}.{mapped_society.name}".lower(),
+            }
+            query = query.where(class_society_expr.in_(sorted(allowed_values)))
+        else:
+            query = query.where(class_society_expr == normalized_society)
+
+    if machinery_type:
+        query = query.where(StandardJob.machinery_type.ilike(f"%{machinery_type.strip()}%"))
+
+    if is_critical is not None:
+        query = query.where(StandardJob.is_critical.is_(is_critical))
+
+    if search:
+        term = f"%{search.strip()}%"
+        query = query.where(
+            or_(
+                StandardJob.job_name.ilike(term),
+                StandardJob.machinery_type.ilike(term),
+                StandardJob.job_description.ilike(term),
+                StandardJob.library_reference.ilike(term),
+                StandardJob.class_society.cast(String).ilike(term),
+                StandardJob.frequency.cast(String).ilike(term),
+                StandardJob.frequency_type.cast(String).ilike(term),
+            )
+        )
+
+    return query, class_society_expr
+
+
+def _find_jobs_review_job_for_standard_job(
+    std_job: StandardJob,
+    jobs_review_jobs: list[Job],
+) -> Optional[Job]:
+    for candidate in jobs_review_jobs:
+        if _job_looks_library_imported(candidate, std_job):
+            return candidate
+    return None
+
+
+def _serialize_standard_job_match(
+    match: StandardJobMatch,
+    *,
+    job_lookup: dict[uuid.UUID, Job],
+    standard_job_lookup: dict[uuid.UUID, StandardJob],
+    jobs_review_jobs: list[Job],
+) -> dict[str, Any]:
+    matched_job = job_lookup.get(match.matched_job_id) if match.matched_job_id else None
+    standard_job = standard_job_lookup.get(match.standard_job_id)
+    review_job = _find_jobs_review_job_for_standard_job(standard_job, jobs_review_jobs) if standard_job else None
+    return {
+        "id": str(match.id),
+        "standard_job_id": str(match.standard_job_id),
+        "matched_job_id": str(match.matched_job_id) if match.matched_job_id else None,
+        "match_status": match.match_status.value,
+        "match_score": match.match_score,
+        "not_applicable_reason": match.not_applicable_reason,
+        "matched_job_name": matched_job.job_name if matched_job else None,
+        "matched_job_code": matched_job.job_code if matched_job else None,
+        "matched_job_description": matched_job.job_description if matched_job else None,
+        "matched_job_qc_status": matched_job.qc_status.value if matched_job and matched_job.qc_status else None,
+        "matched_job_origin": (
+            "manual"
+            if matched_job and matched_job.source_manual_id is not None
+            else "review"
+            if matched_job
+            else None
+        ),
+        "jobs_review_job_id": str(review_job.id) if review_job else None,
+        "jobs_review_job_name": review_job.job_name if review_job else None,
+        "jobs_review_job_qc_status": review_job.qc_status.value if review_job and review_job.qc_status else None,
+    }
 WORKBOOK_SHEETS = {"annex1pmsjobs", "auditstandardjobs", "annexjobtitle", "criticaljobs"}
 IMPORTABLE_JOB_HEADERS = {"jobname", "jobtitle", "jobdescription", "frequencytype", "frequency", "iscritical"}
 
@@ -795,60 +905,14 @@ async def list_standard_jobs(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
-    class_society_expr = func.lower(func.trim(StandardJob.class_society.cast(String)))
-    frequency_type_expr = func.lower(StandardJob.frequency_type.cast(String))
-    query = select(StandardJob).where(
-        StandardJob.tenant_id == current_user.tenant_id,
-        StandardJob.is_deleted == False,
+    query, class_society_expr = _build_standard_jobs_query(
+        tenant_id=current_user.tenant_id,
+        class_society=class_society,
+        machinery_type=machinery_type,
+        is_critical=is_critical,
+        job_type=job_type,
+        search=search,
     )
-
-    if job_type == "critical":
-        query = query.where(StandardJob.is_critical.is_(True))
-    elif job_type == "standard":
-        query = query.where(
-            StandardJob.is_critical.is_(False),
-            or_(
-                StandardJob.class_society.is_(None),
-                ~class_society_expr.in_(sorted(CLASS_LIBRARY_VALUES)),
-            ),
-        )
-    elif job_type == "class":
-        query = query.where(
-            StandardJob.is_critical.is_(False),
-            class_society_expr.in_(sorted(CLASS_LIBRARY_VALUES)),
-        )
-
-    if class_society:
-        normalized_society = _norm_text(class_society)
-        mapped_society = CS_MAP.get(normalized_society)
-        if mapped_society is not None:
-            allowed_values = {
-                mapped_society.value.lower(),
-                f"{mapped_society.__class__.__name__}.{mapped_society.name}".lower(),
-            }
-            query = query.where(class_society_expr.in_(sorted(allowed_values)))
-        else:
-            query = query.where(class_society_expr == normalized_society)
-
-    if machinery_type:
-        query = query.where(StandardJob.machinery_type.ilike(f"%{machinery_type.strip()}%"))
-
-    if is_critical is not None:
-        query = query.where(StandardJob.is_critical.is_(is_critical))
-
-    if search:
-        term = f"%{search.strip()}%"
-        query = query.where(
-            or_(
-                StandardJob.job_name.ilike(term),
-                StandardJob.machinery_type.ilike(term),
-                StandardJob.job_description.ilike(term),
-                StandardJob.library_reference.ilike(term),
-                StandardJob.class_society.cast(String).ilike(term),
-                StandardJob.frequency.cast(String).ilike(term),
-                StandardJob.frequency_type.cast(String).ilike(term),
-            )
-        )
 
     sort_columns = {
         "job_name": StandardJob.job_name,
@@ -1313,28 +1377,114 @@ async def get_matches(
     matched_job_ids = [match.matched_job_id for match in matches if match.matched_job_id]
     job_lookup: dict[uuid.UUID, Job] = {}
     if matched_job_ids:
-        jobs_result = await db.execute(select(Job).where(Job.id.in_(matched_job_ids)))
+        jobs_result = await db.execute(select(Job).where(Job.id.in_(matched_job_ids), Job.is_deleted == False))
         job_lookup = {job.id: job for job in jobs_result.scalars().all()}
+    standard_job_lookup: dict[uuid.UUID, StandardJob] = {}
+    standard_job_ids_for_matches = [match.standard_job_id for match in matches]
+    if standard_job_ids_for_matches:
+        std_jobs_result = await db.execute(
+            select(StandardJob).where(StandardJob.id.in_(standard_job_ids_for_matches), StandardJob.is_deleted == False)
+        )
+        standard_job_lookup = {job.id: job for job in std_jobs_result.scalars().all()}
+    jobs_review_result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == current_user.tenant_id,
+            Job.is_deleted == False,
+            Job.source_manual_id.is_(None),
+        )
+    )
+    jobs_review_jobs = jobs_review_result.scalars().all()
     return {
         "items": [
-            {
-                "id": str(m.id),
-                "standard_job_id": str(m.standard_job_id),
-                "matched_job_id": str(m.matched_job_id) if m.matched_job_id else None,
-                "match_status": m.match_status.value,
-                "match_score": m.match_score,
-                "not_applicable_reason": m.not_applicable_reason,
-                "matched_job_name": job_lookup[m.matched_job_id].job_name if m.matched_job_id in job_lookup else None,
-                "matched_job_code": job_lookup[m.matched_job_id].job_code if m.matched_job_id in job_lookup else None,
-                "matched_job_description": job_lookup[m.matched_job_id].job_description if m.matched_job_id in job_lookup else None,
-                "matched_job_qc_status": job_lookup[m.matched_job_id].qc_status.value if m.matched_job_id in job_lookup and job_lookup[m.matched_job_id].qc_status else None,
-            }
+            _serialize_standard_job_match(
+                m,
+                job_lookup=job_lookup,
+                standard_job_lookup=standard_job_lookup,
+                jobs_review_jobs=jobs_review_jobs,
+            )
             for m in matches
         ],
         "page": page,
         "page_size": page_size,
         "total": total,
         "total_pages": total_pages,
+    }
+
+
+@router.get("/vessels/{vessel_id}/standard-jobs/summary", summary="Get standard jobs comparison summary")
+async def get_standard_jobs_summary(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    class_society: Optional[str] = Query(None),
+    machinery_type: Optional[str] = Query(None),
+    is_critical: Optional[bool] = Query(None),
+    job_type: Optional[str] = Query(None, description="'standard', 'class', or 'critical'"),
+    search: Optional[str] = Query(None),
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    query, _ = _build_standard_jobs_query(
+        tenant_id=current_user.tenant_id,
+        class_society=class_society,
+        machinery_type=machinery_type,
+        is_critical=is_critical,
+        job_type=job_type,
+        search=search,
+    )
+    std_jobs_result = await db.execute(query.order_by(None))
+    std_jobs = std_jobs_result.scalars().all()
+    if not std_jobs:
+        return {
+            "library_total": 0,
+            "added_to_review_total": 0,
+            "not_applicable_total": 0,
+            "manual_linked_total": 0,
+        }
+
+    std_job_ids = [job.id for job in std_jobs]
+    matches_result = await db.execute(
+        select(StandardJobMatch).where(
+            StandardJobMatch.vessel_id == vessel_id,
+            StandardJobMatch.standard_job_id.in_(std_job_ids),
+            StandardJobMatch.is_deleted == False,
+        )
+    )
+    matches = matches_result.scalars().all()
+
+    matched_job_ids = [match.matched_job_id for match in matches if match.matched_job_id]
+    matched_jobs_lookup: dict[uuid.UUID, Job] = {}
+    if matched_job_ids:
+        matched_jobs_result = await db.execute(
+            select(Job).where(Job.id.in_(matched_job_ids), Job.is_deleted == False)
+        )
+        matched_jobs_lookup = {job.id: job for job in matched_jobs_result.scalars().all()}
+
+    jobs_review_result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == current_user.tenant_id,
+            Job.is_deleted == False,
+            Job.source_manual_id.is_(None),
+        )
+    )
+    jobs_review_jobs = jobs_review_result.scalars().all()
+
+    added_to_review_total = sum(
+        1 for std_job in std_jobs if _find_jobs_review_job_for_standard_job(std_job, jobs_review_jobs) is not None
+    )
+    not_applicable_total = sum(1 for match in matches if match.match_status == MatchStatus.not_applicable)
+    manual_linked_total = sum(
+        1
+        for match in matches
+        if match.matched_job_id in matched_jobs_lookup
+        and matched_jobs_lookup[match.matched_job_id].source_manual_id is not None
+    )
+    return {
+        "library_total": len(std_jobs),
+        "added_to_review_total": added_to_review_total,
+        "not_applicable_total": not_applicable_total,
+        "manual_linked_total": manual_linked_total,
     }
 
 
