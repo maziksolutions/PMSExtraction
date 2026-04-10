@@ -176,18 +176,18 @@ async def list_maker_models(
         await db.commit()
     except Exception:
         await db.rollback()
-    # Use separate param names for each ILIKE occurrence — asyncpg maps named→positional
-    # and breaks when the same name appears more than once in a single text() call.
-    search_pat = f"%{search}%" if search else None
-    count_q = text("""
+    params: dict[str, Any] = {"tid": str(current_user.tenant_id)}
+    where_sql = "tenant_id = :tid AND is_deleted = false"
+    if search:
+        where_sql += " AND (maker ILIKE :pat1 OR model ILIKE :pat2)"
+        params["pat1"] = f"%{search}%"
+        params["pat2"] = f"%{search}%"
+
+    count_q = text(f"""
         SELECT COUNT(*) FROM maker_models
-        WHERE tenant_id = :tid AND is_deleted = false
-        AND (:search IS NULL OR maker ILIKE :pat1 OR model ILIKE :pat2)
+        WHERE {where_sql}
     """)
-    total = (await db.execute(count_q, {
-        "tid": str(current_user.tenant_id),
-        "search": search, "pat1": search_pat, "pat2": search_pat,
-    })).scalar_one()
+    total = (await db.execute(count_q, params)).scalar_one()
 
     sort_columns = {
         "maker": "maker",
@@ -200,16 +200,16 @@ async def list_maker_models(
 
     rows_q = text("""
         SELECT id, maker, model, component_category, created_at FROM maker_models
-        WHERE tenant_id = :tid AND is_deleted = false
-        AND (:search IS NULL OR maker ILIKE :pat1 OR model ILIKE :pat2)
+        WHERE """ + where_sql + """
         ORDER BY """ + sort_column + " " + sort_direction + """, maker ASC, model ASC
         LIMIT :lim OFFSET :off
     """)
-    rows = (await db.execute(rows_q, {
-        "tid": str(current_user.tenant_id),
-        "search": search, "pat1": search_pat, "pat2": search_pat,
-        "lim": page_size, "off": (page - 1) * page_size,
-    })).fetchall()
+    row_params = {
+        **params,
+        "lim": page_size,
+        "off": (page - 1) * page_size,
+    }
+    rows = (await db.execute(rows_q, row_params)).fetchall()
 
     items = [{"id": str(r[0]), "maker": r[1], "model": r[2], "component_category": r[3], "created_at": str(r[4])} for r in rows]
     return {"items": items, "total": total, "page": page, "page_size": page_size}
