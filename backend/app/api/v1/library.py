@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 logger = logging.getLogger(__name__)
 from fastapi.responses import StreamingResponse
 from app.core.config import settings
-from sqlalchemy import select, text
+from sqlalchemy import bindparam, select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -27,6 +28,13 @@ from app.services.review_workflow import backfill_global_library_from_accepted_r
 from app.services.vessel_library import load_library_components_for_vessel
 
 router = APIRouter()
+
+
+def _jsonb_typed_text(sql: str):
+    return text(sql).bindparams(
+        bindparam("cd", type_=JSONB),
+        bindparam("sv", type_=JSONB),
+    )
 
 _DEFAULT_VESSEL_TYPES = [
     ("Oil Tanker", 1),
@@ -975,7 +983,6 @@ async def populate_global_library(
             }
         )
 
-    import json as _json
     added = 0
     duplicates = 0
 
@@ -996,20 +1003,18 @@ async def populate_global_library(
             duplicates += 1
         else:
             new_id = uuid.uuid4()
-            canonical_json = _json.dumps(record)
-            source_vessels_json = _json.dumps([vessel_id_str])
             await db.execute(
-                text(
+                _jsonb_typed_text(
                     f"INSERT INTO {table} "
                     f"(id, tenant_id, canonical_data, occurrence_count, source_vessels, "
                     f"first_seen_at, is_deleted) "
-                    f"VALUES (:id, :tid, CAST(:cd AS jsonb), 1, CAST(:sv AS jsonb), NOW(), false)"
+                    f"VALUES (:id, :tid, :cd, 1, :sv, NOW(), false)"
                 ),
                 {
                     "id": str(new_id),
                     "tid": str(current_user.tenant_id),
-                    "cd": canonical_json,
-                    "sv": source_vessels_json,
+                    "cd": record,
+                    "sv": [vessel_id_str],
                 },
             )
             # Also add to local dedup list to prevent intra-batch duplicates

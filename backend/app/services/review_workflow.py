@@ -5,7 +5,8 @@ import uuid
 
 from typing import Any, Iterable, Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import bindparam, select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.activity import ActivityEntry
@@ -24,6 +25,13 @@ _GLOBAL_TABLE_MAP = {
     "job": "global_job_library",
     "spare": "global_spare_library",
 }
+
+
+def _jsonb_typed_text(sql: str):
+    return text(sql).bindparams(
+        bindparam("cd", type_=JSONB),
+        bindparam("sv", type_=JSONB),
+    )
 
 
 def _as_uuid_str(value: uuid.UUID | str) -> str:
@@ -546,18 +554,18 @@ async def _upsert_global_library_record(
             source_vessels.append(vessel_id_str)
         occurrence_count = max(int(duplicate_match["occurrence_count"]), len(source_vessels))
         await db.execute(
-            text(
+            _jsonb_typed_text(
                 f"UPDATE {table} "
-                "SET canonical_data = CAST(:cd AS jsonb), "
-                "    source_vessels = CAST(:sv AS jsonb), "
+                "SET canonical_data = :cd, "
+                "    source_vessels = :sv, "
                 "    occurrence_count = :count, "
                 "    last_confirmed_at = NOW(), "
                 "    updated_at = NOW() "
                 "WHERE id = :id"
             ),
             {
-                "cd": json.dumps(record),
-                "sv": json.dumps(source_vessels),
+                "cd": record,
+                "sv": source_vessels,
                 "count": occurrence_count,
                 "id": duplicate_match["id"],
             },
@@ -569,17 +577,17 @@ async def _upsert_global_library_record(
 
     new_id = str(uuid.uuid4())
     await db.execute(
-        text(
+        _jsonb_typed_text(
             f"INSERT INTO {table} "
             "(id, tenant_id, canonical_data, occurrence_count, source_vessels, first_seen_at, "
             " last_confirmed_at, created_at, updated_at, is_deleted) "
-            "VALUES (:id, :tid, CAST(:cd AS jsonb), 1, CAST(:sv AS jsonb), NOW(), NOW(), NOW(), NOW(), false)"
+            "VALUES (:id, :tid, :cd, 1, :sv, NOW(), NOW(), NOW(), NOW(), false)"
         ),
         {
             "id": new_id,
             "tid": _as_uuid_str(tenant_id),
-            "cd": json.dumps(record),
-            "sv": json.dumps([vessel_id_str]),
+            "cd": record,
+            "sv": [vessel_id_str],
         },
     )
     existing_rows.append(
@@ -637,18 +645,18 @@ async def _reconcile_global_library_records(
         if match_index is None:
             new_id = str(uuid.uuid4())
             await db.execute(
-                text(
+                _jsonb_typed_text(
                     f"INSERT INTO {table} "
                     "(id, tenant_id, canonical_data, occurrence_count, source_vessels, first_seen_at, "
                     " last_confirmed_at, created_at, updated_at, is_deleted) "
-                    "VALUES (:id, :tid, CAST(:cd AS jsonb), :count, CAST(:sv AS jsonb), NOW(), NOW(), NOW(), NOW(), false)"
+                    "VALUES (:id, :tid, :cd, :count, :sv, NOW(), NOW(), NOW(), NOW(), false)"
                 ),
                 {
                     "id": new_id,
                     "tid": _as_uuid_str(tenant_id),
-                    "cd": json.dumps(desired["data"]),
+                    "cd": desired["data"],
                     "count": desired["occurrence_count"],
-                    "sv": json.dumps(desired["source_vessels"]),
+                    "sv": desired["source_vessels"],
                 },
             )
             added += 1
@@ -663,10 +671,10 @@ async def _reconcile_global_library_records(
         )
         if should_update:
             await db.execute(
-                text(
+                _jsonb_typed_text(
                     f"UPDATE {table} "
-                    "SET canonical_data = CAST(:cd AS jsonb), "
-                    "    source_vessels = CAST(:sv AS jsonb), "
+                    "SET canonical_data = :cd, "
+                    "    source_vessels = :sv, "
                     "    occurrence_count = :count, "
                     "    last_confirmed_at = NOW(), "
                     "    updated_at = NOW() "
@@ -674,8 +682,8 @@ async def _reconcile_global_library_records(
                 ),
                 {
                     "id": existing["id"],
-                    "cd": json.dumps(desired["data"]),
-                    "sv": json.dumps(source_vessels),
+                    "cd": desired["data"],
+                    "sv": source_vessels,
                     "count": desired["occurrence_count"],
                 },
             )
