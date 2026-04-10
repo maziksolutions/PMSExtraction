@@ -387,9 +387,7 @@ async def update_component(
             description=f"Updated component '{comp.component_name}'.",
             metadata={"fields": sorted(update_data.keys())},
         )
-    if comp.qc_status == QCStatus.accepted and (
-        original_qc_status != QCStatus.accepted or update_data
-    ):
+    if original_qc_status == QCStatus.accepted or comp.qc_status == QCStatus.accepted:
         await sync_components_to_global_library(
             db,
             tenant_id=current_user.tenant_id,
@@ -417,9 +415,18 @@ async def delete_component(
     )
     comp = result.scalar_one_or_none()
     if comp:
+        needs_sync = comp.qc_status == QCStatus.accepted
         comp.is_deleted = True
         db.add(comp)
         await db.commit()
+        if needs_sync:
+            await sync_components_to_global_library(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                components=[],
+            )
+            await db.commit()
 
 
 @router.post("/{vessel_id}/components/bulk-update", summary="Bulk update fields on selected components")
@@ -472,6 +479,14 @@ async def bulk_update_components(
             setattr(comp, field, value)
         db.add(comp)
     await db.commit()
+    if components:
+        await sync_components_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            components=components,
+        )
+        await db.commit()
     return {"updated": len(components)}
 
 
@@ -533,6 +548,7 @@ async def bulk_reject_components(
     )
     components = result.scalars().all()
     activities = []
+    should_sync = any(comp.qc_status == QCStatus.accepted for comp in components)
     for comp in components:
         comp.qc_status = QCStatus.rejected
         db.add(comp)
@@ -549,6 +565,14 @@ async def bulk_reject_components(
             )
         )
     await db.commit()
+    if should_sync:
+        await sync_components_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            components=[],
+        )
+        await db.commit()
     for activity in activities:
         await broadcast_activity(activity)
     return {"rejected": len(components)}

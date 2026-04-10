@@ -175,14 +175,13 @@ async def _run_spare_side_effects(
                 for spare in sync_result.scalars().all()
                 if spare.qc_status == QCStatus.accepted
             ]
-            if sync_spares:
-                await sync_spares_to_global_library(
-                    db,
-                    tenant_id=tenant_id,
-                    vessel_id=vessel_id,
-                    spares=sync_spares,
-                )
-                await db.commit()
+            await sync_spares_to_global_library(
+                db,
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                spares=sync_spares,
+            )
+            await db.commit()
         except Exception:
             await db.rollback()
 
@@ -442,8 +441,8 @@ async def update_spare(
             }
         ] if update_data else None,
         sync_spare_ids=[spare.id]
-        if spare.qc_status == QCStatus.accepted
-        and (original_qc_status != QCStatus.accepted or bool(update_data))
+        if bool(update_data)
+        and (original_qc_status == QCStatus.accepted or spare.qc_status == QCStatus.accepted)
         else None,
     )
     await db.refresh(spare)
@@ -462,9 +461,18 @@ async def delete_spare(
     )
     spare = result.scalar_one_or_none()
     if spare:
+        needs_sync = spare.qc_status == QCStatus.accepted
         spare.is_deleted = True
         db.add(spare)
         await db.commit()
+        if needs_sync:
+            await sync_spares_to_global_library(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                spares=[],
+            )
+            await db.commit()
 
 
 @router.post("/{vessel_id}/spares/bulk-accept")
@@ -509,10 +517,19 @@ async def bulk_reject_spares(
     ids = [uuid.UUID(i) for i in body.get("ids", [])]
     result = await db.execute(select(Spare).where(Spare.id.in_(ids), Spare.vessel_id == vessel_id))
     spares = result.scalars().all()
+    should_sync = any(spare.qc_status == QCStatus.accepted for spare in spares)
     for spare in spares:
         spare.qc_status = QCStatus.rejected
         db.add(spare)
     await db.commit()
+    if should_sync:
+        await sync_spares_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            spares=[],
+        )
+        await db.commit()
     await _run_spare_side_effects(
         db,
         tenant_id=current_user.tenant_id,
@@ -551,6 +568,7 @@ async def bulk_update_spares(
     )
     spares = result.scalars().all()
     for spare in spares:
+        setattr(spare, "_original_qc_status_for_sync", spare.qc_status)
         for field, value in update_payload.items():
             setattr(spare, field, value)
         db.add(spare)
@@ -569,7 +587,12 @@ async def bulk_update_spares(
             }
             for spare in spares
         ],
-        sync_spare_ids=[spare.id for spare in spares if spare.qc_status == QCStatus.accepted],
+        sync_spare_ids=[
+            spare.id
+            for spare in spares
+            if getattr(spare, "_original_qc_status_for_sync", None) == QCStatus.accepted
+            or spare.qc_status == QCStatus.accepted
+        ],
     )
     return {"updated": len(spares)}
 

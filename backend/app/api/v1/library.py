@@ -993,7 +993,7 @@ async def populate_global_library(
                     f"INSERT INTO {table} "
                     f"(id, tenant_id, canonical_data, occurrence_count, source_vessels, "
                     f"first_seen_at, is_deleted) "
-                    f"VALUES (:id, :tid, :cd::jsonb, 1, :sv::jsonb, NOW(), false)"
+                    f"VALUES (:id, :tid, CAST(:cd AS jsonb), 1, CAST(:sv AS jsonb), NOW(), false)"
                 ),
                 {
                     "id": str(new_id),

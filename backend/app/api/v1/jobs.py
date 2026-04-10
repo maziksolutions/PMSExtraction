@@ -238,14 +238,13 @@ async def _run_job_side_effects(
                 for job in sync_result.scalars().all()
                 if job.qc_status == QCStatus.accepted
             ]
-            if sync_jobs:
-                await sync_jobs_to_global_library(
-                    db,
-                    tenant_id=tenant_id,
-                    vessel_id=vessel_id,
-                    jobs=sync_jobs,
-                )
-                await db.commit()
+            await sync_jobs_to_global_library(
+                db,
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                jobs=sync_jobs,
+            )
+            await db.commit()
         except Exception:
             await db.rollback()
 
@@ -631,8 +630,8 @@ async def update_job(
             }
         ] if update_data else None,
         sync_job_ids=[job.id]
-        if job.qc_status == QCStatus.accepted
-        and (original_qc_status != QCStatus.accepted or bool(update_data))
+        if bool(update_data)
+        and (original_qc_status == QCStatus.accepted or job.qc_status == QCStatus.accepted)
         else None,
     )
     await db.refresh(job)
@@ -654,9 +653,18 @@ async def delete_job(
     )
     job = result.scalar_one_or_none()
     if job:
+        needs_sync = job.qc_status == QCStatus.accepted
         job.is_deleted = True
         db.add(job)
         await db.commit()
+        if needs_sync:
+            await sync_jobs_to_global_library(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                jobs=[],
+            )
+            await db.commit()
 
 
 @router.post("/{vessel_id}/jobs/bulk-accept")
@@ -701,10 +709,19 @@ async def bulk_reject_jobs(
     ids = [uuid.UUID(i) for i in body.get("ids", [])]
     result = await db.execute(select(Job).where(Job.id.in_(ids), Job.vessel_id == vessel_id))
     jobs = result.scalars().all()
+    should_sync = any(job.qc_status == QCStatus.accepted for job in jobs)
     for job in jobs:
         job.qc_status = QCStatus.rejected
         db.add(job)
     await db.commit()
+    if should_sync:
+        await sync_jobs_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            jobs=[],
+        )
+        await db.commit()
     await _run_job_side_effects(
         db,
         tenant_id=current_user.tenant_id,
@@ -743,6 +760,7 @@ async def bulk_update_jobs(
     )
     jobs = result.scalars().all()
     for job in jobs:
+        setattr(job, "_original_qc_status_for_sync", job.qc_status)
         for field, value in update_payload.items():
             setattr(job, field, value)
         if "performing_rank" in update_payload:
@@ -776,7 +794,12 @@ async def bulk_update_jobs(
             }
             for job in jobs
         ],
-        sync_job_ids=[job.id for job in jobs if job.qc_status == QCStatus.accepted],
+        sync_job_ids=[
+            job.id
+            for job in jobs
+            if getattr(job, "_original_qc_status_for_sync", None) == QCStatus.accepted
+            or job.qc_status == QCStatus.accepted
+        ],
     )
     return {"updated": len(jobs)}
 
@@ -870,6 +893,7 @@ async def merge_jobs(
             detail="Only jobs with the same frequency and frequency type can be merged.",
         )
 
+    had_accepted_job = any(job.qc_status == QCStatus.accepted for job in jobs)
     merged_ids: list[str] = []
     merged_names: list[str | None] = [target.job_name]
     merged_descriptions: list[str | None] = [target.job_description]
@@ -943,7 +967,7 @@ async def merge_jobs(
                 "metadata": {"merged_job_ids": merged_ids},
             }
         ],
-        sync_job_ids=[target.id] if target.qc_status == QCStatus.accepted else None,
+        sync_job_ids=[target.id] if (had_accepted_job or target.qc_status == QCStatus.accepted) else None,
     )
     refreshed_result = await db.execute(
         select(Job).where(

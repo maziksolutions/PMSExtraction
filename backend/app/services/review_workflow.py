@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections import defaultdict
+
 from typing import Any, Iterable, Optional
 
 from sqlalchemy import select, text
@@ -373,8 +373,8 @@ async def _upsert_global_library_record(
         await db.execute(
             text(
                 f"UPDATE {table} "
-                "SET canonical_data = :cd::jsonb, "
-                "    source_vessels = :sv::jsonb, "
+                "SET canonical_data = CAST(:cd AS jsonb), "
+                "    source_vessels = CAST(:sv AS jsonb), "
                 "    occurrence_count = :count, "
                 "    last_confirmed_at = NOW(), "
                 "    updated_at = NOW() "
@@ -398,7 +398,7 @@ async def _upsert_global_library_record(
             f"INSERT INTO {table} "
             "(id, tenant_id, canonical_data, occurrence_count, source_vessels, first_seen_at, "
             " last_confirmed_at, created_at, updated_at, is_deleted) "
-            "VALUES (:id, :tid, :cd::jsonb, 1, :sv::jsonb, NOW(), NOW(), NOW(), NOW(), false)"
+            "VALUES (:id, :tid, CAST(:cd AS jsonb), 1, CAST(:sv AS jsonb), NOW(), NOW(), NOW(), NOW(), false)"
         ),
         {
             "id": new_id,
@@ -418,6 +418,149 @@ async def _upsert_global_library_record(
     return True, False
 
 
+def _records_match(entity_type: str, left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if entity_type == "component":
+        return is_duplicate_component(left, right)
+    if entity_type == "job":
+        return is_duplicate_job(left, right)
+    if entity_type == "spare":
+        return is_duplicate_spare(left, right)
+    return False
+
+
+async def _reconcile_global_library_records(
+    db: AsyncSession,
+    *,
+    table: str,
+    tenant_id: uuid.UUID,
+    entity_type: str,
+    desired_records: list[dict[str, Any]],
+) -> dict[str, int]:
+    existing_rows = await _load_existing_global_entries(db, table=table, tenant_id=tenant_id)
+    deleted_signatures = await _load_deleted_global_signatures(db, table=table, tenant_id=tenant_id)
+    unmatched_existing = existing_rows.copy()
+
+    added = 0
+    updated = 0
+    removed = 0
+    skipped_deleted = 0
+
+    for desired in desired_records:
+        if _library_signature(desired["data"]) in deleted_signatures:
+            skipped_deleted += 1
+            continue
+
+        match_index = next(
+            (
+                index
+                for index, existing in enumerate(unmatched_existing)
+                if _records_match(entity_type, desired["data"], existing["data"])
+            ),
+            None,
+        )
+
+        if match_index is None:
+            new_id = str(uuid.uuid4())
+            await db.execute(
+                text(
+                    f"INSERT INTO {table} "
+                    "(id, tenant_id, canonical_data, occurrence_count, source_vessels, first_seen_at, "
+                    " last_confirmed_at, created_at, updated_at, is_deleted) "
+                    "VALUES (:id, :tid, CAST(:cd AS jsonb), :count, CAST(:sv AS jsonb), NOW(), NOW(), NOW(), NOW(), false)"
+                ),
+                {
+                    "id": new_id,
+                    "tid": _as_uuid_str(tenant_id),
+                    "cd": json.dumps(desired["data"]),
+                    "count": desired["occurrence_count"],
+                    "sv": json.dumps(desired["source_vessels"]),
+                },
+            )
+            added += 1
+            continue
+
+        existing = unmatched_existing.pop(match_index)
+        source_vessels = list(desired["source_vessels"])
+        should_update = (
+            existing["data"] != desired["data"]
+            or list(existing["source_vessels"]) != source_vessels
+            or int(existing["occurrence_count"]) != int(desired["occurrence_count"])
+        )
+        if should_update:
+            await db.execute(
+                text(
+                    f"UPDATE {table} "
+                    "SET canonical_data = CAST(:cd AS jsonb), "
+                    "    source_vessels = CAST(:sv AS jsonb), "
+                    "    occurrence_count = :count, "
+                    "    last_confirmed_at = NOW(), "
+                    "    updated_at = NOW() "
+                    "WHERE id = :id"
+                ),
+                {
+                    "id": existing["id"],
+                    "cd": json.dumps(desired["data"]),
+                    "sv": json.dumps(source_vessels),
+                    "count": desired["occurrence_count"],
+                },
+            )
+            updated += 1
+
+    for stale in unmatched_existing:
+        await db.execute(
+            text(
+                f"UPDATE {table} "
+                "SET is_deleted = true, updated_at = NOW() "
+                "WHERE id = :id"
+            ),
+            {"id": stale["id"]},
+        )
+        removed += 1
+
+    return {
+        "added": added,
+        "updated": updated,
+        "removed": removed,
+        "skipped_deleted": skipped_deleted,
+    }
+
+
+def _collapse_records_for_library(
+    *,
+    entity_type: str,
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    desired_groups: list[dict[str, Any]] = []
+    duplicates = 0
+
+    for item in records:
+        candidate = _canonical_library_record(item["data"])
+        vessel_id_str = item["vessel_id"]
+        match = next(
+            (group for group in desired_groups if _records_match(entity_type, candidate, group["data"])),
+            None,
+        )
+        if match is None:
+            desired_groups.append(
+                {
+                    "data": candidate,
+                    "source_vessels": [vessel_id_str],
+                    "occurrence_count": 1,
+                }
+            )
+            continue
+
+        duplicates += 1
+        if vessel_id_str not in match["source_vessels"]:
+            match["source_vessels"].append(vessel_id_str)
+        match["occurrence_count"] += 1
+
+    for group in desired_groups:
+        group["source_vessels"] = sorted(group["source_vessels"])
+
+    return {"desired_groups": desired_groups, "duplicates": duplicates}
+
+
 async def sync_components_to_global_library(
     db: AsyncSession,
     *,
@@ -425,24 +568,7 @@ async def sync_components_to_global_library(
     vessel_id: uuid.UUID,
     components: Iterable[Component],
 ) -> dict[str, int]:
-    table = _GLOBAL_TABLE_MAP["component"]
-    existing_rows = await _load_existing_global_entries(db, table=table, tenant_id=tenant_id)
-    deleted_signatures = await _load_deleted_global_signatures(db, table=table, tenant_id=tenant_id)
-    added = duplicates = 0
     for component in components:
-        record = _component_record(component)
-        was_added, was_duplicate = await _upsert_global_library_record(
-            db,
-            table=table,
-            tenant_id=tenant_id,
-            vessel_id=vessel_id,
-            record=record,
-            existing_rows=existing_rows,
-            entity_type="component",
-            deleted_signatures=deleted_signatures,
-        )
-        added += int(was_added)
-        duplicates += int(was_duplicate)
         await upsert_maker_model_library_entry(
             db,
             tenant_id=tenant_id,
@@ -450,7 +576,11 @@ async def sync_components_to_global_library(
             model=component.model,
             component_category=component.group1,
         )
-    return {"added": added, "duplicates": duplicates}
+    return await backfill_global_library_from_accepted_records(
+        db,
+        tenant_id=tenant_id,
+        entity_type="component",
+    )
 
 
 async def sync_jobs_to_global_library(
@@ -460,25 +590,11 @@ async def sync_jobs_to_global_library(
     vessel_id: uuid.UUID,
     jobs: Iterable[Job],
 ) -> dict[str, int]:
-    table = _GLOBAL_TABLE_MAP["job"]
-    existing_rows = await _load_existing_global_entries(db, table=table, tenant_id=tenant_id)
-    deleted_signatures = await _load_deleted_global_signatures(db, table=table, tenant_id=tenant_id)
-    added = duplicates = 0
-    for job in jobs:
-        record = _job_record(job)
-        was_added, was_duplicate = await _upsert_global_library_record(
-            db,
-            table=table,
-            tenant_id=tenant_id,
-            vessel_id=vessel_id,
-            record=record,
-            existing_rows=existing_rows,
-            entity_type="job",
-            deleted_signatures=deleted_signatures,
-        )
-        added += int(was_added)
-        duplicates += int(was_duplicate)
-    return {"added": added, "duplicates": duplicates}
+    return await backfill_global_library_from_accepted_records(
+        db,
+        tenant_id=tenant_id,
+        entity_type="job",
+    )
 
 
 async def sync_spares_to_global_library(
@@ -488,24 +604,7 @@ async def sync_spares_to_global_library(
     vessel_id: uuid.UUID,
     spares: Iterable[Spare],
 ) -> dict[str, int]:
-    table = _GLOBAL_TABLE_MAP["spare"]
-    existing_rows = await _load_existing_global_entries(db, table=table, tenant_id=tenant_id)
-    deleted_signatures = await _load_deleted_global_signatures(db, table=table, tenant_id=tenant_id)
-    added = duplicates = 0
     for spare in spares:
-        record = _spare_record(spare)
-        was_added, was_duplicate = await _upsert_global_library_record(
-            db,
-            table=table,
-            tenant_id=tenant_id,
-            vessel_id=vessel_id,
-            record=record,
-            existing_rows=existing_rows,
-            entity_type="spare",
-            deleted_signatures=deleted_signatures,
-        )
-        added += int(was_added)
-        duplicates += int(was_duplicate)
         await upsert_maker_model_library_entry(
             db,
             tenant_id=tenant_id,
@@ -513,7 +612,11 @@ async def sync_spares_to_global_library(
             model=spare.spare_model,
             component_category="spare",
         )
-    return {"added": added, "duplicates": duplicates}
+    return await backfill_global_library_from_accepted_records(
+        db,
+        tenant_id=tenant_id,
+        entity_type="spare",
+    )
 
 
 async def backfill_maker_models_from_accepted_records(
@@ -569,19 +672,21 @@ async def backfill_global_library_from_accepted_records(
                 Component.is_deleted == False,
             )
         )
-        buckets: dict[uuid.UUID, list[Component]] = defaultdict(list)
-        for component in result.scalars().all():
-            buckets[component.vessel_id].append(component)
-        totals = {"added": 0, "duplicates": 0}
-        for vessel_id, vessel_components in buckets.items():
-            sync_result = await sync_components_to_global_library(
-                db,
-                tenant_id=tenant_id,
-                vessel_id=vessel_id,
-                components=vessel_components,
-            )
-            totals["added"] += sync_result["added"]
-            totals["duplicates"] += sync_result["duplicates"]
+        collapsed = _collapse_records_for_library(
+            entity_type="component",
+            records=[
+                {"vessel_id": _as_uuid_str(component.vessel_id), "data": _component_record(component)}
+                for component in result.scalars().all()
+            ],
+        )
+        totals = await _reconcile_global_library_records(
+            db,
+            table=_GLOBAL_TABLE_MAP["component"],
+            tenant_id=tenant_id,
+            entity_type="component",
+            desired_records=collapsed["desired_groups"],
+        )
+        totals["duplicates"] = collapsed["duplicates"]
         return totals
 
     if entity_type == "job":
@@ -592,19 +697,21 @@ async def backfill_global_library_from_accepted_records(
                 Job.is_deleted == False,
             )
         )
-        buckets: dict[uuid.UUID, list[Job]] = defaultdict(list)
-        for job in result.scalars().all():
-            buckets[job.vessel_id].append(job)
-        totals = {"added": 0, "duplicates": 0}
-        for vessel_id, vessel_jobs in buckets.items():
-            sync_result = await sync_jobs_to_global_library(
-                db,
-                tenant_id=tenant_id,
-                vessel_id=vessel_id,
-                jobs=vessel_jobs,
-            )
-            totals["added"] += sync_result["added"]
-            totals["duplicates"] += sync_result["duplicates"]
+        collapsed = _collapse_records_for_library(
+            entity_type="job",
+            records=[
+                {"vessel_id": _as_uuid_str(job.vessel_id), "data": _job_record(job)}
+                for job in result.scalars().all()
+            ],
+        )
+        totals = await _reconcile_global_library_records(
+            db,
+            table=_GLOBAL_TABLE_MAP["job"],
+            tenant_id=tenant_id,
+            entity_type="job",
+            desired_records=collapsed["desired_groups"],
+        )
+        totals["duplicates"] = collapsed["duplicates"]
         return totals
 
     if entity_type == "spare":
@@ -615,19 +722,21 @@ async def backfill_global_library_from_accepted_records(
                 Spare.is_deleted == False,
             )
         )
-        buckets: dict[uuid.UUID, list[Spare]] = defaultdict(list)
-        for spare in result.scalars().all():
-            buckets[spare.vessel_id].append(spare)
-        totals = {"added": 0, "duplicates": 0}
-        for vessel_id, vessel_spares in buckets.items():
-            sync_result = await sync_spares_to_global_library(
-                db,
-                tenant_id=tenant_id,
-                vessel_id=vessel_id,
-                spares=vessel_spares,
-            )
-            totals["added"] += sync_result["added"]
-            totals["duplicates"] += sync_result["duplicates"]
+        collapsed = _collapse_records_for_library(
+            entity_type="spare",
+            records=[
+                {"vessel_id": _as_uuid_str(spare.vessel_id), "data": _spare_record(spare)}
+                for spare in result.scalars().all()
+            ],
+        )
+        totals = await _reconcile_global_library_records(
+            db,
+            table=_GLOBAL_TABLE_MAP["spare"],
+            tenant_id=tenant_id,
+            entity_type="spare",
+            desired_records=collapsed["desired_groups"],
+        )
+        totals["duplicates"] = collapsed["duplicates"]
         return totals
 
-    return {"added": 0, "duplicates": 0}
+    return {"added": 0, "updated": 0, "removed": 0, "duplicates": 0, "skipped_deleted": 0}
