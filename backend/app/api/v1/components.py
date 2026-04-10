@@ -151,6 +151,16 @@ async def _backfill_component_manual_links(
         await db.commit()
 
 
+def _component_has_manual_link(component: Component) -> bool:
+    return bool(
+        component.source_manual_id
+        or component.pdf_reference
+        or component.page_reference is not None
+        or component.job_pages
+        or component.spare_pages
+    )
+
+
 @router.get("/{vessel_id}/components", summary="List components with filters")
 async def list_components(
     vessel_id: uuid.UUID,
@@ -162,6 +172,7 @@ async def list_components(
     qc_status: Optional[str] = Query(None),
     min_confidence: Optional[int] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
+    mapped_extracted: Optional[bool] = Query(None),
     search: Optional[str] = Query(None),
     maker_filter: Optional[str] = Query(None),
     model_filter: Optional[str] = Query(None),
@@ -219,9 +230,6 @@ async def list_components(
     if model_filter:
         base_where.append(Component.model.ilike(f"%{model_filter}%"))
 
-    total_result = await db.execute(select(func.count()).select_from(Component).where(*base_where))
-    total: int = total_result.scalar_one()
-
     sort_columns = {
         "component_name": Component.component_name,
         "maker": Component.maker,
@@ -241,8 +249,6 @@ async def list_components(
         select(Component)
         .where(*base_where)
         .order_by(order_expr, Component.component_name.asc(), Component.id.asc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
     )
     result = await db.execute(query)
     components = result.scalars().all()
@@ -252,7 +258,21 @@ async def list_components(
         components=components,
         db=db,
     )
-    return {"items": [ComponentOut.model_validate(c) for c in components], "page": page, "page_size": page_size, "total": total}
+    if mapped_extracted is not None:
+        components = [
+            component
+            for component in components
+            if (_component_has_manual_link(component) and not component.is_unmapped) == mapped_extracted
+        ]
+
+    total = len(components)
+    paged_components = components[(page - 1) * page_size : page * page_size]
+    return {
+        "items": [ComponentOut.model_validate(c) for c in paged_components],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+    }
 
 
 @router.post(

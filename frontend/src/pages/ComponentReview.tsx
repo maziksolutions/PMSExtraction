@@ -219,6 +219,7 @@ const ComponentReview: React.FC = () => {
   const [selectedGroup2, setSelectedGroup2] = useState<string | null>(null)
   const [selectedMachinery, setSelectedMachinery] = useState<string | null>(null)
   const [showUnmapped, setShowUnmapped] = useState(false)
+  const [showMappedExtracted, setShowMappedExtracted] = useState(false)
   const [expandedG1, setExpandedG1] = useState<Set<string>>(new Set())
   const [expandedG2, setExpandedG2] = useState<Set<string>>(new Set())
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -241,9 +242,10 @@ const ComponentReview: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, sortBy, sortOrder, page, pageSize],
+    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, showMappedExtracted, searchTable, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
       const params: Record<string, string | number> = { page, page_size: pageSize, is_unmapped: showUnmapped ? 'true' : 'false' }
+      if (showMappedExtracted) params.mapped_extracted = 'true'
       if (selectedGroup1) params.group1 = selectedGroup1
       if (selectedGroup2) params.group2 = selectedGroup2
       if (selectedMachinery) params.main_machinery = selectedMachinery
@@ -337,7 +339,7 @@ const ComponentReview: React.FC = () => {
   })
 
   // Reset to page 1 when any filter changes
-  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, searchTable, sortBy, sortOrder, pageSize])
+  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, showMappedExtracted, searchTable, sortBy, sortOrder, pageSize])
 
   const handleExcelImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -397,7 +399,7 @@ const ComponentReview: React.FC = () => {
 
   React.useEffect(() => {
     if (!components.length) {
-      if (selectedComponent && !showUnmapped) {
+      if (selectedComponent && !showUnmapped && !showMappedExtracted) {
         const fallback = mappedComponentOptions.find((component) => component.id === selectedComponent.id)
         if (fallback) setSelectedComponent(fallback)
       }
@@ -408,7 +410,7 @@ const ComponentReview: React.FC = () => {
       const refreshed = components.find((component) => component.id === selectedComponent.id)
       if (refreshed) setSelectedComponent(refreshed)
     }
-  }, [components, mappedComponentOptions, selectedComponent, showUnmapped])
+  }, [components, mappedComponentOptions, selectedComponent, showUnmapped, showMappedExtracted])
 
   return (
     <>
@@ -478,15 +480,15 @@ const ComponentReview: React.FC = () => {
 
         {/* All Components */}
         <button
-          onClick={() => { setSelectedGroup1(null); setSelectedGroup2(null); setSelectedMachinery(null); setShowUnmapped(false) }}
+          onClick={() => { setSelectedGroup1(null); setSelectedGroup2(null); setSelectedMachinery(null); setShowUnmapped(false); setShowMappedExtracted(false) }}
           className={`mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors ${
-            !selectedGroup1 && !showUnmapped
+            !selectedGroup1 && !showUnmapped && !showMappedExtracted
               ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
               : 'border border-transparent text-[#72243e] hover:bg-[#fff3f7] hover:text-[#4b1528]'
           }`}
         >
           All Components
-          <span className={`ml-auto rounded-full px-1.5 text-xs ${!selectedGroup1 && !showUnmapped ? 'bg-[#fff3f7] text-[#8c2f52]' : 'bg-slate-700 text-slate-400'}`}>
+          <span className={`ml-auto rounded-full px-1.5 text-xs ${!selectedGroup1 && !showUnmapped && !showMappedExtracted ? 'bg-[#fff3f7] text-[#8c2f52]' : 'bg-slate-700 text-slate-400'}`}>
             {allComponentsQuery.data?.total ?? allComponentsQuery.data?.items?.length ?? 0}
           </span>
         </button>
@@ -510,7 +512,7 @@ const ComponentReview: React.FC = () => {
                 {expandedG1.has(node.group1) ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
               </button>
               <button
-                onClick={() => { setSelectedGroup1(node.group1); setSelectedGroup2(null); setSelectedMachinery(null); setShowUnmapped(false) }}
+                onClick={() => { setSelectedGroup1(node.group1); setSelectedGroup2(null); setSelectedMachinery(null); setShowUnmapped(false); setShowMappedExtracted(false) }}
                 className={`flex flex-1 items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm transition-colors ${
                   selectedGroup1 === node.group1 && !selectedGroup2
                     ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
@@ -541,7 +543,7 @@ const ComponentReview: React.FC = () => {
                     {expandedG2.has(`${node.group1}::${g2}`) ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                   </button>
                   <button
-                    onClick={() => { setSelectedGroup1(node.group1); setSelectedGroup2(g2); setSelectedMachinery(null); setShowUnmapped(false) }}
+                    onClick={() => { setSelectedGroup1(node.group1); setSelectedGroup2(g2); setSelectedMachinery(null); setShowUnmapped(false); setShowMappedExtracted(false) }}
                     className={`flex flex-1 items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
                       selectedGroup2 === g2 && !selectedMachinery
                         ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
@@ -564,7 +566,7 @@ const ComponentReview: React.FC = () => {
                 {expandedG2.has(`${node.group1}::${g2}`) && Object.entries(g2data.mainMachineries).sort(([a], [b]) => a.localeCompare(b)).map(([mm, count]) => (
                   <div key={mm} className="ml-5 flex items-center gap-1">
                     <button
-                      onClick={() => { setSelectedGroup1(node.group1); setSelectedGroup2(g2); setSelectedMachinery(mm); setShowUnmapped(false) }}
+                      onClick={() => { setSelectedGroup1(node.group1); setSelectedGroup2(g2); setSelectedMachinery(mm); setShowUnmapped(false); setShowMappedExtracted(false) }}
                       className={`flex flex-1 items-center gap-1.5 rounded-lg px-2 py-1 text-xs transition-colors ${
                         selectedMachinery === mm
                           ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
@@ -590,7 +592,7 @@ const ComponentReview: React.FC = () => {
         ))}
 
         <button
-          onClick={() => { setSelectedGroup1(null); setSelectedGroup2(null); setSelectedMachinery(null); setShowUnmapped(true) }}
+          onClick={() => { setSelectedGroup1(null); setSelectedGroup2(null); setSelectedMachinery(null); setShowUnmapped(true); setShowMappedExtracted(false) }}
           className={`mt-2 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors ${
             showUnmapped
               ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
@@ -599,6 +601,20 @@ const ComponentReview: React.FC = () => {
         >
           <AlertCircle className={`h-3.5 w-3.5 ${showUnmapped ? 'text-[#fff3f7]' : ''}`} />
           Unmapped
+        </button>
+        <button
+          onClick={() => { setSelectedGroup1(null); setSelectedGroup2(null); setSelectedMachinery(null); setShowUnmapped(false); setShowMappedExtracted(true) }}
+          className={`mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors ${
+            showMappedExtracted
+              ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[0_8px_18px_rgba(212,83,126,0.18)]'
+              : 'border border-transparent text-[#8f4a64] hover:bg-[#fff3f7] hover:text-[#4b1528]'
+          }`}
+        >
+          <FolderPlus className={`h-3.5 w-3.5 ${showMappedExtracted ? 'text-[#fff3f7]' : 'text-amber-500'}`} />
+          Mapped Extracted
+          <span className={`ml-auto rounded-full px-1.5 text-xs ${showMappedExtracted ? 'bg-[#fff3f7] text-[#8c2f52]' : 'bg-slate-700 text-slate-400'}`}>
+            {allComponentsQuery.data?.items?.filter((component: Component) => !component.is_unmapped && !!(component.source_manual_id || component.pdf_reference || component.page_reference !== null || component.job_pages || component.spare_pages)).length ?? 0}
+          </span>
         </button>
       </aside>
 
@@ -626,22 +642,6 @@ const ComponentReview: React.FC = () => {
             <FileDown className="h-3.5 w-3.5" />
             Template
           </a>
-
-          {/* Clear Extraction Links */}
-          <button
-            onClick={async () => {
-              if (!window.confirm('This will clear PDF Reference, Job Pages, Spare Pages and manual links from ALL components. Use this to undo incorrect auto-merge or auto-link results. Continue?')) return
-              try {
-                const res = await apiClient.post(`/vessels/${vesselId}/components/clear-extraction-links`)
-                setImportResult(`Cleared extraction links from ${res.data.cleared} components.`)
-                queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
-              } catch { setImportResult('Clear failed.') }
-            }}
-            className="flex items-center gap-1.5 rounded-lg border border-red-800 bg-red-900/20 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-900/40 hover:text-white"
-          >
-            <X className="h-3.5 w-3.5" />
-            Clear Links
-          </button>
 
           {/* Export Accepted */}
           <button
