@@ -5,7 +5,7 @@ import uuid
 from typing import Annotated, Any, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Response, UploadFile, status
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -272,6 +272,46 @@ async def _rerun_manual_extraction(manual_ids: list[str]) -> None:
             continue
 
 
+async def _restore_soft_deleted_manual_jobs_if_vessel_empty(
+    db: AsyncSession,
+    *,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> int:
+    """
+    Recover extracted manual jobs that were soft-deleted by older buggy reruns.
+    This only activates when the vessel currently has no active jobs at all.
+    """
+    active_jobs_result = await db.execute(
+        select(func.count()).select_from(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == tenant_id,
+            Job.is_deleted == False,
+        )
+    )
+    if active_jobs_result.scalar_one():
+        return 0
+
+    deleted_jobs_result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == tenant_id,
+            Job.source_manual_id.is_not(None),
+            Job.is_deleted == True,
+        )
+    )
+    deleted_jobs = deleted_jobs_result.scalars().all()
+    if not deleted_jobs:
+        return 0
+
+    for job in deleted_jobs:
+        job.is_deleted = False
+        db.add(job)
+
+    await db.commit()
+    return len(deleted_jobs)
+
+
 @router.get("/{vessel_id}/jobs", summary="List jobs with filters")
 async def list_jobs(
     vessel_id: uuid.UUID,
@@ -294,6 +334,11 @@ async def list_jobs(
     from app.models.component import Component
     from app.models.ingestion import Manual
     await _get_vessel_or_404(vessel_id, db)
+    await _restore_soft_deleted_manual_jobs_if_vessel_empty(
+        db,
+        vessel_id=vessel_id,
+        tenant_id=current_user.tenant_id,
+    )
     await _normalize_vessel_job_names(
         db,
         vessel_id=vessel_id,

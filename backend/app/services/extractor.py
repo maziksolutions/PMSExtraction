@@ -1540,27 +1540,6 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 len(filtered_text),
             )
 
-        await db.execute(
-            update(Job)
-            .where(Job.source_manual_id == manual.id, Job.is_deleted == False)
-            .values(is_deleted=True)
-        )
-        await db.execute(
-            update(Spare)
-            .where(Spare.source_manual_id == manual.id, Spare.is_deleted == False)
-            .values(is_deleted=True)
-        )
-        await db.execute(
-            update(Component)
-            .where(
-                Component.source_manual_id == manual.id,
-                Component.is_deleted == False,
-                Component.qc_status == QCStatus.pending,
-            )
-            .values(is_deleted=True)
-        )
-        await db.commit()
-
         # ------------------------------------------------------------------
         # Chunk the full text so every page is processed.
         # Claude claude-sonnet-4-6 has a 200k token context window.
@@ -1787,6 +1766,35 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                         page_reference=int(source_page) if source_page is not None else None,
                     )
                     spares_to_add.append(spare)
+
+        # ------------------------------------------------------------------
+        # Replace prior extracted records only for entity types that were
+        # actually re-extracted successfully on this run. This avoids wiping
+        # existing jobs when a rerun only targets components/spares or when a
+        # provider returns zero rows for a selected entity type.
+        # ------------------------------------------------------------------
+        if components_to_add:
+            await db.execute(
+                update(Component)
+                .where(
+                    Component.source_manual_id == manual.id,
+                    Component.is_deleted == False,
+                    Component.qc_status == QCStatus.pending,
+                )
+                .values(is_deleted=True)
+            )
+        if jobs_to_add:
+            await db.execute(
+                update(Job)
+                .where(Job.source_manual_id == manual.id, Job.is_deleted == False)
+                .values(is_deleted=True)
+            )
+        if spares_to_add:
+            await db.execute(
+                update(Spare)
+                .where(Spare.source_manual_id == manual.id, Spare.is_deleted == False)
+                .values(is_deleted=True)
+            )
 
         # ------------------------------------------------------------------
         # Persist all records
