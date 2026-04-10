@@ -102,6 +102,14 @@ _ABBREVIATION_MAP: dict[str, str] = {
     r"\bnrv\b": "non return valve",
 }
 
+_ROOT_COMPONENT_ALIASES: dict[str, tuple[str, ...]] = {
+    "pump": ("pump", "pumps"),
+    "motor": ("motor", "motors"),
+    "fan": ("fan", "fans"),
+    "blower": ("blower", "blowers"),
+    "compressor": ("compressor", "compressors"),
+}
+
 
 def normalise(text: str) -> str:
     """
@@ -153,6 +161,17 @@ def _alphanumeric_only(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
+def _root_component_name(text: str) -> str:
+    normalised = normalise(text)
+    if not normalised:
+        return ""
+    tokens = set(normalised.split())
+    for root_name, aliases in _ROOT_COMPONENT_ALIASES.items():
+        if any(alias in tokens for alias in aliases):
+            return root_name
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Core fuzzy similarity
 # ---------------------------------------------------------------------------
@@ -188,8 +207,6 @@ def is_duplicate_component(new: dict, existing: dict) -> bool:
     ex_name = normalise(existing.get("component_name", ""))
     if not new_name or not ex_name:
         return False
-    if fuzzy_similarity(new_name, ex_name) < 0.90:
-        return False
 
     # --- maker ---
     new_maker_raw = new.get("maker", "") or ""
@@ -210,6 +227,15 @@ def is_duplicate_component(new: dict, existing: dict) -> bool:
     model_matches = (
         fuzzy_similarity(new_model, ex_model) >= 0.90 if model_present else True
     )
+
+    new_root = _root_component_name(f"{new.get('component_name', '')} {new.get('main_machinery', '')}")
+    ex_root = _root_component_name(f"{existing.get('component_name', '')} {existing.get('main_machinery', '')}")
+
+    name_matches = fuzzy_similarity(new_name, ex_name) >= 0.90
+    root_maker_model_match = bool(new_root and ex_root and new_root == ex_root and maker_present and model_present and maker_matches and model_matches)
+
+    if not name_matches and not root_maker_model_match:
+        return False
 
     # maker+model must match; if neither is present, treat as matching
     both_blank = (not new_maker and not ex_maker) and (not new_model and not ex_model)

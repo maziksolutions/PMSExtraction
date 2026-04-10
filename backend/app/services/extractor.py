@@ -392,13 +392,29 @@ def _dedupe_records(records: list[dict], extraction_type: str) -> list[dict]:
     deduped: list[dict] = []
     for record in records:
         if extraction_type == "component":
-            key = "|".join(
-                [
-                    (record.get("component_name") or "").strip().lower(),
-                    (record.get("main_machinery") or "").strip().lower(),
-                    str(record.get("source_page_number") or ""),
-                ]
-            )
+            component_name = (record.get("component_name") or "").strip().lower()
+            main_machinery = (record.get("main_machinery") or "").strip().lower()
+            maker = (record.get("maker") or "").strip().lower()
+            model = (record.get("model") or "").strip().lower()
+            combined = f"{component_name} {main_machinery}"
+            if any(keyword in combined for keyword in ("pump", "motor", "fan", "blower", "compressor")) and maker and model:
+                root = next(
+                    (
+                        keyword
+                        for keyword in ("pump", "motor", "fan", "blower", "compressor")
+                        if keyword in combined
+                    ),
+                    "",
+                )
+                key = "|".join([root, maker, model])
+            else:
+                key = "|".join(
+                    [
+                        component_name,
+                        main_machinery,
+                        str(record.get("source_page_number") or ""),
+                    ]
+                )
         elif extraction_type == "job":
             key = "|".join(
                 [
@@ -1353,6 +1369,54 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 "auto_extract_from_manual: treating unknown manual %s as Instruction Manual (has page signals)",
                 manual_id_str,
             )
+
+        try:
+            from app.services.manual_match_reuse import (
+                find_best_manual_match_for_source,
+                reuse_records_from_matched_manual,
+            )
+
+            best_match = await find_best_manual_match_for_source(
+                db,
+                tenant_id=tenant_id,
+                source_manual_id=manual.id,
+            )
+            if best_match and str(best_match.get("match_confidence") or "").lower() in {"exact", "high", "medium"}:
+                matched_manual_result = await db.execute(
+                    select(Manual).where(
+                        Manual.id == uuid.UUID(str(best_match["matched_manual_id"])),
+                        Manual.is_deleted == False,
+                    )
+                )
+                matched_manual = matched_manual_result.scalar_one_or_none()
+                if matched_manual is not None:
+                    payload = await reuse_records_from_matched_manual(
+                        db,
+                        tenant_id=tenant_id,
+                        vessel_id=vessel_id,
+                        source_manual=manual,
+                        matched_manual=matched_manual,
+                        match_confidence=str(best_match.get("match_confidence") or ""),
+                        match_score=best_match.get("match_score"),
+                        auto_merge_components=True,
+                    )
+                    await db.execute(
+                        update(Manual)
+                        .where(Manual.id == manual_id)
+                        .values(status=ManualStatus.classified)
+                    )
+                    await db.commit()
+                    logger.warning(
+                        "auto_extract_from_manual: reused matched manual for %s exact=%s components=%d jobs=%d spares=%d",
+                        manual_id_str,
+                        payload.get("exact_match"),
+                        payload.get("copied_components", 0),
+                        payload.get("copied_jobs", 0),
+                        payload.get("copied_spares", 0),
+                    )
+                    return
+        except Exception as manual_match_err:
+            logger.warning("auto_extract_from_manual: matched-manual reuse failed: %s", manual_match_err)
 
         # ------------------------------------------------------------------
         # Mark as scanning

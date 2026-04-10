@@ -24,6 +24,7 @@ from app.models.spare import Spare
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.services.deduplication import is_duplicate_component, is_duplicate_job, is_duplicate_spare
+from app.services.manual_match_reuse import reuse_records_from_matched_manual
 from app.services.review_workflow import backfill_global_library_from_accepted_records
 from app.services.vessel_library import load_library_components_for_vessel
 
@@ -1243,20 +1244,15 @@ async def copy_matched_vessel_records(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
-    """
-    Copy all accepted Components, Jobs, and Spares from the source vessel
-    referenced in the match into this vessel as pending QC records.
-    """
+    """Copy accepted records from the matched manual into this vessel as pending QC records."""
     await _get_vessel_or_404(vessel_id, db)
 
     # Resolve the match to find the source vessel
     try:
         match_result = await db.execute(
             text(
-                "SELECT mm.source_manual_id, mm.matched_manual_id, "
-                "sm.vessel_id AS source_vessel_id "
+                "SELECT mm.source_manual_id, mm.matched_manual_id, mm.match_score, mm.match_confidence "
                 "FROM manual_matches mm "
-                "JOIN manuals sm ON sm.id = mm.source_manual_id "
                 "WHERE mm.id = :mid AND mm.tenant_id = :tid AND mm.is_deleted = false"
             ),
             {"mid": str(match_id), "tid": str(current_user.tenant_id)},
@@ -1268,99 +1264,35 @@ async def copy_matched_vessel_records(
     if match_row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Match not found")
 
-    source_vessel_id = uuid.UUID(str(match_row["source_vessel_id"]))
-
-    copied_components = 0
-    copied_jobs = 0
-    copied_spares = 0
-
-    # --- Copy Components ---
-    comp_result = await db.execute(
-        select(Component).where(
-            Component.vessel_id == source_vessel_id,
-            Component.tenant_id == current_user.tenant_id,
-            Component.qc_status == CompQCStatus.accepted,
-            Component.is_deleted == False,
+    source_manual_result = await db.execute(
+        select(Manual).where(
+            Manual.id == uuid.UUID(str(match_row["source_manual_id"])),
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
         )
     )
-    for c in comp_result.scalars().all():
-        new_comp = Component(
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            group1=c.group1,
-            group2=c.group2,
-            main_machinery=c.main_machinery,
-            component_name=c.component_name,
-            maker=c.maker,
-            model=c.model,
-            serial_number=c.serial_number,
-            specification=c.specification,
-            is_critical=c.is_critical,
-            job_pages=c.job_pages,
-            spare_pages=c.spare_pages,
-            confidence_score=c.confidence_score,
-            qc_status=CompQCStatus.pending,
-            source_manual_id=c.source_manual_id,
-        )
-        db.add(new_comp)
-        copied_components += 1
-
-    # --- Copy Jobs ---
-    job_result = await db.execute(
-        select(Job).where(
-            Job.vessel_id == source_vessel_id,
-            Job.tenant_id == current_user.tenant_id,
-            Job.qc_status == CompQCStatus.accepted,
-            Job.is_deleted == False,
+    source_manual = source_manual_result.scalar_one_or_none()
+    matched_manual_result = await db.execute(
+        select(Manual).where(
+            Manual.id == uuid.UUID(str(match_row["matched_manual_id"])),
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
         )
     )
-    for j in job_result.scalars().all():
-        new_job = Job(
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            job_name=j.job_name,
-            job_code=j.job_code,
-            job_description=j.job_description,
-            safety_precaution=j.safety_precaution,
-            frequency=j.frequency,
-            frequency_type=j.frequency_type,
-            is_critical=j.is_critical,
-            confidence_score=j.confidence_score,
-            qc_status=CompQCStatus.pending,
-            source_manual_id=j.source_manual_id,
-        )
-        db.add(new_job)
-        copied_jobs += 1
+    matched_manual = matched_manual_result.scalar_one_or_none()
 
-    # --- Copy Spares ---
-    spare_result = await db.execute(
-        select(Spare).where(
-            Spare.vessel_id == source_vessel_id,
-            Spare.tenant_id == current_user.tenant_id,
-            Spare.qc_status == CompQCStatus.accepted,
-            Spare.is_deleted == False,
-        )
+    if source_manual is None or matched_manual is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matched manuals not found")
+
+    payload = await reuse_records_from_matched_manual(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        source_manual=source_manual,
+        matched_manual=matched_manual,
+        match_confidence=str(match_row.get("match_confidence") or ""),
+        match_score=match_row.get("match_score"),
+        auto_merge_components=True,
     )
-    for s in spare_result.scalars().all():
-        new_spare = Spare(
-            tenant_id=current_user.tenant_id,
-            vessel_id=vessel_id,
-            part_name=s.part_name,
-            part_number=s.part_number,
-            specification=s.specification,
-            spare_maker=s.spare_maker,
-            spare_model=s.spare_model,
-            confidence_score=s.confidence_score,
-            qc_status=CompQCStatus.pending,
-            source_manual_id=s.source_manual_id,
-        )
-        db.add(new_spare)
-        copied_spares += 1
-
     await db.commit()
-    return {
-        "copied_components": copied_components,
-        "copied_jobs": copied_jobs,
-        "copied_spares": copied_spares,
-        "total": copied_components + copied_jobs + copied_spares,
-    }
+    return payload

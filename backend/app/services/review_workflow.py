@@ -14,6 +14,7 @@ from app.models.component import Component, QCStatus
 from app.models.job import Job
 from app.models.spare import Spare
 from app.services.deduplication import (
+    normalise,
     is_duplicate_component,
     is_duplicate_job,
     is_duplicate_spare,
@@ -54,6 +55,16 @@ def _normalized_signature_payload(record: dict[str, Any]) -> dict[str, Any]:
 
 def _canonical_library_record(record: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in record.items() if key != "id"}
+
+
+def _root_component_display_name(*values: Optional[str]) -> Optional[str]:
+    text = normalise(" ".join(filter(None, values)))
+    if not text:
+        return None
+    for root_name in ("pump", "motor", "fan", "blower", "compressor"):
+        if root_name in text.split():
+            return root_name.title()
+    return None
 
 
 def _library_signature(record: dict[str, Any]) -> str:
@@ -410,12 +421,15 @@ async def broadcast_activity(entry: ActivityEntry | dict[str, Any]) -> None:
 
 
 def _component_record(component: Component) -> dict[str, Any]:
+    root_name = None
+    if component.maker and component.model:
+        root_name = _root_component_display_name(component.component_name, component.main_machinery)
     return {
         "id": str(component.id),
         "group1": component.group1,
         "group2": component.group2,
         "main_machinery": component.main_machinery,
-        "component_name": component.component_name,
+        "component_name": root_name or component.component_name,
         "maker": component.maker or "",
         "model": component.model or "",
         "location": component.location or "",

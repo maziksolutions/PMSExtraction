@@ -1030,6 +1030,7 @@ const CONFIDENCE_COLORS: Record<string, string> = {
 }
 
 const ManualMatchesTab: React.FC = () => {
+  const queryClient = useQueryClient()
   const [selectedVesselId, setSelectedVesselId] = useState('')
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('match_score')
@@ -1061,6 +1062,20 @@ const ManualMatchesTab: React.FC = () => {
   const savedItems: any[] = savedQuery.data?.items ?? []
   const total = savedQuery.data?.total ?? savedItems.length
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  const reuseMutation = useMutation({
+    mutationFn: (matchId: string) =>
+      apiClient.post(`/library/${selectedVesselId}/manuals/matches/${matchId}/copy-all`).then(r => r.data),
+    onSuccess: (data: any) => {
+      setRunMsg(
+        `Reused ${data?.copied_components ?? 0} components, ${data?.copied_jobs ?? 0} jobs, and ${data?.copied_spares ?? 0} spares from the matched manual.`
+      )
+      queryClient.invalidateQueries({ queryKey: ['manual-matches'] })
+    },
+    onError: (err: any) => {
+      setRunMsg(err?.response?.data?.detail ?? err?.message ?? 'Reuse from matched manual failed.')
+    },
+  })
 
   const handleFindMatches = async () => {
     if (!selectedVesselId) return
@@ -1182,6 +1197,7 @@ const ManualMatchesTab: React.FC = () => {
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Matched Vessel</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Score</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Confidence</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-slate-400">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700/50">
@@ -1201,6 +1217,15 @@ const ManualMatchesTab: React.FC = () => {
                     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONFIDENCE_COLORS[item.match_confidence] ?? 'bg-slate-600 text-slate-200'}`}>
                       {item.match_confidence ?? '—'}
                     </span>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <button
+                      onClick={() => reuseMutation.mutate(String(item.id))}
+                      disabled={reuseMutation.isPending}
+                      className="rounded-lg bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-50"
+                    >
+                      {reuseMutation.isPending ? 'Reusing...' : 'Reuse in Vessel'}
+                    </button>
                   </td>
                 </tr>
               ))}

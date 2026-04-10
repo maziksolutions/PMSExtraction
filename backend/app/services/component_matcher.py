@@ -18,6 +18,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.component import Component, QCStatus
+from app.models.job import Job
+from app.models.spare import Spare
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,17 @@ _ABBREV_PATTERNS: list[tuple[str, str]] = [
 ]
 
 _COMPILED = [(re.compile(pat, re.IGNORECASE), repl) for pat, repl in _ABBREV_PATTERNS]
+_ROOT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "pump": ("pump", "pumps"),
+    "motor": ("motor", "motors"),
+    "fan": ("fan", "fans"),
+    "blower": ("blower", "blowers"),
+    "compressor": ("compressor", "compressors"),
+    "valve": ("valve", "valves"),
+    "filter": ("filter", "filters", "strainer", "strainers"),
+    "cooler": ("cooler", "coolers"),
+    "purifier": ("purifier", "purifiers", "separator", "separators"),
+}
 
 
 def _normalize(name: str) -> str:
@@ -92,6 +105,21 @@ def _similarity(a: str, b: str) -> float:
     return max(jaccard, char_sim)
 
 
+def _root_component_name(*values: Optional[str]) -> Optional[str]:
+    text = _normalize(" ".join(filter(None, values)))
+    if not text:
+        return None
+    tokens = set(text.split())
+    for root_name, aliases in _ROOT_KEYWORDS.items():
+        if any(alias in tokens for alias in aliases):
+            return root_name
+    return None
+
+
+def _maker_model_key(component: Component) -> tuple[str, str]:
+    return (_normalize(component.maker or ""), _normalize(component.model or ""))
+
+
 def _component_similarity(extracted: Component, library: Component) -> float:
     name_score = _similarity(extracted.component_name, library.component_name)
     machinery_score = _similarity(extracted.main_machinery, library.main_machinery)
@@ -111,6 +139,18 @@ def _component_similarity(extracted: Component, library: Component) -> float:
     if ext_tokens and lib_tokens:
         overlap = len(ext_tokens & lib_tokens) / max(min(len(ext_tokens), len(lib_tokens)), 1)
         if overlap >= 0.75:
+            bonus += 0.08
+
+    extracted_root = _root_component_name(extracted.component_name, extracted.main_machinery)
+    library_root = _root_component_name(library.component_name, library.main_machinery)
+    if extracted_root and library_root and extracted_root == library_root:
+        bonus += 0.12
+
+    extracted_maker_model = _maker_model_key(extracted)
+    library_maker_model = _maker_model_key(library)
+    if all(extracted_maker_model) and extracted_maker_model == library_maker_model:
+        bonus += 0.18
+        if extracted_root and library_root and extracted_root == library_root:
             bonus += 0.08
 
     return max(name_score, machinery_score, cross_score) + bonus
@@ -237,6 +277,7 @@ async def auto_merge_extracted_components(
     merged = 0
     unmatched = 0
     to_delete: list[uuid.UUID] = []
+    merge_pairs: list[tuple[uuid.UUID, uuid.UUID]] = []
 
     for ext_comp in extracted_components:
         best_match: Optional[Component] = None
@@ -252,6 +293,7 @@ async def auto_merge_extracted_components(
             merge_component_into_target(ext_comp, best_match)
             db.add(best_match)
             to_delete.append(ext_comp.id)
+            merge_pairs.append((ext_comp.id, best_match.id))
             merged += 1
 
             logger.info(
@@ -272,6 +314,32 @@ async def auto_merge_extracted_components(
                 best_match.component_name if best_match else "—",
                 best_score,
             )
+
+    for source_component_id, target_component_id in merge_pairs:
+        jobs_result = await db.execute(
+            select(Job).where(
+                Job.vessel_id == vessel_id,
+                Job.tenant_id == tenant_id,
+                Job.component_id == source_component_id,
+                Job.is_deleted == False,
+            )
+        )
+        for job in jobs_result.scalars().all():
+            job.component_id = target_component_id
+            job.is_unmapped = False
+            db.add(job)
+
+        spares_result = await db.execute(
+            select(Spare).where(
+                Spare.vessel_id == vessel_id,
+                Spare.tenant_id == tenant_id,
+                Spare.component_id == source_component_id,
+                Spare.is_deleted == False,
+            )
+        )
+        for spare in spares_result.scalars().all():
+            spare.component_id = target_component_id
+            db.add(spare)
 
     # Soft-delete the extracted duplicates that were merged
     for comp_id in to_delete:
