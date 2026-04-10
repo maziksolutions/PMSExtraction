@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections import defaultdict
 from typing import Any, Iterable, Optional
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.activity import ActivityEntry
-from app.models.component import Component
+from app.models.component import Component, QCStatus
 from app.models.job import Job
 from app.models.spare import Spare
 from app.services.deduplication import (
@@ -435,3 +436,86 @@ async def sync_spares_to_global_library(
             component_category="spare",
         )
     return {"added": added, "duplicates": duplicates}
+
+
+async def backfill_global_library_from_accepted_records(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    entity_type: str,
+) -> dict[str, int]:
+    await ensure_global_library_tables(db)
+
+    if entity_type == "component":
+        result = await db.execute(
+            select(Component).where(
+                Component.tenant_id == tenant_id,
+                Component.qc_status == QCStatus.accepted,
+                Component.is_deleted == False,
+            )
+        )
+        components_by_vessel: dict[uuid.UUID, list[Component]] = defaultdict(list)
+        for component in result.scalars().all():
+            components_by_vessel[component.vessel_id].append(component)
+
+        added = duplicates = 0
+        for vessel_id, components in components_by_vessel.items():
+            outcome = await sync_components_to_global_library(
+                db,
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                components=components,
+            )
+            added += outcome["added"]
+            duplicates += outcome["duplicates"]
+        return {"added": added, "duplicates": duplicates}
+
+    if entity_type == "job":
+        result = await db.execute(
+            select(Job).where(
+                Job.tenant_id == tenant_id,
+                Job.qc_status == QCStatus.accepted,
+                Job.is_deleted == False,
+            )
+        )
+        jobs_by_vessel: dict[uuid.UUID, list[Job]] = defaultdict(list)
+        for job in result.scalars().all():
+            jobs_by_vessel[job.vessel_id].append(job)
+
+        added = duplicates = 0
+        for vessel_id, jobs in jobs_by_vessel.items():
+            outcome = await sync_jobs_to_global_library(
+                db,
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                jobs=jobs,
+            )
+            added += outcome["added"]
+            duplicates += outcome["duplicates"]
+        return {"added": added, "duplicates": duplicates}
+
+    if entity_type == "spare":
+        result = await db.execute(
+            select(Spare).where(
+                Spare.tenant_id == tenant_id,
+                Spare.qc_status == QCStatus.accepted,
+                Spare.is_deleted == False,
+            )
+        )
+        spares_by_vessel: dict[uuid.UUID, list[Spare]] = defaultdict(list)
+        for spare in result.scalars().all():
+            spares_by_vessel[spare.vessel_id].append(spare)
+
+        added = duplicates = 0
+        for vessel_id, spares in spares_by_vessel.items():
+            outcome = await sync_spares_to_global_library(
+                db,
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                spares=spares,
+            )
+            added += outcome["added"]
+            duplicates += outcome["duplicates"]
+        return {"added": added, "duplicates": duplicates}
+
+    return {"added": 0, "duplicates": 0}

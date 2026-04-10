@@ -817,7 +817,10 @@ const GlobalLibrariesTab: React.FC = () => {
         <>
           {/* Populate from Vessel */}
           <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
-            <h3 className="text-sm font-semibold text-slate-300 mb-3">Populate from Vessel</h3>
+            <h3 className="text-sm font-semibold text-slate-300 mb-1">Populate from Vessel</h3>
+            <p className="mb-3 text-xs text-slate-400">
+              Accepted QC records now auto-sync into Global Libraries. Use this only to backfill a specific vessel on demand.
+            </p>
             <div className="flex items-center gap-3">
               <input
                 type="text"

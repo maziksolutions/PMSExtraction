@@ -23,6 +23,7 @@ from app.models.spare import Spare
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.services.deduplication import is_duplicate_component, is_duplicate_job, is_duplicate_spare
+from app.services.review_workflow import backfill_global_library_from_accepted_records
 from app.services.vessel_library import load_library_components_for_vessel
 
 router = APIRouter()
@@ -755,6 +756,18 @@ async def list_global_library(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid entity_type '{entity_type}'. Must be one of: component, job, spare.",
         )
+
+    if page == 1 and not search:
+        try:
+            await backfill_global_library_from_accepted_records(
+                db,
+                tenant_id=current_user.tenant_id,
+                entity_type=entity_type,
+            )
+            await db.commit()
+        except Exception as err:
+            logger.warning("list_global_library backfill failed for %s: %s", entity_type, err)
+            await db.rollback()
 
     where_clauses = ["tenant_id = :tid", "is_deleted = false"]
     params: dict[str, Any] = {"tid": str(current_user.tenant_id)}
