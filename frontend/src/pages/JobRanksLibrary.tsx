@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BookOpen, Plus, RefreshCw } from 'lucide-react'
+import { BookOpen, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface RankOption {
@@ -38,6 +38,19 @@ const JobRanksLibrary: React.FC<{ embedded?: boolean }> = ({ embedded = false })
     onError: (error: unknown) => {
       setActionMessage(null)
       setActionError(getApiErrorMessage(error, 'Unable to add rank.'))
+    },
+  })
+
+  const deleteRankMutation = useMutation({
+    mutationFn: (rankName: string) => apiClient.delete(`/job-ranks/${encodeURIComponent(rankName)}`).then((r) => r.data),
+    onSuccess: () => {
+      setActionError(null)
+      setActionMessage('Removed rank from the library.')
+      queryClient.invalidateQueries({ queryKey: ['job-ranks'] })
+    },
+    onError: (error: unknown) => {
+      setActionMessage(null)
+      setActionError(getApiErrorMessage(error, 'Unable to remove rank.'))
     },
   })
 
@@ -118,8 +131,15 @@ const JobRanksLibrary: React.FC<{ embedded?: boolean }> = ({ embedded = false })
         ) : (
           <div className="grid gap-px bg-slate-800 md:grid-cols-2 xl:grid-cols-3">
             {filteredRanks.map((rank) => (
-              <div key={rank.id} className="bg-slate-900 px-4 py-3 text-sm text-slate-200">
-                {rank.rank_name}
+              <div key={rank.id} className="flex items-center justify-between gap-3 bg-slate-900 px-4 py-3 text-sm text-slate-200">
+                <span>{rank.rank_name}</span>
+                <button
+                  onClick={() => deleteRankMutation.mutate(rank.rank_name)}
+                  className="text-slate-500 transition-colors hover:text-red-400"
+                  title="Remove rank"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
               </div>
             ))}
           </div>

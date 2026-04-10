@@ -257,7 +257,13 @@ def infer_manual_performing_rank(
     return None
 
 
-async def ensure_job_rank(db: AsyncSession, *, tenant_id: uuid.UUID, rank_name: Optional[str]) -> None:
+async def ensure_job_rank(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    rank_name: Optional[str],
+    revive_deleted: bool = False,
+) -> None:
     cleaned = normalize_rank_name(rank_name)
     if not cleaned:
         return
@@ -274,7 +280,7 @@ async def ensure_job_rank(db: AsyncSession, *, tenant_id: uuid.UUID, rank_name: 
         if pending.tenant_id == tenant_id and pending.normalized_name == key:
             if pending.rank_name != cleaned:
                 pending.rank_name = cleaned
-            if getattr(pending, "is_deleted", False):
+            if revive_deleted and getattr(pending, "is_deleted", False):
                 pending.is_deleted = False
             return
 
@@ -288,9 +294,10 @@ async def ensure_job_rank(db: AsyncSession, *, tenant_id: uuid.UUID, rank_name: 
     if existing:
         if existing.rank_name != cleaned:
             existing.rank_name = cleaned
-        if existing.is_deleted:
+        if existing.is_deleted and revive_deleted:
             existing.is_deleted = False
-        db.add(existing)
+        if not existing.is_deleted or revive_deleted:
+            db.add(existing)
         return
     db.add(
         JobRank(
@@ -715,11 +722,22 @@ async def list_rank_names_from_seed_and_existing_data(
     tenant_id: uuid.UUID,
 ) -> list[str]:
     rank_names: dict[str, str] = {}
+    deleted_result = await db.execute(
+        select(JobRank.normalized_name, JobRank.rank_name).where(
+            JobRank.tenant_id == tenant_id,
+            JobRank.is_deleted == True,
+        )
+    )
+    deleted_rank_keys = {
+        normalized_name or _rank_key(rank_name)
+        for normalized_name, rank_name in deleted_result.all()
+        if normalized_name or _rank_key(rank_name)
+    }
 
     for rank_name in _load_audit_rank_seed().get("known_ranks", []):
         cleaned = normalize_rank_name(rank_name)
         key = _rank_key(cleaned)
-        if cleaned and key and key not in rank_names:
+        if cleaned and key and key not in deleted_rank_keys and key not in rank_names:
             rank_names[key] = cleaned
 
     rank_queries = [
@@ -754,12 +772,12 @@ async def list_rank_names_from_seed_and_existing_data(
         for (rank_name,) in result.all():
             cleaned = normalize_rank_name(rank_name)
             key = _rank_key(cleaned)
-            if cleaned and key and key not in rank_names:
+            if cleaned and key and key not in deleted_rank_keys and key not in rank_names:
                 rank_names[key] = cleaned
 
     for rank_name in ("Chief Engineer", "Master"):
         key = _rank_key(rank_name)
-        if key and key not in rank_names:
+        if key and key not in deleted_rank_keys and key not in rank_names:
             rank_names[key] = rank_name
 
     return sorted(rank_names.values(), key=lambda value: value.lower())

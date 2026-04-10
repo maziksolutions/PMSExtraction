@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.deps import get_current_user
 from app.models.user import User
+from app.services.review_workflow import backfill_maker_models_from_accepted_records
 
 router = APIRouter()
 
@@ -84,6 +85,11 @@ async def list_makers(
     search: Optional[str] = Query(None),
 ) -> dict[str, Any]:
     await _bootstrap(db)
+    try:
+        await backfill_maker_models_from_accepted_records(db, tenant_id=current_user.tenant_id)
+        await db.commit()
+    except Exception:
+        await db.rollback()
     if search:
         query = text("""
             SELECT DISTINCT maker FROM maker_models
@@ -122,6 +128,11 @@ async def list_models(
     search: Optional[str] = Query(None),
 ) -> dict[str, Any]:
     await _bootstrap(db)
+    try:
+        await backfill_maker_models_from_accepted_records(db, tenant_id=current_user.tenant_id)
+        await db.commit()
+    except Exception:
+        await db.rollback()
     # Build query dynamically to avoid None parameter issues
     base_where = "WHERE tenant_id = :tid AND is_deleted = false AND model IS NOT NULL"
     params = {"tid": str(current_user.tenant_id)}
@@ -160,6 +171,11 @@ async def list_maker_models(
     page_size: int = Query(100, ge=1, le=500),
 ) -> dict[str, Any]:
     await _bootstrap(db)
+    try:
+        await backfill_maker_models_from_accepted_records(db, tenant_id=current_user.tenant_id)
+        await db.commit()
+    except Exception:
+        await db.rollback()
     # Use separate param names for each ILIKE occurrence — asyncpg maps named→positional
     # and breaks when the same name appears more than once in a single text() call.
     search_pat = f"%{search}%" if search else None

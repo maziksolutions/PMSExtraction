@@ -30,6 +30,28 @@ def _as_uuid_str(value: uuid.UUID | str) -> str:
     return str(value)
 
 
+def _normalized_signature_payload(record: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for key, value in record.items():
+        if key == "id":
+            continue
+        if isinstance(value, str):
+            normalized[key] = " ".join(value.strip().lower().split())
+        elif value is None:
+            normalized[key] = None
+        else:
+            normalized[key] = value
+    return normalized
+
+
+def _canonical_library_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in record.items() if key != "id"}
+
+
+def _library_signature(record: dict[str, Any]) -> str:
+    return json.dumps(_normalized_signature_payload(record), sort_keys=True, default=str)
+
+
 def _activity_event_payload(entry: ActivityEntry) -> dict[str, Any]:
     cached = getattr(entry, "_event_payload", None)
     if cached:
@@ -130,6 +152,26 @@ async def upsert_maker_model_library_entry(
         return
 
     await ensure_maker_models_table(db)
+
+    deleted_match = await db.execute(
+        text(
+            """
+            SELECT id FROM maker_models
+            WHERE tenant_id = :tid
+              AND maker = :maker
+              AND COALESCE(model, '') = COALESCE(:model, '')
+              AND is_deleted = true
+            LIMIT 1
+            """
+        ),
+        {
+            "tid": _as_uuid_str(tenant_id),
+            "maker": maker_value,
+            "model": model_value,
+        },
+    )
+    if deleted_match.scalar_one_or_none() is not None:
+        return
     await db.execute(
         text(
             """
@@ -266,8 +308,33 @@ async def _load_existing_global_entries(
                 "source_vessels": list(row["source_vessels"] or []),
                 "occurrence_count": int(row["occurrence_count"] or 1),
             }
-        )
+    )
     return items
+
+
+async def _load_deleted_global_signatures(
+    db: AsyncSession,
+    *,
+    table: str,
+    tenant_id: uuid.UUID,
+) -> set[str]:
+    await ensure_global_library_tables(db)
+    deleted_result = await db.execute(
+        text(
+            f"SELECT canonical_data "
+            f"FROM {table} WHERE tenant_id = :tid AND is_deleted = true"
+        ),
+        {"tid": _as_uuid_str(tenant_id)},
+    )
+    signatures: set[str] = set()
+    for (raw_data,) in deleted_result.all():
+        if isinstance(raw_data, str):
+            try:
+                raw_data = json.loads(raw_data)
+            except Exception:
+                raw_data = {}
+        signatures.add(_library_signature(raw_data or {}))
+    return signatures
 
 
 async def _upsert_global_library_record(
@@ -438,6 +505,44 @@ async def sync_spares_to_global_library(
     return {"added": added, "duplicates": duplicates}
 
 
+async def backfill_maker_models_from_accepted_records(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+) -> None:
+    component_result = await db.execute(
+        select(Component).where(
+            Component.tenant_id == tenant_id,
+            Component.qc_status == QCStatus.accepted,
+            Component.is_deleted == False,
+        )
+    )
+    for component in component_result.scalars().all():
+        await upsert_maker_model_library_entry(
+            db,
+            tenant_id=tenant_id,
+            maker=component.maker,
+            model=component.model,
+            component_category=component.group1,
+        )
+
+    spare_result = await db.execute(
+        select(Spare).where(
+            Spare.tenant_id == tenant_id,
+            Spare.qc_status == QCStatus.accepted,
+            Spare.is_deleted == False,
+        )
+    )
+    for spare in spare_result.scalars().all():
+        await upsert_maker_model_library_entry(
+            db,
+            tenant_id=tenant_id,
+            maker=spare.spare_maker,
+            model=spare.spare_model,
+            component_category="spare",
+        )
+
+
 async def backfill_global_library_from_accepted_records(
     db: AsyncSession,
     *,
@@ -445,6 +550,18 @@ async def backfill_global_library_from_accepted_records(
     entity_type: str,
 ) -> dict[str, int]:
     await ensure_global_library_tables(db)
+    table = _GLOBAL_TABLE_MAP.get(entity_type)
+    if not table:
+        return {"added": 0, "duplicates": 0}
+
+    existing_rows = await _load_existing_global_entries(db, table=table, tenant_id=tenant_id)
+    deleted_signatures = await _load_deleted_global_signatures(db, table=table, tenant_id=tenant_id)
+    existing_by_signature: dict[str, dict[str, Any]] = {}
+    for existing in existing_rows:
+        signature = _library_signature(existing["data"])
+        existing_by_signature.setdefault(signature, existing)
+
+    aggregated: dict[str, dict[str, Any]] = {}
 
     if entity_type == "component":
         result = await db.execute(
@@ -454,23 +571,28 @@ async def backfill_global_library_from_accepted_records(
                 Component.is_deleted == False,
             )
         )
-        components_by_vessel: dict[uuid.UUID, list[Component]] = defaultdict(list)
         for component in result.scalars().all():
-            components_by_vessel[component.vessel_id].append(component)
-
-        added = duplicates = 0
-        for vessel_id, components in components_by_vessel.items():
-            outcome = await sync_components_to_global_library(
+            record = _canonical_library_record(_component_record(component))
+            signature = _library_signature(record)
+            bucket = aggregated.setdefault(
+                signature,
+                {
+                    "record": record,
+                    "source_vessels": set(),
+                    "occurrence_count": 0,
+                },
+            )
+            bucket["source_vessels"].add(_as_uuid_str(component.vessel_id))
+            bucket["occurrence_count"] += 1
+            await upsert_maker_model_library_entry(
                 db,
                 tenant_id=tenant_id,
-                vessel_id=vessel_id,
-                components=components,
+                maker=component.maker,
+                model=component.model,
+                component_category=component.group1,
             )
-            added += outcome["added"]
-            duplicates += outcome["duplicates"]
-        return {"added": added, "duplicates": duplicates}
 
-    if entity_type == "job":
+    elif entity_type == "job":
         result = await db.execute(
             select(Job).where(
                 Job.tenant_id == tenant_id,
@@ -478,23 +600,21 @@ async def backfill_global_library_from_accepted_records(
                 Job.is_deleted == False,
             )
         )
-        jobs_by_vessel: dict[uuid.UUID, list[Job]] = defaultdict(list)
         for job in result.scalars().all():
-            jobs_by_vessel[job.vessel_id].append(job)
-
-        added = duplicates = 0
-        for vessel_id, jobs in jobs_by_vessel.items():
-            outcome = await sync_jobs_to_global_library(
-                db,
-                tenant_id=tenant_id,
-                vessel_id=vessel_id,
-                jobs=jobs,
+            record = _canonical_library_record(_job_record(job))
+            signature = _library_signature(record)
+            bucket = aggregated.setdefault(
+                signature,
+                {
+                    "record": record,
+                    "source_vessels": set(),
+                    "occurrence_count": 0,
+                },
             )
-            added += outcome["added"]
-            duplicates += outcome["duplicates"]
-        return {"added": added, "duplicates": duplicates}
+            bucket["source_vessels"].add(_as_uuid_str(job.vessel_id))
+            bucket["occurrence_count"] += 1
 
-    if entity_type == "spare":
+    elif entity_type == "spare":
         result = await db.execute(
             select(Spare).where(
                 Spare.tenant_id == tenant_id,
@@ -502,20 +622,76 @@ async def backfill_global_library_from_accepted_records(
                 Spare.is_deleted == False,
             )
         )
-        spares_by_vessel: dict[uuid.UUID, list[Spare]] = defaultdict(list)
         for spare in result.scalars().all():
-            spares_by_vessel[spare.vessel_id].append(spare)
-
-        added = duplicates = 0
-        for vessel_id, spares in spares_by_vessel.items():
-            outcome = await sync_spares_to_global_library(
+            record = _canonical_library_record(_spare_record(spare))
+            signature = _library_signature(record)
+            bucket = aggregated.setdefault(
+                signature,
+                {
+                    "record": record,
+                    "source_vessels": set(),
+                    "occurrence_count": 0,
+                },
+            )
+            bucket["source_vessels"].add(_as_uuid_str(spare.vessel_id))
+            bucket["occurrence_count"] += 1
+            await upsert_maker_model_library_entry(
                 db,
                 tenant_id=tenant_id,
-                vessel_id=vessel_id,
-                spares=spares,
+                maker=spare.spare_maker,
+                model=spare.spare_model,
+                component_category="spare",
             )
-            added += outcome["added"]
-            duplicates += outcome["duplicates"]
-        return {"added": added, "duplicates": duplicates}
+    else:
+        return {"added": 0, "duplicates": 0}
 
-    return {"added": 0, "duplicates": 0}
+    added = duplicates = 0
+    for signature, payload in aggregated.items():
+        if signature in deleted_signatures and signature not in existing_by_signature:
+            continue
+        record = payload["record"]
+        source_vessels = sorted(payload["source_vessels"])
+        occurrence_count = int(payload["occurrence_count"])
+        existing = existing_by_signature.get(signature)
+        if existing:
+            merged_vessels = sorted(set(existing["source_vessels"]).union(source_vessels))
+            await db.execute(
+                text(
+                    f"UPDATE {table} "
+                    "SET canonical_data = :cd::jsonb, "
+                    "    source_vessels = :sv::jsonb, "
+                    "    occurrence_count = :count, "
+                    "    last_confirmed_at = NOW(), "
+                    "    updated_at = NOW(), "
+                    "    is_deleted = false "
+                    "WHERE id = :id"
+                ),
+                {
+                    "cd": json.dumps(record),
+                    "sv": json.dumps(merged_vessels),
+                    "count": max(int(existing["occurrence_count"]), occurrence_count, len(merged_vessels)),
+                    "id": existing["id"],
+                },
+            )
+            duplicates += 1
+            continue
+
+        new_id = str(uuid.uuid4())
+        await db.execute(
+            text(
+                f"INSERT INTO {table} "
+                "(id, tenant_id, canonical_data, occurrence_count, source_vessels, first_seen_at, "
+                " last_confirmed_at, created_at, updated_at, is_deleted) "
+                "VALUES (:id, :tid, :cd::jsonb, :count, :sv::jsonb, NOW(), NOW(), NOW(), NOW(), false)"
+            ),
+            {
+                "id": new_id,
+                "tid": _as_uuid_str(tenant_id),
+                "cd": json.dumps(record),
+                "count": occurrence_count,
+                "sv": json.dumps(source_vessels),
+            },
+        )
+        added += 1
+
+    return {"added": added, "duplicates": duplicates}

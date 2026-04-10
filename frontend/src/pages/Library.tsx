@@ -728,6 +728,7 @@ const GLOBAL_ENTITY_LABELS: Record<GlobalEntity, string> = {
 }
 
 const GlobalLibrariesTab: React.FC = () => {
+  const queryClient = useQueryClient()
   const [activeSub, setActiveSub] = useState<'makers' | 'component' | 'job' | 'spare' | 'rank'>('makers')
   const [activeEntity, setActiveEntity] = useState<GlobalEntity>('component')
   const [populateVesselId, setPopulateVesselId] = useState('')
@@ -738,6 +739,7 @@ const GlobalLibrariesTab: React.FC = () => {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
+  const [libraryActionMessage, setLibraryActionMessage] = useState<string | null>(null)
 
   const { data: entriesData, isLoading } = useQuery({
     queryKey: ['library', 'global', activeEntity, search, sortBy, sortOrder, page, pageSize],
@@ -758,6 +760,14 @@ const GlobalLibrariesTab: React.FC = () => {
   const entries: GlobalLibraryEntry[] = entriesData?.items ?? entriesData ?? []
   const total = entriesData?.total ?? entries.length
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  const deleteEntryMutation = useMutation({
+    mutationFn: (entryId: string) => apiClient.delete(`/library/global/${activeEntity}/${entryId}`).then((r) => r.data),
+    onSuccess: () => {
+      setLibraryActionMessage('Removed entry from the global library.')
+      queryClient.invalidateQueries({ queryKey: ['library', 'global'] })
+    },
+  })
 
   React.useEffect(() => {
     setPage(1)
@@ -821,6 +831,11 @@ const GlobalLibrariesTab: React.FC = () => {
       {/* Component / Job / Spare cross-project global library */}
       {activeSub !== 'makers' && activeSub !== 'rank' && (
         <>
+          {libraryActionMessage && (
+            <div className="rounded-lg border border-emerald-600/40 bg-emerald-900/30 px-4 py-3 text-sm text-emerald-300">
+              {libraryActionMessage}
+            </div>
+          )}
           {/* Populate from Vessel */}
           <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
             <h3 className="text-sm font-semibold text-slate-300 mb-1">Populate from Vessel</h3>
@@ -893,15 +908,16 @@ const GlobalLibrariesTab: React.FC = () => {
                     <th className="text-left px-4 py-3 text-slate-400 font-medium">Occurrences</th>
                     <th className="text-left px-4 py-3 text-slate-400 font-medium">Source Vessels</th>
                     <th className="text-left px-4 py-3 text-slate-400 font-medium">First Seen</th>
+                    <th className="px-4 py-3 w-10" />
                   </tr>
                 </thead>
                 <tbody>
                   {isLoading ? (
-                    <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">
+                    <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">
                       <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2" />Loading...
                     </td></tr>
                   ) : entries.length === 0 ? (
-                    <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">
+                    <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-500">
                       No {activeSub}s found in global library.
                     </td></tr>
                   ) : entries.map((entry) => {
@@ -943,6 +959,15 @@ const GlobalLibrariesTab: React.FC = () => {
                           </td>
                           <td className="px-4 py-3 text-slate-400 text-xs">{entry.source_vessels.length} vessels</td>
                           <td className="px-4 py-3 text-slate-400 text-xs">{new Date(entry.first_seen_at).toLocaleDateString()}</td>
+                          <td className="px-4 py-3">
+                            <button
+                              onClick={() => deleteEntryMutation.mutate(entry.id)}
+                              className="text-slate-500 transition-colors hover:text-red-400"
+                              title="Remove entry"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </td>
                         </tr>
                       </React.Fragment>
                     )

@@ -757,18 +757,6 @@ async def list_global_library(
             detail=f"Invalid entity_type '{entity_type}'. Must be one of: component, job, spare.",
         )
 
-    if page == 1 and not search:
-        try:
-            await backfill_global_library_from_accepted_records(
-                db,
-                tenant_id=current_user.tenant_id,
-                entity_type=entity_type,
-            )
-            await db.commit()
-        except Exception as err:
-            logger.warning("list_global_library backfill failed for %s: %s", entity_type, err)
-            await db.rollback()
-
     where_clauses = ["tenant_id = :tid", "is_deleted = false"]
     params: dict[str, Any] = {"tid": str(current_user.tenant_id)}
     if search:
@@ -783,10 +771,19 @@ async def list_global_library(
     sort_column = sort_columns.get(sort_by, "occurrence_count")
     sort_direction = "DESC" if str(sort_order).lower() == "desc" else "ASC"
 
-    count_result = await db.execute(
-        text(f"SELECT COUNT(*) FROM {table} WHERE {where_sql}"),
-        params,
-    )
+    if page == 1 and not search:
+        try:
+            await backfill_global_library_from_accepted_records(
+                db,
+                tenant_id=current_user.tenant_id,
+                entity_type=entity_type,
+            )
+            await db.commit()
+        except Exception as err:
+            logger.warning("list_global_library backfill failed for %s: %s", entity_type, err)
+            await db.rollback()
+
+    count_result = await db.execute(text(f"SELECT COUNT(*) FROM {table} WHERE {where_sql}"), params)
     total = count_result.scalar_one()
 
     result = await db.execute(
@@ -808,6 +805,35 @@ async def list_global_library(
         "page_size": page_size,
         "total": total,
     }
+
+
+@router.delete(
+    "/library/global/{entity_type}/{entry_id}",
+    summary="Delete a global library entry (component/job/spare)",
+)
+async def delete_global_library_entry(
+    entity_type: str,
+    entry_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, str]:
+    table = _GLOBAL_TABLE_MAP.get(entity_type)
+    if not table:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid entity_type '{entity_type}'. Must be one of: component, job, spare.",
+        )
+
+    await db.execute(
+        text(
+            f"UPDATE {table} "
+            "SET is_deleted = true, updated_at = NOW() "
+            "WHERE id = :id AND tenant_id = :tid"
+        ),
+        {"id": str(entry_id), "tid": str(current_user.tenant_id)},
+    )
+    await db.commit()
+    return {"status": "deleted"}
 
 
 @router.post(
