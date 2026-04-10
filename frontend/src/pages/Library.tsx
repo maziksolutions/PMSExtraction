@@ -18,6 +18,7 @@ import {
   Wrench,
 } from 'lucide-react'
 import apiClient from '@/api/client'
+import JobRanksLibrary from '@/pages/JobRanksLibrary'
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 
@@ -721,7 +722,7 @@ const GLOBAL_ENTITY_LABELS: Record<GlobalEntity, string> = {
 }
 
 const GlobalLibrariesTab: React.FC = () => {
-  const [activeSub, setActiveSub] = useState<'makers' | 'component' | 'job' | 'spare'>('makers')
+  const [activeSub, setActiveSub] = useState<'makers' | 'component' | 'job' | 'spare' | 'rank'>('makers')
   const [activeEntity, setActiveEntity] = useState<GlobalEntity>('component')
   const [populateVesselId, setPopulateVesselId] = useState('')
   const [populateResult, setPopulateResult] = useState<PopulateResult | null>(null)
@@ -777,6 +778,7 @@ const GlobalLibrariesTab: React.FC = () => {
     { key: 'component' as const, label: 'Components', icon: null },
     { key: 'job' as const, label: 'Jobs', icon: null },
     { key: 'spare' as const, label: 'Spares', icon: null },
+    { key: 'rank' as const, label: 'Ranks', icon: null },
   ]
 
   return (
@@ -788,7 +790,7 @@ const GlobalLibrariesTab: React.FC = () => {
             key={key}
             onClick={() => {
               setActiveSub(key)
-              if (key !== 'makers') setActiveEntity(key as GlobalEntity)
+              if (key !== 'makers' && key !== 'rank') setActiveEntity(key as GlobalEntity)
               setPopulateResult(null)
               setPage(1)
             }}
@@ -807,8 +809,11 @@ const GlobalLibrariesTab: React.FC = () => {
       {/* Maker/Model sub-tab */}
       {activeSub === 'makers' && <MakerModelTab />}
 
+      {/* Rank library sub-tab */}
+      {activeSub === 'rank' && <JobRanksLibrary embedded />}
+
       {/* Component / Job / Spare cross-project global library */}
-      {activeSub !== 'makers' && (
+      {activeSub !== 'makers' && activeSub !== 'rank' && (
         <>
           {/* Populate from Vessel */}
           <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
