@@ -25,6 +25,11 @@
     --warning-bg-hover: #d9a653;
     --warning-text: #7a4300;
     --warning-border: #d19a4d;
+    --success-bg-soft: rgba(135, 182, 148, 0.28);
+    --success-bg-strong: #b8d7c1;
+    --success-bg-hover: #a4c9af;
+    --success-text: #24533a;
+    --success-border: #7faf8a;
   }
 
   html {
@@ -199,6 +204,75 @@
 [class*="border-yellow-600"],
 [class*="border-yellow-500"] {
   border-color: var(--warning-border) !important;
+}
+
+[class*="bg-green-950/30"],
+[class*="bg-green-950/20"],
+[class*="bg-green-900/40"],
+[class*="bg-green-900/30"],
+[class*="bg-green-900/20"],
+[class*="bg-green-900/10"],
+[class*="bg-green-800/50"],
+[class*="bg-green-500/10"],
+[class*="bg-green-500/20"],
+[class*="bg-emerald-950/30"],
+[class*="bg-emerald-950/20"],
+[class*="bg-emerald-900/40"],
+[class*="bg-emerald-900/30"],
+[class*="bg-emerald-900/20"],
+[class*="bg-emerald-900/10"],
+[class*="bg-emerald-800/50"],
+[class*="bg-emerald-500/10"],
+[class*="bg-emerald-500/20"] {
+  background-color: var(--success-bg-soft) !important;
+}
+
+[class*="bg-green-900"],
+[class*="bg-green-800"],
+[class*="bg-green-700"],
+[class*="bg-green-600"],
+[class*="bg-green-500"],
+[class*="bg-emerald-900"],
+[class*="bg-emerald-800"],
+[class*="bg-emerald-700"],
+[class*="bg-emerald-600"],
+[class*="bg-emerald-500"] {
+  background-color: var(--success-bg-strong) !important;
+}
+
+[class*="hover:bg-green-700"]:hover,
+[class*="hover:bg-green-600"]:hover,
+[class*="hover:bg-green-500"]:hover,
+[class*="hover:bg-emerald-700"]:hover,
+[class*="hover:bg-emerald-600"]:hover,
+[class*="hover:bg-emerald-500"]:hover {
+  background-color: var(--success-bg-hover) !important;
+}
+
+[class*="text-green-100"],
+[class*="text-green-200"],
+[class*="text-green-300"],
+[class*="text-green-400"],
+[class*="text-green-500"],
+[class*="text-emerald-100"],
+[class*="text-emerald-200"],
+[class*="text-emerald-300"],
+[class*="text-emerald-400"],
+[class*="text-emerald-500"] {
+  color: var(--success-text) !important;
+}
+
+[class*="border-green-900"],
+[class*="border-green-800"],
+[class*="border-green-700"],
+[class*="border-green-600"],
+[class*="border-green-500"],
+[class*="border-emerald-900"],
+[class*="border-emerald-800"],
+[class*="border-emerald-700"],
+[class*="border-emerald-600"],
+[class*="border-emerald-500"] {
+  border-color: var(--success-border) !important;
 }
 
 [class*="shadow-xl"],
