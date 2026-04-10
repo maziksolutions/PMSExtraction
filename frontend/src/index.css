@@ -20,6 +20,11 @@
     --accent-hover: #72243e;
     --accent-soft: #fbeaf0;
     --accent-border: #ed93b1;
+    --warning-bg-soft: rgba(231, 188, 104, 0.22);
+    --warning-bg-strong: #e7bc68;
+    --warning-bg-hover: #d9a653;
+    --warning-text: #7a4300;
+    --warning-border: #d19a4d;
   }
 
   html {
@@ -147,6 +152,53 @@
 [class*="bg-sky-900/20"],
 [class*="bg-sky-500/20"] {
   background-color: var(--accent-soft) !important;
+}
+
+[class*="bg-amber-900/40"],
+[class*="bg-amber-900/30"],
+[class*="bg-amber-900/20"],
+[class*="bg-amber-900/10"],
+[class*="bg-amber-800/50"] {
+  background-color: var(--warning-bg-soft) !important;
+}
+
+[class*="bg-amber-900"],
+[class*="bg-amber-800"],
+[class*="bg-amber-700"],
+[class*="bg-amber-600"],
+[class*="bg-amber-500"],
+[class*="bg-yellow-600"] {
+  background-color: var(--warning-bg-strong) !important;
+}
+
+[class*="hover:bg-amber-600"]:hover,
+[class*="hover:bg-amber-700"]:hover,
+[class*="hover:bg-amber-500"]:hover,
+[class*="hover:bg-yellow-600"]:hover {
+  background-color: var(--warning-bg-hover) !important;
+}
+
+[class*="text-amber-100"],
+[class*="text-amber-200"],
+[class*="text-amber-300"],
+[class*="text-amber-400"],
+[class*="text-amber-500"],
+[class*="text-yellow-100"],
+[class*="text-yellow-200"],
+[class*="text-yellow-300"],
+[class*="text-yellow-400"],
+[class*="text-yellow-500"] {
+  color: var(--warning-text) !important;
+}
+
+[class*="border-amber-900"],
+[class*="border-amber-800"],
+[class*="border-amber-700"],
+[class*="border-amber-600"],
+[class*="border-amber-500"],
+[class*="border-yellow-600"],
+[class*="border-yellow-500"] {
+  border-color: var(--warning-border) !important;
 }
 
 [class*="shadow-xl"],

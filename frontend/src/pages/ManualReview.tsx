@@ -1197,7 +1197,7 @@ const ManualReview: React.FC = () => {
                             value={supplyVal}
                             onChange={(e) => handleEdit(m.id, 'supply_type', e.target.value)}
                             className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs focus:border-sky-500 focus:outline-none"
-                            style={{ color: supplyVal === 'yard_supply' ? '#fbbf24' : '#86efac' }}
+                            style={{ color: supplyVal === 'yard_supply' ? 'var(--warning-text)' : '#166534' }}
                           >
                             <option value="OEM">OEM</option>
                             <option value="yard_supply">Yard Supply</option>
