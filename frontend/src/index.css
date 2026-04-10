@@ -4,22 +4,22 @@
 
 @layer base {
   :root {
-    --app-bg: #f4efe6;
-    --app-bg-soft: #efe7db;
-    --panel-bg: #fbf7f0;
-    --panel-bg-strong: #f3ecdf;
-    --panel-bg-muted: #e8dfd1;
-    --panel-bg-hover: #e3d8c7;
-    --border-soft: #d6c8b4;
-    --border-strong: #c8b79e;
-    --text-strong: #2f3a34;
-    --text-body: #506056;
-    --text-soft: #6f7f74;
-    --text-muted: #8c988f;
-    --accent: #2d8f7b;
-    --accent-hover: #257867;
-    --accent-soft: #d9efe8;
-    --accent-border: #94c6b8;
+    --app-bg: #fdf8f9;
+    --app-bg-soft: #fbeaf0;
+    --panel-bg: #fffdfd;
+    --panel-bg-strong: #fff3f7;
+    --panel-bg-muted: #f7dce6;
+    --panel-bg-hover: #f2cddc;
+    --border-soft: #efc5d3;
+    --border-strong: #ed93b1;
+    --text-strong: #4b1528;
+    --text-body: #72243e;
+    --text-soft: #8f4a64;
+    --text-muted: #b6778e;
+    --accent: #d4537e;
+    --accent-hover: #72243e;
+    --accent-soft: #fbeaf0;
+    --accent-border: #ed93b1;
   }
 
   html {
@@ -29,8 +29,9 @@
 
   body {
     background:
-      radial-gradient(circle at top left, rgba(217, 239, 232, 0.9), transparent 30%),
-      radial-gradient(circle at top right, rgba(250, 239, 220, 0.85), transparent 28%),
+      radial-gradient(circle at top left, rgba(251, 234, 240, 0.98), transparent 30%),
+      radial-gradient(circle at top right, rgba(237, 147, 177, 0.24), transparent 24%),
+      radial-gradient(circle at bottom right, rgba(212, 83, 126, 0.12), transparent 26%),
       linear-gradient(180deg, var(--app-bg-soft) 0%, var(--app-bg) 100%);
     color: var(--text-strong);
   }
@@ -152,7 +153,7 @@
 [class*="shadow-2xl"],
 [class*="shadow-lg"],
 [class*="shadow"] {
-  box-shadow: 0 12px 28px rgba(122, 102, 74, 0.12) !important;
+  box-shadow: 0 14px 34px rgba(114, 36, 62, 0.12) !important;
 }
 
 input,
