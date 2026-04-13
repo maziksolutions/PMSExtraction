@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import time
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.deps import get_current_user
 from app.models.job_rank import JobRank
@@ -18,6 +20,18 @@ from app.services.job_ranks import (
 )
 
 router = APIRouter()
+_JOB_RANK_BACKFILL_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
+_job_rank_backfill_last_run: dict[str, float] = {}
+
+
+def _should_backfill_job_ranks(tenant_id) -> bool:
+    now = time.time()
+    key = str(tenant_id)
+    last_run = _job_rank_backfill_last_run.get(key, 0.0)
+    if now - last_run < _JOB_RANK_BACKFILL_TTL_SECONDS:
+        return False
+    _job_rank_backfill_last_run[key] = now
+    return True
 
 
 @router.get("/job-ranks", summary="List job ranks")
@@ -30,11 +44,12 @@ async def list_job_ranks(
     page: int = Query(1, ge=1),
     page_size: int = Query(200, ge=1, le=1000),
 ) -> dict[str, object]:
-    try:
-        await backfill_job_ranks_from_existing_data(db, tenant_id=current_user.tenant_id)
-        await db.commit()
-    except Exception:
-        await db.rollback()
+    if _should_backfill_job_ranks(current_user.tenant_id):
+        try:
+            await backfill_job_ranks_from_existing_data(db, tenant_id=current_user.tenant_id)
+            await db.commit()
+        except Exception:
+            await db.rollback()
 
     rank_names = await list_rank_names_from_seed_and_existing_data(
         db,

@@ -104,11 +104,12 @@ async def list_makers(
     search: Optional[str] = Query(None),
 ) -> dict[str, Any]:
     await _bootstrap(db)
-    try:
-        await backfill_maker_models_from_accepted_records(db, tenant_id=current_user.tenant_id)
-        await db.commit()
-    except Exception:
-        await db.rollback()
+    if _should_backfill_maker_models(current_user.tenant_id):
+        try:
+            await backfill_maker_models_from_accepted_records(db, tenant_id=current_user.tenant_id)
+            await db.commit()
+        except Exception:
+            await db.rollback()
     if search:
         query = text("""
             SELECT DISTINCT maker FROM maker_models
@@ -147,11 +148,12 @@ async def list_models(
     search: Optional[str] = Query(None),
 ) -> dict[str, Any]:
     await _bootstrap(db)
-    try:
-        await backfill_maker_models_from_accepted_records(db, tenant_id=current_user.tenant_id)
-        await db.commit()
-    except Exception:
-        await db.rollback()
+    if _should_backfill_maker_models(current_user.tenant_id):
+        try:
+            await backfill_maker_models_from_accepted_records(db, tenant_id=current_user.tenant_id)
+            await db.commit()
+        except Exception:
+            await db.rollback()
     # Build query dynamically to avoid None parameter issues
     base_where = "WHERE tenant_id = :tid AND is_deleted = false AND model IS NOT NULL"
     params = {"tid": str(current_user.tenant_id)}

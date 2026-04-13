@@ -32,6 +32,8 @@ from app.services.vessel_library import load_library_components_for_vessel
 router = APIRouter()
 _GLOBAL_LIBRARY_BACKFILL_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
 _global_library_backfill_last_run: dict[str, float] = {}
+_schema_bootstrapped: bool = False
+_vessel_types_seeded_for_tenant: dict[str, float] = {}
 
 
 def _jsonb_typed_text(sql: str):
@@ -67,6 +69,9 @@ async def _bootstrap_schema(db: AsyncSession) -> None:
     Alembic migrations 0008/0009 have not yet successfully run on this Railway
     instance.  All statements use IF NOT EXISTS so they are fully idempotent.
     """
+    global _schema_bootstrapped
+    if _schema_bootstrapped:
+        return
     try:
         await db.execute(text("""
             CREATE TABLE IF NOT EXISTS vessel_types (
@@ -107,6 +112,7 @@ async def _bootstrap_schema(db: AsyncSession) -> None:
             ADD COLUMN IF NOT EXISTS criticality VARCHAR(20) NOT NULL DEFAULT 'non_critical'
         """))
         await db.commit()
+        _schema_bootstrapped = True
     except Exception as err:
         logger.warning("_bootstrap_schema: %s", err)
         await db.rollback()
@@ -114,6 +120,10 @@ async def _bootstrap_schema(db: AsyncSession) -> None:
 
 async def _ensure_vessel_types(tenant_id: str, db: AsyncSession) -> None:
     """Seed any missing default vessel types for a tenant (checks each one individually)."""
+    now = time.time()
+    last_seeded = _vessel_types_seeded_for_tenant.get(tenant_id, 0.0)
+    if now - last_seeded < _GLOBAL_LIBRARY_BACKFILL_TTL_SECONDS:
+        return
     try:
         inserted = 0
         for name, sort_order in _DEFAULT_VESSEL_TYPES:
@@ -142,6 +152,7 @@ async def _ensure_vessel_types(tenant_id: str, db: AsyncSession) -> None:
                 await db.rollback()
         if inserted > 0:
             await db.commit()
+        _vessel_types_seeded_for_tenant[tenant_id] = now
     except Exception as err:
         logger.error("_ensure_vessel_types failed for tenant %s: %s", tenant_id, err)
         await db.rollback()

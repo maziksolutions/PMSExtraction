@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import time
 import uuid
 from typing import Any, Optional
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.component import Component, QCStatus
+
+_BASELINE_CHECK_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
+_baseline_check_last_run: dict[str, float] = {}
 
 
 async def _single_populated_vessel_type(
@@ -200,6 +205,12 @@ async def ensure_vessel_library_baseline(
     vessel_id: uuid.UUID,
     vessel_type_name: Optional[str],
 ) -> dict[str, Any]:
+    cache_key = f"{tenant_id}:{vessel_id}:{(vessel_type_name or '').strip().lower()}"
+    now = time.time()
+    last_run = _baseline_check_last_run.get(cache_key, 0.0)
+    if now - last_run < _BASELINE_CHECK_TTL_SECONDS:
+        return {"added": 0, "skipped": 0, "message": "Baseline check throttled"}
+
     existing_count = await db.scalar(
         select(func.count())
         .select_from(Component)
@@ -211,6 +222,7 @@ async def ensure_vessel_library_baseline(
         )
     )
     if (existing_count or 0) > 0:
+        _baseline_check_last_run[cache_key] = now
         return {"added": 0, "skipped": 0, "message": "Baseline already loaded"}
 
     result = await load_library_components_for_vessel(
@@ -221,4 +233,5 @@ async def ensure_vessel_library_baseline(
     )
     if result.get("added"):
         await db.commit()
+    _baseline_check_last_run[cache_key] = now
     return result
