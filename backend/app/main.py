@@ -163,6 +163,29 @@ app.add_middleware(AuditLogMiddleware)
 
 
 @app.get(
+    "/health/live",
+    tags=["Health"],
+    summary="Liveness health check endpoint",
+    response_description="Basic service liveness status",
+    response_class=Response,
+)
+async def health_live() -> Response:
+    """
+    Lightweight liveness probe for container platforms.
+    This endpoint intentionally avoids DB/Redis/blob checks so startup and
+    rolling deploys are not blocked by cold dependencies.
+    """
+    import json
+
+    data = {
+        "status": "healthy",
+        "service": settings.PROJECT_NAME,
+        "version": settings.VERSION,
+    }
+    return Response(content=json.dumps(data), media_type="application/json", status_code=200)
+
+
+@app.get(
     "/health",
     tags=["Health"],
     summary="Health check endpoint",
