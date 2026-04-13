@@ -9,8 +9,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api.v1.router import api_router
 from app.core.config import settings
+
+try:
+    from app.api.v1.router import api_router
+except Exception as exc:
+    import traceback
+
+    print(f"[STARTUP ERROR] Failed to import API router: {exc}", flush=True)
+    traceback.print_exc()
+    raise
 
 # ---------------------------------------------------------------------------
 # Application factory
