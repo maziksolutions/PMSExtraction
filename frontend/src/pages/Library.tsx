@@ -1029,6 +1029,13 @@ const CONFIDENCE_COLORS: Record<string, string> = {
   low: 'bg-slate-600 text-slate-200',
 }
 
+function formatManualMatchScore(score: unknown): string {
+  const numeric = Number(score)
+  if (!Number.isFinite(numeric)) return '—'
+  if (numeric > 1) return `${Math.round(numeric)}%`
+  return `${Math.round(numeric * 100)}%`
+}
+
 const ManualMatchesTab: React.FC = () => {
   const queryClient = useQueryClient()
   const [selectedVesselId, setSelectedVesselId] = useState('')
@@ -1042,7 +1049,7 @@ const ManualMatchesTab: React.FC = () => {
 
   const vesselsQuery = useQuery({
     queryKey: ['vessels-list-matches'],
-    queryFn: () => apiClient.get('/vessels?page=1&page_size=200').then(r => r.data),
+    queryFn: () => apiClient.get('/vessels?page=1&page_size=100').then(r => r.data),
   })
   const vessels: { id: string; name: string; imo_number: string }[] = vesselsQuery.data?.items ?? []
 
@@ -1211,7 +1218,7 @@ const ManualMatchesTab: React.FC = () => {
                   </td>
                   <td className="px-4 py-2.5 text-slate-400">{item.matched_vessel_name ?? '—'}</td>
                   <td className="px-4 py-2.5 text-slate-300">
-                    {item.match_score != null ? `${Math.round(item.match_score * 100)}%` : '—'}
+                    {formatManualMatchScore(item.match_score)}
                   </td>
                   <td className="px-4 py-2.5">
                     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${CONFIDENCE_COLORS[item.match_confidence] ?? 'bg-slate-600 text-slate-200'}`}>

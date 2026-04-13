@@ -17,7 +17,10 @@ def _is_exact_manual_match(match_confidence: Optional[str], match_score: Any) ->
     if confidence == "exact":
         return True
     try:
-        return float(match_score or 0) >= 0.999
+        numeric_score = float(match_score or 0)
+        if numeric_score > 1:
+            return numeric_score >= 99.9
+        return numeric_score >= 0.999
     except (TypeError, ValueError):
         return False
 

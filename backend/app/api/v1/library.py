@@ -1087,6 +1087,7 @@ async def find_manual_matches(
         str(v.id): v.vessel_name for v in vessel_result.scalars().all()
     }
 
+    from datetime import datetime, timezone
     from difflib import SequenceMatcher
 
     def _filename_sim(a: str, b: str) -> float:
@@ -1096,54 +1097,96 @@ async def find_manual_matches(
         return SequenceMatcher(None, a_stem, b_stem).ratio()
 
     matches_created: list[dict] = []
+    now = datetime.now(timezone.utc)
 
     for own in own_manuals:
         for other in other_manuals:
             # --- SHA-256 exact match ---
             if own.sha256_hash and other.sha256_hash and own.sha256_hash == other.sha256_hash:
-                score = 1.0
+                score_ratio = 1.0
                 confidence = "exact"
             else:
                 # --- filename fuzzy match ---
-                score = _filename_sim(own.original_filename, other.original_filename)
-                if score < 0.60:
+                score_ratio = _filename_sim(own.original_filename, other.original_filename)
+                if score_ratio < 0.60:
                     continue
-                confidence = "high" if score >= 0.85 else "medium" if score >= 0.70 else "low"
+                confidence = "high" if score_ratio >= 0.85 else "medium" if score_ratio >= 0.70 else "low"
 
-            match_id = uuid.uuid4()
+            score_percent = int(round(score_ratio * 100))
+
             matched_vessel_name = vessel_name_map.get(str(other.vessel_id), "Unknown Vessel")
 
-            # Upsert into manual_matches (ignore duplicates)
+            # Upsert/update into manual_matches by source+matched manual pair.
             try:
-                await db.execute(
+                existing_result = await db.execute(
                     text(
-                        "INSERT INTO manual_matches "
-                        "(id, tenant_id, source_manual_id, matched_manual_id, "
-                        "match_score, match_confidence, is_deleted) "
-                        "VALUES (:id, :tid, :smid, :mmid, :score, :conf, false) "
-                        "ON CONFLICT DO NOTHING"
+                        "SELECT id FROM manual_matches "
+                        "WHERE tenant_id = :tid "
+                        "  AND source_manual_id = :smid "
+                        "  AND matched_manual_id = :mmid "
+                        "LIMIT 1"
                     ),
                     {
-                        "id": str(match_id),
                         "tid": str(current_user.tenant_id),
                         "smid": str(own.id),
                         "mmid": str(other.id),
-                        "score": round(score, 4),
-                        "conf": confidence,
                     },
                 )
-            except Exception:
-                pass  # Table may not exist yet; gracefully skip
+                existing_row = existing_result.mappings().one_or_none()
+                if existing_row:
+                    await db.execute(
+                        text(
+                            "UPDATE manual_matches "
+                            "SET match_score = :score, "
+                            "    match_confidence = :conf, "
+                            "    updated_at = :updated_at, "
+                            "    is_deleted = false "
+                            "WHERE id = :id"
+                        ),
+                        {
+                            "id": str(existing_row["id"]),
+                            "score": score_percent,
+                            "conf": confidence,
+                            "updated_at": now,
+                        },
+                    )
+                    stored_match_id = str(existing_row["id"])
+                else:
+                    stored_match_id = str(uuid.uuid4())
+                    await db.execute(
+                        text(
+                            "INSERT INTO manual_matches "
+                            "(id, tenant_id, source_manual_id, matched_manual_id, "
+                            "match_score, match_confidence, copy_action_taken, created_at, updated_at, is_deleted) "
+                            "VALUES (:id, :tid, :smid, :mmid, :score, :conf, 'NONE', :created_at, :updated_at, false)"
+                        ),
+                        {
+                            "id": stored_match_id,
+                            "tid": str(current_user.tenant_id),
+                            "smid": str(own.id),
+                            "mmid": str(other.id),
+                            "score": score_percent,
+                            "conf": confidence,
+                            "created_at": now,
+                            "updated_at": now,
+                        },
+                    )
+            except Exception as exc:
+                # Return computed matches even if persistence fails so the user
+                # can still see cross-project manual candidates.
+                stored_match_id = str(uuid.uuid4())
+                logger.warning("find_manual_matches persistence failed for %s -> %s: %s", own.id, other.id, exc)
 
             matches_created.append(
                 {
+                    "id": stored_match_id,
                     "source_manual_id": str(own.id),
                     "source_manual_name": own.original_filename,
                     "matched_manual_id": str(other.id),
                     "matched_manual_name": other.original_filename,
                     "matched_vessel_id": str(other.vessel_id),
                     "matched_vessel_name": matched_vessel_name,
-                    "match_score": round(score, 4),
+                    "match_score": score_percent,
                     "match_confidence": confidence,
                 }
             )
