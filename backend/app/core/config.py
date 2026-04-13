@@ -23,6 +23,10 @@ class Settings(BaseSettings):
 
     # Database — Railway provides postgresql://, we need postgresql+asyncpg:// for async SQLAlchemy
     DATABASE_URL: str = "postgresql+asyncpg://pms_user:pms_password_dev@localhost:5432/pms_extraction"
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 40
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 1800
 
     @property
     def async_database_url(self) -> str:
@@ -84,6 +88,10 @@ class Settings(BaseSettings):
     EXTRACTION_MAX_TOKENS: int = 8192
     EXTRACTION_CHUNK_CHARS: int = 14000
     EXTRACTION_CHUNK_OVERLAP_CHARS: int = 500
+    MANUAL_EXTRACTION_CONCURRENCY: int = 4
+    MANUAL_SCREENING_CONCURRENCY: int = 2
+    MANUAL_SCREENING_DELAY_SECONDS: float = 2.0
+    HOT_PATH_MAINTENANCE_TTL_SECONDS: float = 300.0
 
     # File storage (local disk — ephemeral on Railway; mount a Volume for persistence)
     UPLOAD_DIR: str = "/tmp/pms_uploads"

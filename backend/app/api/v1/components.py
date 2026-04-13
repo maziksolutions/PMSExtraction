@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+import time
 from typing import Annotated, Any, List, Optional
 
 import io
@@ -30,6 +31,8 @@ from app.services.review_workflow import (
 from app.services.vessel_library import ensure_vessel_library_baseline
 
 router = APIRouter()
+_COMPONENT_MAINTENANCE_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
+_component_maintenance_last_run: dict[str, float] = {}
 
 
 async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselProject:
@@ -161,6 +164,28 @@ def _component_has_manual_link(component: Component) -> bool:
     )
 
 
+def _component_manual_link_clause():
+    from sqlalchemy import or_
+
+    return or_(
+        Component.source_manual_id.is_not(None),
+        Component.pdf_reference.is_not(None),
+        Component.page_reference.is_not(None),
+        Component.job_pages.is_not(None),
+        Component.spare_pages.is_not(None),
+    )
+
+
+def _should_run_component_maintenance(vessel_id: uuid.UUID) -> bool:
+    now = time.time()
+    key = str(vessel_id)
+    last_run = _component_maintenance_last_run.get(key, 0.0)
+    if now - last_run < _COMPONENT_MAINTENANCE_TTL_SECONDS:
+        return False
+    _component_maintenance_last_run[key] = now
+    return True
+
+
 @router.get("/{vessel_id}/components", summary="List components with filters")
 async def list_components(
     vessel_id: uuid.UUID,
@@ -188,12 +213,14 @@ async def list_components(
         vessel_id=vessel_id,
         vessel_type_name=vessel.vessel_type,
     )
-    await _normalize_pending_extracted_components(
-        vessel_id=vessel_id,
-        tenant_id=current_user.tenant_id,
-        vessel_updated_at=vessel.updated_at,
-        db=db,
-    )
+    should_run_maintenance = _should_run_component_maintenance(vessel_id)
+    if should_run_maintenance:
+        await _normalize_pending_extracted_components(
+            vessel_id=vessel_id,
+            tenant_id=current_user.tenant_id,
+            vessel_updated_at=vessel.updated_at,
+            db=db,
+        )
     base_where = [
         Component.vessel_id == vessel_id,
         Component.tenant_id == current_user.tenant_id,
@@ -229,6 +256,18 @@ async def list_components(
         base_where.append(Component.maker.ilike(f"%{maker_filter}%"))
     if model_filter:
         base_where.append(Component.model.ilike(f"%{model_filter}%"))
+    if mapped_extracted is not None:
+        if mapped_extracted:
+            base_where.append(_component_manual_link_clause())
+            base_where.append(Component.is_unmapped == False)
+        else:
+            from sqlalchemy import not_, or_
+            base_where.append(
+                or_(
+                    not_(_component_manual_link_clause()),
+                    Component.is_unmapped == True,
+                )
+            )
 
     sort_columns = {
         "component_name": Component.component_name,
@@ -245,28 +284,24 @@ async def list_components(
     }
     order_col = sort_columns.get(sort_by, Component.component_name)
     order_expr = order_col.desc() if sort_order == "desc" else order_col.asc()
+    total_result = await db.execute(select(func.count()).select_from(Component).where(*base_where))
+    total = total_result.scalar_one()
     query = (
         select(Component)
         .where(*base_where)
         .order_by(order_expr, Component.component_name.asc(), Component.id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
     result = await db.execute(query)
-    components = result.scalars().all()
-    await _backfill_component_manual_links(
-        vessel_id=vessel_id,
-        tenant_id=current_user.tenant_id,
-        components=components,
-        db=db,
-    )
-    if mapped_extracted is not None:
-        components = [
-            component
-            for component in components
-            if (_component_has_manual_link(component) and not component.is_unmapped) == mapped_extracted
-        ]
-
-    total = len(components)
-    paged_components = components[(page - 1) * page_size : page * page_size]
+    paged_components = result.scalars().all()
+    if should_run_maintenance:
+        await _backfill_component_manual_links(
+            vessel_id=vessel_id,
+            tenant_id=current_user.tenant_id,
+            components=paged_components,
+            db=db,
+        )
     return {
         "items": [ComponentOut.model_validate(c) for c in paged_components],
         "page": page,

@@ -7,6 +7,7 @@ Supports bulk import from Excel/CSV (no duplicates) and lookup for dropdowns.
 from __future__ import annotations
 
 import io
+import time
 import uuid
 from typing import Annotated, Any, Optional
 
@@ -14,12 +15,15 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.deps import get_current_user
 from app.models.user import User
 from app.services.review_workflow import backfill_maker_models_from_accepted_records
 
 router = APIRouter()
+_MAKER_MODEL_BACKFILL_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
+_maker_model_backfill_last_run: dict[str, float] = {}
 
 # ---------------------------------------------------------------------------
 # Runtime bootstrap — create table if migration hasn't run yet
@@ -27,6 +31,16 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 _bootstrapped: bool = False  # module-level flag — only runs once per process
+
+
+def _should_backfill_maker_models(tenant_id: uuid.UUID) -> bool:
+    now = time.time()
+    key = str(tenant_id)
+    last_run = _maker_model_backfill_last_run.get(key, 0.0)
+    if now - last_run < _MAKER_MODEL_BACKFILL_TTL_SECONDS:
+        return False
+    _maker_model_backfill_last_run[key] = now
+    return True
 
 
 async def _bootstrap(db: AsyncSession) -> None:
@@ -176,11 +190,12 @@ async def list_maker_models(
     page_size: int = Query(100, ge=1, le=500),
 ) -> dict[str, Any]:
     await _bootstrap(db)
-    try:
-        await backfill_maker_models_from_accepted_records(db, tenant_id=current_user.tenant_id)
-        await db.commit()
-    except Exception:
-        await db.rollback()
+    if _should_backfill_maker_models(current_user.tenant_id):
+        try:
+            await backfill_maker_models_from_accepted_records(db, tenant_id=current_user.tenant_id)
+            await db.commit()
+        except Exception:
+            await db.rollback()
     params: dict[str, Any] = {"tid": str(current_user.tenant_id)}
     where_sql = "tenant_id = :tid AND is_deleted = false"
     if search:

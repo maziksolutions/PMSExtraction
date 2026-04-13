@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Annotated, Any, Optional
@@ -10,6 +11,7 @@ logger = logging.getLogger(__name__)
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.deps import get_current_user
 from app.models.base import TenantBase
@@ -92,15 +94,22 @@ async def _run_extract_all(
     tenant_id_str: str,
     manual_ids: list[str],
 ) -> None:
-    """Run auto_extract_from_manual for each manual sequentially."""
+    """Run auto_extract_from_manual for each manual with bounded parallelism."""
     set_extraction_state(vessel_id_str, total=len(manual_ids), done=0, status="running")
+    semaphore = asyncio.Semaphore(max(1, int(getattr(settings, "MANUAL_EXTRACTION_CONCURRENCY", 4) or 4)))
+    state_lock = asyncio.Lock()
 
-    for mid in manual_ids:
-        try:
-            await auto_extract_from_manual(mid)
-        except Exception as exc:
-            logger.error("_run_extract_all: extraction failed for manual %s: %s", mid, exc)
-        _extract_state[vessel_id_str]["done"] += 1
+    async def _run_one(mid: str) -> None:
+        async with semaphore:
+            try:
+                await auto_extract_from_manual(mid)
+            except Exception as exc:
+                logger.error("_run_extract_all: extraction failed for manual %s: %s", mid, exc)
+            finally:
+                async with state_lock:
+                    _extract_state[vessel_id_str]["done"] += 1
+
+    await asyncio.gather(*[_run_one(mid) for mid in manual_ids])
 
     _extract_state[vessel_id_str]["status"] = "completed"
 

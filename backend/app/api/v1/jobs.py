@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import time
 import uuid
 from typing import Annotated, Any, List, Optional
 
@@ -8,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Qu
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.deps import get_current_user
 from app.models.component import QCStatus
@@ -38,6 +40,8 @@ from app.services.job_naming import (
 )
 
 router = APIRouter()
+_JOB_MAINTENANCE_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
+_job_maintenance_last_run: dict[str, float] = {}
 
 
 JOB_SOURCE_KIND_LABELS = {
@@ -46,6 +50,16 @@ JOB_SOURCE_KIND_LABELS = {
     "critical_library": "Critical Jobs Library",
     "cms_file": "CMS File",
 }
+
+
+def _should_run_job_maintenance(vessel_id: uuid.UUID) -> bool:
+    now = time.time()
+    key = str(vessel_id)
+    last_run = _job_maintenance_last_run.get(key, 0.0)
+    if now - last_run < _JOB_MAINTENANCE_TTL_SECONDS:
+        return False
+    _job_maintenance_last_run[key] = now
+    return True
 
 
 def _merge_text_values(*values: Optional[str]) -> Optional[str]:
@@ -333,21 +347,22 @@ async def list_jobs(
     from app.models.component import Component
     from app.models.ingestion import Manual
     await _get_vessel_or_404(vessel_id, db)
-    await _restore_soft_deleted_manual_jobs_if_vessel_empty(
-        db,
-        vessel_id=vessel_id,
-        tenant_id=current_user.tenant_id,
-    )
-    await _normalize_vessel_job_names(
-        db,
-        vessel_id=vessel_id,
-        tenant_id=current_user.tenant_id,
-    )
-    await backfill_manual_job_ranks(
-        db,
-        tenant_id=current_user.tenant_id,
-        vessel_id=vessel_id,
-    )
+    if _should_run_job_maintenance(vessel_id):
+        await _restore_soft_deleted_manual_jobs_if_vessel_empty(
+            db,
+            vessel_id=vessel_id,
+            tenant_id=current_user.tenant_id,
+        )
+        await _normalize_vessel_job_names(
+            db,
+            vessel_id=vessel_id,
+            tenant_id=current_user.tenant_id,
+        )
+        await backfill_manual_job_ranks(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+        )
     base_where = [
         Job.vessel_id == vessel_id,
         Job.tenant_id == current_user.tenant_id,

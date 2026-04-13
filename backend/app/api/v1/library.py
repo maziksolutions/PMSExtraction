@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import time
 import uuid
 from typing import Annotated, Any, Optional
 
@@ -29,6 +30,8 @@ from app.services.review_workflow import backfill_global_library_from_accepted_r
 from app.services.vessel_library import load_library_components_for_vessel
 
 router = APIRouter()
+_GLOBAL_LIBRARY_BACKFILL_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
+_global_library_backfill_last_run: dict[str, float] = {}
 
 
 def _jsonb_typed_text(sql: str):
@@ -36,6 +39,16 @@ def _jsonb_typed_text(sql: str):
         bindparam("cd", type_=JSONB),
         bindparam("sv", type_=JSONB),
     )
+
+
+def _should_backfill_global_library(*, tenant_id: uuid.UUID, entity_type: str) -> bool:
+    now = time.time()
+    key = f"{tenant_id}:{entity_type}"
+    last_run = _global_library_backfill_last_run.get(key, 0.0)
+    if now - last_run < _GLOBAL_LIBRARY_BACKFILL_TTL_SECONDS:
+        return False
+    _global_library_backfill_last_run[key] = now
+    return True
 
 _DEFAULT_VESSEL_TYPES = [
     ("Oil Tanker", 1),
@@ -780,7 +793,10 @@ async def list_global_library(
     sort_column = sort_columns.get(sort_by, "occurrence_count")
     sort_direction = "DESC" if str(sort_order).lower() == "desc" else "ASC"
 
-    if page == 1 and not search:
+    if page == 1 and not search and _should_backfill_global_library(
+        tenant_id=current_user.tenant_id,
+        entity_type=entity_type,
+    ):
         try:
             await backfill_global_library_from_accepted_records(
                 db,

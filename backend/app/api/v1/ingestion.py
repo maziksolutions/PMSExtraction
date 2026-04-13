@@ -533,7 +533,7 @@ async def upload_manuals(
 # ---------------------------------------------------------------------------
 
 async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids: list[str]) -> None:
-    """Background task: re-classifies the given manuals using Claude (if PDF on disk) or keywords."""
+    """Background task: re-classifies the given manuals using bounded parallelism."""
     from app.core.database import AsyncSessionLocal
     from app.services.classifier import classify_pdf, _keyword_classify
 
@@ -546,30 +546,44 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                 )
             )
             manuals = result.scalars().all()
-            _screening_state[vessel_id_str]["total"] = len(manuals)
-            _screening_state[vessel_id_str]["done"] = 0
 
-            for manual in manuals:
+        runnable_manual_ids = [str(manual.id) for manual in manuals]
+        _screening_state[vessel_id_str]["total"] = len(runnable_manual_ids)
+        _screening_state[vessel_id_str]["done"] = 0
+
+        semaphore = asyncio.Semaphore(max(1, int(getattr(settings, "MANUAL_SCREENING_CONCURRENCY", 2) or 2)))
+        state_lock = asyncio.Lock()
+        delay_seconds = max(0.0, float(getattr(settings, "MANUAL_SCREENING_DELAY_SECONDS", 2.0) or 0.0))
+
+        async def _screen_one(manual_id: str) -> None:
+            async with semaphore:
+                manual_name = manual_id
                 try:
-                    file_path = manual.blob_storage_key
-                    content: bytes | None = None
+                    async with AsyncSessionLocal() as db:
+                        manual_result = await db.execute(
+                            select(Manual).where(
+                                Manual.id == uuid.UUID(manual_id),
+                                Manual.is_deleted == False,
+                            )
+                        )
+                        manual = manual_result.scalar_one_or_none()
+                        if manual is None:
+                            return
 
-                    logger.info(
-                        "_run_screening_task: loading %s blob_key=%r",
-                        manual.original_filename, file_path,
-                    )
+                        manual_name = manual.original_filename
+                        file_path = manual.blob_storage_key
+                        content: bytes | None = None
 
-                    # Try local disk first
-                    if file_path and os.path.exists(file_path):
-                        with open(file_path, "rb") as f:
-                            content = f.read()
-                        logger.info("_run_screening_task: loaded from disk %d bytes", len(content))
-                    else:
-                        # Not on local disk â€” try blob storage (MinIO / Azure).
-                        # NOTE: do NOT skip paths that start with "/" â€” on Railway the
-                        # blob_storage_key may look like an absolute path but the file
-                        # no longer exists on local disk after a container restart.
-                        if file_path:
+                        logger.info(
+                            "_run_screening_task: loading %s blob_key=%r",
+                            manual.original_filename, file_path,
+                        )
+
+                        if file_path and os.path.exists(file_path):
+                            with open(file_path, "rb") as f:
+                                content = f.read()
+                            logger.info("_run_screening_task: loaded from disk %d bytes", len(content))
+                        elif file_path:
                             try:
                                 from app.services.blob_storage import BlobStorageService
                                 blob_svc = BlobStorageService()
@@ -584,131 +598,129 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                     manual.original_filename, file_path, blob_err,
                                 )
 
-                    # Reset classification fields BEFORE re-classifying so stale data
-                    # never persists if the new result differs (e.g. empty page ranges).
-                    await db.execute(
-                        update(Manual).where(Manual.id == manual.id).values(
-                            pages_with_components="",
-                            pages_with_jobs="",
-                            pages_with_spares="",
+                        await db.execute(
+                            update(Manual).where(Manual.id == manual.id).values(
+                                pages_with_components="",
+                                pages_with_jobs="",
+                                pages_with_spares="",
+                            )
                         )
-                    )
-                    await db.commit()
+                        await db.commit()
 
-                    ext = (manual.file_extension or "").lower()
-                    if content and ext == "pdf":
-                        cr = await asyncio.to_thread(classify_pdf, content, manual.original_filename)
-                    else:
-                        # No PDF bytes â€” fall back to stored extracted_text in DB
-                        stored_text = getattr(manual, "extracted_text", None) or ""
-                        if stored_text:
-                            logger.info(
-                                "_run_screening_task: using stored extracted_text (%d chars) for %s",
-                                len(stored_text), manual.original_filename,
-                            )
-                            from app.services.classifier import classify_pages_text
-                            # Parse stored text into per-page list by [PAGE N] or [PAGE N, printed_page=X] markers
-                            import re as _re
-                            parts = _re.split(r'\[PAGE \d+(?:, printed_page=[^\]]+)?\]\n?', stored_text)
-                            pages_text = [p.strip() for p in parts if p.strip()]
-                            page_count = manual.page_count or len(pages_text)
-                            cr = await asyncio.to_thread(
-                                classify_pages_text,
-                                pages_text,
-                                manual.original_filename,
-                                page_count,
-                            )
+                        ext = (manual.file_extension or "").lower()
+                        if content and ext == "pdf":
+                            cr = await asyncio.to_thread(classify_pdf, content, manual.original_filename)
                         else:
-                            logger.warning(
-                                "_run_screening_task: no PDF and no extracted_text for %s â€” using keyword fallback",
-                                manual.original_filename,
-                            )
-                            cr = _keyword_classify([], manual.original_filename, 0)
-
-                    # Also re-extract text with [PAGE N] markers if the stored text lacks them
-                    new_extracted_text: str | None = None
-                    if content and ext == "pdf":
-                        stored = getattr(manual, "extracted_text", None) or ""
-                        if not stored or "[PAGE " not in stored:
-                            try:
-                                import io as _io
-                                import pdfplumber as _pdfplumber
-
-                                def _reextract(data: bytes) -> str:
-                                    parts: list[str] = []
-                                    with _pdfplumber.open(_io.BytesIO(data)) as pdf:
-                                        for pnum, pg in enumerate(pdf.pages, start=1):
-                                            pparts: list[str] = []
-                                            t = pg.extract_text()
-                                            if t and t.strip():
-                                                pparts.append(t)
-                                            try:
-                                                for tbl in (pg.extract_tables() or []):
-                                                    if not tbl:
-                                                        continue
-                                                    rows = [
-                                                        " | ".join(str(c).strip() if c else "" for c in row)
-                                                        for row in tbl if row and any(c for c in row if c)
-                                                    ]
-                                                    if rows:
-                                                        pparts.append("[TABLE]\n" + "\n".join(rows))
-                                            except Exception:
-                                                pass
-
-                                            if pparts:
-                                                parts.append(f"[PAGE {pnum}]\n" + "\n".join(pparts))
-                                            else:
-                                                parts.append(f"[PAGE {pnum}]\n")
-                                    return "\n\n".join(parts)
-
-                                new_extracted_text = await asyncio.to_thread(_reextract, content)
-                            except Exception as re_err:
-                                logger.warning(
-                                    "_run_screening_task: text re-extraction failed for %s: %s",
-                                    manual.original_filename, re_err,
+                            stored_text = getattr(manual, "extracted_text", None) or ""
+                            if stored_text:
+                                logger.info(
+                                    "_run_screening_task: using stored extracted_text (%d chars) for %s",
+                                    len(stored_text), manual.original_filename,
                                 )
+                                from app.services.classifier import classify_pages_text
+                                import re as _re
 
-                    update_vals: dict = {
-                        "category": cr.category,
-                        "classification_confidence": cr.confidence,
-                        "useful_for_extraction": cr.useful_for_extraction,
-                        "pages_with_components": cr.pages_with_components,
-                        "pages_with_jobs": cr.pages_with_jobs,
-                        "pages_with_spares": cr.pages_with_spares,
-                        "supply_type": getattr(cr, "supply_type", "OEM"),
-                        "status": ManualStatus.classified,
-                    }
+                                parts = _re.split(r'\[PAGE \d+(?:, printed_page=[^\]]+)?\]\n?', stored_text)
+                                pages_text = [p.strip() for p in parts if p.strip()]
+                                page_count = manual.page_count or len(pages_text)
+                                cr = await asyncio.to_thread(
+                                    classify_pages_text,
+                                    pages_text,
+                                    manual.original_filename,
+                                    page_count,
+                                )
+                            else:
+                                logger.warning(
+                                    "_run_screening_task: no PDF and no extracted_text for %s â€” using keyword fallback",
+                                    manual.original_filename,
+                                )
+                                cr = _keyword_classify([], manual.original_filename, 0)
 
-                    extras = {
-                        "pages_with_components_printed": getattr(cr, "pages_with_components_printed", ""),
-                        "pages_with_jobs_printed": getattr(cr, "pages_with_jobs_printed", ""),
-                        "pages_with_spares_printed": getattr(cr, "pages_with_spares_printed", ""),
-                        "pages_with_components_physical": getattr(cr, "pages_with_components_physical", ""),
-                        "pages_with_jobs_physical": getattr(cr, "pages_with_jobs_physical", ""),
-                        "pages_with_spares_physical": getattr(cr, "pages_with_spares_physical", ""),
-                        "page_explanations": getattr(cr, "page_explanations", ""),
-                    }
-                    from sqlalchemy import inspect
-                    manual_cols = {c.name for c in inspect(Manual).columns}
-                    for k, v in extras.items():
-                        if k in manual_cols:
-                            update_vals[k] = v
-                    if new_extracted_text:
-                        update_vals["extracted_text"] = new_extracted_text
+                        new_extracted_text: str | None = None
+                        if content and ext == "pdf":
+                            stored = getattr(manual, "extracted_text", None) or ""
+                            if not stored or "[PAGE " not in stored:
+                                try:
+                                    import io as _io
+                                    import pdfplumber as _pdfplumber
 
-                    await db.execute(
-                        update(Manual).where(Manual.id == manual.id).values(**update_vals)
-                    )
-                    await db.commit()
+                                    def _reextract(data: bytes) -> str:
+                                        parts: list[str] = []
+                                        with _pdfplumber.open(_io.BytesIO(data)) as pdf:
+                                            for pnum, pg in enumerate(pdf.pages, start=1):
+                                                pparts: list[str] = []
+                                                text_value = pg.extract_text()
+                                                if text_value and text_value.strip():
+                                                    pparts.append(text_value)
+                                                try:
+                                                    for tbl in (pg.extract_tables() or []):
+                                                        if not tbl:
+                                                            continue
+                                                        rows = [
+                                                            " | ".join(str(c).strip() if c else "" for c in row)
+                                                            for row in tbl if row and any(c for c in row if c)
+                                                        ]
+                                                        if rows:
+                                                            pparts.append("[TABLE]\n" + "\n".join(rows))
+                                                except Exception:
+                                                    pass
+
+                                                if pparts:
+                                                    parts.append(f"[PAGE {pnum}]\n" + "\n".join(pparts))
+                                                else:
+                                                    parts.append(f"[PAGE {pnum}]\n")
+                                        return "\n\n".join(parts)
+
+                                    new_extracted_text = await asyncio.to_thread(_reextract, content)
+                                except Exception as re_err:
+                                    logger.warning(
+                                        "_run_screening_task: text re-extraction failed for %s: %s",
+                                        manual.original_filename, re_err,
+                                    )
+
+                        update_vals: dict[str, Any] = {
+                            "category": cr.category,
+                            "classification_confidence": cr.confidence,
+                            "useful_for_extraction": cr.useful_for_extraction,
+                            "pages_with_components": cr.pages_with_components,
+                            "pages_with_jobs": cr.pages_with_jobs,
+                            "pages_with_spares": cr.pages_with_spares,
+                            "supply_type": getattr(cr, "supply_type", "OEM"),
+                            "status": ManualStatus.classified,
+                        }
+
+                        extras = {
+                            "pages_with_components_printed": getattr(cr, "pages_with_components_printed", ""),
+                            "pages_with_jobs_printed": getattr(cr, "pages_with_jobs_printed", ""),
+                            "pages_with_spares_printed": getattr(cr, "pages_with_spares_printed", ""),
+                            "pages_with_components_physical": getattr(cr, "pages_with_components_physical", ""),
+                            "pages_with_jobs_physical": getattr(cr, "pages_with_jobs_physical", ""),
+                            "pages_with_spares_physical": getattr(cr, "pages_with_spares_physical", ""),
+                            "page_explanations": getattr(cr, "page_explanations", ""),
+                        }
+                        from sqlalchemy import inspect
+
+                        manual_cols = {c.name for c in inspect(Manual).columns}
+                        for key, value in extras.items():
+                            if key in manual_cols:
+                                update_vals[key] = value
+                        if new_extracted_text:
+                            update_vals["extracted_text"] = new_extracted_text
+
+                        await db.execute(
+                            update(Manual).where(Manual.id == manual.id).values(**update_vals)
+                        )
+                        await db.commit()
                 except Exception as exc:
-                    logger.error(
-                        "_run_screening_task: failed for manual %s: %s",
-                        manual.original_filename, exc,
-                    )
-                _screening_state[vessel_id_str]["done"] += 1
-                # Pause between manuals so Gemini free-tier rate limit (RPM) can reset
-                await asyncio.sleep(20)
+                    logger.error("_run_screening_task: failed for manual %s: %s", manual_name, exc)
+                finally:
+                    async with state_lock:
+                        _screening_state[vessel_id_str]["done"] += 1
 
+                if delay_seconds:
+                    await asyncio.sleep(delay_seconds)
+
+        await asyncio.gather(*[_screen_one(manual_id) for manual_id in runnable_manual_ids])
         _screening_state[vessel_id_str]["status"] = "completed"
     except Exception:
         _screening_state[vessel_id_str]["status"] = "failed"
@@ -789,7 +801,7 @@ _extract_state: dict[str, dict] = {}
 
 
 async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) -> None:
-    """Background task: runs auto_extract_from_manual for each selected manual."""
+    """Background task: runs auto_extract_from_manual with bounded parallelism."""
     from app.api.v1.extraction import get_extraction_state, set_extraction_state
     from app.services.extractor import auto_extract_from_manual
 
@@ -800,23 +812,31 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
     )
     set_extraction_state(vessel_id_str, total=len(manual_ids), done=0, status="running")
     try:
-        for manual_id in manual_ids:
-            try:
-                logger.warning(
-                    "_run_extract_selected_task: extracting manual_id=%s vessel=%s",
-                    manual_id,
-                    vessel_id_str,
-                )
-                await auto_extract_from_manual(manual_id)
-            except Exception as exc:
-                logger.error("_run_extract_selected_task: extraction failed for manual %s: %s", manual_id, exc)
-            state = get_extraction_state(vessel_id_str)
-            set_extraction_state(
-                vessel_id_str,
-                total=state.get("total", len(manual_ids)),
-                done=state.get("done", 0) + 1,
-                status="running",
-            )
+        semaphore = asyncio.Semaphore(max(1, int(getattr(settings, "MANUAL_EXTRACTION_CONCURRENCY", 4) or 4)))
+        state_lock = asyncio.Lock()
+
+        async def _run_one(manual_id: str) -> None:
+            async with semaphore:
+                try:
+                    logger.warning(
+                        "_run_extract_selected_task: extracting manual_id=%s vessel=%s",
+                        manual_id,
+                        vessel_id_str,
+                    )
+                    await auto_extract_from_manual(manual_id)
+                except Exception as exc:
+                    logger.error("_run_extract_selected_task: extraction failed for manual %s: %s", manual_id, exc)
+                finally:
+                    async with state_lock:
+                        state = get_extraction_state(vessel_id_str)
+                        set_extraction_state(
+                            vessel_id_str,
+                            total=state.get("total", len(manual_ids)),
+                            done=state.get("done", 0) + 1,
+                            status="running",
+                        )
+
+        await asyncio.gather(*[_run_one(manual_id) for manual_id in manual_ids])
         state = get_extraction_state(vessel_id_str)
         set_extraction_state(
             vessel_id_str,
