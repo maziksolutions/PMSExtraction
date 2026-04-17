@@ -1,4 +1,4 @@
-"""Reserved migration slot after class society enum extension attempt
+"""Add KR and IRS to class_society enum
 
 Revision ID: 0020_add_kr_irs_class_society
 Revises: 0019_job_ranks
@@ -13,14 +13,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Intentionally a no-op.
-    #
-    # Root cause:
-    # PostgreSQL enum ADD VALUE is brittle under transactional migration flows.
-    # The durable fix is implemented in the next migration, which converts
-    # standard_jobs.class_society to VARCHAR so new class societies do not
-    # require future enum alterations.
-    pass
+    # PostgreSQL enum mutations need to run outside Alembic's surrounding
+    # transaction block. autocommit_block() keeps this migration fast and
+    # avoids rewriting the standard_jobs table during application startup.
+    context = op.get_context()
+    with context.autocommit_block():
+        op.execute("ALTER TYPE class_society ADD VALUE IF NOT EXISTS 'KR'")
+        op.execute("ALTER TYPE class_society ADD VALUE IF NOT EXISTS 'IRS'")
 
 
 def downgrade() -> None:
