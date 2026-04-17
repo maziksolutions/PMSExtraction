@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -117,6 +117,45 @@ class Settings(BaseSettings):
             or payload.get("REDIS_PUBLIC_URL")
             or os.getenv("REDIS_PUBLIC_URL")
         )
+        if not redis_url:
+            redis_host = (
+                payload.get("REDISHOST")
+                or os.getenv("REDISHOST")
+                or payload.get("REDIS_HOST")
+                or os.getenv("REDIS_HOST")
+            )
+            redis_port = (
+                payload.get("REDISPORT")
+                or os.getenv("REDISPORT")
+                or payload.get("REDIS_PORT")
+                or os.getenv("REDIS_PORT")
+            )
+            redis_user = (
+                payload.get("REDISUSER")
+                or os.getenv("REDISUSER")
+                or payload.get("REDIS_USER")
+                or os.getenv("REDIS_USER")
+            )
+            redis_password = (
+                payload.get("REDISPASSWORD")
+                or os.getenv("REDISPASSWORD")
+                or payload.get("REDIS_PASSWORD")
+                or os.getenv("REDIS_PASSWORD")
+            )
+            redis_db = (
+                payload.get("REDIS_DB")
+                or os.getenv("REDIS_DB")
+                or payload.get("REDISDATABASE")
+                or os.getenv("REDISDATABASE")
+                or "0"
+            )
+            if redis_host:
+                auth = ""
+                if redis_user and redis_password:
+                    auth = f"{quote(str(redis_user))}:{quote(str(redis_password))}@"
+                elif redis_password:
+                    auth = f":{quote(str(redis_password))}@"
+                redis_url = f"redis://{auth}{redis_host}:{redis_port or '6379'}/{redis_db}"
         if redis_url:
             payload["REDIS_URL"] = redis_url
 
