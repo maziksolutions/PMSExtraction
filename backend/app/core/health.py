@@ -15,6 +15,10 @@ async def deep_health_check() -> dict[str, Any]:
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "components": {},
+        "connection_targets": {
+            "database": "configured",
+            "redis": settings.redis_url_safe,
+        },
     }
 
     # Check database

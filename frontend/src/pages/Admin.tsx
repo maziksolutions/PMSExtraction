@@ -18,6 +18,10 @@ interface HealthComponent {
   [key: string]: string
 }
 
+interface HealthTargets {
+  [key: string]: string
+}
+
 const Admin: React.FC = () => {
   const { data: healthData, refetch: refetchHealth } = useQuery({
     queryKey: ['system-health'],
@@ -31,6 +35,7 @@ const Admin: React.FC = () => {
   })
 
   const components: HealthComponent = healthData?.components ?? {}
+  const connectionTargets: HealthTargets = healthData?.connection_targets ?? {}
   const auditLogs: AuditLog[] = auditData?.items ?? []
 
   return (
@@ -96,6 +101,11 @@ const Admin: React.FC = () => {
                   >
                     {isHealthy ? 'Healthy' : status}
                   </p>
+                  {connectionTargets[name] && (
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Target: <span className="font-mono">{connectionTargets[name]}</span>
+                    </p>
+                  )}
                 </div>
               </div>
             )
