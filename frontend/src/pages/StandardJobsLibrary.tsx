@@ -101,7 +101,11 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
       if (fileRef.current) fileRef.current.value = ''
     },
     onError: (err: any) => {
-      setError(err?.response?.data?.detail || 'Import failed. Check the file format and try again.')
+      setError(
+        err?.response?.data?.detail ||
+        err?.message ||
+        'Import failed. Check the file format and try again.'
+      )
       setResult(null)
     },
   })
