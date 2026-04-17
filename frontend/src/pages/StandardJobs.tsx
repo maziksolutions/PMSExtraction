@@ -140,6 +140,7 @@ const StandardJobs: React.FC = () => {
   const [filterSociety, setFilterSociety] = useState('')
   const [filterMachinery, setFilterMachinery] = useState('')
   const [filterMatchStatus, setFilterMatchStatus] = useState('')
+  const [filterCmsStatus, setFilterCmsStatus] = useState('')
   const [naReason, setNaReason] = useState('')
   const [naMatchId, setNaMatchId] = useState<string | null>(null)
   const [showNaDialog, setShowNaDialog] = useState(false)
@@ -367,27 +368,12 @@ const StandardJobs: React.FC = () => {
     return next
   }, [allJobs, components])
 
-  const visibleJobs = useMemo(() => {
-    if (!filterMatchStatus) return allJobs
-    return allJobs.filter((job) => (matchByStdJobId[job.id]?.match_status ?? 'not_found') === filterMatchStatus)
-  }, [allJobs, filterMatchStatus, matchByStdJobId])
-
-  const selectedSet = new Set(selectedJobIds)
-  const visibleMatches = visibleJobs.map((job) => matchByStdJobId[job.id]).filter(Boolean) as Match[]
-  const selectedMatches = selectedJobIds.map((jobId) => matchByStdJobId[jobId]).filter(Boolean) as Match[]
-  const selectedMatchIds = selectedMatches.map((match) => match.id)
-  const matchedCount = visibleMatches.filter((match) => match.match_status === 'matched').length
-  const partialCount = visibleMatches.filter((match) => match.match_status === 'partial').length
-  const notFoundCount = visibleMatches.filter((match) => match.match_status === 'not_found').length
-  const notApplicableCount = visibleMatches.filter((match) => match.match_status === 'not_applicable').length
-  const allSelected = visibleJobs.length > 0 && visibleJobs.every((job) => selectedSet.has(job.id))
-
   React.useEffect(() => {
     setPage(1)
     setSelectedJobIds([])
     setBatchComponentId('')
     setBatchCmsId('')
-  }, [libraryType, filterSociety, filterMachinery, search, sortBy, sortOrder, pageSize])
+  }, [libraryType, filterSociety, filterMachinery, filterMatchStatus, filterCmsStatus, search, sortBy, sortOrder, pageSize])
 
   React.useEffect(() => {
     if (page > totalPages) setPage(totalPages)
@@ -415,6 +401,30 @@ const StandardJobs: React.FC = () => {
   const getMappedComponentId = (jobId: string) => componentSelections[jobId] ?? suggestedComponentMap[jobId] ?? ''
 
   const getMappedCmsId = (job: StandardJob) => cmsSelections[job.id] ?? job.cms_id ?? ''
+
+  const visibleJobs = useMemo(() => {
+    return allJobs.filter((job) => {
+      const matchesStatusFilter = !filterMatchStatus || (matchByStdJobId[job.id]?.match_status ?? 'not_found') === filterMatchStatus
+      if (!matchesStatusFilter) return false
+      if (!filterCmsStatus) return true
+      const hasCmsCode = Boolean(getMappedCmsId(job).trim())
+      if (filterCmsStatus === 'filled') return hasCmsCode
+      if (filterCmsStatus === 'missing') return !hasCmsCode
+      return true
+    })
+  }, [allJobs, filterMatchStatus, filterCmsStatus, matchByStdJobId, cmsSelections])
+
+  const selectedSet = new Set(selectedJobIds)
+  const visibleMatches = visibleJobs.map((job) => matchByStdJobId[job.id]).filter(Boolean) as Match[]
+  const selectedMatches = selectedJobIds.map((jobId) => matchByStdJobId[jobId]).filter(Boolean) as Match[]
+  const selectedMatchIds = selectedMatches.map((match) => match.id)
+  const matchedCount = visibleMatches.filter((match) => match.match_status === 'matched').length
+  const partialCount = visibleMatches.filter((match) => match.match_status === 'partial').length
+  const notFoundCount = visibleMatches.filter((match) => match.match_status === 'not_found').length
+  const notApplicableCount = visibleMatches.filter((match) => match.match_status === 'not_applicable').length
+  const cmsMissingCount = visibleJobs.filter((job) => !getMappedCmsId(job).trim()).length
+  const cmsFilledCount = visibleJobs.length - cmsMissingCount
+  const allSelected = visibleJobs.length > 0 && visibleJobs.every((job) => selectedSet.has(job.id))
 
   const buildComponentMapPayload = (jobIds: string[]) =>
     jobIds.reduce<Record<string, string>>((acc, jobId) => {
@@ -535,6 +545,19 @@ const StandardJobs: React.FC = () => {
         </div>
       )}
 
+      {visibleJobs.length > 0 && (
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-xl border border-rose-800 bg-rose-900/20 p-4 text-center">
+            <p className="text-2xl font-bold text-rose-300">{cmsMissingCount}</p>
+            <p className="text-xs text-rose-200">CMS Codes Missing</p>
+          </div>
+          <div className="rounded-xl border border-emerald-800 bg-emerald-900/20 p-4 text-center">
+            <p className="text-2xl font-bold text-emerald-300">{cmsFilledCount}</p>
+            <p className="text-xs text-emerald-200">CMS Codes Filled</p>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-3 rounded-xl border border-slate-800 bg-slate-900 p-3">
         <select
           value={filterSociety}
@@ -571,6 +594,15 @@ const StandardJobs: React.FC = () => {
           <option value="partial">Partially Matched</option>
           <option value="not_found">Not Matched</option>
           <option value="not_applicable">Not Applicable</option>
+        </select>
+        <select
+          value={filterCmsStatus}
+          onChange={(e) => setFilterCmsStatus(e.target.value)}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200"
+        >
+          <option value="">All CMS Codes</option>
+          <option value="missing">CMS Code Missing</option>
+          <option value="filled">CMS Code Filled</option>
         </select>
         <select
           value={sortBy}
@@ -743,13 +775,18 @@ const StandardJobs: React.FC = () => {
                       {[job.performing_rank, job.verifying_rank].filter(Boolean).join(' / ') || '-'}
                     </td>
                     <td className="px-4 py-2.5">
-                      <input
-                        type="text"
-                        value={cmsId}
-                        onChange={(e) => setCmsSelections((prev) => ({ ...prev, [job.id]: e.target.value }))}
-                        placeholder="Enter CMS code"
-                        className="w-[180px] rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                      />
+                      <div className="space-y-1.5">
+                        <input
+                          type="text"
+                          value={cmsId}
+                          onChange={(e) => setCmsSelections((prev) => ({ ...prev, [job.id]: e.target.value }))}
+                          placeholder="Enter CMS code"
+                          className="w-[180px] rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                        />
+                        <span className={`inline-flex w-fit rounded-full px-2 py-0.5 text-[11px] font-medium ${cmsId.trim() ? 'bg-emerald-900/50 text-emerald-300' : 'bg-rose-900/50 text-rose-300'}`}>
+                          {cmsId.trim() ? 'CMS code ready' : 'CMS code missing'}
+                        </span>
+                      </div>
                     </td>
                     <td className="px-4 py-2.5">
                       <select
