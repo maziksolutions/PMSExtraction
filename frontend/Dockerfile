@@ -14,7 +14,7 @@ RUN npm run build
 FROM nginx:alpine
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /app/dist /usr/share/nginx/html
-ENV BACKEND_UPSTREAM=http://backend:8000
+ENV BACKEND_UPSTREAM=https://web-production-c592.up.railway.app
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
