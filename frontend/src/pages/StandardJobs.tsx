@@ -17,6 +17,7 @@ interface StandardJob {
   frequency_type: string | null
   is_critical: boolean
   library_reference: string | null
+  cms_id?: string | null
 }
 
 interface Match {
@@ -145,7 +146,9 @@ const StandardJobs: React.FC = () => {
   const [libraryType, setLibraryType] = useState<'standard' | 'class'>('standard')
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([])
   const [componentSelections, setComponentSelections] = useState<Record<string, string>>({})
+  const [cmsSelections, setCmsSelections] = useState<Record<string, string>>({})
   const [batchComponentId, setBatchComponentId] = useState('')
+  const [batchCmsId, setBatchCmsId] = useState('')
   const [actionMessage, setActionMessage] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -239,11 +242,17 @@ const StandardJobs: React.FC = () => {
   })
 
   const importSelectedMutation = useMutation({
-    mutationFn: (payload: { standard_job_ids?: string[]; import_all?: boolean; component_map?: Record<string, string> }) =>
+    mutationFn: (payload: {
+      standard_job_ids?: string[]
+      import_all?: boolean
+      component_map?: Record<string, string>
+      cms_id_map?: Record<string, string>
+    }) =>
       apiClient
         .post(`/vessels/${vesselId}/standard-jobs/import-batch`, {
           standard_job_ids: payload.standard_job_ids ?? [],
           component_map: payload.component_map ?? {},
+          cms_id_map: payload.cms_id_map ?? {},
           job_type: libraryType,
           class_society: filterSociety || null,
           machinery_type: filterMachinery || null,
@@ -269,10 +278,13 @@ const StandardJobs: React.FC = () => {
   })
 
   const importSingleMutation = useMutation({
-    mutationFn: ({ standardJobId, componentId }: { standardJobId: string; componentId?: string }) =>
+    mutationFn: ({ standardJobId, componentId, cmsId }: { standardJobId: string; componentId?: string; cmsId?: string }) =>
       apiClient
         .post(`/vessels/${vesselId}/standard-jobs/import/${standardJobId}`, null, {
-          params: componentId ? { component_id: componentId } : {},
+          params: {
+            ...(componentId ? { component_id: componentId } : {}),
+            ...(cmsId ? { cms_id: cmsId } : {}),
+          },
         })
         .then((r) => r.data),
     onSuccess: (data) => {
@@ -374,6 +386,7 @@ const StandardJobs: React.FC = () => {
     setPage(1)
     setSelectedJobIds([])
     setBatchComponentId('')
+    setBatchCmsId('')
   }, [libraryType, filterSociety, filterMachinery, search, sortBy, sortOrder, pageSize])
 
   React.useEffect(() => {
@@ -401,10 +414,21 @@ const StandardJobs: React.FC = () => {
 
   const getMappedComponentId = (jobId: string) => componentSelections[jobId] ?? suggestedComponentMap[jobId] ?? ''
 
+  const getMappedCmsId = (job: StandardJob) => cmsSelections[job.id] ?? job.cms_id ?? ''
+
   const buildComponentMapPayload = (jobIds: string[]) =>
     jobIds.reduce<Record<string, string>>((acc, jobId) => {
       const componentId = getMappedComponentId(jobId)
       if (componentId) acc[jobId] = componentId
+      return acc
+    }, {})
+
+  const buildCmsIdMapPayload = (jobIds: string[]) =>
+    jobIds.reduce<Record<string, string>>((acc, jobId) => {
+      const job = allJobs.find((item) => item.id === jobId)
+      if (!job) return acc
+      const cmsId = getMappedCmsId(job).trim()
+      if (cmsId) acc[jobId] = cmsId
       return acc
     }, {})
 
@@ -414,6 +438,18 @@ const StandardJobs: React.FC = () => {
       const next = { ...prev }
       for (const jobId of selectedJobIds) {
         next[jobId] = batchComponentId
+      }
+      return next
+    })
+  }
+
+  const applyBatchCmsSelection = () => {
+    const trimmedCmsId = batchCmsId.trim()
+    if (!trimmedCmsId || selectedJobIds.length === 0) return
+    setCmsSelections((prev) => {
+      const next = { ...prev }
+      for (const jobId of selectedJobIds) {
+        next[jobId] = trimmedCmsId
       }
       return next
     })
@@ -556,7 +592,7 @@ const StandardJobs: React.FC = () => {
       </div>
 
       <div className="rounded-xl border border-sky-900/50 bg-sky-950/20 px-4 py-3 text-xs text-sky-200">
-        Use the Standard Jobs Library page to import or edit library jobs. On this page, compare them against instruction-manual jobs, choose component mappings, add selected class or company jobs into Jobs Review, then update CMS codes there before final export if needed.
+        Use the Standard Jobs Library page to import or edit library jobs. On this page, compare them against instruction-manual jobs, choose component mappings, enter CMS codes where needed, and add selected class or company jobs into Jobs Review for final review and export.
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -564,6 +600,7 @@ const StandardJobs: React.FC = () => {
           onClick={() => importSelectedMutation.mutate({
             standard_job_ids: selectedJobIds,
             component_map: buildComponentMapPayload(selectedJobIds),
+            cms_id_map: buildCmsIdMapPayload(selectedJobIds),
           })}
           disabled={selectedJobIds.length === 0 || importSelectedMutation.isPending}
           className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
@@ -602,6 +639,20 @@ const StandardJobs: React.FC = () => {
           >
             Apply Component To Selected
           </button>
+          <input
+            type="text"
+            value={batchCmsId}
+            onChange={(e) => setBatchCmsId(e.target.value)}
+            placeholder="Batch CMS code..."
+            className="w-[220px] rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200"
+          />
+          <button
+            onClick={applyBatchCmsSelection}
+            disabled={!batchCmsId.trim()}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+          >
+            Apply CMS Code To Selected
+          </button>
           <button
             onClick={handleBatchMarkNA}
             disabled={selectedMatchIds.length === 0 || batchMarkNaMutation.isPending}
@@ -628,7 +679,7 @@ const StandardJobs: React.FC = () => {
       ) : null}
 
       <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
-        <table className="w-full min-w-[2150px] text-sm">
+        <table className="w-full min-w-[2320px] text-sm">
           <thead>
             <tr className="border-b border-slate-700 text-left text-xs text-slate-500 uppercase">
               <th className="px-4 py-3">
@@ -642,6 +693,7 @@ const StandardJobs: React.FC = () => {
               <th className="px-4 py-3">Class Society</th>
               <th className="px-4 py-3">Machinery Type</th>
               <th className="px-4 py-3">Rank</th>
+              <th className="px-4 py-3">CMS Code</th>
               <th className="px-4 py-3">Suggested Component</th>
               <th className="px-4 py-3">Frequency</th>
               <th className="px-4 py-3">Match Status</th>
@@ -655,13 +707,13 @@ const StandardJobs: React.FC = () => {
           <tbody className="divide-y divide-slate-800">
             {standardJobsQuery.isLoading ? (
               <tr>
-                <td colSpan={13} className="py-12 text-center text-slate-500">
+                <td colSpan={14} className="py-12 text-center text-slate-500">
                   Loading comparison library...
                 </td>
               </tr>
             ) : visibleJobs.length === 0 ? (
               <tr>
-                <td colSpan={13} className="py-12 text-center text-slate-500">
+                <td colSpan={14} className="py-12 text-center text-slate-500">
                   No jobs found for the selected library and filters.
                 </td>
               </tr>
@@ -669,6 +721,7 @@ const StandardJobs: React.FC = () => {
               visibleJobs.map((job) => {
                 const match = matchByStdJobId[job.id]
                 const componentId = getMappedComponentId(job.id)
+                const cmsId = getMappedCmsId(job)
                 return (
                   <tr key={job.id} className="hover:bg-slate-800/50 transition-colors">
                     <td className="px-4 py-2.5">
@@ -688,6 +741,15 @@ const StandardJobs: React.FC = () => {
                     <td className="px-4 py-2.5 text-slate-400">{job.machinery_type}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-400">
                       {[job.performing_rank, job.verifying_rank].filter(Boolean).join(' / ') || '-'}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <input
+                        type="text"
+                        value={cmsId}
+                        onChange={(e) => setCmsSelections((prev) => ({ ...prev, [job.id]: e.target.value }))}
+                        placeholder="Enter CMS code"
+                        className="w-[180px] rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                      />
                     </td>
                     <td className="px-4 py-2.5">
                       <select
@@ -754,7 +816,11 @@ const StandardJobs: React.FC = () => {
                       <div className="flex items-center gap-1">
                         {!match?.jobs_review_job_id && (match?.match_status === 'not_found' || match?.match_status === 'partial' || !match) && (
                           <button
-                            onClick={() => importSingleMutation.mutate({ standardJobId: job.id, componentId: componentId || undefined })}
+                            onClick={() => importSingleMutation.mutate({
+                              standardJobId: job.id,
+                              componentId: componentId || undefined,
+                              cmsId: cmsId.trim() || undefined,
+                            })}
                             className="rounded bg-sky-700 px-2 py-1 text-xs text-white hover:bg-sky-600"
                             title="Add this library job to Jobs Review"
                           >

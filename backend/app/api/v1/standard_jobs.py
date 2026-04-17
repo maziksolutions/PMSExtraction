@@ -961,9 +961,11 @@ async def _import_standard_job_to_vessel(
     vessel_id: uuid.UUID,
     std_job: StandardJob,
     component_id: Optional[uuid.UUID],
+    cms_id: Optional[str],
     current_user: User,
     db: AsyncSession,
 ) -> tuple[str, Job]:
+    cms_id = _clean_text(cms_id)
     inferred_rank = None
     if not std_job.performing_rank and component_id:
         inferred_rank = await infer_rank_from_component(
@@ -1004,6 +1006,8 @@ async def _import_standard_job_to_vessel(
             if component_id is not None:
                 matched_job.component_id = component_id
                 matched_job.is_unmapped = False
+            if cms_id and cms_id != matched_job.cms_id:
+                matched_job.cms_id = cms_id
             if not matched_job.performing_rank and (std_job.performing_rank or inferred_rank):
                 matched_job.performing_rank = std_job.performing_rank or inferred_rank
             if not matched_job.verifying_rank and std_job.verifying_rank:
@@ -1041,6 +1045,8 @@ async def _import_standard_job_to_vessel(
         if component_id is not None:
             existing_job.component_id = component_id
             existing_job.is_unmapped = False
+        if cms_id and cms_id != existing_job.cms_id:
+            existing_job.cms_id = cms_id
         if not existing_job.performing_rank and (std_job.performing_rank or inferred_rank):
             existing_job.performing_rank = std_job.performing_rank or inferred_rank
         if not existing_job.verifying_rank and std_job.verifying_rank:
@@ -1070,6 +1076,7 @@ async def _import_standard_job_to_vessel(
         frequency_type=std_job.frequency_type,
         is_critical=std_job.is_critical,
         source_reference=std_job.library_reference,
+        cms_id=cms_id,
         qc_status=QCStatus.pending,
         component_id=component_id,
         is_unmapped=component_id is None,
@@ -1759,6 +1766,7 @@ async def import_standard_job(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     component_id: Optional[str] = Query(None),
+    cms_id: Optional[str] = Query(None),
 ) -> dict[str, Any]:
     await _get_vessel_or_404(vessel_id, db)
 
@@ -1781,6 +1789,7 @@ async def import_standard_job(
         vessel_id=vessel_id,
         std_job=std_job,
         component_id=mapped_component_id,
+        cms_id=cms_id,
         current_user=current_user,
         db=db,
     )
@@ -1799,7 +1808,9 @@ async def import_standard_jobs_batch(
 
     selected_ids = [uuid.UUID(v) for v in body.get("standard_job_ids", []) if v]
     component_map_raw = body.get("component_map") or {}
+    cms_id_map_raw = body.get("cms_id_map") or {}
     component_map: dict[str, uuid.UUID | None] = {}
+    cms_id_map: dict[str, str] = {}
     if isinstance(component_map_raw, dict):
         for standard_job_id, component_id in component_map_raw.items():
             if not isinstance(standard_job_id, str):
@@ -1809,6 +1820,13 @@ async def import_standard_jobs_batch(
                 component_id=component_id,
                 db=db,
             ) if component_id else None
+    if isinstance(cms_id_map_raw, dict):
+        for standard_job_id, cms_id in cms_id_map_raw.items():
+            if not isinstance(standard_job_id, str):
+                continue
+            cleaned_cms_id = _clean_text(cms_id) if isinstance(cms_id, str) else None
+            if cleaned_cms_id:
+                cms_id_map[standard_job_id] = cleaned_cms_id
     query = select(StandardJob).where(
         StandardJob.tenant_id == current_user.tenant_id,
         StandardJob.is_deleted == False,
@@ -1843,6 +1861,7 @@ async def import_standard_jobs_batch(
             vessel_id=vessel_id,
             std_job=std_job,
             component_id=mapped_component_id,
+            cms_id=cms_id_map.get(str(std_job.id)),
             current_user=current_user,
             db=db,
         )
