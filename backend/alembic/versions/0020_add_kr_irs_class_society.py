@@ -1,13 +1,13 @@
 """Reserved migration slot after class society enum extension attempt
 
 Revision ID: 0020_add_kr_irs_class_society
-Revises: 0019_add_job_ranks_and_standard_job_ranks
+Revises: 0019_job_ranks
 Create Date: 2026-04-17 18:10:00
 """
 
 # revision identifiers, used by Alembic.
 revision = "0020_add_kr_irs_class_society"
-down_revision = "0019_add_job_ranks_and_standard_job_ranks"
+down_revision = "0019_job_ranks"
 branch_labels = None
 depends_on = None
 
