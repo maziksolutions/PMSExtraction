@@ -8,10 +8,10 @@ from difflib import SequenceMatcher
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from sqlalchemy import String, asc, desc, func, or_, select
+from sqlalchemy import String, asc, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import engine, get_db
 from app.deps import get_current_user
 from app.models.component import Component, QCStatus
 from app.models.job import Job
@@ -340,6 +340,35 @@ CLASS_WORKBOOK_REQUIRED_HEADERS = {
     "componentnamepms",
     "frequencyinterval",
 }
+
+
+async def _ensure_class_society_enum_members() -> None:
+    """
+    Keep class-society imports deploy-safe.
+
+    Railway container startup should stay fast, so we avoid schema work in the
+    global boot command. Instead, when class-job flows need KR / IRS values, we
+    extend the PostgreSQL enum just-in-time in autocommit mode. The block is
+    idempotent and safely no-ops if the enum type is already absent or already
+    contains the values.
+    """
+    sql = text(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'class_society') THEN
+                ALTER TYPE class_society ADD VALUE IF NOT EXISTS 'KR';
+                ALTER TYPE class_society ADD VALUE IF NOT EXISTS 'IRS';
+            END IF;
+        END
+        $$;
+        """
+    )
+    async with engine.connect() as connection:
+        autocommit_connection = await connection.execution_options(
+            isolation_level="AUTOCOMMIT"
+        )
+        await autocommit_connection.execute(sql)
 
 
 def _split_class_interval_candidates(value: str) -> list[str]:
@@ -1149,6 +1178,7 @@ async def bulk_import_standard_jobs(
     """Import Standard Jobs or Class Society Jobs from Excel/CSV."""
     content = await file.read()
     filename = (file.filename or "").lower()
+    await _ensure_class_society_enum_members()
     if job_type not in {"standard", "class", "critical"}:
         raise HTTPException(status_code=400, detail="job_type must be 'standard', 'class', or 'critical'")
     rows = _extract_rows_from_upload(content, filename, job_type=job_type)
@@ -1356,6 +1386,7 @@ async def create_standard_job(
     if not job_name or not machinery_type:
         raise HTTPException(status_code=400, detail="job_name and machinery_type are required")
 
+    await _ensure_class_society_enum_members()
     class_society_raw = _clean_text(body.get("class_society")) or "General"
     class_society = CS_MAP.get(_norm_text(class_society_raw))
     if class_society is None:
