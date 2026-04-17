@@ -1,12 +1,9 @@
-"""Add KR and IRS to class_society enum
+"""Reserved migration slot after class society enum extension attempt
 
 Revision ID: 0020_add_kr_irs_class_society
 Revises: 0019_add_job_ranks_and_standard_job_ranks
 Create Date: 2026-04-17 18:10:00
 """
-
-from alembic import op
-
 
 # revision identifiers, used by Alembic.
 revision = "0020_add_kr_irs_class_society"
@@ -16,11 +13,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("ALTER TYPE class_society ADD VALUE IF NOT EXISTS 'KR'")
-    op.execute("ALTER TYPE class_society ADD VALUE IF NOT EXISTS 'IRS'")
+    # Intentionally a no-op.
+    #
+    # Root cause:
+    # PostgreSQL enum ADD VALUE is brittle under transactional migration flows.
+    # The durable fix is implemented in the next migration, which converts
+    # standard_jobs.class_society to VARCHAR so new class societies do not
+    # require future enum alterations.
+    pass
 
 
 def downgrade() -> None:
-    # PostgreSQL does not support removing enum values without recreating the type.
-    # This migration is intentionally irreversible.
     pass
