@@ -302,7 +302,24 @@ FREQ_ALIASES = {
     "running_hours": "hourly",
     "runninghour": "hourly",
 }
-CS_MAP = {member.value.lower(): member for member in ClassSociety}
+CS_MAP = {_norm_text(member.value): member for member in ClassSociety}
+CS_MAP.update(
+    {
+        "dnv": ClassSociety.dnv_gl,
+        "dnvgl": ClassSociety.dnv_gl,
+        "lr": ClassSociety.lr,
+        "lloydsregister": ClassSociety.lr,
+        "bv": ClassSociety.bv,
+        "bureauveritas": ClassSociety.bv,
+        "nk": ClassSociety.classnk,
+        "classnk": ClassSociety.classnk,
+        "kr": ClassSociety.kr,
+        "koreanregister": ClassSociety.kr,
+        "irs": ClassSociety.irs,
+        "irclass": ClassSociety.irs,
+        "indianregisterofshipping": ClassSociety.irs,
+    }
+)
 CLASS_LIBRARY_VALUES = {
     _norm_text(member.value)
     for member in ClassSociety
@@ -315,6 +332,179 @@ CLASS_LIBRARY_VALUES.update(
         if member != ClassSociety.general
     }
 )
+CLASS_WORKBOOK_SKIP_CATEGORIES = {"class surveys", "statutory surveys"}
+CLASS_WORKBOOK_REQUIRED_HEADERS = {
+    "standardjobname",
+    "jobaction",
+    "surveycategory",
+    "componentnamepms",
+    "frequencyinterval",
+}
+
+
+def _split_class_interval_candidates(value: str) -> list[str]:
+    return [
+        part.strip()
+        for part in re.split(r"/|,|;|\band\b", value, flags=re.IGNORECASE)
+        if part and part.strip()
+    ]
+
+
+def _parse_class_frequency(value: Any) -> tuple[Optional[int], Optional[Any], Optional[str]]:
+    raw = _clean_text(value)
+    if not raw:
+        return None, None, None
+
+    normalized = _norm_text(raw).replace("~", "").replace("approximately", "").strip()
+    if not normalized:
+        return None, None, raw
+
+    for candidate in _split_class_interval_candidates(normalized):
+        mapped_type = _map_frequency_type(candidate)
+        if mapped_type is not None:
+            if candidate in {"daily", "weekly", "monthly", "annual", "yearly", "hourly"}:
+                base_frequency = 1
+            else:
+                number_match = re.search(r"(\d+(?:\.\d+)?)", candidate)
+                base_frequency = None
+                if number_match:
+                    try:
+                        numeric_value = float(number_match.group(1))
+                    except ValueError:
+                        numeric_value = None
+                    if numeric_value is not None:
+                        if mapped_type == FREQ_MAP["yearly"]:
+                            if numeric_value.is_integer():
+                                base_frequency = int(numeric_value)
+                            else:
+                                monthly_value = numeric_value * 12
+                                if monthly_value.is_integer():
+                                    return int(monthly_value), FREQ_MAP["monthly"], raw
+                        elif numeric_value.is_integer():
+                            base_frequency = int(numeric_value)
+
+            if base_frequency is not None:
+                return base_frequency, mapped_type, raw
+
+    return None, None, raw
+
+
+def _strip_class_location_tokens(value: Optional[str]) -> Optional[str]:
+    text = _clean_text(value)
+    if not text:
+        return None
+
+    cleaned = re.sub(
+        r"\s*\((?=[^)]*\bno\.?\s*\d+)[^)]*\)",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\bno\.?\s*\d+[a-z/-]*\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\(\s*\)", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([,;/)])", r"\1", cleaned)
+    cleaned = re.sub(r"([(])\s+", r"\1", cleaned)
+    cleaned = cleaned.strip(" -—,;/")
+    return cleaned or text
+
+
+def _match_class_society(value: Any) -> Optional[ClassSociety]:
+    normalized = _norm_text(value)
+    if not normalized:
+        return None
+    mapped = CS_MAP.get(normalized)
+    if mapped is not None:
+        return mapped
+    for alias, member in sorted(CS_MAP.items(), key=lambda item: len(item[0]), reverse=True):
+        if alias and alias in normalized:
+            return member
+    return None
+
+
+def _class_library_reference(class_society: ClassSociety, survey_category: Optional[str]) -> Optional[str]:
+    if survey_category:
+        return f"{class_society.value} / {survey_category}"[:200]
+    return class_society.value[:200]
+
+
+def _class_job_description(
+    *,
+    survey_category: Optional[str],
+    job_action: Optional[str],
+    raw_interval: Optional[str],
+) -> Optional[str]:
+    lines = ["Imported from class workbook"]
+    if survey_category:
+        lines.append(f"Survey category: {survey_category}")
+    if job_action:
+        lines.append(f"Job action: {job_action}")
+    if raw_interval:
+        lines.append(f"Imported interval: {raw_interval}")
+    return "\n".join(lines)
+
+
+def _sheet_looks_like_class_job_library(headers: list[str]) -> bool:
+    header_set = {header for header in headers if header}
+    return CLASS_WORKBOOK_REQUIRED_HEADERS.issubset(header_set)
+
+
+def _extract_class_workbook_rows(wb: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        header_row_idx: Optional[int] = None
+        headers: list[str] = []
+        class_society: Optional[ClassSociety] = None
+
+        preview_rows = list(ws.iter_rows(min_row=1, max_row=8, values_only=True))
+        title_text = " ".join(str(cell or "") for row in preview_rows[:2] for cell in row if cell)
+        class_society = _match_class_society(f"{sheet_name} {title_text}")
+
+        for row_idx, row in enumerate(preview_rows, start=1):
+            candidate_headers = [_header_key(cell) for cell in row]
+            if _sheet_looks_like_class_job_library(candidate_headers):
+                header_row_idx = row_idx
+                headers = candidate_headers
+                break
+
+        if header_row_idx is None or class_society is None:
+            continue
+
+        for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
+            mapped = {headers[i]: (row[i] if i < len(row) else None) for i in range(len(headers))}
+            survey_category = _clean_text(mapped.get("surveycategory"))
+            if not survey_category:
+                continue
+            if _norm_text(survey_category) in CLASS_WORKBOOK_SKIP_CATEGORIES:
+                continue
+
+            job_name = _strip_class_location_tokens(mapped.get("standardjobname"))
+            machinery_type = _strip_class_location_tokens(mapped.get("componentnamepms"))
+            if not job_name or not machinery_type:
+                continue
+
+            frequency, frequency_type, raw_interval = _parse_class_frequency(mapped.get("frequencyinterval"))
+            rows.append(
+                {
+                    "class_society": class_society,
+                    "machinery_type": machinery_type,
+                    "job_name": job_name,
+                    "job_description": _class_job_description(
+                        survey_category=survey_category,
+                        job_action=_clean_text(mapped.get("jobaction")),
+                        raw_interval=raw_interval,
+                    ),
+                    "performing_rank": None,
+                    "verifying_rank": None,
+                    "frequency": frequency,
+                    "frequency_type": frequency_type,
+                    "is_critical": False,
+                    "library_reference": _class_library_reference(class_society, survey_category),
+                    "is_system": False,
+                }
+            )
+    return rows
 
 
 def _build_standard_jobs_query(
@@ -585,6 +775,10 @@ def _extract_rows_from_upload(content: bytes, filename: str, *, job_type: str) -
         import openpyxl
 
         wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+        if job_type == "class":
+            class_rows = _extract_class_workbook_rows(wb)
+            if class_rows:
+                return class_rows
         structured_rows = _extract_structured_workbook_rows(wb, job_type=job_type)
         if structured_rows:
             return structured_rows
@@ -982,7 +1176,10 @@ async def bulk_import_standard_jobs(
     if not rows:
         raise HTTPException(
             status_code=400,
-            detail="No importable rows found. Use Audit standard jobs / Annex Job Title for Standard Jobs or Critical Jobs for the Critical Jobs tab.",
+            detail=(
+                "No importable rows found. Use Audit standard jobs / Annex Job Title for Standard Jobs, "
+                "Critical Jobs for the Critical Jobs tab, or the class survey workbook vessel sheets for Class Jobs."
+            ),
         )
 
     imported = 0
@@ -1233,17 +1430,21 @@ async def run_comparison(
     vessel_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    body: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     vessel = await _get_vessel_or_404(vessel_id, db)
 
-    # Get all standard jobs
-    std_jobs_result = await db.execute(
-        select(StandardJob).where(
-            StandardJob.tenant_id == current_user.tenant_id,
-            StandardJob.is_deleted == False,
-            StandardJob.is_critical == False,
-        )
+    body = body or {}
+
+    query, _ = _build_standard_jobs_query(
+        tenant_id=current_user.tenant_id,
+        class_society=_clean_text(body.get("class_society")),
+        machinery_type=_clean_text(body.get("machinery_type")),
+        is_critical=False,
+        job_type=_clean_text(body.get("job_type")),
+        search=None,
     )
+    std_jobs_result = await db.execute(query.order_by(None))
     std_jobs = std_jobs_result.scalars().all()
 
     # Get vessel jobs

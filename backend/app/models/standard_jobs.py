@@ -23,6 +23,8 @@ class ClassSociety(str, enum.Enum):
     bv = "Bureau Veritas"
     abs = "ABS"
     classnk = "ClassNK"
+    kr = "KR"
+    irs = "IRS"
 
 
 class MatchStatus(str, enum.Enum):

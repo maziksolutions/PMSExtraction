@@ -51,7 +51,15 @@ interface StandardJobFormState {
 
 type TabType = 'standard' | 'class' | 'critical'
 
-const CLASS_SOCIETIES = ['DNV GL', "Lloyd's Register", 'Bureau Veritas', 'ABS', 'ClassNK']
+const CLASS_SOCIETIES = [
+  { value: 'DNV GL', label: 'DNV' },
+  { value: "Lloyd's Register", label: 'LR' },
+  { value: 'Bureau Veritas', label: 'BV' },
+  { value: 'ABS', label: 'ABS' },
+  { value: 'ClassNK', label: 'NK' },
+  { value: 'KR', label: 'KR' },
+  { value: 'IRS', label: 'IRS' },
+]
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
 const LIBRARY_SORT_OPTIONS = [
   { value: 'job_name', label: 'Job Name' },
@@ -61,6 +69,11 @@ const LIBRARY_SORT_OPTIONS = [
   { value: 'frequency', label: 'Frequency' },
   { value: 'reference', label: 'Reference' },
 ]
+
+function displayClassSociety(value: string | null | undefined): string {
+  const matched = CLASS_SOCIETIES.find((option) => option.value === value)
+  return matched?.label ?? value ?? '-'
+}
 
 // ─── Import Panel ─────────────────────────────────────────────────────────────
 
@@ -122,12 +135,14 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
           </>
         ) : (
           <>
-            <p>Required columns: <span className="text-slate-400">job_name, machinery_type</span></p>
-            <p>Optional columns: <span className="text-slate-400">job_description, class_society, frequency, frequency_type, is_critical, library_reference</span></p>
+            <p>Supported class workbook format: <span className="text-slate-400">one GUIDE sheet plus one vessel sheet per class report, like your attached CLSR workbook</span></p>
+            <p>The importer reads each vessel sheet, infers the class from the sheet name, skips <span className="text-slate-400">CLASS SURVEYS</span> and <span className="text-slate-400">STATUTORY SURVEYS</span>, and imports the remaining machinery / hull survey rows as reusable class jobs.</p>
+            <p>Imported fields: <span className="text-slate-400">Standard Job Name, Job Action, Component Name (PMS), Frequency / Interval</span>. Class Asset Code / ID and vessel-specific numbering are ignored.</p>
+            <p>Duplicate location-specific rows like <span className="text-slate-400">No.1 / No.2</span> are normalized into one reusable class job pattern per class society.</p>
           </>
         )}
         {jobType === 'class' && (
-          <p>class_society values: <span className="text-slate-400">DNV GL, Lloyd's Register, Bureau Veritas, ABS, ClassNK</span></p>
+          <p>Supported classes: <span className="text-slate-400">DNV, LR, BV, ABS, NK, KR, IRS</span></p>
         )}
         <p>frequency_type values: <span className="text-slate-400">daily, weekly, monthly, yearly, hourly</span></p>
       </div>
@@ -251,7 +266,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
             className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-sky-500"
           >
             <option value="">All Class Societies</option>
-            {CLASS_SOCIETIES.map((s) => <option key={s} value={s}>{s}</option>)}
+            {CLASS_SOCIETIES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         )}
         <input
@@ -362,7 +377,7 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
                       {jobType === 'class' && (
                         <td className="px-4 py-3">
                           <span className="px-2 py-0.5 rounded-full text-xs bg-sky-900/50 text-sky-400 border border-sky-700/40">
-                            {job.class_society}
+                            {displayClassSociety(job.class_society)}
                           </span>
                         </td>
                       )}
@@ -477,7 +492,7 @@ const StandardJobsLibrary: React.FC = () => {
       setShowAddDialog(false)
       setAddError(null)
       setForm({
-        class_society: activeTab === 'class' ? 'DNV GL' : 'General',
+        class_society: activeTab === 'class' ? CLASS_SOCIETIES[0].value : 'General',
         machinery_type: '',
         job_name: '',
         job_description: '',
@@ -512,7 +527,7 @@ const StandardJobsLibrary: React.FC = () => {
           {activeTab === 'standard'
             ? 'Global maintenance job standards - imported once, applied to all vessels'
             : activeTab === 'class'
-              ? "Classification society job requirements - DNV GL, Lloyd's Register, Bureau Veritas, ABS, ClassNK"
+              ? 'Classification society job requirements imported from class survey workbooks and compared like the standard-jobs flow before moving selected items into Jobs Review.'
               : 'Critical maintenance jobs library - added to vessels after Jobs QC.'}
         </p>
       </div>
@@ -552,7 +567,7 @@ const StandardJobsLibrary: React.FC = () => {
               setAddError(null)
               setForm((prev) => ({
                 ...prev,
-                class_society: activeTab === 'class' ? (prev.class_society === 'General' ? 'DNV GL' : prev.class_society) : 'General',
+                class_society: activeTab === 'class' ? (prev.class_society === 'General' ? CLASS_SOCIETIES[0].value : prev.class_society) : 'General',
                 is_critical: activeTab === 'critical',
               }))
               setShowAddDialog(true)
@@ -590,7 +605,7 @@ const StandardJobsLibrary: React.FC = () => {
                   {activeTab !== 'class' ? (
                     <option value="General">General</option>
                   ) : (
-                    CLASS_SOCIETIES.map((society) => <option key={society} value={society}>{society}</option>)
+                    CLASS_SOCIETIES.map((society) => <option key={society.value} value={society.value}>{society.label}</option>)
                   )}
                 </select>
               </label>

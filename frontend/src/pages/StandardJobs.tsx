@@ -65,6 +65,20 @@ const SORT_OPTIONS = [
   { value: 'frequency', label: 'Frequency' },
   { value: 'reference', label: 'Reference' },
 ]
+const CLASS_SOCIETY_OPTIONS = [
+  { value: 'DNV GL', label: 'DNV' },
+  { value: "Lloyd's Register", label: 'LR' },
+  { value: 'Bureau Veritas', label: 'BV' },
+  { value: 'ABS', label: 'ABS' },
+  { value: 'ClassNK', label: 'NK' },
+  { value: 'KR', label: 'KR' },
+  { value: 'IRS', label: 'IRS' },
+]
+
+function displayClassSociety(value: string | null | undefined): string {
+  const matched = CLASS_SOCIETY_OPTIONS.find((option) => option.value === value)
+  return matched?.label ?? value ?? '-'
+}
 
 function getApiErrorMessage(error: unknown, fallback: string): string {
   const maybeError = error as { response?: { data?: { detail?: unknown } }; message?: string }
@@ -201,12 +215,21 @@ const StandardJobs: React.FC = () => {
   })
 
   const runComparisonMutation = useMutation({
-    mutationFn: () => apiClient.post(`/vessels/${vesselId}/standard-jobs/run-comparison`).then((r) => r.data),
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/standard-jobs/run-comparison`, {
+        job_type: libraryType,
+        class_society: libraryType === 'class' ? (filterSociety || null) : null,
+        machinery_type: filterMachinery || null,
+      }).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['std-job-matches', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['standard-jobs-comparison'] })
       queryClient.invalidateQueries({ queryKey: ['std-job-summary', vesselId] })
-      setActionMessage('Comparison completed against instruction-manual jobs.')
+      setActionMessage(
+        libraryType === 'class' && filterSociety
+          ? `Comparison completed for ${displayClassSociety(filterSociety)} class jobs against instruction-manual jobs.`
+          : 'Comparison completed against instruction-manual jobs.'
+      )
       setActionError(null)
     },
     onError: (error: unknown) => {
@@ -484,12 +507,10 @@ const StandardJobs: React.FC = () => {
           className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 disabled:opacity-60"
         >
           <option value="">All Class Societies</option>
-          <option value="DNV GL">DNV GL</option>
-          <option value="Lloyd's Register">Lloyd's Register</option>
-          <option value="Bureau Veritas">Bureau Veritas</option>
-          <option value="ABS">ABS</option>
-          <option value="ClassNK">ClassNK</option>
-        </select>
+            {CLASS_SOCIETY_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
         <input
           type="text"
           value={filterMachinery}
@@ -535,7 +556,7 @@ const StandardJobs: React.FC = () => {
       </div>
 
       <div className="rounded-xl border border-sky-900/50 bg-sky-950/20 px-4 py-3 text-xs text-sky-200">
-        Use the Standard Jobs Library page to import or edit library jobs. On this page, compare them against instruction-manual jobs, choose component mappings, and add selected library jobs into Jobs Review for vessel review.
+        Use the Standard Jobs Library page to import or edit library jobs. On this page, compare them against instruction-manual jobs, choose component mappings, add selected class or company jobs into Jobs Review, then update CMS codes there before final export if needed.
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -663,7 +684,7 @@ const StandardJobs: React.FC = () => {
                         <p className="text-xs font-mono text-slate-500">{job.library_reference}</p>
                       )}
                     </td>
-                    <td className="px-4 py-2.5 text-xs text-slate-300">{job.class_society}</td>
+                    <td className="px-4 py-2.5 text-xs text-slate-300">{displayClassSociety(job.class_society)}</td>
                     <td className="px-4 py-2.5 text-slate-400">{job.machinery_type}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-400">
                       {[job.performing_rank, job.verifying_rank].filter(Boolean).join(' / ') || '-'}
