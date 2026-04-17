@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+from urllib.parse import urlsplit
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -99,6 +103,45 @@ class Settings(BaseSettings):
     # Azure Document Intelligence
     AZURE_DOC_INTELLIGENCE_KEY: str = ""
     AZURE_DOC_INTELLIGENCE_ENDPOINT: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_platform_aliases(cls, data):
+        payload = dict(data or {})
+
+        redis_url = (
+            payload.get("REDIS_URL")
+            or os.getenv("REDIS_URL")
+            or payload.get("REDIS_PRIVATE_URL")
+            or os.getenv("REDIS_PRIVATE_URL")
+            or payload.get("REDIS_PUBLIC_URL")
+            or os.getenv("REDIS_PUBLIC_URL")
+        )
+        if redis_url:
+            payload["REDIS_URL"] = redis_url
+
+        database_url = (
+            payload.get("DATABASE_URL")
+            or os.getenv("DATABASE_URL")
+            or payload.get("POSTGRES_URL")
+            or os.getenv("POSTGRES_URL")
+            or payload.get("POSTGRESQL_URL")
+            or os.getenv("POSTGRESQL_URL")
+        )
+        if database_url:
+            payload["DATABASE_URL"] = database_url
+
+        return payload
+
+    @property
+    def redis_url_safe(self) -> str:
+        try:
+            parsed = urlsplit(self.REDIS_URL)
+            host = parsed.hostname or "unknown"
+            port = parsed.port or ("6379" if parsed.scheme.startswith("redis") else "")
+            return f"{parsed.scheme}://{host}{f':{port}' if port else ''}"
+        except Exception:
+            return "<unparsed>"
 
 
 settings = Settings()

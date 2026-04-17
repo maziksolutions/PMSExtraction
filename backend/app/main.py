@@ -111,6 +111,10 @@ async def _log_ai_config() -> None:
         f"ANTHROPIC_API_KEY={'SET' if settings.ANTHROPIC_API_KEY else 'NOT SET'}",
         flush=True,
     )
+    print(
+        f"[REDIS CONFIG] REDIS_URL={settings.redis_url_safe}",
+        flush=True,
+    )
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)
