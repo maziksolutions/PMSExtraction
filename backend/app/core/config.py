@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_HOURS: int = 8
     MAX_REQUEST_SIZE_BYTES: int = 60 * 1024 * 1024
     REQUIRE_STRICT_UPLOAD_VALIDATION: bool = True
+    ENFORCE_TRUSTED_HOST_MIDDLEWARE: bool = False
 
     # Database — Railway provides postgresql://, we need postgresql+asyncpg:// for async SQLAlchemy
     DATABASE_URL: str = "postgresql+asyncpg://pms_user:pms_password_dev@localhost:5432/pms_extraction"

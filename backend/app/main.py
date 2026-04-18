@@ -45,10 +45,11 @@ app = FastAPI(
     redoc_url=f"{settings.API_V1_STR}/redoc" if settings.EXPOSE_API_DOCS else None,
 )
 
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=settings.TRUSTED_HOSTS,
-)
+if settings.ENFORCE_TRUSTED_HOST_MIDDLEWARE:
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=settings.TRUSTED_HOSTS,
+    )
 
 app.add_middleware(
     CORSMiddleware,
