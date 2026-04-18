@@ -18,12 +18,16 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Maritime PMS Data Extraction Tool"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
+    ENVIRONMENT: str = "production"
+    EXPOSE_API_DOCS: bool = False
 
     # Security
     SECRET_KEY: str = "dev-secret-key-change-in-production-min-32-chars"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_HOURS: int = 8
+    MAX_REQUEST_SIZE_BYTES: int = 60 * 1024 * 1024
+    REQUIRE_STRICT_UPLOAD_VALIDATION: bool = True
 
     # Database — Railway provides postgresql://, we need postgresql+asyncpg:// for async SQLAlchemy
     DATABASE_URL: str = "postgresql+asyncpg://pms_user:pms_password_dev@localhost:5432/pms_extraction"
@@ -56,6 +60,12 @@ class Settings(BaseSettings):
         "https://maritime-pms-tool-production.up.railway.app",
     ]
     ALLOWED_ORIGINS_REGEX: str = r"https://.*\.up\.railway\.app"
+    TRUSTED_HOSTS: list[str] = [
+        "localhost",
+        "127.0.0.1",
+        "*.up.railway.app",
+        "*.railway.internal",
+    ]
 
     # Rate limiting
     RATE_LIMIT_PER_MINUTE: int = 100
@@ -181,6 +191,17 @@ class Settings(BaseSettings):
             return f"{parsed.scheme}://{host}{f':{port}' if port else ''}"
         except Exception:
             return "<unparsed>"
+
+    @model_validator(mode="after")
+    def _validate_security_defaults(self):
+        is_prod_like = self.ENVIRONMENT.lower() not in {"dev", "development", "local", "test"}
+        if len(self.SECRET_KEY or "") < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters long.")
+        if is_prod_like and self.SECRET_KEY == "dev-secret-key-change-in-production-min-32-chars":
+            raise ValueError("Refusing to start with the default SECRET_KEY in production-like environments.")
+        if self.MAX_REQUEST_SIZE_BYTES < 1024 * 1024:
+            raise ValueError("MAX_REQUEST_SIZE_BYTES must be at least 1 MB.")
+        return self
 
 
 settings = Settings()

@@ -17,3 +17,10 @@ class TokenResponse(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str = Field(..., description="A valid refresh token previously issued")
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str | None = Field(
+        default=None,
+        description="Optional refresh token to revoke together with the active access token",
+    )

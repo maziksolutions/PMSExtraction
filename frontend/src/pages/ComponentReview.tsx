@@ -617,7 +617,7 @@ const ComponentReview: React.FC = () => {
             <Upload className="h-3.5 w-3.5" />
             Import Excel
           </button>
-          <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleExcelImport} />
+          <input ref={fileInputRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={handleExcelImport} />
           <a
             href={`${apiClient.defaults.baseURL}/vessels/components/import-template`}
             download="components_import_template.xlsx"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import uuid
 from typing import Any
 
 import bcrypt as _bcrypt
@@ -32,12 +33,20 @@ def create_access_token(
     The payload must include at minimum: user_id, email, role, tenant_id.
     """
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (
+    issued_at = datetime.now(timezone.utc)
+    expire = issued_at + (
         expires_delta
         if expires_delta is not None
         else timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    to_encode.update({"exp": expire, "token_type": "access"})
+    to_encode.update(
+        {
+            "exp": expire,
+            "iat": issued_at,
+            "jti": str(uuid.uuid4()),
+            "token_type": "access",
+        }
+    )
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
@@ -48,10 +57,18 @@ def create_refresh_token(data: dict[str, Any]) -> str:
     The payload must include at minimum: user_id, email, role, tenant_id.
     """
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(
+    issued_at = datetime.now(timezone.utc)
+    expire = issued_at + timedelta(
         hours=settings.REFRESH_TOKEN_EXPIRE_HOURS
     )
-    to_encode.update({"exp": expire, "token_type": "refresh"})
+    to_encode.update(
+        {
+            "exp": expire,
+            "iat": issued_at,
+            "jti": str(uuid.uuid4()),
+            "token_type": "refresh",
+        }
+    )
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 

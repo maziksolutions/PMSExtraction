@@ -20,6 +20,7 @@ from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.manual import ManualOut, ManualUpdate
 from app.services.review_workflow import broadcast_activity, log_activity
+from app.services.upload_security import validate_uploaded_file_bytes
 
 router = APIRouter()
 
@@ -722,6 +723,12 @@ async def import_manual_screening(
         )
 
     content = await file.read()
+    validate_uploaded_file_bytes(
+        filename=file.filename or "manual_review_import.xlsx",
+        content=content,
+        allowed_extensions={"xlsx"},
+        max_size_bytes=10 * 1024 * 1024,
+    )
     try:
         import openpyxl
 

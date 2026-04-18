@@ -61,8 +61,8 @@ export function useVesselSocket(vesselId: string | undefined): UseVesselSocketRe
     loadActivity()
     const activityInterval = window.setInterval(loadActivity, 15000)
 
-    const url = `${WS_BASE}/api/v1/ws/${vesselId}?token=${token}`
-    const ws = new WebSocket(url)
+    const url = `${WS_BASE}/api/v1/ws/${vesselId}`
+    const ws = new WebSocket(url, ['access-token', token])
     wsRef.current = ws
 
     ws.onopen = () => {

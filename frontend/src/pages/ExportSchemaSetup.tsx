@@ -194,7 +194,7 @@ const ExportSchemaSetup: React.FC = () => {
               Click to upload your PMS Import Template
             </p>
             <p className="mt-1 text-xs text-slate-500">
-              Supported: .xlsx, .xls — Max 10 MB
+              Supported: .xlsx — Max 10 MB
             </p>
             {uploadMutation.isPending && (
               <div className="mt-4 flex items-center gap-2 text-sky-400">
@@ -213,7 +213,7 @@ const ExportSchemaSetup: React.FC = () => {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".xlsx,.xls"
+            accept=".xlsx"
             className="hidden"
             onChange={handleFileChange}
           />

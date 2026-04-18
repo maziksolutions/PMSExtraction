@@ -18,6 +18,7 @@ from app.models.user import User, UserRole
 from app.models.vessel import VesselProject
 from app.schemas.export import ExportSchemaOut, ExportVersionOut
 from app.services.exporter import export_service
+from app.services.upload_security import validate_uploaded_file_bytes
 
 router = APIRouter()
 
@@ -123,6 +124,12 @@ async def create_export_schema(
 ) -> ExportSchemaOut:
     """Upload an Excel template and auto-detect sheet/column structure."""
     content = await file.read()
+    validate_uploaded_file_bytes(
+        filename=file.filename or "export_template.xlsx",
+        content=content,
+        allowed_extensions={"xlsx"},
+        max_size_bytes=10 * 1024 * 1024,
+    )
     parsed = export_service.parse_template(content, file.filename or "template.xlsx")
 
     schema = ExportSchema(

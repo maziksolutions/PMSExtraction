@@ -20,6 +20,7 @@ from app.core.database import get_db
 from app.deps import get_current_user
 from app.models.user import User
 from app.services.review_workflow import backfill_maker_models_from_accepted_records
+from app.services.upload_security import validate_uploaded_file_bytes
 
 router = APIRouter()
 _MAKER_MODEL_BACKFILL_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
@@ -280,8 +281,14 @@ async def import_maker_models(
     Skips duplicates. Returns counts of imported and skipped rows.
     """
     await _bootstrap(db)
-    content = await file.read()
     filename = (file.filename or "").lower()
+    content = await file.read()
+    validate_uploaded_file_bytes(
+        filename=file.filename or "maker_model_import.xlsx",
+        content=content,
+        allowed_extensions={"csv", "xlsx"},
+        max_size_bytes=10 * 1024 * 1024,
+    )
 
     rows: list[dict] = []
     try:

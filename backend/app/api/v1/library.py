@@ -27,6 +27,7 @@ from app.models.vessel import VesselProject
 from app.services.deduplication import is_duplicate_component, is_duplicate_job, is_duplicate_spare
 from app.services.manual_match_reuse import reuse_records_from_matched_manual
 from app.services.review_workflow import backfill_global_library_from_accepted_records
+from app.services.upload_security import validate_uploaded_file_bytes
 from app.services.vessel_library import load_library_components_for_vessel
 
 router = APIRouter()
@@ -362,8 +363,14 @@ async def import_component_structure(
     Expected columns: ShipComponentName | HierarchyComponentCode | ShipComponentCode |
     ComponentType | Priority | Status | Quantity | Category
     """
-    content = await file.read()
     filename = (file.filename or "").lower()
+    content = await file.read()
+    validate_uploaded_file_bytes(
+        filename=file.filename or "component_structure_import.xlsx",
+        content=content,
+        allowed_extensions={"csv", "xlsx"},
+        max_size_bytes=20 * 1024 * 1024,
+    )
 
     rows: list[dict] = []
     try:

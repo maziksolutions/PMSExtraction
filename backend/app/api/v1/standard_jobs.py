@@ -31,6 +31,7 @@ from app.services.job_ranks import (
     infer_rank_from_component,
     normalize_rank_name,
 )
+from app.services.upload_security import validate_uploaded_file_bytes
 
 router = APIRouter()
 
@@ -1185,6 +1186,12 @@ async def bulk_import_standard_jobs(
     """Import Standard Jobs or Class Society Jobs from Excel/CSV."""
     content = await file.read()
     filename = (file.filename or "").lower()
+    validate_uploaded_file_bytes(
+        filename=file.filename or "standard_jobs_import.xlsx",
+        content=content,
+        allowed_extensions={"csv", "xlsx"},
+        max_size_bytes=25 * 1024 * 1024,
+    )
     await _ensure_class_society_enum_members()
     if job_type not in {"standard", "class", "critical"}:
         raise HTTPException(status_code=400, detail="job_type must be 'standard', 'class', or 'critical'")

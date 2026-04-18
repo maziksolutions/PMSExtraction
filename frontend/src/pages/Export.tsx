@@ -170,7 +170,7 @@ const Export: React.FC = () => {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".xlsx,.xls"
+              accept=".xlsx"
               className="hidden"
               onChange={handleSchemaUpload}
             />

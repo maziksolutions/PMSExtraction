@@ -29,6 +29,7 @@ from app.schemas.ingestion import (
     SharePointFileListResponse,
 )
 from app.services.sharepoint import SharePointService
+from app.services.upload_security import validate_uploaded_file_bytes
 
 router = APIRouter()
 
@@ -414,7 +415,11 @@ async def upload_manuals(
 
     await _get_vessel_or_404(vessel_id, db)
 
-    ALLOWED_EXTENSIONS = {"pdf", "docx", "doc", "xlsx", "xls"}
+    ALLOWED_EXTENSIONS = (
+        {"pdf", "docx", "xlsx"}
+        if settings.REQUIRE_STRICT_UPLOAD_VALIDATION
+        else {"pdf", "docx", "doc", "xlsx", "xls"}
+    )
     MAX_SIZE = 50 * 1024 * 1024  # 50 MB per file
 
     mime_map_upload = {
@@ -432,18 +437,13 @@ async def upload_manuals(
 
     for upload in files:
         filename = upload.filename or "unknown"
-        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "pdf"
-        if ext not in ALLOWED_EXTENSIONS:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File '{filename}' has unsupported extension '.{ext}'. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
-            )
         content = await upload.read()
-        if len(content) > MAX_SIZE:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"File '{filename}' exceeds the 50 MB limit.",
-            )
+        ext = validate_uploaded_file_bytes(
+            filename=filename,
+            content=content,
+            allowed_extensions=ALLOWED_EXTENSIONS,
+            max_size_bytes=MAX_SIZE,
+        )
 
         # Duplicate check via SHA-256
         sha256 = _hashlib.sha256(content).hexdigest()
@@ -982,6 +982,7 @@ async def view_manual(
     }
     ext = (manual.file_extension or "").lower().lstrip(".")
     media_type = mime_map.get(ext, "application/octet-stream")
+    safe_filename = (manual.original_filename or "manual").replace("\r", "_").replace("\n", "_").replace('"', "'")
 
     _log.info("view_manual: manual_id=%s blob_key=%s", manual_id, blob_key)
 
@@ -993,7 +994,7 @@ async def view_manual(
         return Response(
             content=file_bytes,
             media_type=media_type,
-            headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
+            headers={"Content-Disposition": f'inline; filename="{safe_filename}"'},
         )
 
     # Not on local disk â€” download from blob storage (R2 / MinIO / Azure)
@@ -1013,7 +1014,7 @@ async def view_manual(
         return Response(
             content=file_bytes,
             media_type=media_type,
-            headers={"Content-Disposition": f'inline; filename="{manual.original_filename}"'},
+            headers={"Content-Disposition": f'inline; filename="{safe_filename}"'},
         )
     except Exception as exc:
         _log.error("view_manual: blob download FAILED key=%s error=%s", blob_key, exc, exc_info=True)

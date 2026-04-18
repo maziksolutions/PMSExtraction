@@ -230,7 +230,7 @@ const Ingestion: React.FC = () => {
           <div>
             <h2 className="text-lg font-semibold text-white">Upload PDF Manuals</h2>
             <p className="mt-1 text-sm text-slate-400">
-              Upload one or more PDF/Word/Excel files directly. Supported: .pdf, .docx, .doc, .xlsx, .xls (max 50 MB each)
+              Upload one or more PDF or modern Office files directly. Supported: .pdf, .docx, .xlsx (max 50 MB each)
             </p>
           </div>
 
@@ -241,13 +241,13 @@ const Ingestion: React.FC = () => {
           >
             <Upload className="mb-3 h-10 w-10 text-slate-500" />
             <p className="text-sm font-medium text-slate-300">Click to select files</p>
-            <p className="mt-1 text-xs text-slate-500">PDF, DOCX, DOC, XLSX, XLS</p>
+            <p className="mt-1 text-xs text-slate-500">PDF, DOCX, XLSX</p>
           </div>
           <input
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".pdf,.docx,.doc,.xlsx,.xls"
+            accept=".pdf,.docx,.xlsx"
             className="hidden"
             onChange={handleFileSelect}
           />

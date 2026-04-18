@@ -167,7 +167,7 @@ const ImportPanel: React.FC<{ jobType: TabType; onImported: () => void }> = ({ j
         <input
           ref={fileRef}
           type="file"
-          accept=".xlsx,.xls,.csv"
+          accept=".xlsx,.csv"
           onChange={handleFile}
           className="hidden"
         />

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,9 +18,11 @@ from app.core.security import (
     verify_token,
 )
 from app.models.user import User
-from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse
+from app.schemas.auth import LoginRequest, LogoutRequest, RefreshRequest, TokenResponse
+from app.services.token_store import is_token_revoked, revoke_token_payload
 
 router = APIRouter()
+optional_bearer = HTTPBearer(auto_error=False)
 
 
 @router.post(
@@ -111,6 +114,8 @@ async def refresh_token(
 
     if token_payload.get("token_type") != "refresh":
         raise credentials_exception
+    if await is_token_revoked(token_payload):
+        raise credentials_exception
 
     user_id_str: str | None = token_payload.get("user_id")
     if not user_id_str:
@@ -140,6 +145,7 @@ async def refresh_token(
 
     new_access_token = create_access_token(data=new_token_data)
     new_refresh_token = create_refresh_token(data=new_token_data)
+    await revoke_token_payload(token_payload)
 
     return TokenResponse(
         access_token=new_access_token,
@@ -154,14 +160,30 @@ async def refresh_token(
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
     response_model=None,
-    summary="Logout (client-side token invalidation)",
+    summary="Logout and revoke the active tokens",
 )
-async def logout() -> Response:
+async def logout(
+    payload: LogoutRequest | None = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(optional_bearer)] = None,
+) -> Response:
     """
-    Logout endpoint.
+    Revoke the active access token and optionally the refresh token.
+    """
+    if credentials and credentials.credentials:
+        try:
+            access_payload = verify_token(credentials.credentials)
+            if access_payload.get("token_type") == "access":
+                await revoke_token_payload(access_payload)
+        except JWTError:
+            pass
 
-    Because JWTs are stateless, this endpoint instructs the client to
-    discard its tokens. For full server-side invalidation, implement a
-    Redis token blocklist keyed on the JWT `jti` claim.
-    """
+    refresh_token = payload.refresh_token if payload else None
+    if refresh_token:
+        try:
+            refresh_payload = verify_token(refresh_token)
+            if refresh_payload.get("token_type") == "refresh":
+                await revoke_token_payload(refresh_payload)
+        except JWTError:
+            pass
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -21,6 +21,7 @@ export function useAuth(): UseAuthReturn {
   const {
     user: currentUser,
     isAuthenticated,
+    refreshToken,
     login: storeLogin,
     logout: storeLogout,
   } = useAuthStore()
@@ -32,7 +33,6 @@ export function useAuth(): UseAuthReturn {
    */
   const login = useCallback(
     async (email: string, password: string): Promise<void> => {
-      // 1. Obtain tokens
       const tokenResponse = await apiClient.post<AuthTokens>('/auth/login', {
         email,
         password,
@@ -40,35 +40,30 @@ export function useAuth(): UseAuthReturn {
 
       const tokens = tokenResponse.data
 
-      // 2. Temporarily set the access token so the next request is authorised
       useAuthStore.setState({ accessToken: tokens.access_token })
 
-      // 3. Fetch the authenticated user profile
       const userResponse = await apiClient.get<User>('/users/me')
       const user = userResponse.data
 
-      // 4. Persist everything in the store
       storeLogin(user, tokens)
-
-      // 5. Redirect to dashboard
       navigate('/', { replace: true })
     },
     [navigate, storeLogin]
   )
 
   /**
-   * Logout: tell the server and clear local state.
+   * Logout: ask the server to revoke tokens and clear local state.
    */
   const logout = useCallback(async (): Promise<void> => {
     try {
-      await apiClient.post('/auth/logout')
+      await apiClient.post('/auth/logout', { refresh_token: refreshToken })
     } catch {
-      // Ignore server errors on logout — clear state regardless
+      // Clear the local session even if the revoke request fails.
     } finally {
       storeLogout()
       navigate('/login', { replace: true })
     }
-  }, [navigate, storeLogout])
+  }, [navigate, refreshToken, storeLogout])
 
   return {
     currentUser,

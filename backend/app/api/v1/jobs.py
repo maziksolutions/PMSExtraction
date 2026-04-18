@@ -38,6 +38,7 @@ from app.services.job_naming import (
     split_reference_entries,
     summarize_reference_entries,
 )
+from app.services.upload_security import validate_uploaded_file_bytes
 
 router = APIRouter()
 _JOB_MAINTENANCE_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
@@ -1035,6 +1036,12 @@ async def upload_cms_mapping(
     """Upload a CSV with job_name → cms_id mappings."""
     await _get_vessel_or_404(vessel_id, db)
     content = await file.read()
+    validate_uploaded_file_bytes(
+        filename=file.filename or "cms_mapping.csv",
+        content=content,
+        allowed_extensions={"csv"},
+        max_size_bytes=5 * 1024 * 1024,
+    )
     lines = content.decode("utf-8", errors="replace").splitlines()
     updated = 0
     for line in lines[1:]:  # Skip header

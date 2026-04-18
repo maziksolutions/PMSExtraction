@@ -29,6 +29,7 @@ from app.services.review_workflow import (
     log_activity,
     sync_components_to_global_library,
 )
+from app.services.upload_security import validate_uploaded_file_bytes
 from app.services.vessel_library import ensure_vessel_library_baseline
 
 router = APIRouter()
@@ -944,6 +945,12 @@ async def import_components_excel(
     await _get_vessel_or_404(vessel_id, db)
     content = await file.read()
     filename = (file.filename or "").lower()
+    validate_uploaded_file_bytes(
+        filename=file.filename or "components_import.xlsx",
+        content=content,
+        allowed_extensions={"csv", "xlsx"},
+        max_size_bytes=20 * 1024 * 1024,
+    )
 
     rows: list[dict] = []
 

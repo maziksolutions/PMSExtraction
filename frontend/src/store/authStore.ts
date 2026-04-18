@@ -59,7 +59,7 @@ export const useAuthStore = create<AuthStore>()(
     }),
     {
       name: 'maritime-pms-auth',
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() => sessionStorage),
       // Only persist the token strings and user — not action functions
       partialize: (state) => ({
         user: state.user,
