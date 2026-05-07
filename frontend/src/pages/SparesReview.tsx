@@ -297,6 +297,7 @@ const SparesReview: React.FC = () => {
   const [filterQC, setFilterQC] = useState('')
   const [filterMethod, setFilterMethod] = useState('')
   const [filterCritical, setFilterCritical] = useState('')
+  const [filterSourceFile, setFilterSourceFile] = useState('')
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('part_name')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
@@ -312,13 +313,21 @@ const SparesReview: React.FC = () => {
   const [showBatchPanel, setShowBatchPanel] = useState(false)
   const [batchFields, setBatchFields] = useState<BatchSpareFields>({})
 
+  const sourceFilesQuery = useQuery({
+    queryKey: ['spare-source-files', vesselId],
+    queryFn: () =>
+      apiClient.get(`/vessels/${vesselId}/spares/source-files`).then((r) => r.data.items as string[]),
+    enabled: !!vesselId,
+  })
+
   const { data, isLoading } = useQuery({
-    queryKey: ['spares', vesselId, filterQC, filterMethod, filterCritical, search, sortBy, sortOrder, page, pageSize],
+    queryKey: ['spares', vesselId, filterQC, filterMethod, filterCritical, filterSourceFile, search, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
       const params: Record<string, string> = {}
       if (filterQC) params.qc_status = filterQC
       if (filterMethod) params.extraction_method = filterMethod
       if (filterCritical) params.is_critical = filterCritical
+      if (filterSourceFile) params.pdf_reference = filterSourceFile
       if (search) params.search = search
       params.sort_by = sortBy
       params.sort_order = sortOrder
@@ -463,7 +472,7 @@ const SparesReview: React.FC = () => {
 
   React.useEffect(() => {
     setPage(1)
-  }, [filterQC, filterMethod, filterCritical, search, sortBy, sortOrder, pageSize])
+  }, [filterQC, filterMethod, filterCritical, filterSourceFile, search, sortBy, sortOrder, pageSize])
 
   React.useEffect(() => {
     if (page > totalPages) {
@@ -684,6 +693,18 @@ const SparesReview: React.FC = () => {
             <option value="rejected">Rejected</option>
           </select>
           <select
+            value={filterSourceFile}
+            onChange={(e) => setFilterSourceFile(e.target.value)}
+            className="max-w-xs rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          >
+            <option value="">All Source Files</option>
+            {(sourceFilesQuery.data ?? []).map((filename) => (
+              <option key={filename} value={filename}>
+                {filename}
+              </option>
+            ))}
+          </select>
+          <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
             className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
@@ -702,12 +723,13 @@ const SparesReview: React.FC = () => {
             <option value="asc">Ascending</option>
             <option value="desc">Descending</option>
           </select>
-          {(filterQC || filterMethod || filterCritical || search || sortBy !== 'part_name' || sortOrder !== 'asc') && (
+          {(filterQC || filterMethod || filterCritical || filterSourceFile || search || sortBy !== 'part_name' || sortOrder !== 'asc') && (
             <button
               onClick={() => {
                 setFilterQC('')
                 setFilterMethod('')
                 setFilterCritical('')
+                setFilterSourceFile('')
                 setSearch('')
                 setSortBy('part_name')
                 setSortOrder('asc')

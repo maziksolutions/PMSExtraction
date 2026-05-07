@@ -208,6 +208,30 @@ async def _rerun_manual_extraction(manual_ids: list[str]) -> None:
             continue
 
 
+@router.get("/{vessel_id}/spares/source-files", summary="List unique source file names for spares")
+async def list_spare_source_files(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    from app.models.ingestion import Manual
+    await _get_vessel_or_404(vessel_id, db)
+    result = await db.execute(
+        select(Manual.original_filename)
+        .join(Spare, Spare.source_manual_id == Manual.id)
+        .where(
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == current_user.tenant_id,
+            Spare.is_deleted == False,
+            Manual.original_filename.isnot(None),
+        )
+        .distinct()
+        .order_by(Manual.original_filename.asc())
+    )
+    filenames = [row[0] for row in result.all() if row[0]]
+    return {"items": filenames}
+
+
 @router.get("/{vessel_id}/spares", summary="List spares with filters")
 async def list_spares(
     vessel_id: uuid.UUID,
@@ -217,6 +241,7 @@ async def list_spares(
     extraction_method: Optional[str] = Query(None),
     qc_status: Optional[str] = Query(None),
     is_critical: Optional[bool] = Query(None),
+    pdf_reference: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     sort_by: str = Query("part_name"),
     sort_order: str = Query("asc", pattern="^(asc|desc)$"),
@@ -246,6 +271,16 @@ async def list_spares(
             pass
     if is_critical is not None:
         base_where.append(Spare.is_critical == is_critical)
+    if pdf_reference:
+        manual_id_result = await db.execute(
+            select(Manual.id).where(
+                Manual.vessel_id == vessel_id,
+                Manual.original_filename == pdf_reference,
+                Manual.is_deleted == False,
+            )
+        )
+        matched_ids = [row[0] for row in manual_id_result.all()]
+        base_where.append(Spare.source_manual_id.in_(matched_ids) if matched_ids else (Spare.id == None))
     if search:
         base_where.append(
             or_(
