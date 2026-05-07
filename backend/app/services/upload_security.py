@@ -18,11 +18,7 @@ OLE_MAGIC = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"
 ZIP_MAGIC_PREFIXES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 SUSPICIOUS_PDF_MARKERS = (
     b"/javascript",
-    b"/js",
     b"/launch",
-    b"/richmedia",
-    b"/embeddedfile",
-    b"/openaction",
 )
 
 
