@@ -1018,14 +1018,15 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
         for attempt in range(3):
             response = httpx.post(url, json=payload, timeout=120)
             if response.status_code == 429:
-                wait = 30 * (attempt + 1)  # 30s, 60s, 90s
-                _log.warning("classifier[gemini]: 429 rate limit for %s â€” retrying in %ds", filename, wait)
+                wait = 5 * (2 ** attempt)  # 5s, 10s, 20s
+                _log.warning(“classifier[gemini]: 429 rate limit for %s – retrying in %ds”, filename, wait)
                 time.sleep(wait)
                 continue
             response.raise_for_status()
             break
         else:
-            response.raise_for_status()
+            _log.warning(“classifier[gemini]: exhausted retries for %s – giving up”, filename)
+            return None
         data = response.json()
         raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
@@ -1139,11 +1140,11 @@ def classify_pages_text(
     total_pages = total_pages or len(pages_text)
     page_refs = _build_page_references(pages_text)
 
-    ai_result = _classify_with_groq(pages_text, filename, total_pages)
+    ai_result = _classify_with_claude(pages_text, filename, total_pages)
+    if not ai_result:
+        ai_result = _classify_with_groq(pages_text, filename, total_pages)
     if not ai_result:
         ai_result = _classify_with_gemini(pages_text, filename, total_pages)
-    if not ai_result:
-        ai_result = _classify_with_claude(pages_text, filename, total_pages)
 
     category = ai_result.get("category", "Unknown/Unclassifiable") if ai_result else "Unknown/Unclassifiable"
     if category not in VALID_CATEGORIES:
@@ -1206,100 +1207,13 @@ def classify_pages_text(
 
 
 def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
-    """
+    “””
     Classify a PDF manual.
-    Priority: Gemini (free) â†’ Claude (paid) â†’ keyword fallback.
-    """
+    Priority: Claude (primary) → Groq (free fallback) → Gemini (free fallback) → keyword.
+    “””
     pages_text, total_pages = _extract_pdf_text(content)
-    _log.info("classifier: extracted %d pages from %s (%d bytes)", total_pages, filename, len(content))
+    _log.info(“classifier: extracted %d pages from %s (%d bytes)”, total_pages, filename, len(content))
     return classify_pages_text(pages_text, filename, total_pages)
-    ai_result = _classify_with_groq(pages_text, filename, total_pages)
-    if not ai_result:
-        ai_result = _classify_with_gemini(pages_text, filename, total_pages)
-    if not ai_result:
-        ai_result = _classify_with_claude(pages_text, filename, total_pages)
-    if ai_result:
-        category = ai_result.get("category", "Unknown/Unclassifiable")
-        if category not in VALID_CATEGORIES:
-            category = "Unknown/Unclassifiable"
-        ai_confidence = max(0, min(100, int(ai_result.get("confidence", 60))))
-
-        # If AI is uncertain, also run keyword classifier and pick the better result
-        if category == "Unknown/Unclassifiable" or ai_confidence < 50:
-            kw = _keyword_classify(pages_text, filename, total_pages)
-            if kw.category != "Unknown/Unclassifiable" and kw.confidence >= ai_confidence:
-                _log.info(
-                    "classifier: AI returned %s (%d%%) â€” keyword classifier wins with %s (%d%%)",
-                    category, ai_confidence, kw.category, kw.confidence,
-                )
-                # Still use programmatic scan for keyword-fallback category
-                resolved = _resolve_pages(pages_text)
-                components, jobs, spares = _scan_pages(pages_text, resolved, kw.category)
-                kw.pages_with_components = components
-                kw.pages_with_jobs = jobs
-                kw.pages_with_spares = spares
-                return _sanitise_result(kw)
-
-        # Programmatic page scanning for printed/physical and explanations (always available)
-        resolved = _resolve_pages(pages_text)
-        scanned_comp, scanned_jobs, scanned_spares, scanned_comp_phys, scanned_jobs_phys, scanned_spares_phys, scanned_reasons = _scan_pages(pages_text, resolved, category)
-
-        # Use AI-provided pages if available; fallback to programmatic results.
-        marked_text, valid_doc_pages = _make_marked_text(pages_text, max_chars=80_000)
-        ai_components = ai_result.get("pages_with_components", "").strip()
-        ai_jobs = ai_result.get("pages_with_jobs", "").strip()
-        ai_spares = ai_result.get("pages_with_spares", "").strip()
-
-        if ai_components or ai_jobs or ai_spares:
-            components = _filter_to_valid_pages(ai_components, valid_doc_pages)
-            jobs = _filter_to_valid_pages(ai_jobs, valid_doc_pages)
-            spares = _filter_to_valid_pages(ai_spares, valid_doc_pages)
-            _log.info("classifier: using AI-identified pages: comp=%s jobs=%s spares=%s", components, jobs, spares)
-        else:
-            components = scanned_comp
-            jobs = scanned_jobs
-            spares = scanned_spares
-            _log.info("classifier: using programmatic scan: comp=%s jobs=%s spares=%s", components, jobs, spares)
-
-        result = ClassificationResult(
-            category=category,
-            confidence=ai_confidence,
-            useful_for_extraction=ai_result.get("useful_for_extraction", "partial"),
-            pages_with_components=components,
-            pages_with_jobs=jobs,
-            pages_with_spares=spares,
-            pages_with_components_printed=scanned_comp if scanned_comp else "",
-            pages_with_jobs_printed=scanned_jobs if scanned_jobs else "",
-            pages_with_spares_printed=scanned_spares if scanned_spares else "",
-            pages_with_components_physical=scanned_comp_phys,
-            pages_with_jobs_physical=scanned_jobs_phys,
-            pages_with_spares_physical=scanned_spares_phys,
-            page_explanations=scanned_reasons,
-            page_count=total_pages,
-        )
-        final = _sanitise_result(result)
-        _log.info(
-            "classifier: FINAL %s â†’ cat=%s conf=%d components=%r jobs=%r spares=%r",
-            filename, final.category, final.confidence,
-            final.pages_with_components, final.pages_with_jobs, final.pages_with_spares,
-        )
-        return final
-
-    # Fallback: keyword matching + programmatic page scan
-    kw = _keyword_classify(pages_text, filename, total_pages)
-    resolved = _resolve_pages(pages_text)
-    components, jobs, spares, comp_phys, jobs_phys, spares_phys, reasons = _scan_pages(pages_text, resolved, kw.category)
-    kw.pages_with_components = components
-    kw.pages_with_jobs = jobs
-    kw.pages_with_spares = spares
-    kw.pages_with_components_printed = components
-    kw.pages_with_jobs_printed = jobs
-    kw.pages_with_spares_printed = spares
-    kw.pages_with_components_physical = comp_phys
-    kw.pages_with_jobs_physical = jobs_phys
-    kw.pages_with_spares_physical = spares_phys
-    kw.page_explanations = reasons
-    return _sanitise_result(kw)
 
 
 def _keyword_classify(pages_text: list[str], filename: str, total_pages: int) -> ClassificationResult:
