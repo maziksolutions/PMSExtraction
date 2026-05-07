@@ -232,8 +232,32 @@ def _strip_code_fences(raw_text: str) -> str:
     return raw_text
 
 
+def _recover_partial_json_array(raw_text: str) -> list[dict]:
+    """Recover fully-formed records from a JSON array truncated by max_tokens."""
+    last_close = raw_text.rfind("},")
+    if last_close == -1:
+        last_close = raw_text.rfind("}")
+    if last_close == -1:
+        return []
+    candidate = raw_text[: last_close + 1].strip()
+    if not candidate.startswith("["):
+        candidate = "[" + candidate
+    candidate = candidate + "]"
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, list):
+            return [r for r in parsed if isinstance(r, dict)]
+    except Exception:
+        pass
+    return []
+
+
 def _parse_json_records(raw_text: str) -> list[dict]:
-    parsed: Any = json.loads(_strip_code_fences(raw_text).strip())
+    clean = _strip_code_fences(raw_text).strip()
+    try:
+        parsed: Any = json.loads(clean)
+    except json.JSONDecodeError:
+        return _recover_partial_json_array(clean)
     if isinstance(parsed, list):
         return [r for r in parsed if isinstance(r, dict)]
     if isinstance(parsed, dict):
@@ -296,7 +320,7 @@ async def _extract_with_openai(
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    max_tokens = getattr(settings, "EXTRACTION_MAX_TOKENS", 8192)
+    max_tokens = getattr(settings, "EXTRACTION_MAX_TOKENS", 16000)
     model_id: str = getattr(settings, "OPENAI_MODEL_ID", None) or "gpt-4.1-mini"
     response = await client.chat.completions.create(
         model=model_id,

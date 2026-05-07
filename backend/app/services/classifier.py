@@ -1140,11 +1140,11 @@ def classify_pages_text(
     total_pages = total_pages or len(pages_text)
     page_refs = _build_page_references(pages_text)
 
-    ai_result = _classify_with_claude(pages_text, filename, total_pages)
-    if not ai_result:
-        ai_result = _classify_with_groq(pages_text, filename, total_pages)
+    ai_result = _classify_with_groq(pages_text, filename, total_pages)
     if not ai_result:
         ai_result = _classify_with_gemini(pages_text, filename, total_pages)
+    if not ai_result:
+        ai_result = _classify_with_claude(pages_text, filename, total_pages)
 
     category = ai_result.get("category", "Unknown/Unclassifiable") if ai_result else "Unknown/Unclassifiable"
     if category not in VALID_CATEGORIES:
@@ -1209,7 +1209,7 @@ def classify_pages_text(
 def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
     “””
     Classify a PDF manual.
-    Priority: Claude (primary) → Groq (free fallback) → Gemini (free fallback) → keyword.
+    Priority: Groq (free) → Gemini (free fallback) → Claude (paid fallback) → keyword.
     “””
     pages_text, total_pages = _extract_pdf_text(content)
     _log.info(“classifier: extracted %d pages from %s (%d bytes)”, total_pages, filename, len(content))
