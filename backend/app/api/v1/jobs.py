@@ -326,6 +326,30 @@ async def _restore_soft_deleted_manual_jobs_if_vessel_empty(
     return len(deleted_jobs)
 
 
+@router.get("/{vessel_id}/jobs/source-files", summary="List unique source file names for jobs")
+async def list_job_source_files(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    from app.models.ingestion import Manual
+    await _get_vessel_or_404(vessel_id, db)
+    result = await db.execute(
+        select(Manual.original_filename)
+        .join(Job, Job.source_manual_id == Manual.id)
+        .where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == current_user.tenant_id,
+            Job.is_deleted == False,
+            Manual.original_filename.isnot(None),
+        )
+        .distinct()
+        .order_by(Manual.original_filename.asc())
+    )
+    filenames = [row[0] for row in result.all() if row[0]]
+    return {"items": filenames}
+
+
 @router.get("/{vessel_id}/jobs", summary="List jobs with filters")
 async def list_jobs(
     vessel_id: uuid.UUID,
@@ -338,6 +362,7 @@ async def list_jobs(
     is_unmapped: Optional[bool] = Query(None),
     frequency_type: Optional[str] = Query(None),
     source_kind: Optional[str] = Query(None, pattern="^(instruction_manual|standard_library|critical_library|cms_file)$"),
+    pdf_reference: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     sort_by: str = Query("job_name"),
     sort_order: str = Query("asc", pattern="^(asc|desc)$"),
@@ -425,6 +450,17 @@ async def list_jobs(
         base_where.append(exists(library_job_exists))
     elif source_kind == "cms_file" and not has_job_ids_filter:
         base_where.append(Job.cms_id.is_not(None))
+    if pdf_reference:
+        from app.models.ingestion import Manual as _Manual
+        manual_id_result = await db.execute(
+            select(_Manual.id).where(
+                _Manual.vessel_id == vessel_id,
+                _Manual.original_filename == pdf_reference,
+                _Manual.is_deleted == False,
+            )
+        )
+        matched_ids = [row[0] for row in manual_id_result.all()]
+        base_where.append(Job.source_manual_id.in_(matched_ids) if matched_ids else (Job.id == None))
     if search:
         base_where.append(
             or_(

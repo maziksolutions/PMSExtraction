@@ -188,6 +188,30 @@ def _should_run_component_maintenance(vessel_id: uuid.UUID) -> bool:
     return True
 
 
+@router.get("/{vessel_id}/components/source-files", summary="List unique source file names for components")
+async def list_component_source_files(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    from app.models.ingestion import Manual
+    await _get_vessel_or_404(vessel_id, db)
+    result = await db.execute(
+        select(Manual.original_filename)
+        .join(Component, Component.source_manual_id == Manual.id)
+        .where(
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == current_user.tenant_id,
+            Component.is_deleted == False,
+            Manual.original_filename.isnot(None),
+        )
+        .distinct()
+        .order_by(Manual.original_filename.asc())
+    )
+    filenames = [row[0] for row in result.all() if row[0]]
+    return {"items": filenames}
+
+
 @router.get("/{vessel_id}/components", summary="List components with filters")
 async def list_components(
     vessel_id: uuid.UUID,
@@ -200,6 +224,7 @@ async def list_components(
     min_confidence: Optional[int] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
     mapped_extracted: Optional[bool] = Query(None),
+    pdf_reference: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     maker_filter: Optional[str] = Query(None),
     model_filter: Optional[str] = Query(None),
@@ -258,6 +283,17 @@ async def list_components(
         base_where.append(Component.maker.ilike(f"%{maker_filter}%"))
     if model_filter:
         base_where.append(Component.model.ilike(f"%{model_filter}%"))
+    if pdf_reference:
+        from app.models.ingestion import Manual as _Manual
+        manual_id_result = await db.execute(
+            select(_Manual.id).where(
+                _Manual.vessel_id == vessel_id,
+                _Manual.original_filename == pdf_reference,
+                _Manual.is_deleted == False,
+            )
+        )
+        matched_ids = [row[0] for row in manual_id_result.all()]
+        base_where.append(Component.source_manual_id.in_(matched_ids) if matched_ids else (Component.id == None))
     if mapped_extracted is not None:
         if mapped_extracted:
             base_where.append(_component_manual_link_clause())

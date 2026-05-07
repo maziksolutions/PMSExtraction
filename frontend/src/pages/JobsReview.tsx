@@ -363,6 +363,7 @@ const JobsReview: React.FC = () => {
   const queryClient = useQueryClient()
   const [filterQC, setFilterQC] = useState('')
   const [filterCritical, setFilterCritical] = useState('')
+  const [filterSourceFile, setFilterSourceFile] = useState('')
   const [filterUnmapped, setFilterUnmapped] = useState(false)
   const [filterFreqType, setFilterFreqType] = useState('')
   const [filterNoCMS, setFilterNoCMS] = useState(false)
@@ -389,11 +390,12 @@ const JobsReview: React.FC = () => {
   const [batchFields, setBatchFields] = useState<BatchJobFields>({})
 
   const { data, isLoading } = useQuery({
-    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, filterJobIds, search, sortBy, sortOrder, page, pageSize],
+    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterSourceFile, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, filterJobIds, search, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
       const params: Record<string, string> = {}
       if (filterQC) params.qc_status = filterQC
       if (filterCritical) params.is_critical = filterCritical
+      if (filterSourceFile) params.pdf_reference = filterSourceFile
       if (filterUnmapped) params.is_unmapped = 'true'
       if (filterFreqType) params.frequency_type = filterFreqType
       if (filterSourceKind && !normalizedJobIds) params.source_kind = filterSourceKind
@@ -405,6 +407,12 @@ const JobsReview: React.FC = () => {
       params.page_size = String(pageSize)
       return apiClient.get(`/vessels/${vesselId}/jobs`, { params }).then((r) => r.data)
     },
+    enabled: !!vesselId,
+  })
+
+  const sourceFilesQuery = useQuery({
+    queryKey: ['job-source-files', vesselId],
+    queryFn: () => apiClient.get(`/vessels/${vesselId}/jobs/source-files`).then((r) => r.data.items as string[]),
     enabled: !!vesselId,
   })
 
@@ -592,6 +600,7 @@ const JobsReview: React.FC = () => {
   const hasActiveFilters = Boolean(
     filterQC ||
     filterCritical ||
+    filterSourceFile ||
     filterUnmapped ||
     filterFreqType ||
     filterNoCMS ||
@@ -605,6 +614,7 @@ const JobsReview: React.FC = () => {
   const clearFilters = useCallback(() => {
     setFilterQC('')
     setFilterCritical('')
+    setFilterSourceFile('')
     setFilterUnmapped(false)
     setFilterFreqType('')
     setFilterNoCMS(false)
@@ -616,7 +626,7 @@ const JobsReview: React.FC = () => {
 
   React.useEffect(() => {
     setPage(1)
-  }, [filterQC, filterCritical, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, filterJobIds, search, sortBy, sortOrder, pageSize])
+  }, [filterQC, filterCritical, filterSourceFile, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, filterJobIds, search, sortBy, sortOrder, pageSize])
 
   React.useEffect(() => {
     const sourceKindParam = searchParams.get('source_kind') ?? ''
@@ -918,6 +928,12 @@ const JobsReview: React.FC = () => {
             <option value="accepted">Accepted</option>
             <option value="rejected">Rejected</option>
             <option value="modified">Modified</option>
+          </select>
+          <select value={filterSourceFile} onChange={(e) => setFilterSourceFile(e.target.value)} className="max-w-xs rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none">
+            <option value="">All Source Files</option>
+            {(sourceFilesQuery.data ?? []).map((filename) => (
+              <option key={filename} value={filename}>{filename}</option>
+            ))}
           </select>
           <input
             type="text"

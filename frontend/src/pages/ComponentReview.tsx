@@ -224,6 +224,7 @@ const ComponentReview: React.FC = () => {
   const [expandedG2, setExpandedG2] = useState<Set<string>>(new Set())
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [filterQC, setFilterQC] = useState('')
+  const [filterSourceFile, setFilterSourceFile] = useState('')
   const [searchTable, setSearchTable] = useState('')
   const [searchTree, setSearchTree] = useState('')
   const [sortBy, setSortBy] = useState('component_name')
@@ -241,7 +242,7 @@ const ComponentReview: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, showMappedExtracted, searchTable, sortBy, sortOrder, page, pageSize],
+    queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, filterSourceFile, showUnmapped, showMappedExtracted, searchTable, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
       const params: Record<string, string | number> = { page, page_size: pageSize, is_unmapped: showUnmapped ? 'true' : 'false' }
       if (showMappedExtracted) params.mapped_extracted = 'true'
@@ -249,11 +250,18 @@ const ComponentReview: React.FC = () => {
       if (selectedGroup2) params.group2 = selectedGroup2
       if (selectedMachinery) params.main_machinery = selectedMachinery
       if (filterQC) params.qc_status = filterQC
+      if (filterSourceFile) params.pdf_reference = filterSourceFile
       if (searchTable) params.search = searchTable
       params.sort_by = sortBy
       params.sort_order = sortOrder
       return apiClient.get(`/vessels/${vesselId}/components`, { params }).then((r) => r.data)
     },
+    enabled: !!vesselId,
+  })
+
+  const sourceFilesQuery = useQuery({
+    queryKey: ['component-source-files', vesselId],
+    queryFn: () => apiClient.get(`/vessels/${vesselId}/components/source-files`).then((r) => r.data.items as string[]),
     enabled: !!vesselId,
   })
 
@@ -322,7 +330,7 @@ const ComponentReview: React.FC = () => {
   })
 
   // Reset to page 1 when any filter changes
-  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, showUnmapped, showMappedExtracted, searchTable, sortBy, sortOrder, pageSize])
+  React.useEffect(() => { setPage(1) }, [selectedGroup1, selectedGroup2, selectedMachinery, filterQC, filterSourceFile, showUnmapped, showMappedExtracted, searchTable, sortBy, sortOrder, pageSize])
 
   const handleExcelImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -687,6 +695,18 @@ const ComponentReview: React.FC = () => {
               <option value="accepted">Accepted</option>
               <option value="rejected">Rejected</option>
               <option value="modified">Modified</option>
+            </select>
+
+            {/* Source file filter */}
+            <select
+              value={filterSourceFile}
+              onChange={(e) => setFilterSourceFile(e.target.value)}
+              className="max-w-xs rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+            >
+              <option value="">All Source Files</option>
+              {(sourceFilesQuery.data ?? []).map((filename) => (
+                <option key={filename} value={filename}>{filename}</option>
+              ))}
             </select>
 
             {/* Bulk actions */}
