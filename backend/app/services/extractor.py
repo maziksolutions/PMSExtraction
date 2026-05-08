@@ -548,7 +548,7 @@ async def _ocr_page_with_openai(image_bytes: bytes, filename: str, page_no: int)
                 },
             ],
             temperature=0,
-            max_tokens=3000,
+            max_tokens=8000,
         )
         return (response.choices[0].message.content or "").strip()
     except Exception as exc:
@@ -601,7 +601,7 @@ async def _extract_entities_from_page_image_with_openai(
                 },
             ],
             temperature=0,
-            max_tokens=4000,
+            max_tokens=16000,
         )
         raw_text = (response.choices[0].message.content or "").strip()
         records = _parse_json_records(raw_text)
@@ -631,7 +631,7 @@ async def _render_selected_pdf_page_images(
     *,
     file_bytes: bytes,
     selected_pages: list[int],
-    resolution: int = 250,
+    resolution: int = 300,
 ) -> dict[int, bytes]:
     rendered: dict[int, bytes] = {}
     try:
@@ -716,7 +716,7 @@ async def _enrich_pdf_text_for_selected_pages(
                 combined = "\n".join(part for part in page_parts if part).strip()
                 if len(combined) < 120:
                     try:
-                        page_image = page.to_image(resolution=250).original
+                        page_image = page.to_image(resolution=300).original
                     except Exception:
                         page_image = None
 
@@ -1767,7 +1767,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 rendered_pages = await _render_selected_pdf_page_images(
                     file_bytes=file_bytes,
                     selected_pages=selected_pages,
-                    resolution=250,
+                    resolution=300,
                 )
                 if rendered_pages:
                     context_note = None
