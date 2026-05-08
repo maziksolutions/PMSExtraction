@@ -835,7 +835,7 @@ async def snip_save_spares(
             spare_model=record.get("spare_model") or None,
             source_manual_id=source_manual_id,
             page_reference=page_number,
-            extraction_method=ExtractionMethod.table,
+            extraction_method=ExtractionMethod.manual,
             is_critical=False,
             qc_status=QCStatus.pending,
             confidence_score=int(record.get("confidence_score") or 75),

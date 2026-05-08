@@ -21,6 +21,7 @@ class ExtractionMethod(str, enum.Enum):
     table = "table"
     drawing = "drawing"
     text = "text"
+    manual = "manual"
 
 
 class Spare(TenantBase):

@@ -275,6 +275,7 @@ const METHOD_COLORS: Record<string, string> = {
   table: 'bg-blue-700 text-blue-100',
   text: 'bg-purple-700 text-purple-100',
   drawing: 'bg-amber-700 text-amber-100',
+  manual: 'bg-teal-700 text-teal-100',
 }
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
@@ -682,6 +683,7 @@ const SparesReview: React.FC = () => {
             <option value="table">Table</option>
             <option value="text">Text</option>
             <option value="drawing">Drawing</option>
+            <option value="manual">Manual (Snip)</option>
           </select>
           <select
             value={filterCritical}
