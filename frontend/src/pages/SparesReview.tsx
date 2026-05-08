@@ -530,6 +530,7 @@ const SparesReview: React.FC = () => {
   )
 
   return (
+    <>
     <ResizableSplitView
       storageKey={`spares-review-layout:${vesselId ?? 'default'}`}
       initialLeftPercent={58}
@@ -1061,6 +1062,7 @@ const SparesReview: React.FC = () => {
         }}
       />
     )}
+    </>
   )
 }
 
