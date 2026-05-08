@@ -778,12 +778,21 @@ async def snip_extract_spares(
     if not image_bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image file is empty")
 
-    from app.services.extractor import _extract_spare_parts_from_image_split
+    from app.services.extractor import _extract_entities_from_page_image_with_openai
 
-    records = await _extract_spare_parts_from_image_split(
+    # Single direct vision call — the user has already cropped to the table,
+    # so no left/right split is needed (halves extraction time vs split function).
+    records = await _extract_entities_from_page_image_with_openai(
         image_bytes=image_bytes,
         filename=image.filename or "snipped_region.png",
         page_no=page_number or 0,
+        extraction_type="spare",
+        context_note=(
+            "This is a manually snipped image of a spare parts table. "
+            "Extract EVERY row visible. Columns are typically: "
+            "REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS. "
+            "Translate any Japanese text to English."
+        ),
     )
     return {"records": records, "count": len(records)}
 

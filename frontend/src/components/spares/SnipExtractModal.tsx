@@ -116,6 +116,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
   const [isLoadingPage, setIsLoadingPage] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
+  const isDraggingRef = useRef(false)
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState<DragPoint | null>(null)
   const [dragEnd, setDragEnd] = useState<DragPoint | null>(null)
@@ -211,39 +212,47 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     }
   }
 
-  const getOverlayPoint = (e: React.MouseEvent<HTMLDivElement>): DragPoint => {
+  const getOverlayPoint = (clientX: number, clientY: number): DragPoint => {
     const rect = overlayRef.current!.getBoundingClientRect()
     return {
-      x: Math.max(0, Math.min(e.clientX - rect.left, rect.width)),
-      y: Math.max(0, Math.min(e.clientY - rect.top, rect.height)),
+      x: Math.max(0, Math.min(clientX - rect.left, rect.width)),
+      y: Math.max(0, Math.min(clientY - rect.top, rect.height)),
     }
   }
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+  // Use pointer events + setPointerCapture so the drag keeps firing even when
+  // the cursor moves outside the overlay or the container scrolls.
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!overlayRef.current) return
     e.preventDefault()
-    const pt = getOverlayPoint(e)
+    e.currentTarget.setPointerCapture(e.pointerId)
+    const pt = getOverlayPoint(e.clientX, e.clientY)
     setDragStart(pt)
     setDragEnd(pt)
+    isDraggingRef.current = true
     setIsDragging(true)
     setHasSelection(false)
   }
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isDragging || !dragStart) return
-    setDragEnd(getOverlayPoint(e))
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return
+    setDragEnd(getOverlayPoint(e.clientX, e.clientY))
   }
 
-  const handleMouseUp = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isDragging) return
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return
+    isDraggingRef.current = false
     setIsDragging(false)
-    const end = getOverlayPoint(e)
+    const end = getOverlayPoint(e.clientX, e.clientY)
     setDragEnd(end)
-    if (dragStart) {
-      const w = Math.abs(end.x - dragStart.x)
-      const h = Math.abs(end.y - dragStart.y)
-      setHasSelection(w > 15 && h > 15)
-    }
+    setDragStart((prev) => {
+      if (prev) {
+        const w = Math.abs(end.x - prev.x)
+        const h = Math.abs(end.y - prev.y)
+        setHasSelection(w > 15 && h > 15)
+      }
+      return prev
+    })
   }
 
   const selectionRect =
@@ -475,15 +484,15 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                       className="block bg-white"
                       style={{ userSelect: 'none', pointerEvents: 'none', maxHeight: '100%' }}
                     />
-                    {/* Interaction overlay — exactly covers the image */}
+                    {/* Interaction overlay — pointer capture keeps drag firing outside bounds */}
                     <div
                       ref={overlayRef}
                       className="absolute inset-0"
-                      style={{ cursor: 'crosshair' }}
-                      onMouseDown={handleMouseDown}
-                      onMouseMove={handleMouseMove}
-                      onMouseUp={handleMouseUp}
-                      onMouseLeave={handleMouseUp}
+                      style={{ cursor: 'crosshair', touchAction: 'none' }}
+                      onPointerDown={handlePointerDown}
+                      onPointerMove={handlePointerMove}
+                      onPointerUp={handlePointerUp}
+                      onPointerCancel={handlePointerUp}
                     />
                     {/* Selection rectangle */}
                     {selectionRect && selectionRect.width > 4 && selectionRect.height > 4 && (
