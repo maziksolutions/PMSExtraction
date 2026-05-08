@@ -39,7 +39,10 @@ function getApiError(err: unknown): string {
   return e?.message ?? 'Request failed'
 }
 
-async function imageElementToBlob(imgEl: HTMLImageElement, cropBox?: { x1: number; y1: number; x2: number; y2: number }): Promise<Blob> {
+async function imageElementToBlob(
+  imgEl: HTMLImageElement,
+  cropBox?: { x1: number; y1: number; x2: number; y2: number }
+): Promise<Blob> {
   const canvas = document.createElement('canvas')
   let sx = 0, sy = 0, sw = imgEl.naturalWidth, sh = imgEl.naturalHeight
   if (cropBox) {
@@ -59,6 +62,44 @@ async function imageElementToBlob(imgEl: HTMLImageElement, cropBox?: { x1: numbe
   )
 }
 
+// Physically rotate image pixels by 90° increments using a canvas so the
+// rendered <img> element always has correct layout dimensions (no CSS transform).
+function rotateDataUrl(src: string, degrees: 90 | -90): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      // 90° rotations swap width/height
+      canvas.width = img.height
+      canvas.height = img.width
+      const ctx = canvas.getContext('2d')!
+      ctx.translate(canvas.width / 2, canvas.height / 2)
+      ctx.rotate((degrees * Math.PI) / 180)
+      ctx.drawImage(img, -img.width / 2, -img.height / 2)
+      resolve(canvas.toDataURL('image/png'))
+    }
+    img.onerror = () => reject(new Error('Failed to load image for rotation'))
+    img.src = src
+  })
+}
+
+// Convert a blob:// or data: URL to a data URL so canvas can read it cross-origin-safely.
+function toDataUrl(src: string): Promise<string> {
+  if (src.startsWith('data:')) return Promise.resolve(src)
+  return new Promise((resolve, reject) => {
+    const img = new window.Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = img.naturalWidth
+      canvas.height = img.naturalHeight
+      canvas.getContext('2d')!.drawImage(img, 0, 0)
+      resolve(canvas.toDataURL('image/png'))
+    }
+    img.onerror = () => reject(new Error('Failed to read image'))
+    img.src = src
+  })
+}
+
 const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, onSaved }) => {
   const imgRef = useRef<HTMLImageElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
@@ -66,7 +107,10 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
   const [imageMode, setImageMode] = useState<'manual' | 'upload'>('manual')
   const [selectedManualId, setSelectedManualId] = useState('')
   const [pageInput, setPageInput] = useState('')
-  const [loadedImageUrl, setLoadedImageUrl] = useState<string | null>(null)
+
+  // displayImageUrl is the currently-shown image — may be canvas-rotated from the original
+  const [displayImageUrl, setDisplayImageUrl] = useState<string | null>(null)
+  const [isRotating, setIsRotating] = useState(false)
   const [loadedManualId, setLoadedManualId] = useState<string | null>(null)
   const [loadedPage, setLoadedPage] = useState<number | null>(null)
   const [isLoadingPage, setIsLoadingPage] = useState(false)
@@ -82,8 +126,6 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
   const [checkedIndices, setCheckedIndices] = useState<Set<number>>(new Set())
   const [extractError, setExtractError] = useState<string | null>(null)
 
-  const [rotation, setRotation] = useState(0)
-
   const [isSaving, setIsSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -98,26 +140,30 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
   })
   const manuals: ManualItem[] = manualsQuery.data ?? []
 
+  const clearSelectionAndResults = () => {
+    setDragStart(null)
+    setDragEnd(null)
+    setHasSelection(false)
+    setExtractedRecords([])
+    setSaveMessage(null)
+  }
+
   const loadPage = async () => {
     const pageNum = parseInt(pageInput, 10)
     if (!selectedManualId || isNaN(pageNum) || pageNum < 1) return
     setIsLoadingPage(true)
     setLoadError(null)
-    setLoadedImageUrl(null)
-    setDragStart(null)
-    setDragEnd(null)
-    setHasSelection(false)
-    setExtractedRecords([])
+    setDisplayImageUrl(null)
+    clearSelectionAndResults()
     try {
       const res = await apiClient.get(`/vessels/${vesselId}/manuals/${selectedManualId}/page-preview`, {
         params: { pages: String(pageNum) },
       })
       const page = (res.data.pages ?? [])[0]
       if (page?.image_data_url) {
-        setLoadedImageUrl(page.image_data_url)
+        setDisplayImageUrl(page.image_data_url)
         setLoadedManualId(selectedManualId)
         setLoadedPage(pageNum)
-        setRotation(0)
       } else {
         setLoadError('No image available for this page.')
       }
@@ -128,18 +174,21 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     }
   }
 
-  const handleFileUpload = useCallback((file: File) => {
+  const handleFileUpload = useCallback(async (file: File) => {
     if (!file.type.startsWith('image/')) return
-    const url = URL.createObjectURL(file)
-    setLoadedImageUrl(url)
+    const blobUrl = URL.createObjectURL(file)
+    clearSelectionAndResults()
+    setLoadError(null)
     setLoadedManualId(null)
     setLoadedPage(null)
-    setDragStart(null)
-    setDragEnd(null)
-    setHasSelection(false)
-    setExtractedRecords([])
-    setLoadError(null)
-    setRotation(0)
+    try {
+      // Convert to data URL so canvas rotation works without CORS issues
+      const dataUrl = await toDataUrl(blobUrl)
+      URL.revokeObjectURL(blobUrl)
+      setDisplayImageUrl(dataUrl)
+    } catch {
+      setDisplayImageUrl(blobUrl)
+    }
   }, [])
 
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -147,6 +196,20 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     const file = e.dataTransfer.files[0]
     if (file) handleFileUpload(file)
   }, [handleFileUpload])
+
+  const handleRotate = async (degrees: 90 | -90) => {
+    if (!displayImageUrl || isRotating) return
+    setIsRotating(true)
+    clearSelectionAndResults()
+    try {
+      const rotated = await rotateDataUrl(displayImageUrl, degrees)
+      setDisplayImageUrl(rotated)
+    } catch {
+      // rotation failed silently — keep current image
+    } finally {
+      setIsRotating(false)
+    }
+  }
 
   const getOverlayPoint = (e: React.MouseEvent<HTMLDivElement>): DragPoint => {
     const rect = overlayRef.current!.getBoundingClientRect()
@@ -183,14 +246,15 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     }
   }
 
-  const selectionRect = dragStart && dragEnd
-    ? {
-        left: Math.min(dragStart.x, dragEnd.x),
-        top: Math.min(dragStart.y, dragEnd.y),
-        width: Math.abs(dragEnd.x - dragStart.x),
-        height: Math.abs(dragEnd.y - dragStart.y),
-      }
-    : null
+  const selectionRect =
+    dragStart && dragEnd
+      ? {
+          left: Math.min(dragStart.x, dragEnd.x),
+          top: Math.min(dragStart.y, dragEnd.y),
+          width: Math.abs(dragEnd.x - dragStart.x),
+          height: Math.abs(dragEnd.y - dragStart.y),
+        }
+      : null
 
   const getCropBox = (): { x1: number; y1: number; x2: number; y2: number } | undefined => {
     if (!hasSelection || !dragStart || !dragEnd) return undefined
@@ -203,7 +267,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
   }
 
   const handleExtract = async (useSelection: boolean) => {
-    if (!imgRef.current || !loadedImageUrl) return
+    if (!imgRef.current || !displayImageUrl) return
     setIsExtracting(true)
     setExtractError(null)
     setExtractedRecords([])
@@ -285,9 +349,9 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left: Image loader + selection tool */}
-        <div className="flex w-[58%] shrink-0 flex-col gap-3 overflow-y-auto border-r border-slate-800 p-4">
+        <div className="flex w-[58%] shrink-0 flex-col gap-3 overflow-hidden border-r border-slate-800 p-4">
           {/* Source tabs */}
-          <div className="flex gap-2">
+          <div className="flex shrink-0 gap-2">
             <button
               onClick={() => setImageMode('manual')}
               className={`rounded-lg px-3 py-1.5 text-xs font-medium ${imageMode === 'manual' ? 'bg-sky-600 text-white' : 'border border-slate-700 text-slate-400 hover:bg-slate-800'}`}
@@ -304,7 +368,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
 
           {/* Manual picker */}
           {imageMode === 'manual' && (
-            <div className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 p-3">
+            <div className="flex shrink-0 items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 p-3">
               <div className="relative flex-1">
                 <select
                   value={selectedManualId}
@@ -342,7 +406,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
             <div
               onDrop={handleDrop}
               onDragOver={(e) => e.preventDefault()}
-              className="rounded-xl border-2 border-dashed border-slate-700 bg-slate-900 p-6 text-center hover:border-sky-700"
+              className="shrink-0 rounded-xl border-2 border-dashed border-slate-700 bg-slate-900 p-6 text-center hover:border-sky-700"
             >
               <Upload className="mx-auto mb-2 h-6 w-6 text-slate-500" />
               <p className="text-xs text-slate-400">Drag &amp; drop a screenshot here, or</p>
@@ -363,85 +427,87 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
           )}
 
           {loadError && (
-            <div className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{loadError}</div>
+            <div className="shrink-0 rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{loadError}</div>
           )}
 
           {/* Image display + selection overlay */}
-          {loadedImageUrl && (
+          {displayImageUrl ? (
             <>
-              {/* Rotate toolbar */}
-              <div className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5">
+              {/* Rotate + hint toolbar */}
+              <div className="flex shrink-0 items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5">
                 <span className="flex-1 text-[11px] text-slate-500">
-                  {rotation !== 0 ? `Rotated ${rotation}°` : 'Drag to select a region, then extract'}
+                  {hasSelection ? 'Selection ready — use Extract Selection or Extract Full Page' : 'Drag to select a table region, then extract'}
                 </span>
                 <button
                   type="button"
-                  onClick={() => { setRotation((r) => (r + 270) % 360); setDragStart(null); setDragEnd(null); setHasSelection(false) }}
-                  className="rounded border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
-                  title="Rotate left"
+                  onClick={() => handleRotate(-90)}
+                  disabled={isRotating}
+                  className="rounded border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-40"
+                  title="Rotate left 90°"
                 >
-                  <RotateCcw className="h-3.5 w-3.5" />
+                  {isRotating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setRotation((r) => (r + 90) % 360); setDragStart(null); setDragEnd(null); setHasSelection(false) }}
-                  className="rounded border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
-                  title="Rotate right"
+                  onClick={() => handleRotate(90)}
+                  disabled={isRotating}
+                  className="rounded border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-40"
+                  title="Rotate right 90°"
                 >
-                  <RotateCw className="h-3.5 w-3.5" />
+                  {isRotating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCw className="h-3.5 w-3.5" />}
                 </button>
               </div>
 
-              <div
-                className="relative overflow-auto rounded-lg border border-slate-700 bg-slate-900 select-none"
-                style={{ cursor: isDragging ? 'crosshair' : 'crosshair' }}
-              >
-                <img
-                  ref={imgRef}
-                  src={loadedImageUrl}
-                  alt="Manual page"
-                  draggable={false}
-                  className="block rounded-lg bg-white transition-transform"
-                  style={{
-                    userSelect: 'none',
-                    pointerEvents: 'none',
-                    transform: `rotate(${rotation}deg)`,
-                    transformOrigin: 'center center',
-                    width: rotation % 180 === 0 ? '100%' : 'auto',
-                    maxWidth: rotation % 180 === 0 ? '100%' : 'none',
-                  }}
-                />
-                {/* Selection overlay — sits on top of the image */}
-                <div
-                  ref={overlayRef}
-                  className="absolute inset-0"
-                  style={{ cursor: 'crosshair' }}
-                  onMouseDown={handleMouseDown}
-                  onMouseMove={handleMouseMove}
-                  onMouseUp={handleMouseUp}
-                  onMouseLeave={handleMouseUp}
-                />
-                {/* Selection rectangle */}
-                {selectionRect && selectionRect.width > 4 && selectionRect.height > 4 && (
-                  <div
-                    className="pointer-events-none absolute"
-                    style={{
-                      left: selectionRect.left,
-                      top: selectionRect.top,
-                      width: selectionRect.width,
-                      height: selectionRect.height,
-                      border: '2px solid #38bdf8',
-                      background: 'rgba(56,189,248,0.08)',
-                    }}
-                  />
-                )}
+              {/*
+                Outer container: scrollable in both axes so wide/tall images
+                are fully accessible. The inner wrapper is inline-block so it
+                shrinks to exactly the image size — this keeps the overlay and
+                selection box perfectly aligned with the visible image.
+              */}
+              <div className="flex-1 overflow-auto rounded-lg border border-slate-700 bg-slate-900">
+                <div className="inline-block min-w-full select-none">
+                  <div className="relative inline-block">
+                    <img
+                      ref={imgRef}
+                      src={displayImageUrl}
+                      alt="Manual page"
+                      draggable={false}
+                      className="block bg-white"
+                      style={{ userSelect: 'none', pointerEvents: 'none', maxHeight: '100%' }}
+                    />
+                    {/* Interaction overlay — exactly covers the image */}
+                    <div
+                      ref={overlayRef}
+                      className="absolute inset-0"
+                      style={{ cursor: 'crosshair' }}
+                      onMouseDown={handleMouseDown}
+                      onMouseMove={handleMouseMove}
+                      onMouseUp={handleMouseUp}
+                      onMouseLeave={handleMouseUp}
+                    />
+                    {/* Selection rectangle */}
+                    {selectionRect && selectionRect.width > 4 && selectionRect.height > 4 && (
+                      <div
+                        className="pointer-events-none absolute"
+                        style={{
+                          left: selectionRect.left,
+                          top: selectionRect.top,
+                          width: selectionRect.width,
+                          height: selectionRect.height,
+                          border: '2px solid #38bdf8',
+                          background: 'rgba(56,189,248,0.08)',
+                        }}
+                      />
+                    )}
+                  </div>
+                </div>
               </div>
 
               {/* Action buttons */}
-              <div className="flex gap-2">
+              <div className="flex shrink-0 gap-2">
                 <button
                   onClick={() => handleExtract(false)}
-                  disabled={isExtracting}
+                  disabled={isExtracting || isRotating}
                   className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-slate-700 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
                 >
                   {isExtracting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
@@ -450,7 +516,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                 {hasSelection && (
                   <button
                     onClick={() => handleExtract(true)}
-                    disabled={isExtracting}
+                    disabled={isExtracting || isRotating}
                     className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-sky-600 py-2 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
                   >
                     {isExtracting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
@@ -458,24 +524,17 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                   </button>
                 )}
               </div>
-              {!hasSelection && (
-                <p className="text-center text-[11px] text-slate-600">
-                  Drag a box over the parts table to snip a region, or use Extract Full Page
-                </p>
-              )}
             </>
-          )}
-
-          {!loadedImageUrl && (
-            <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-slate-800 py-16 text-sm text-slate-600">
-              Load a page or upload a screenshot to begin
+          ) : (
+            <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-slate-800 text-sm text-slate-600">
+              {isLoadingPage ? 'Loading page…' : 'Load a page or upload a screenshot to begin'}
             </div>
           )}
         </div>
 
         {/* Right: Extracted records */}
         <div className="flex flex-1 flex-col gap-3 overflow-hidden p-4">
-          <div className="flex items-center justify-between">
+          <div className="flex shrink-0 items-center justify-between">
             <h3 className="text-sm font-semibold text-white">Extracted Records</h3>
             {extractedRecords.length > 0 && (
               <span className="text-xs text-slate-500">{extractedRecords.length} found</span>
@@ -483,13 +542,13 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
           </div>
 
           {extractError && (
-            <div className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{extractError}</div>
+            <div className="shrink-0 rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{extractError}</div>
           )}
           {saveError && (
-            <div className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{saveError}</div>
+            <div className="shrink-0 rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">{saveError}</div>
           )}
           {saveMessage && (
-            <div className="flex items-center gap-2 rounded-lg border border-green-900/60 bg-green-950/30 px-3 py-2 text-xs text-green-200">
+            <div className="flex shrink-0 items-center gap-2 rounded-lg border border-green-900/60 bg-green-950/30 px-3 py-2 text-xs text-green-200">
               <CheckCircle className="h-3.5 w-3.5 shrink-0" />
               {saveMessage}
             </div>
@@ -511,7 +570,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
 
           {!isExtracting && extractedRecords.length > 0 && (
             <>
-              <div className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
+              <div className="flex shrink-0 items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">
                 <input
                   type="checkbox"
                   checked={checkedIndices.size === extractedRecords.length}
@@ -564,17 +623,17 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                           <div className="truncate" title={record.part_name}>{record.part_name}</div>
                         </td>
                         <td className="px-3 py-2 font-mono text-slate-400">
-                          <div className="truncate w-24" title={record.part_number ?? ''}>{record.part_number ?? '-'}</div>
+                          <div className="w-24 truncate" title={record.part_number ?? ''}>{record.part_number ?? '-'}</div>
                         </td>
                         <td className="px-3 py-2 text-slate-400">{record.drawing_position ?? '-'}</td>
                         <td className="px-3 py-2 font-mono text-slate-400">
-                          <div className="truncate w-20" title={record.drawing_number ?? ''}>{record.drawing_number ?? '-'}</div>
+                          <div className="w-20 truncate" title={record.drawing_number ?? ''}>{record.drawing_number ?? '-'}</div>
                         </td>
                         <td className="px-3 py-2 text-slate-400">
-                          <div className="truncate w-24" title={record.spare_maker ?? ''}>{record.spare_maker ?? '-'}</div>
+                          <div className="w-24 truncate" title={record.spare_maker ?? ''}>{record.spare_maker ?? '-'}</div>
                         </td>
                         <td className="px-3 py-2 text-slate-400">
-                          <div className="truncate max-w-[140px]" title={record.specification ?? ''}>{record.specification ?? '-'}</div>
+                          <div className="max-w-[140px] truncate" title={record.specification ?? ''}>{record.specification ?? '-'}</div>
                         </td>
                         <td className="px-3 py-2">
                           {record.confidence_score != null ? (
