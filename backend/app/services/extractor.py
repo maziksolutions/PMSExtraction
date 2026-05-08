@@ -180,6 +180,14 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "  NO. | NAME | MATERIAL | QTY   (e.g. 1 | UV LAMP | QUARTZ GLASS | 1)\n"
             "  Extract EVERY row. The drawing_position is the NO. column.\n"
             "  The drawing_number is the figure/drawing reference (e.g. 'Fig.7', 'UV STERILIZER drawing').\n\n"
+            "MULTI-COLUMN TABLE FORMAT (very common in Japanese equipment manuals):\n"
+            "  Pages often show 2–4 identical table sections placed side-by-side across the page width.\n"
+            "  Each section has the same column headers: REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS\n"
+            "  Items are numbered sequentially across ALL sections (e.g. 1-41 in the leftmost section,\n"
+            "  43-106 in the next, 101-176 in the third, 201-226 in the rightmost).\n"
+            "  You MUST scan ALL sections from left to right across the ENTIRE page width.\n"
+            "  DO NOT stop after reading only the first or leftmost column group.\n"
+            "  A single page can contain 100-300 individual parts — extract EVERY one.\n\n"
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
             '  "part_name": "exact part name from the document (e.g. \'UV LAMP\', \'O-RING\')",\n'
@@ -561,6 +569,79 @@ async def _ocr_page_with_openai(image_bytes: bytes, filename: str, page_no: int)
         return ""
 
 
+async def _extract_spare_parts_from_image_split(
+    *,
+    image_bytes: bytes,
+    filename: str,
+    page_no: int,
+    context_note: str | None = None,
+) -> list[dict]:
+    """Split a dense parts-list page into left/right halves and extract from each.
+
+    Japanese spare parts tables typically pack 2-4 column groups side-by-side across
+    the page. A single vision call often reads only the leftmost group and stops.
+    Splitting the image forces the model to focus on each half independently.
+    """
+    try:
+        from PIL import Image as PILImage
+    except ImportError:
+        return await _extract_entities_from_page_image_with_openai(
+            image_bytes=image_bytes,
+            filename=filename,
+            page_no=page_no,
+            extraction_type="spare",
+            context_note=context_note,
+        )
+
+    img = PILImage.open(io.BytesIO(image_bytes))
+    width, height = img.size
+    mid = width // 2
+
+    all_records: list[dict] = []
+    for strip_idx, box in enumerate([(0, 0, mid, height), (mid, 0, width, height)]):
+        half_label = "LEFT half" if strip_idx == 0 else "RIGHT half"
+        buf = io.BytesIO()
+        img.crop(box).save(buf, format="PNG")
+        half_bytes = buf.getvalue()
+
+        note = (
+            f"You are looking at the {half_label} of the page. "
+            "This half contains one or two column groups from a multi-column parts list. "
+            "Extract EVERY row visible in this image strip — read top to bottom completely."
+        )
+        if context_note:
+            note += f" {context_note}"
+
+        records = await _extract_entities_from_page_image_with_openai(
+            image_bytes=half_bytes,
+            filename=filename,
+            page_no=page_no,
+            extraction_type="spare",
+            context_note=note,
+        )
+        logger.info(
+            "extract_spare_split[openai]: %s page=%d strip=%s records=%d",
+            filename,
+            page_no,
+            half_label,
+            len(records),
+        )
+        all_records.extend(records)
+
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for r in all_records:
+        key = str(
+            r.get("part_number") or r.get("drawing_position") or r.get("part_name") or ""
+        ).strip().lower()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        deduped.append(r)
+    return deduped
+
+
 async def _extract_entities_from_page_image_with_openai(
     *,
     image_bytes: bytes,
@@ -585,6 +666,19 @@ async def _extract_entities_from_page_image_with_openai(
             f"Use source_page_number={page_no} for every record found on this page. "
             "Use visible titles, maker logos, model tables, captions, callout tables, and drawing parts lists."
         )
+        if extraction_type == "spare":
+            text_instructions += (
+                "\n\nCRITICAL FOR PARTS TABLES: This page may contain multiple column groups placed side-by-side "
+                "(e.g. 2–4 sets of [REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS] across the full page width). "
+                "You MUST read and extract rows from EVERY column group — scan from the leftmost group to the rightmost. "
+                "DO NOT stop after the first column group. "
+                "Items are numbered sequentially across all groups; there may be 100–300 parts on this single page. "
+                "Extract EVERY row you can see in every column group. "
+                "For the drawing_number field use the drawing reference printed at the bottom of the page (e.g. 'CIT-MR-0'). "
+                "For the drawing_position field use the REF.NO column value. "
+                "For part_number use the PC.NO column value. "
+                "Translate any Japanese text in DESCRIPTION to English."
+            )
         if context_note:
             text_instructions += f"\n\nAdditional known context:\n{context_note}"
 
@@ -1779,13 +1873,21 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                         image_bytes = rendered_pages.get(page_no)
                         if not image_bytes:
                             continue
-                        vision_records = await _extract_entities_from_page_image_with_openai(
-                            image_bytes=image_bytes,
-                            filename=filename,
-                            page_no=page_no,
-                            extraction_type=etype,
-                            context_note=context_note,
-                        )
+                        if etype == "spare":
+                            vision_records = await _extract_spare_parts_from_image_split(
+                                image_bytes=image_bytes,
+                                filename=filename,
+                                page_no=page_no,
+                                context_note=context_note,
+                            )
+                        else:
+                            vision_records = await _extract_entities_from_page_image_with_openai(
+                                image_bytes=image_bytes,
+                                filename=filename,
+                                page_no=page_no,
+                                extraction_type=etype,
+                                context_note=context_note,
+                            )
                         all_records.extend(vision_records)
 
             records = _dedupe_records(all_records, etype)
