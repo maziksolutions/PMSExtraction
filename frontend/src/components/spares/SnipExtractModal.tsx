@@ -216,6 +216,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
       if (loadedPage) formData.append('page_number', String(loadedPage))
       const res = await apiClient.post(`/vessels/${vesselId}/spares/snip-extract`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120_000,
       })
       const records: ExtractedRecord[] = res.data.records ?? []
       setExtractedRecords(records)
