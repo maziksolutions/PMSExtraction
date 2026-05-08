@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Scissors, Upload, X, Loader2, CheckCircle, ChevronDown } from 'lucide-react'
+import { Scissors, Upload, X, Loader2, CheckCircle, ChevronDown, RotateCcw, RotateCw } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface ExtractedRecord {
@@ -82,6 +82,8 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
   const [checkedIndices, setCheckedIndices] = useState<Set<number>>(new Set())
   const [extractError, setExtractError] = useState<string | null>(null)
 
+  const [rotation, setRotation] = useState(0)
+
   const [isSaving, setIsSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -115,6 +117,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
         setLoadedImageUrl(page.image_data_url)
         setLoadedManualId(selectedManualId)
         setLoadedPage(pageNum)
+        setRotation(0)
       } else {
         setLoadError('No image available for this page.')
       }
@@ -136,6 +139,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     setHasSelection(false)
     setExtractedRecords([])
     setLoadError(null)
+    setRotation(0)
   }, [])
 
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -364,6 +368,29 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
           {/* Image display + selection overlay */}
           {loadedImageUrl && (
             <>
+              {/* Rotate toolbar */}
+              <div className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5">
+                <span className="flex-1 text-[11px] text-slate-500">
+                  {rotation !== 0 ? `Rotated ${rotation}°` : 'Drag to select a region, then extract'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setRotation((r) => (r + 270) % 360); setDragStart(null); setDragEnd(null); setHasSelection(false) }}
+                  className="rounded border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+                  title="Rotate left"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setRotation((r) => (r + 90) % 360); setDragStart(null); setDragEnd(null); setHasSelection(false) }}
+                  className="rounded border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+                  title="Rotate right"
+                >
+                  <RotateCw className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
               <div
                 className="relative overflow-auto rounded-lg border border-slate-700 bg-slate-900 select-none"
                 style={{ cursor: isDragging ? 'crosshair' : 'crosshair' }}
@@ -373,8 +400,15 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                   src={loadedImageUrl}
                   alt="Manual page"
                   draggable={false}
-                  className="block w-full rounded-lg bg-white"
-                  style={{ userSelect: 'none', pointerEvents: 'none' }}
+                  className="block rounded-lg bg-white transition-transform"
+                  style={{
+                    userSelect: 'none',
+                    pointerEvents: 'none',
+                    transform: `rotate(${rotation}deg)`,
+                    transformOrigin: 'center center',
+                    width: rotation % 180 === 0 ? '100%' : 'auto',
+                    maxWidth: rotation % 180 === 0 ? '100%' : 'none',
+                  }}
                 />
                 {/* Selection overlay — sits on top of the image */}
                 <div
