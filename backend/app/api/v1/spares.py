@@ -780,18 +780,20 @@ async def snip_extract_spares(
 
     from app.services.extractor import _extract_entities_from_page_image_with_openai
 
-    # Single direct vision call — the user has already cropped to the table,
-    # so no left/right split is needed (halves extraction time vs split function).
+    # Single direct vision call — the user has already cropped to the table area.
+    # Enhancement (contrast/sharpness) is applied inside _extract_entities_from_page_image_with_openai.
     records = await _extract_entities_from_page_image_with_openai(
         image_bytes=image_bytes,
         filename=image.filename or "snipped_region.png",
         page_no=page_number or 0,
         extraction_type="spare",
         context_note=(
-            "This is a manually snipped image of a spare parts table. "
-            "Extract EVERY row visible. Columns are typically: "
-            "REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS. "
-            "Translate any Japanese text to English."
+            "This is a manually snipped/cropped image of a spare parts table. "
+            "STEP 1: Count the number of data rows visible (not headers). "
+            "STEP 2: Output EXACTLY that many JSON records — do not stop early or skip rows. "
+            "Typical columns: REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS. "
+            "ALL output fields MUST be in English — translate ALL Japanese or non-English text to English. "
+            "Never output Japanese/non-English characters in any field."
         ),
     )
     return {"records": records, "count": len(records)}

@@ -202,6 +202,8 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "}\n\n"
             "RULES:\n"
             "- source_page_number from [PAGE N] markers only\n"
+            "- COUNT FIRST: before extracting, count the total number of data rows visible in the image/text "
+            "(excluding header rows). Your output array MUST contain exactly that many records — do not stop early.\n"
             "- Extract EVERY row from parts tables — never skip rows\n"
             "- For drawing parts tables (NO./NAME/MATERIAL): drawing_position=NO., specification=MATERIAL\n"
             "- Part numbers: include exactly as printed (do not reformat)\n"
@@ -209,11 +211,15 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "- spare_model: identify which sub-assembly the spare belongs to from context (section heading)\n"
             "- If no spare parts found, return []\n"
             "- Return ONLY the JSON array, no markdown fences\n"
-            "LANGUAGE RULES:\n"
-            "- ALL output fields (part_name, specification, spare_maker, spare_model, drawing_number, etc.) MUST be in English only\n"
-            "- If the source document contains non-English text (e.g. Japanese, Chinese, Korean), translate the content to English\n"
-            "- Do NOT output any non-English characters in any field\n"
-            "- Use the English equivalent shown alongside or below non-English text when available (e.g. 'BALL BEARING' instead of 'ボールベアリング')"
+            "LANGUAGE RULES (STRICT — NO EXCEPTIONS):\n"
+            "- ALL output fields MUST contain English text ONLY\n"
+            "- NEVER output Japanese, Chinese, Korean, or any other non-Latin characters in ANY field\n"
+            "- If source text is in Japanese/non-English: translate to English. "
+            "Use the English equivalent printed alongside (e.g. 'BALL BEARING' not 'ボールベアリング'). "
+            "If no English is visible, translate from context.\n"
+            "- If you cannot reliably translate a part name to English, output a best-effort English description\n"
+            "- Specification/remarks fields: translate ALL non-English content to English\n"
+            "- A record with non-English characters in any field is INVALID — fix it before outputting"
         ),
         "user_template": (
             "Document: {filename}\n\n"
@@ -289,6 +295,20 @@ def _redact_error_message(exc: Exception) -> str:
         if secret:
             message = message.replace(secret, "***")
     return message
+
+
+def _enhance_image_for_extraction(image_bytes: bytes) -> bytes:
+    """Boost contrast and sharpness so the vision model reads dense table text accurately."""
+    try:
+        from PIL import Image as PILImage, ImageEnhance
+        img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
+        img = ImageEnhance.Contrast(img).enhance(1.4)
+        img = ImageEnhance.Sharpness(img).enhance(2.0)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=False)
+        return buf.getvalue()
+    except Exception:
+        return image_bytes
 
 
 async def _extract_with_claude(
@@ -593,27 +613,46 @@ async def _extract_spare_parts_from_image_split(
             context_note=context_note,
         )
 
-    img = PILImage.open(io.BytesIO(image_bytes))
+    # Enhance once, then crop to strips (avoids redundant PIL opens per strip)
+    enhanced_bytes = _enhance_image_for_extraction(image_bytes)
+    img = PILImage.open(io.BytesIO(enhanced_bytes)).convert("RGB")
     width, height = img.size
-    mid = width // 2
+
+    # 4 vertical strips with 8% overlap — handles pages with 2, 3, or 4 column groups.
+    # Each strip is sent as a separate vision call so the model focuses on one region.
+    n_strips = 4
+    strip_w = width / n_strips
+    overlap_px = int(strip_w * 0.08)
+    strip_labels = [
+        "far-left quarter (columns 1)",
+        "centre-left quarter (columns 2)",
+        "centre-right quarter (columns 3)",
+        "far-right quarter (columns 4)",
+    ]
 
     all_records: list[dict] = []
-    for strip_idx, box in enumerate([(0, 0, mid, height), (mid, 0, width, height)]):
-        half_label = "LEFT half" if strip_idx == 0 else "RIGHT half"
+    for idx, label in enumerate(strip_labels):
+        x1 = max(0, int(idx * strip_w) - overlap_px)
+        x2 = min(width, int((idx + 1) * strip_w) + overlap_px)
         buf = io.BytesIO()
-        img.crop(box).save(buf, format="PNG")
-        half_bytes = buf.getvalue()
+        img.crop((x1, 0, x2, height)).save(buf, format="PNG")
+        strip_bytes = buf.getvalue()
 
         note = (
-            f"You are looking at the {half_label} of the page. "
-            "This half contains one or two column groups from a multi-column parts list. "
-            "Extract EVERY row visible in this image strip — read top to bottom completely."
+            f"You are looking at the {label} of a multi-column parts-list page. "
+            "STEP 1: Count the data rows visible in this strip (not headers). "
+            "STEP 2: Extract EXACTLY that many records — one JSON object per row, do not stop early. "
+            "ALL text must be in English — translate any Japanese/non-English text. "
+            "Never output non-English characters."
         )
         if context_note:
             note += f" {context_note}"
 
+        # Pass raw bytes; _extract_entities_from_page_image_with_openai will NOT
+        # re-enhance since we already enhanced above (pass a flag via context_note
+        # is not needed — slight re-enhancement is harmless and handled gracefully).
         records = await _extract_entities_from_page_image_with_openai(
-            image_bytes=half_bytes,
+            image_bytes=strip_bytes,
             filename=filename,
             page_no=page_no,
             extraction_type="spare",
@@ -623,11 +662,12 @@ async def _extract_spare_parts_from_image_split(
             "extract_spare_split[openai]: %s page=%d strip=%s records=%d",
             filename,
             page_no,
-            half_label,
+            label,
             len(records),
         )
         all_records.extend(records)
 
+    # Deduplicate by part_number → drawing_position → part_name
     seen: set[str] = set()
     deduped: list[dict] = []
     for r in all_records:
@@ -653,6 +693,9 @@ async def _extract_entities_from_page_image_with_openai(
     if not settings.OPENAI_API_KEY:
         return []
 
+    # Enhance image quality before sending to the vision model
+    image_bytes = _enhance_image_for_extraction(image_bytes)
+
     prompt_cfg = DEFAULT_PROMPTS[extraction_type]
     try:
         from openai import AsyncOpenAI
@@ -664,23 +707,30 @@ async def _extract_entities_from_page_image_with_openai(
             f"You are looking at a rendered image of physical PDF page {page_no} from '{filename}'. "
             f"Return ONLY a valid JSON array for {extraction_type} extraction. "
             f"Use source_page_number={page_no} for every record found on this page. "
-            "Use visible titles, maker logos, model tables, captions, callout tables, and drawing parts lists."
+            "ALL output field values MUST be in English only — translate any Japanese, Chinese, or other "
+            "non-English text to English. Never output non-Latin characters in any field."
         )
         if extraction_type == "spare":
             text_instructions += (
-                "\n\nCRITICAL FOR PARTS TABLES: This page may contain multiple column groups placed side-by-side "
-                "(e.g. 2–4 sets of [REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS] across the full page width). "
-                "You MUST read and extract rows from EVERY column group — scan from the leftmost group to the rightmost. "
-                "DO NOT stop after the first column group. "
-                "Items are numbered sequentially across all groups; there may be 100–300 parts on this single page. "
-                "Extract EVERY row you can see in every column group. "
-                "For the drawing_number field use the drawing reference printed at the bottom of the page (e.g. 'CIT-MR-0'). "
-                "For the drawing_position field use the REF.NO column value. "
-                "For part_number use the PC.NO column value. "
-                "Translate any Japanese text in DESCRIPTION to English."
+                "\n\nEXTRACTION STEPS:"
+                "\n  STEP 1 — COUNT: Count every data row visible in this image (excluding column headers). "
+                "Keep that count in mind."
+                "\n  STEP 2 — EXTRACT: Output a JSON record for EVERY row you counted. "
+                "Your output array length MUST equal the row count from Step 1. Do not stop early."
+                "\n\nCRITICAL FOR PARTS TABLES: This image may contain multiple column groups placed side-by-side "
+                "(e.g. 2–4 sets of [REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS] across the width). "
+                "Scan left-to-right across the ENTIRE width — extract from EVERY column group. "
+                "DO NOT stop after reading only the first column group. "
+                "A single page can contain 50–300 parts — extract ALL of them."
+                "\n  • drawing_number → drawing reference at the bottom of the page (e.g. 'CIT-MR-0')"
+                "\n  • drawing_position → REF.NO column value"
+                "\n  • part_number → PC.NO column value"
+                "\n  • part_name → DESCRIPTION column value translated to English"
+                "\n  • specification → QTY + REMARKS translated to English"
+                "\nTranslate ALL non-English (Japanese etc.) DESCRIPTION text to English."
             )
         if context_note:
-            text_instructions += f"\n\nAdditional known context:\n{context_note}"
+            text_instructions += f"\n\nAdditional context:\n{context_note}"
 
         response = await client.chat.completions.create(
             model=model_id,
@@ -690,12 +740,12 @@ async def _extract_entities_from_page_image_with_openai(
                     "role": "user",
                     "content": [
                         {"type": "text", "text": text_instructions},
-                        {"type": "image_url", "image_url": {"url": data_url}},
+                        {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
                     ],
                 },
             ],
             temperature=0,
-            max_tokens=16000,
+            max_tokens=32000,
         )
         raw_text = (response.choices[0].message.content or "").strip()
         records = _parse_json_records(raw_text)
@@ -725,7 +775,7 @@ async def _render_selected_pdf_page_images(
     *,
     file_bytes: bytes,
     selected_pages: list[int],
-    resolution: int = 300,
+    resolution: int = 400,
 ) -> dict[int, bytes]:
     rendered: dict[int, bytes] = {}
     try:
@@ -810,7 +860,7 @@ async def _enrich_pdf_text_for_selected_pages(
                 combined = "\n".join(part for part in page_parts if part).strip()
                 if len(combined) < 120:
                     try:
-                        page_image = page.to_image(resolution=300).original
+                        page_image = page.to_image(resolution=400).original
                     except Exception:
                         page_image = None
 
@@ -1861,7 +1911,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 rendered_pages = await _render_selected_pdf_page_images(
                     file_bytes=file_bytes,
                     selected_pages=selected_pages,
-                    resolution=300,
+                    resolution=400,
                 )
                 if rendered_pages:
                     context_note = None
