@@ -317,6 +317,12 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     }
   }
 
+  const updateRecord = (idx: number, field: keyof ExtractedRecord, value: string) => {
+    setExtractedRecords((prev) =>
+      prev.map((r, i) => (i === idx ? { ...r, [field]: value || null } : r))
+    )
+  }
+
   const handleSave = async () => {
     const selected = extractedRecords.filter((_, i) => checkedIndices.has(i))
     if (!selected.length) return
@@ -617,10 +623,9 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                     {extractedRecords.map((record, idx) => (
                       <tr
                         key={idx}
-                        onClick={() => toggleRecord(idx)}
-                        className={`cursor-pointer hover:bg-slate-800/50 ${checkedIndices.has(idx) ? 'bg-sky-900/10' : ''}`}
+                        className={`hover:bg-slate-800/30 ${checkedIndices.has(idx) ? 'bg-sky-900/10' : ''}`}
                       >
-                        <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                        <td className="px-3 py-1.5">
                           <input
                             type="checkbox"
                             checked={checkedIndices.has(idx)}
@@ -628,23 +633,49 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                             className="h-3.5 w-3.5 rounded"
                           />
                         </td>
-                        <td className="max-w-[180px] px-3 py-2 font-medium text-slate-200">
-                          <div className="truncate" title={record.part_name}>{record.part_name}</div>
+                        <td className="px-2 py-1 font-medium text-slate-200">
+                          <input
+                            value={record.part_name}
+                            onChange={(e) => updateRecord(idx, 'part_name', e.target.value)}
+                            className="w-full min-w-[120px] rounded border border-transparent bg-transparent px-1 py-0.5 text-xs text-slate-200 hover:border-slate-600 focus:border-sky-500 focus:bg-slate-800 focus:outline-none"
+                          />
                         </td>
-                        <td className="px-3 py-2 font-mono text-slate-400">
-                          <div className="w-24 truncate" title={record.part_number ?? ''}>{record.part_number ?? '-'}</div>
+                        <td className="px-2 py-1">
+                          <input
+                            value={record.part_number ?? ''}
+                            onChange={(e) => updateRecord(idx, 'part_number', e.target.value)}
+                            className="w-24 rounded border border-transparent bg-transparent px-1 py-0.5 font-mono text-xs text-slate-400 hover:border-slate-600 focus:border-sky-500 focus:bg-slate-800 focus:outline-none"
+                          />
                         </td>
-                        <td className="px-3 py-2 text-slate-400">{record.drawing_position ?? '-'}</td>
-                        <td className="px-3 py-2 font-mono text-slate-400">
-                          <div className="w-20 truncate" title={record.drawing_number ?? ''}>{record.drawing_number ?? '-'}</div>
+                        <td className="px-2 py-1">
+                          <input
+                            value={record.drawing_position ?? ''}
+                            onChange={(e) => updateRecord(idx, 'drawing_position', e.target.value)}
+                            className="w-12 rounded border border-transparent bg-transparent px-1 py-0.5 text-xs text-slate-400 hover:border-slate-600 focus:border-sky-500 focus:bg-slate-800 focus:outline-none"
+                          />
                         </td>
-                        <td className="px-3 py-2 text-slate-400">
-                          <div className="w-24 truncate" title={record.spare_maker ?? ''}>{record.spare_maker ?? '-'}</div>
+                        <td className="px-2 py-1">
+                          <input
+                            value={record.drawing_number ?? ''}
+                            onChange={(e) => updateRecord(idx, 'drawing_number', e.target.value)}
+                            className="w-20 rounded border border-transparent bg-transparent px-1 py-0.5 font-mono text-xs text-slate-400 hover:border-slate-600 focus:border-sky-500 focus:bg-slate-800 focus:outline-none"
+                          />
                         </td>
-                        <td className="px-3 py-2 text-slate-400">
-                          <div className="max-w-[140px] truncate" title={record.specification ?? ''}>{record.specification ?? '-'}</div>
+                        <td className="px-2 py-1">
+                          <input
+                            value={record.spare_maker ?? ''}
+                            onChange={(e) => updateRecord(idx, 'spare_maker', e.target.value)}
+                            className="w-24 rounded border border-transparent bg-transparent px-1 py-0.5 text-xs text-slate-400 hover:border-slate-600 focus:border-sky-500 focus:bg-slate-800 focus:outline-none"
+                          />
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-2 py-1">
+                          <input
+                            value={record.specification ?? ''}
+                            onChange={(e) => updateRecord(idx, 'specification', e.target.value)}
+                            className="w-full min-w-[100px] rounded border border-transparent bg-transparent px-1 py-0.5 text-xs text-slate-400 hover:border-slate-600 focus:border-sky-500 focus:bg-slate-800 focus:outline-none"
+                          />
+                        </td>
+                        <td className="px-3 py-1.5">
                           {record.confidence_score != null ? (
                             <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
                               record.confidence_score >= 80 ? 'bg-green-700 text-green-100'
