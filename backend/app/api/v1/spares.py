@@ -4,7 +4,7 @@ import re
 import uuid
 from typing import Annotated, Any, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -763,3 +763,92 @@ async def get_spare_page_image(
             pass
 
     return {"image_url": None, "message": "Page image not available"}
+
+
+@router.post("/{vessel_id}/spares/snip-extract", summary="Extract spare parts from an uploaded image (snip tool)")
+async def snip_extract_spares(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    image: UploadFile = File(...),
+    page_number: Optional[int] = Form(None),
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image file is empty")
+
+    from app.services.extractor import _extract_spare_parts_from_image_split
+
+    records = await _extract_spare_parts_from_image_split(
+        image_bytes=image_bytes,
+        filename=image.filename or "snipped_region.png",
+        page_no=page_number or 0,
+    )
+    return {"records": records, "count": len(records)}
+
+
+@router.post("/{vessel_id}/spares/snip-save", summary="Save spare records extracted via the snip tool")
+async def snip_save_spares(
+    vessel_id: uuid.UUID,
+    body: dict[str, Any],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    records: list[dict[str, Any]] = body.get("records", [])
+    source_manual_id_str: Optional[str] = body.get("source_manual_id")
+    page_number: Optional[int] = body.get("page_number")
+
+    source_manual_id: Optional[uuid.UUID] = None
+    if source_manual_id_str:
+        try:
+            source_manual_id = uuid.UUID(source_manual_id_str)
+        except ValueError:
+            pass
+
+    saved_spares: list[Spare] = []
+    for record in records:
+        part_name = str(record.get("part_name") or "").strip()
+        if not part_name:
+            continue
+        spare = Spare(
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            part_name=part_name,
+            part_number=record.get("part_number") or None,
+            drawing_number=record.get("drawing_number") or None,
+            drawing_position=record.get("drawing_position") or None,
+            specification=record.get("specification") or None,
+            spare_assembly=record.get("spare_model") or None,
+            assembly_description=record.get("spare_model") or None,
+            spare_maker=record.get("spare_maker") or None,
+            spare_model=record.get("spare_model") or None,
+            source_manual_id=source_manual_id,
+            page_reference=page_number,
+            extraction_method=ExtractionMethod.table,
+            is_critical=False,
+            qc_status=QCStatus.pending,
+            confidence_score=int(record.get("confidence_score") or 75),
+        )
+        db.add(spare)
+        saved_spares.append(spare)
+
+    if saved_spares:
+        await db.commit()
+        await _run_spare_side_effects(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            user_id=current_user.id,
+            activity_payloads=[
+                {
+                    "action_type": "spare.created",
+                    "entity_id": spare.id,
+                    "description": f"Added spare '{spare.part_name}' via snip extraction.",
+                }
+                for spare in saved_spares
+            ],
+        )
+
+    return {"saved": len(saved_spares)}

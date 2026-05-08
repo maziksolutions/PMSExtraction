@@ -1,10 +1,11 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil } from 'lucide-react'
+import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil, Scissors } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 import ResizableSplitView from '@/components/layout/ResizableSplitView'
+import SnipExtractModal from '@/components/spares/SnipExtractModal'
 
 interface ComponentOption {
   id: string
@@ -312,6 +313,7 @@ const SparesReview: React.FC = () => {
   const [edits, setEdits] = useState<Record<string, InlineSpareEdit>>({})
   const [showBatchPanel, setShowBatchPanel] = useState(false)
   const [batchFields, setBatchFields] = useState<BatchSpareFields>({})
+  const [showSnipModal, setShowSnipModal] = useState(false)
 
   const sourceFilesQuery = useQuery({
     queryKey: ['spare-source-files', vesselId],
@@ -566,6 +568,13 @@ const SparesReview: React.FC = () => {
                 </button>
               </>
             )}
+            <button
+              onClick={() => setShowSnipModal(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-sky-700 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-800"
+            >
+              <Scissors className="h-3.5 w-3.5" />
+              Snip &amp; Extract
+            </button>
             <button
               onClick={() => { setCreateDraft({ qc_status: 'pending' }); setEditingSpare(null) }}
               className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
@@ -1041,6 +1050,17 @@ const SparesReview: React.FC = () => {
       />
       }
     />
+
+    {showSnipModal && vesselId && (
+      <SnipExtractModal
+        vesselId={vesselId}
+        onClose={() => setShowSnipModal(false)}
+        onSaved={() => {
+          queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
+          queryClient.invalidateQueries({ queryKey: ['spare-source-files', vesselId] })
+        }}
+      />
+    )}
   )
 }
 
