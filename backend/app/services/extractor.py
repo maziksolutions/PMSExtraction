@@ -613,9 +613,8 @@ async def _extract_spare_parts_from_image_split(
             context_note=context_note,
         )
 
-    # Enhance once, then crop to strips (avoids redundant PIL opens per strip)
-    enhanced_bytes = _enhance_image_for_extraction(image_bytes)
-    img = PILImage.open(io.BytesIO(enhanced_bytes)).convert("RGB")
+    # Crop from original — each strip is enhanced inside _extract_entities_from_page_image_with_openai
+    img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
     width, height = img.size
 
     # 4 vertical strips with 8% overlap — handles pages with 2, 3, or 4 column groups.
