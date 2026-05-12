@@ -1332,6 +1332,7 @@ async def extract_entities(
     Returns:
         List of dicts parsed from Claude's JSON response, or [] on error.
     """
+    global _claude_vision_billing_failed
     prompt_config = DEFAULT_PROMPTS.get(extraction_type, DEFAULT_PROMPTS["component"])
     system_prompt = custom_prompt or prompt_config["system"]
     user_message = prompt_config["user_template"].format(text=text_chunk, filename=filename)
@@ -1380,7 +1381,6 @@ async def extract_entities(
                 "credit balance" in err_str.lower() or ("400" in err_str and "credit" in err_str.lower())
             ):
                 _claude_text_billing_failed = True
-                global _claude_vision_billing_failed
                 _claude_vision_billing_failed = True
                 logger.warning(
                     "extract_entities: Claude billing error — skipping Claude for remaining providers"
