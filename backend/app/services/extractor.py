@@ -202,9 +202,10 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "}\n\n"
             "RULES:\n"
             "- source_page_number from [PAGE N] markers only\n"
-            "- COUNT FIRST: before extracting, count the total number of data rows visible in the image/text "
-            "(excluding header rows). Your output array MUST contain exactly that many records — do not stop early.\n"
+            "- COUNT FIRST: count only structured table rows (grid rows with Part No/Name/Qty columns — NOT numbers in assembly diagram callouts). Output exactly that many records.\n"
             "- Extract EVERY row from parts tables — never skip rows\n"
+            "- ASSEMBLY DIAGRAM RULE: If a page has an exploded-view/assembly diagram with numbered callouts AND a parts table below it, extract ONLY from the parts table rows. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them.\n"
+            "- REMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly variant tags — store in spare_model, NOT in part_name or drawing_number.\n"
             "- For drawing parts tables (NO./NAME/MATERIAL): drawing_position=NO., specification=MATERIAL\n"
             "- Part numbers: include exactly as printed (do not reformat)\n"
             "- spare_maker: infer from document title/header (e.g. 'TAIKO KIKAI INDUSTRIES' → 'Taiko Kikai')\n"
@@ -813,7 +814,9 @@ async def _extract_entities_from_page_image_with_openai(
         )
         if extraction_type == "spare":
             text_instructions += (
-                "\n\nCount every data row (excluding column headers), then output exactly that many JSON records. "
+                "\n\nASSEMBLY DIAGRAM RULE (CRITICAL): If the page has an exploded-view/assembly diagram with numbered callouts AND a parts table, extract ONLY from the parts table. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them. Count only table rows (not diagram callout labels)."
+                "\n\nREMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly tags — put in spare_model, NOT part_name or drawing_number."
+                "\n\nCount every TABLE data row (excluding column headers), then output exactly that many JSON records. "
                 "Do not stop early. "
                 "\n\nFor multi-column parts tables (REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS "
                 "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
@@ -893,7 +896,9 @@ async def _extract_entities_from_page_image_with_claude(
         )
         if extraction_type == "spare":
             text_instructions += (
-                "\n\nCount every data row (excluding column headers), then output exactly that many JSON records. "
+                "\n\nASSEMBLY DIAGRAM RULE (CRITICAL): If the page has an exploded-view/assembly diagram with numbered callouts AND a parts table, extract ONLY from the parts table. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them. Count only table rows (not diagram callout labels)."
+                "\n\nREMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly tags — put in spare_model, NOT part_name or drawing_number."
+                "\n\nCount every TABLE data row (excluding column headers), then output exactly that many JSON records. "
                 "Do not stop early. "
                 "\n\nFor multi-column parts tables (REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS "
                 "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
