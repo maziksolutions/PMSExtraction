@@ -2200,31 +2200,42 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                     spares_to_add.append(spare)
 
         # ------------------------------------------------------------------
-        # Replace prior extracted records only for entity types that were
-        # actually re-extracted successfully on this run. This avoids wiping
-        # existing jobs when a rerun only targets components/spares or when a
-        # provider returns zero rows for a selected entity type.
+        # Overwrite prior extracted records for every entity type that was
+        # selected for re-extraction, regardless of whether new records were
+        # found. This ensures re-extraction is always a clean replace, not an
+        # accumulation on top of old data.
+        #
+        # Rules:
+        #   Components — delete ALL (any QC status); user reviews fresh results
+        #   Jobs       — delete ALL from this manual
+        #   Spares     — delete auto-extracted only; preserve manually snipped
+        #                records (extraction_method='manual') so user corrections
+        #                are not wiped by a background re-extraction
         # ------------------------------------------------------------------
-        if components_to_add:
+        if "component" in extraction_types:
             await db.execute(
                 update(Component)
                 .where(
                     Component.source_manual_id == manual.id,
                     Component.is_deleted == False,
-                    Component.qc_status == QCStatus.pending,
                 )
                 .values(is_deleted=True)
             )
-        if jobs_to_add:
+        if "job" in extraction_types:
             await db.execute(
                 update(Job)
                 .where(Job.source_manual_id == manual.id, Job.is_deleted == False)
                 .values(is_deleted=True)
             )
-        if spares_to_add:
+        if "spare" in extraction_types:
+            from app.models.spare import ExtractionMethod as _EM
             await db.execute(
                 update(Spare)
-                .where(Spare.source_manual_id == manual.id, Spare.is_deleted == False)
+                .where(
+                    Spare.source_manual_id == manual.id,
+                    Spare.is_deleted == False,
+                    Spare.extraction_method != _EM.manual,
+                )
                 .values(is_deleted=True)
             )
 
