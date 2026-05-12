@@ -293,7 +293,7 @@ async def list_spares(
     total_result = await db.execute(select(_func.count()).select_from(Spare).where(*base_where))
     total: int = total_result.scalar_one()
 
-    from sqlalchemy import cast, Integer, case
+    from sqlalchemy import cast, Integer, case, func
 
     sort_columns = {
         "part_name": Spare.part_name,
@@ -310,9 +310,10 @@ async def list_spares(
     }
 
     if sort_by == "page_order":
-        # Sort by page number, then drawing_position numerically (cast where possible), then insertion order
+        # Extract leading digits so ranges like '1~58' sort on their start value
+        leading_digits = func.nullif(func.substring(Spare.drawing_position, r'^\d+'), '')
         numeric_pos = case(
-            (Spare.drawing_position.regexp_match(r"^\d+$"), cast(Spare.drawing_position, Integer)),
+            (leading_digits.isnot(None), cast(leading_digits, Integer)),
             else_=99999,
         )
         query = (

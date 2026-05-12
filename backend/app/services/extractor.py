@@ -193,7 +193,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             '  "part_name": "exact part name from the document (e.g. \'UV LAMP\', \'O-RING\')",\n'
             '  "part_number": "catalog/part number exactly as printed or null",\n'
             '  "drawing_number": "DWG.NO or drawing reference from the page title block — read the actual value printed on the page (e.g. \'B3798160-02\', \'Fig.7\') or null",\n'
-            '  "drawing_position": "item/position number from the parts table (e.g. \'1\', \'11\') or null",\n'
+            '  "drawing_position": "REF.NO or position from the parts table — copy EXACTLY as printed, including ranges (e.g. \'1\', \'11\', \'1~58\', \'155~156\', \'101~105\') or null",\n'
             '  "specification": "material, size, standard, quantity note (e.g. \'QUARTZ GLASS\', \'RUBBER\', \'STAINLESS STEEL\') or null",\n'
             '  "spare_maker": "manufacturer — if manual is for a specific maker (e.g. TAIKO KIKAI), set that maker for all parts; null only if truly unknown",\n'
             '  "spare_model": "model or sub-assembly this spare belongs to (e.g. \'UV Sterilizer SBH-25\', \'Aeration Blower TSS-25\') or null",\n'
@@ -819,7 +819,7 @@ async def _extract_entities_from_page_image_with_openai(
                 "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
                 "A single page can contain 50-300 parts — extract ALL of them."
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
-                "\n  • drawing_position → REF.NO value"
+                "\n  • drawing_position → REF.NO value — copy EXACTLY as printed, including ranges (e.g. '1~58', '155~156')"
                 "\n  • part_number → PC.NO value"
                 "\n  • part_name → DESCRIPTION translated to English"
                 "\n  • specification → QTY + REMARKS translated to English"
@@ -899,7 +899,7 @@ async def _extract_entities_from_page_image_with_claude(
                 "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
                 "A single page can contain 50-300 parts — extract ALL of them."
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
-                "\n  • drawing_position → REF.NO value"
+                "\n  • drawing_position → REF.NO value — copy EXACTLY as printed, including ranges (e.g. '1~58', '155~156')"
                 "\n  • part_number → PC.NO value"
                 "\n  • part_name → DESCRIPTION translated to English"
                 "\n  • specification → QTY + REMARKS translated to English"
