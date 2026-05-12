@@ -388,38 +388,6 @@ async def _extract_with_openai(
     return _parse_json_records(raw_text)
 
 
-async def _extract_with_groq(
-    *,
-    system_prompt: str,
-    user_message: str,
-    filename: str,
-    extraction_type: str,
-) -> list[dict]:
-    if not settings.GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not configured")
-
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(
-        api_key=settings.GROQ_API_KEY,
-        base_url="https://api.groq.com/openai/v1",
-    )
-    max_tokens = min(getattr(settings, "EXTRACTION_MAX_TOKENS", 8192), 8192)
-    response = await client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
-        max_tokens=max_tokens,
-        temperature=0,
-    )
-    raw_text = (response.choices[0].message.content or "").strip()
-    if not raw_text:
-        raise RuntimeError("Groq returned an empty response")
-    logger.info("extract_entities[groq]: %s/%s responded", filename, extraction_type)
-    return _parse_json_records(raw_text)
-
 
 async def _extract_with_gemini(
     *,
@@ -1443,7 +1411,6 @@ async def extract_entities(
         ("claude", _extract_with_claude),
         ("openai", _extract_with_openai),
         ("gemini", _extract_with_gemini),
-        ("groq", _extract_with_groq),
     ]
     last_error: Exception | None = None
 

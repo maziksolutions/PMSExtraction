@@ -99,7 +99,6 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     CLAUDE_MODEL_ID: str = "claude-sonnet-4-6"
     GEMINI_API_KEY: str = ""
-    GROQ_API_KEY: str = ""
     EXTRACTION_MAX_TOKENS: int = 32000          # text-mode LLM cap (was 8192 — root cause of 32/226 problem)
     EXTRACTION_VISION_MAX_TOKENS: int = 32000   # vision-mode cap (was hard-coded 16000)
     EXTRACTION_SUFFICIENCY_RETRY: bool = True   # retry at 2× tokens when output is truncated
