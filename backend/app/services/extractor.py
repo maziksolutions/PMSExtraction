@@ -342,8 +342,13 @@ async def _extract_with_claude(
         )
         raw_text: str = message.content[0].text.strip()
         rows = _parse_json_records(raw_text)
-        truncated = message.stop_reason == "max_tokens" or not raw_text.rstrip().endswith("]")
-        if not truncated:
+        # Only retry if the model was genuinely cut off (hit the token limit) or if we
+        # received partial records but the JSON array didn't close. Do NOT retry when
+        # rows==0 and stop_reason is end_turn — Claude returned prose ("no spares found")
+        # rather than [], and doubling the cap won't change that.
+        hard_cutoff = message.stop_reason == "max_tokens"
+        partial_array = len(rows) > 0 and not raw_text.rstrip().endswith("]")
+        if not hard_cutoff and not partial_array:
             logger.info(
                 "extract_entities[claude]: %s/%s rows=%d cap=%d",
                 filename, extraction_type, len(rows), cap,
@@ -877,8 +882,9 @@ async def _extract_entities_from_page_image_with_claude(
             )
             raw_text = message.content[0].text.strip()
             records = _parse_json_records(raw_text)
-            truncated = message.stop_reason == "max_tokens" or not raw_text.rstrip().endswith("]")
-            if not truncated:
+            hard_cutoff = message.stop_reason == "max_tokens"
+            partial_array = len(records) > 0 and not raw_text.rstrip().endswith("]")
+            if not hard_cutoff and not partial_array:
                 break
             logger.warning(
                 "extract_entities[claude-vision]: %s/%s page=%d truncated cap=%d attempt=%d rows=%d — retrying",
