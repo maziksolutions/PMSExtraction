@@ -61,6 +61,10 @@ type InlineSpareEdit = Partial<{
 }>
 
 type BatchSpareFields = {
+  part_name?: string
+  part_number?: string
+  drawing_number?: string
+  drawing_position?: string
   component_id?: string
   spare_assembly?: string
   assembly_description?: string
@@ -619,7 +623,11 @@ const SparesReview: React.FC = () => {
               </button>
             </div>
             <p className="text-xs text-slate-400">Fill only the fields you want to update. Empty fields are ignored.</p>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
+              <input value={batchFields.part_name ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, part_name: e.target.value }))} placeholder="Part name" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
+              <input value={batchFields.part_number ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, part_number: e.target.value }))} placeholder="Part number" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
+              <input value={batchFields.drawing_number ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, drawing_number: e.target.value }))} placeholder="Drawing number" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
+              <input value={batchFields.drawing_position ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, drawing_position: e.target.value }))} placeholder="POS" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
               <select value={batchFields.component_id ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, component_id: e.target.value }))} className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none">
                 <option value="">Component - no change</option>
                 <option value="__unmapped__">Unmapped</option>
