@@ -236,6 +236,27 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 _PAGE_BLOCK_RE = re.compile(r"\[PAGE\s+(\d+)\]\s*\n?(.*?)(?=(?:\n\[PAGE\s+\d+\])|\Z)", re.S)
 
 
+def _extract_json_from_prose(text: str) -> str:
+    """Pull the first JSON array/object out of a response that leads with prose or step-by-step text.
+
+    Claude sometimes wraps its JSON inside markdown code fences and/or precedes it with
+    'STEP 1 — COUNT: ...' analysis. This function finds the actual JSON payload regardless
+    of what comes before or after it.
+    """
+    # Priority 1: content inside ```json ... ``` or ``` ... ``` fences
+    m = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?```", text, re.I)
+    if m:
+        inner = m.group(1).strip()
+        if inner.startswith("[") or inner.startswith("{"):
+            return inner
+    # Priority 2: find the first [ or { and return from there; caller handles truncation
+    for ch in ("[", "{"):
+        idx = text.find(ch)
+        if idx != -1:
+            return text[idx:]
+    return text
+
+
 def _strip_code_fences(raw_text: str) -> str:
     if raw_text.startswith("```"):
         lines = raw_text.splitlines()
@@ -268,6 +289,10 @@ def _recover_partial_json_array(raw_text: str) -> list[dict]:
 
 def _parse_json_records(raw_text: str) -> list[dict]:
     clean = _strip_code_fences(raw_text).strip()
+    # If the response starts with prose (e.g. "I'll carefully scan...") rather than JSON,
+    # extract the embedded array/object before attempting to parse.
+    if not clean.startswith("[") and not clean.startswith("{"):
+        clean = _extract_json_from_prose(raw_text).strip()
     try:
         parsed: Any = json.loads(clean)
     except json.JSONDecodeError:
@@ -779,30 +804,25 @@ async def _extract_entities_from_page_image_with_openai(
         data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
         model_id = getattr(settings, "OPENAI_VISION_MODEL_ID", None) or "gpt-4.1"
         text_instructions = (
-            f"You are looking at a rendered image of physical PDF page {page_no} from '{filename}'. "
-            f"Return ONLY a valid JSON array for {extraction_type} extraction. "
-            f"Use source_page_number={page_no} for every record found on this page. "
-            "ALL output field values MUST be in English only — translate any Japanese, Chinese, or other "
-            "non-English text to English. Never output non-Latin characters in any field."
+            f"Output ONLY a raw JSON array — no prose, no markdown fences, no step-by-step text. "
+            f"Start your response with [ and end with ]. "
+            f"You are extracting {extraction_type} data from PDF page {page_no} of '{filename}'. "
+            f"Use source_page_number={page_no} for every record. "
+            "ALL field values MUST be in English — translate Japanese/Chinese/non-English text. "
+            "Never output non-Latin characters in any field."
         )
         if extraction_type == "spare":
             text_instructions += (
-                "\n\nEXTRACTION STEPS:"
-                "\n  STEP 1 — COUNT: Count every data row visible in this image (excluding column headers). "
-                "Keep that count in mind."
-                "\n  STEP 2 — EXTRACT: Output a JSON record for EVERY row you counted. "
-                "Your output array length MUST equal the row count from Step 1. Do not stop early."
-                "\n\nCRITICAL FOR PARTS TABLES: This image may contain multiple column groups placed side-by-side "
-                "(e.g. 2–4 sets of [REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS] across the width). "
-                "Scan left-to-right across the ENTIRE width — extract from EVERY column group. "
-                "DO NOT stop after reading only the first column group. "
-                "A single page can contain 50–300 parts — extract ALL of them."
-                "\n  • drawing_number → drawing reference at the bottom of the page (e.g. 'CIT-MR-0')"
-                "\n  • drawing_position → REF.NO column value"
-                "\n  • part_number → PC.NO column value"
-                "\n  • part_name → DESCRIPTION column value translated to English"
+                "\n\nCount every data row (excluding column headers), then output exactly that many JSON records. "
+                "Do not stop early. "
+                "\n\nFor multi-column parts tables (REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS "
+                "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
+                "A single page can contain 50-300 parts — extract ALL of them."
+                "\n  • drawing_number → drawing reference at page bottom (e.g. 'CIT-MR-0')"
+                "\n  • drawing_position → REF.NO value"
+                "\n  • part_number → PC.NO value"
+                "\n  • part_name → DESCRIPTION translated to English"
                 "\n  • specification → QTY + REMARKS translated to English"
-                "\nTranslate ALL non-English (Japanese etc.) DESCRIPTION text to English."
             )
         if context_note:
             text_instructions += f"\n\nAdditional context:\n{context_note}"
@@ -864,29 +884,25 @@ async def _extract_entities_from_page_image_with_claude(
         b64_data = base64.b64encode(image_bytes).decode("ascii")
 
         text_instructions = (
-            f"You are looking at a rendered image of physical PDF page {page_no} from '{filename}'. "
-            f"Return ONLY a valid JSON array for {extraction_type} extraction. "
-            f"Use source_page_number={page_no} for every record found on this page. "
-            "ALL output field values MUST be in English only — translate any Japanese, Chinese, or other "
-            "non-English text to English. Never output non-Latin characters in any field."
+            f"Output ONLY a raw JSON array — no prose, no markdown fences, no explanations. "
+            f"Start your response with [ and end with ]. "
+            f"Extract {extraction_type} data from PDF page {page_no} of '{filename}'. "
+            f"Use source_page_number={page_no} for every record. "
+            "ALL field values MUST be in English — translate Japanese/Chinese/non-English text. "
+            "Never output non-Latin characters in any field."
         )
         if extraction_type == "spare":
             text_instructions += (
-                "\n\nEXTRACTION STEPS:"
-                "\n  STEP 1 — COUNT: Count every data row visible in this image (excluding column headers). "
-                "Keep that count in mind."
-                "\n  STEP 2 — EXTRACT: Output a JSON record for EVERY row you counted. "
-                "Your output array length MUST equal the row count from Step 1. Do not stop early."
-                "\n\nCRITICAL FOR PARTS TABLES: This image may contain multiple column groups side-by-side "
-                "(e.g. 2–4 sets of [REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS] across the width). "
-                "Scan left-to-right across the ENTIRE width — extract from EVERY column group. "
-                "DO NOT stop after reading only the first column group."
-                "\n  • drawing_number → drawing reference at the bottom (e.g. 'CIT-MR-0')"
-                "\n  • drawing_position → REF.NO column value"
-                "\n  • part_number → PC.NO column value"
+                "\n\nCount every data row (excluding column headers), then output exactly that many JSON records. "
+                "Do not stop early. "
+                "\n\nFor multi-column parts tables (REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS "
+                "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
+                "A single page can contain 50-300 parts — extract ALL of them."
+                "\n  • drawing_number → drawing reference at page bottom (e.g. 'CIT-MR-0')"
+                "\n  • drawing_position → REF.NO value"
+                "\n  • part_number → PC.NO value"
                 "\n  • part_name → DESCRIPTION translated to English"
                 "\n  • specification → QTY + REMARKS translated to English"
-                "\nTranslate ALL non-English text to English."
             )
         if context_note:
             text_instructions += f"\n\nAdditional context:\n{context_note}"
