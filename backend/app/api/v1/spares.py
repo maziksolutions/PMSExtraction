@@ -224,6 +224,7 @@ async def list_spare_source_files(
             Spare.tenant_id == current_user.tenant_id,
             Spare.is_deleted == False,
             Manual.original_filename.isnot(None),
+            Manual.is_deleted == False,
         )
         .distinct()
         .order_by(Manual.original_filename.asc())
@@ -350,7 +351,9 @@ async def list_spares(
         component_result = await db.execute(select(Component).where(Component.id.in_(component_ids)))
         component_lookup = {component.id: component for component in component_result.scalars().all()}
     if manual_ids:
-        manual_result = await db.execute(select(Manual).where(Manual.id.in_(manual_ids)))
+        manual_result = await db.execute(
+            select(Manual).where(Manual.id.in_(manual_ids), Manual.is_deleted == False)
+        )
         manual_lookup = {manual.id: manual for manual in manual_result.scalars().all()}
 
     items = []

@@ -1047,5 +1047,31 @@ async def delete_manual(
 
     manual.is_deleted = True
     db.add(manual)
+
+    # Cascade soft-delete to all records extracted from this manual so they
+    # no longer appear in the spares/jobs/components lists or PDF filters.
+    from app.models.spare import Spare, ExtractionMethod as _EM
+    from app.models.job import Job
+    from app.models.component import Component
+    await db.execute(
+        update(Spare)
+        .where(
+            Spare.source_manual_id == manual.id,
+            Spare.is_deleted == False,
+            Spare.extraction_method != _EM.manual,
+        )
+        .values(is_deleted=True)
+    )
+    await db.execute(
+        update(Job)
+        .where(Job.source_manual_id == manual.id, Job.is_deleted == False)
+        .values(is_deleted=True)
+    )
+    await db.execute(
+        update(Component)
+        .where(Component.source_manual_id == manual.id, Component.is_deleted == False)
+        .values(is_deleted=True)
+    )
+
     await db.commit()
     return {"deleted": True}
