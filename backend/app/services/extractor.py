@@ -685,11 +685,13 @@ async def _extract_spare_parts_from_image_split(
         strip_bytes = buf.getvalue()
 
         note = (
-            f"You are looking at the {label} of a multi-column parts-list page. "
-            "STEP 1: Count the data rows visible in this strip (not headers). "
-            "STEP 2: Extract EXACTLY that many records — one JSON object per row, do not stop early. "
-            "ALL text must be in English — translate any Japanese/non-English text. "
-            "Never output non-English characters."
+            f"You are looking at ONE COLUMN GROUP (the {label}) of a multi-column parts-list page. "
+            "This strip contains ONE set of REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS columns. "
+            "STEP 1: Count the data rows visible in this strip (rows with part numbers, NOT header rows). "
+            "STEP 2: Extract EXACTLY that many records — one JSON object per row. DO NOT stop early. "
+            "CRITICAL: ALWAYS return a JSON array — never return prose or explanations. "
+            "If all descriptions are in Japanese, translate them to English (best-effort is fine). "
+            "Return [] only if this strip contains zero data rows."
         )
         if context_note:
             note += f" {context_note}"
@@ -723,6 +725,35 @@ async def _extract_spare_parts_from_image_split(
         if key.strip("|"):
             seen.add(key)
         deduped.append(r)
+
+    # Full-page fallback: if all strips returned nothing, try the original full-page image.
+    # Narrow strips can confuse the model on very dense Japanese tables; the full page
+    # gives it the complete table structure and context.
+    if not deduped:
+        logger.warning(
+            "extract_spare_split: %s page=%d all %d strips returned 0 records — trying full page",
+            filename, page_no, len(strip_regions),
+        )
+        full_note = (
+            "This page contains a dense multi-column spare parts table. "
+            "Scan ALL column groups left-to-right across the FULL page width. "
+            "Translate ALL Japanese/non-English descriptions to English. "
+            "Return a JSON array with EVERY row — never return prose."
+        )
+        if context_note:
+            full_note += f" {context_note}"
+        deduped = await _extract_entities_from_page_image(
+            image_bytes=image_bytes,
+            filename=filename,
+            page_no=page_no,
+            extraction_type="spare",
+            context_note=full_note,
+        )
+        logger.info(
+            "extract_spare_split: %s page=%d full-page fallback records=%d",
+            filename, page_no, len(deduped),
+        )
+
     return deduped
 
 
@@ -891,6 +922,11 @@ async def _extract_entities_from_page_image_with_claude(
                 filename, extraction_type, page_no, cap, attempt, len(records),
             )
 
+        if not records:
+            logger.warning(
+                "extract_entities[claude-vision]: %s/%s page=%d 0 records — response preview: %r",
+                filename, extraction_type, page_no, raw_text[:400],
+            )
         for record in records:
             if record.get("source_page_number") in (None, "", 0):
                 record["source_page_number"] = page_no
