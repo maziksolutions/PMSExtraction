@@ -780,11 +780,10 @@ async def snip_extract_spares(
     if not image_bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image file is empty")
 
-    from app.services.extractor import _extract_entities_from_page_image_with_openai
+    from app.services.extractor import _extract_entities_from_page_image
 
-    # Single direct vision call — the user has already cropped to the table area.
-    # Enhancement (contrast/sharpness) is applied inside _extract_entities_from_page_image_with_openai.
-    records = await _extract_entities_from_page_image_with_openai(
+    # Claude vision primary, OpenAI fallback. Enhancement applied inside the vision function.
+    records = await _extract_entities_from_page_image(
         image_bytes=image_bytes,
         filename=image.filename or "snipped_region.png",
         page_no=page_number or 0,

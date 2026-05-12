@@ -605,7 +605,7 @@ async def _extract_spare_parts_from_image_split(
     try:
         from PIL import Image as PILImage
     except ImportError:
-        return await _extract_entities_from_page_image_with_openai(
+        return await _extract_entities_from_page_image(
             image_bytes=image_bytes,
             filename=filename,
             page_no=page_no,
@@ -647,10 +647,7 @@ async def _extract_spare_parts_from_image_split(
         if context_note:
             note += f" {context_note}"
 
-        # Pass raw bytes; _extract_entities_from_page_image_with_openai will NOT
-        # re-enhance since we already enhanced above (pass a flag via context_note
-        # is not needed — slight re-enhancement is harmless and handled gracefully).
-        records = await _extract_entities_from_page_image_with_openai(
+        records = await _extract_entities_from_page_image(
             image_bytes=strip_bytes,
             filename=filename,
             page_no=page_no,
@@ -768,6 +765,123 @@ async def _extract_entities_from_page_image_with_openai(
             _redact_error_message(exc),
         )
         return []
+
+
+async def _extract_entities_from_page_image_with_claude(
+    *,
+    image_bytes: bytes,
+    filename: str,
+    page_no: int,
+    extraction_type: str,
+    context_note: str | None = None,
+) -> list[dict]:
+    if not settings.ANTHROPIC_API_KEY:
+        return []
+
+    image_bytes = _enhance_image_for_extraction(image_bytes)
+    prompt_cfg = DEFAULT_PROMPTS[extraction_type]
+    try:
+        model_id: str = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
+        b64_data = base64.b64encode(image_bytes).decode("ascii")
+
+        text_instructions = (
+            f"You are looking at a rendered image of physical PDF page {page_no} from '{filename}'. "
+            f"Return ONLY a valid JSON array for {extraction_type} extraction. "
+            f"Use source_page_number={page_no} for every record found on this page. "
+            "ALL output field values MUST be in English only — translate any Japanese, Chinese, or other "
+            "non-English text to English. Never output non-Latin characters in any field."
+        )
+        if extraction_type == "spare":
+            text_instructions += (
+                "\n\nEXTRACTION STEPS:"
+                "\n  STEP 1 — COUNT: Count every data row visible in this image (excluding column headers). "
+                "Keep that count in mind."
+                "\n  STEP 2 — EXTRACT: Output a JSON record for EVERY row you counted. "
+                "Your output array length MUST equal the row count from Step 1. Do not stop early."
+                "\n\nCRITICAL FOR PARTS TABLES: This image may contain multiple column groups side-by-side "
+                "(e.g. 2–4 sets of [REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS] across the width). "
+                "Scan left-to-right across the ENTIRE width — extract from EVERY column group. "
+                "DO NOT stop after reading only the first column group."
+                "\n  • drawing_number → drawing reference at the bottom (e.g. 'CIT-MR-0')"
+                "\n  • drawing_position → REF.NO column value"
+                "\n  • part_number → PC.NO column value"
+                "\n  • part_name → DESCRIPTION translated to English"
+                "\n  • specification → QTY + REMARKS translated to English"
+                "\nTranslate ALL non-English text to English."
+            )
+        if context_note:
+            text_instructions += f"\n\nAdditional context:\n{context_note}"
+
+        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        message = await client.messages.create(
+            model=model_id,
+            max_tokens=16000,
+            system=prompt_cfg["system"],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": b64_data,
+                            },
+                        },
+                        {"type": "text", "text": text_instructions},
+                    ],
+                }
+            ],
+        )
+        raw_text = message.content[0].text.strip()
+        records = _parse_json_records(raw_text)
+        for record in records:
+            if record.get("source_page_number") in (None, "", 0):
+                record["source_page_number"] = page_no
+        logger.info(
+            "extract_entities[claude-vision]: %s/%s page=%d records=%d",
+            filename, extraction_type, page_no, len(records),
+        )
+        return records
+    except Exception as exc:
+        logger.warning(
+            "extract_entities[claude-vision]: failed for %s/%s page=%d: %s",
+            filename, extraction_type, page_no, _redact_error_message(exc),
+        )
+        return []
+
+
+async def _extract_entities_from_page_image(
+    *,
+    image_bytes: bytes,
+    filename: str,
+    page_no: int,
+    extraction_type: str,
+    context_note: str | None = None,
+) -> list[dict]:
+    """Try Claude vision first; fall back to OpenAI vision."""
+    if settings.ANTHROPIC_API_KEY:
+        records = await _extract_entities_from_page_image_with_claude(
+            image_bytes=image_bytes,
+            filename=filename,
+            page_no=page_no,
+            extraction_type=extraction_type,
+            context_note=context_note,
+        )
+        if records:
+            return records
+        logger.warning(
+            "extract_entities[claude-vision]: empty result for %s/%s page=%d, falling back to OpenAI",
+            filename, extraction_type, page_no,
+        )
+    return await _extract_entities_from_page_image_with_openai(
+        image_bytes=image_bytes,
+        filename=filename,
+        page_no=page_no,
+        extraction_type=extraction_type,
+        context_note=context_note,
+    )
 
 
 async def _render_selected_pdf_page_images(
@@ -1213,8 +1327,8 @@ async def extract_entities(
     if context_note:
         user_message = f"{user_message}\n\nAdditional extraction context:\n{context_note}"
     providers: list[tuple[str, Any]] = [
-        ("openai", _extract_with_openai),
         ("claude", _extract_with_claude),
+        ("openai", _extract_with_openai),
         ("gemini", _extract_with_gemini),
         ("groq", _extract_with_groq),
     ]
@@ -1930,7 +2044,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                                 context_note=context_note,
                             )
                         else:
-                            vision_records = await _extract_entities_from_page_image_with_openai(
+                            vision_records = await _extract_entities_from_page_image(
                                 image_bytes=image_bytes,
                                 filename=filename,
                                 page_no=page_no,
