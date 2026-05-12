@@ -852,6 +852,9 @@ async def _extract_entities_from_page_image_with_claude(
         return []
 
 
+_claude_vision_billing_failed = False  # module-level circuit breaker; reset on process restart
+
+
 async def _extract_entities_from_page_image(
     *,
     image_bytes: bytes,
@@ -861,20 +864,28 @@ async def _extract_entities_from_page_image(
     context_note: str | None = None,
 ) -> list[dict]:
     """Try Claude vision first; fall back to OpenAI vision."""
-    if settings.ANTHROPIC_API_KEY:
-        records = await _extract_entities_from_page_image_with_claude(
-            image_bytes=image_bytes,
-            filename=filename,
-            page_no=page_no,
-            extraction_type=extraction_type,
-            context_note=context_note,
-        )
-        if records:
-            return records
-        logger.warning(
-            "extract_entities[claude-vision]: empty result for %s/%s page=%d, falling back to OpenAI",
-            filename, extraction_type, page_no,
-        )
+    global _claude_vision_billing_failed
+    if settings.ANTHROPIC_API_KEY and not _claude_vision_billing_failed:
+        try:
+            records = await _extract_entities_from_page_image_with_claude(
+                image_bytes=image_bytes,
+                filename=filename,
+                page_no=page_no,
+                extraction_type=extraction_type,
+                context_note=context_note,
+            )
+            if records:
+                return records
+        except Exception as exc:
+            err_str = str(exc)
+            if "credit balance" in err_str.lower() or "402" in err_str or (
+                "400" in err_str and "credit" in err_str.lower()
+            ):
+                _claude_vision_billing_failed = True
+                logger.warning(
+                    "extract_entities[claude-vision]: billing error — disabling Claude vision for this session, using OpenAI"
+                )
+            # Fall through to OpenAI regardless
     return await _extract_entities_from_page_image_with_openai(
         image_bytes=image_bytes,
         filename=filename,
@@ -1326,6 +1337,7 @@ async def extract_entities(
     user_message = prompt_config["user_template"].format(text=text_chunk, filename=filename)
     if context_note:
         user_message = f"{user_message}\n\nAdditional extraction context:\n{context_note}"
+    _claude_text_billing_failed = _claude_vision_billing_failed  # inherit session circuit breaker
     providers: list[tuple[str, Any]] = [
         ("claude", _extract_with_claude),
         ("openai", _extract_with_openai),
@@ -1335,6 +1347,8 @@ async def extract_entities(
     last_error: Exception | None = None
 
     for provider_name, provider in providers:
+        if provider_name == "claude" and _claude_text_billing_failed:
+            continue
         try:
             records = await provider(
                 system_prompt=system_prompt,
@@ -1361,13 +1375,24 @@ async def extract_entities(
             )
         except Exception as exc:
             last_error = exc
-            logger.warning(
-                "extract_entities: provider=%s failed for %s/%s: %s",
-                provider_name,
-                filename,
-                extraction_type,
-                _redact_error_message(exc),
-            )
+            err_str = str(exc)
+            if provider_name == "claude" and (
+                "credit balance" in err_str.lower() or ("400" in err_str and "credit" in err_str.lower())
+            ):
+                _claude_text_billing_failed = True
+                global _claude_vision_billing_failed
+                _claude_vision_billing_failed = True
+                logger.warning(
+                    "extract_entities: Claude billing error — skipping Claude for remaining providers"
+                )
+            else:
+                logger.warning(
+                    "extract_entities: provider=%s failed for %s/%s: %s",
+                    provider_name,
+                    filename,
+                    extraction_type,
+                    _redact_error_message(exc),
+                )
 
     if last_error is not None:
         message = _redact_error_message(last_error)
