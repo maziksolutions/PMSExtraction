@@ -290,7 +290,6 @@ def _redact_error_message(exc: Exception) -> str:
         getattr(settings, "OPENAI_API_KEY", ""),
         getattr(settings, "ANTHROPIC_API_KEY", ""),
         getattr(settings, "GEMINI_API_KEY", ""),
-        getattr(settings, "GROQ_API_KEY", ""),
     ):
         if secret:
             message = message.replace(secret, "***")

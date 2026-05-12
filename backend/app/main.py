@@ -215,10 +215,9 @@ _startup_log = _logging.getLogger("app.startup")
 @app.on_event("startup")
 async def _log_ai_config() -> None:
     print(
-        f"[AI CONFIG] OPENAI_API_KEY={'SET' if settings.OPENAI_API_KEY else 'NOT SET'} | "
-        f"GROQ_API_KEY={'SET' if settings.GROQ_API_KEY else 'NOT SET'} | "
-        f"GEMINI_API_KEY={'SET' if settings.GEMINI_API_KEY else 'NOT SET'} | "
-        f"ANTHROPIC_API_KEY={'SET' if settings.ANTHROPIC_API_KEY else 'NOT SET'}",
+        f"[AI CONFIG] ANTHROPIC_API_KEY={'SET' if settings.ANTHROPIC_API_KEY else 'NOT SET'} | "
+        f"OPENAI_API_KEY={'SET' if settings.OPENAI_API_KEY else 'NOT SET'} | "
+        f"GEMINI_API_KEY={'SET' if settings.GEMINI_API_KEY else 'NOT SET'}",
         flush=True,
     )
     print(
