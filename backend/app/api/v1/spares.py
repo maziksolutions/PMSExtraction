@@ -377,7 +377,9 @@ async def list_spares(
         payload["spare_model"] = _normalize_spare_text(payload.get("spare_model"), compact=True)
         items.append(payload)
 
-    return {"items": items, "page": page, "page_size": page_size, "total": total}
+    import math
+    total_pages = max(1, math.ceil(total / page_size))
+    return {"items": items, "page": page, "page_size": page_size, "total": total, "total_pages": total_pages}
 
 
 @router.post(
