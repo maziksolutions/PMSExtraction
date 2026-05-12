@@ -293,6 +293,8 @@ async def list_spares(
     total_result = await db.execute(select(_func.count()).select_from(Spare).where(*base_where))
     total: int = total_result.scalar_one()
 
+    from sqlalchemy import cast, Integer, case
+
     sort_columns = {
         "part_name": Spare.part_name,
         "part_number": Spare.part_number,
@@ -306,15 +308,34 @@ async def list_spares(
         "page_reference": Spare.page_reference,
         "created_at": Spare.created_at,
     }
-    order_col = sort_columns.get(sort_by, Spare.part_name)
-    order_expr = order_col.desc() if sort_order == "desc" else order_col.asc()
-    query = (
-        select(Spare)
-        .where(*base_where)
-        .order_by(order_expr, Spare.part_name.asc(), Spare.id.asc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    )
+
+    if sort_by == "page_order":
+        # Sort by page number, then drawing_position numerically (cast where possible), then insertion order
+        numeric_pos = case(
+            (Spare.drawing_position.regexp_match(r"^\d+$"), cast(Spare.drawing_position, Integer)),
+            else_=99999,
+        )
+        query = (
+            select(Spare)
+            .where(*base_where)
+            .order_by(
+                Spare.page_reference.asc().nulls_last(),
+                numeric_pos.asc(),
+                Spare.id.asc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    else:
+        order_col = sort_columns.get(sort_by, Spare.part_name)
+        order_expr = order_col.desc() if sort_order == "desc" else order_col.asc()
+        query = (
+            select(Spare)
+            .where(*base_where)
+            .order_by(order_expr, Spare.page_reference.asc().nulls_last(), Spare.id.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
     result = await db.execute(query)
     spares = result.scalars().all()
 

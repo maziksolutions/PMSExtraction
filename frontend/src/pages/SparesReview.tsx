@@ -280,6 +280,7 @@ const METHOD_COLORS: Record<string, string> = {
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
 const SORT_OPTIONS = [
+  { value: 'page_order', label: 'Page Order' },
   { value: 'part_name', label: 'Part Name' },
   { value: 'part_number', label: 'Part Number' },
   { value: 'drawing_number', label: 'Drawing #' },
@@ -301,7 +302,7 @@ const SparesReview: React.FC = () => {
   const [filterCritical, setFilterCritical] = useState('')
   const [filterSourceFile, setFilterSourceFile] = useState('')
   const [search, setSearch] = useState('')
-  const [sortBy, setSortBy] = useState('part_name')
+  const [sortBy, setSortBy] = useState('page_order')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -735,7 +736,7 @@ const SparesReview: React.FC = () => {
             <option value="asc">Ascending</option>
             <option value="desc">Descending</option>
           </select>
-          {(filterQC || filterMethod || filterCritical || filterSourceFile || search || sortBy !== 'part_name' || sortOrder !== 'asc') && (
+          {(filterQC || filterMethod || filterCritical || filterSourceFile || search || sortBy !== 'page_order' || sortOrder !== 'asc') && (
             <button
               onClick={() => {
                 setFilterQC('')

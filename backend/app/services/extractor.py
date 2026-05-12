@@ -192,7 +192,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "{\n"
             '  "part_name": "exact part name from the document (e.g. \'UV LAMP\', \'O-RING\')",\n'
             '  "part_number": "catalog/part number exactly as printed or null",\n'
-            '  "drawing_number": "figure or drawing reference (e.g. \'Fig.7\', \'SBH-65055\') or null",\n'
+            '  "drawing_number": "DWG.NO or drawing reference from the page title block — read the actual value printed on the page (e.g. \'B3798160-02\', \'Fig.7\') or null",\n'
             '  "drawing_position": "item/position number from the parts table (e.g. \'1\', \'11\') or null",\n'
             '  "specification": "material, size, standard, quantity note (e.g. \'QUARTZ GLASS\', \'RUBBER\', \'STAINLESS STEEL\') or null",\n'
             '  "spare_maker": "manufacturer — if manual is for a specific maker (e.g. TAIKO KIKAI), set that maker for all parts; null only if truly unknown",\n'
@@ -818,7 +818,7 @@ async def _extract_entities_from_page_image_with_openai(
                 "\n\nFor multi-column parts tables (REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS "
                 "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
                 "A single page can contain 50-300 parts — extract ALL of them."
-                "\n  • drawing_number → drawing reference at page bottom (e.g. 'CIT-MR-0')"
+                "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
                 "\n  • drawing_position → REF.NO value"
                 "\n  • part_number → PC.NO value"
                 "\n  • part_name → DESCRIPTION translated to English"
@@ -898,7 +898,7 @@ async def _extract_entities_from_page_image_with_claude(
                 "\n\nFor multi-column parts tables (REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS "
                 "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
                 "A single page can contain 50-300 parts — extract ALL of them."
-                "\n  • drawing_number → drawing reference at page bottom (e.g. 'CIT-MR-0')"
+                "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
                 "\n  • drawing_position → REF.NO value"
                 "\n  • part_number → PC.NO value"
                 "\n  • part_name → DESCRIPTION translated to English"
