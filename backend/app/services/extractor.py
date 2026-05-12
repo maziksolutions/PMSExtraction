@@ -322,17 +322,39 @@ async def _extract_with_claude(
         raise RuntimeError("ANTHROPIC_API_KEY is not configured")
 
     client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-    max_tokens = getattr(settings, "EXTRACTION_MAX_TOKENS", 8192)
+    base_cap: int = getattr(settings, "EXTRACTION_MAX_TOKENS", 32000)
     model_id: str = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
-    message = await client.messages.create(
-        model=model_id,
-        max_tokens=max_tokens,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
+    use_caching: bool = getattr(settings, "EXTRACTION_ENABLE_PROMPT_CACHING", True)
+    sufficiency_retry: bool = getattr(settings, "EXTRACTION_SUFFICIENCY_RETRY", True)
+
+    system_arg: Any = (
+        [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+        if use_caching else system_prompt
     )
-    raw_text: str = message.content[0].text.strip()
-    logger.info("extract_entities[claude]: %s/%s responded", filename, extraction_type)
-    return _parse_json_records(raw_text)
+    caps = [base_cap, min(base_cap * 2, 64000)] if sufficiency_retry else [base_cap]
+
+    rows: list[dict] = []
+    for attempt, cap in enumerate(caps):
+        message = await client.messages.create(
+            model=model_id,
+            max_tokens=cap,
+            system=system_arg,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        raw_text: str = message.content[0].text.strip()
+        rows = _parse_json_records(raw_text)
+        truncated = message.stop_reason == "max_tokens" or not raw_text.rstrip().endswith("]")
+        if not truncated:
+            logger.info(
+                "extract_entities[claude]: %s/%s rows=%d cap=%d",
+                filename, extraction_type, len(rows), cap,
+            )
+            return rows
+        logger.warning(
+            "extract_entities[claude]: %s/%s truncated at cap=%d attempt=%d rows=%d — retrying",
+            filename, extraction_type, cap, attempt, len(rows),
+        )
+    return rows
 
 
 async def _extract_with_openai(
@@ -476,13 +498,15 @@ def _dedupe_records(records: list[dict], extraction_type: str) -> list[dict]:
                 ]
             )
         else:
-            key = "|".join(
-                [
-                    (record.get("part_name") or "").strip().lower(),
-                    (record.get("part_number") or "").strip().lower(),
-                    str(record.get("source_page_number") or ""),
-                ]
-            )
+            # Include drawing_number + drawing_position so distinct parts that share a
+            # part_name but differ by position (e.g. two M3x6 bolts) are not collapsed.
+            key = "|".join([
+                (record.get("part_number") or "").strip().lower(),
+                (record.get("drawing_number") or "").strip().lower(),
+                (record.get("drawing_position") or "").strip().lower(),
+                (record.get("part_name") or "").strip().lower(),
+                str(record.get("source_page_number") or ""),
+            ])
         if key.strip("|") and key in seen:
             continue
         if key.strip("|"):
@@ -589,6 +613,44 @@ async def _ocr_page_with_openai(image_bytes: bytes, filename: str, page_no: int)
         return ""
 
 
+def _detect_column_bands(img: Any, min_gap_px: int = 20) -> list[tuple[int, int]]:
+    """Detect vertical whitespace bands to find natural column group boundaries.
+
+    Returns a list of (x_start, x_end) pixel ranges for each column group.
+    Falls back to an empty list if numpy is unavailable or detection is ambiguous.
+    """
+    try:
+        import numpy as np
+        arr = np.asarray(img.convert("L"))
+        col_density = (arr < 200).mean(axis=0)
+        is_gap = col_density < 0.02
+
+        gaps: list[tuple[int, int]] = []
+        start: int | None = None
+        for x, gap in enumerate(is_gap.tolist()):
+            if gap and start is None:
+                start = x
+            elif not gap and start is not None:
+                if x - start >= min_gap_px:
+                    gaps.append((start, x))
+                start = None
+
+        bands: list[tuple[int, int]] = []
+        prev_end = 0
+        for gap_start, gap_end in gaps:
+            if gap_start - prev_end > min_gap_px * 2:
+                bands.append((prev_end, gap_start))
+            prev_end = gap_end
+        if prev_end < img.width - min_gap_px * 2:
+            bands.append((prev_end, img.width))
+
+        if len(bands) < 2 or len(bands) > 6:
+            return []
+        return bands
+    except Exception:
+        return []
+
+
 async def _extract_spare_parts_from_image_split(
     *,
     image_bytes: bytes,
@@ -596,11 +658,11 @@ async def _extract_spare_parts_from_image_split(
     page_no: int,
     context_note: str | None = None,
 ) -> list[dict]:
-    """Split a dense parts-list page into left/right halves and extract from each.
+    """Split a dense parts-list page into column-group strips and extract from each.
 
-    Japanese spare parts tables typically pack 2-4 column groups side-by-side across
-    the page. A single vision call often reads only the leftmost group and stops.
-    Splitting the image forces the model to focus on each half independently.
+    Uses detected vertical whitespace bands to find natural column splits.
+    Falls back to fixed 4 equal strips when detection is ambiguous.
+    Japanese spare parts tables typically pack 2-4 column groups side-by-side.
     """
     try:
         from PIL import Image as PILImage
@@ -613,26 +675,39 @@ async def _extract_spare_parts_from_image_split(
             context_note=context_note,
         )
 
-    # Crop from original — each strip is enhanced inside _extract_entities_from_page_image_with_openai
     img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
     width, height = img.size
 
-    # 4 vertical strips with 8% overlap — handles pages with 2, 3, or 4 column groups.
-    # Each strip is sent as a separate vision call so the model focuses on one region.
-    n_strips = 4
-    strip_w = width / n_strips
-    overlap_px = int(strip_w * 0.08)
-    strip_labels = [
-        "far-left quarter (columns 1)",
-        "centre-left quarter (columns 2)",
-        "centre-right quarter (columns 3)",
-        "far-right quarter (columns 4)",
-    ]
+    # Try column-aware detection; fall back to fixed 4 equal strips
+    bands = _detect_column_bands(img)
+    if bands:
+        overlap_px = max(8, int(width * 0.01))
+        strip_regions = [
+            (max(0, x1 - overlap_px), min(width, x2 + overlap_px))
+            for x1, x2 in bands
+        ]
+        strip_labels = [f"column group {i + 1} of {len(bands)}" for i in range(len(bands))]
+        logger.info(
+            "extract_spare_split: %s page=%d column-aware bands=%d",
+            filename, page_no, len(bands),
+        )
+    else:
+        n_strips = 4
+        strip_w = width / n_strips
+        overlap_px = int(strip_w * 0.08)
+        strip_regions = [
+            (max(0, int(i * strip_w) - overlap_px), min(width, int((i + 1) * strip_w) + overlap_px))
+            for i in range(n_strips)
+        ]
+        strip_labels = [
+            "far-left quarter (columns 1)",
+            "centre-left quarter (columns 2)",
+            "centre-right quarter (columns 3)",
+            "far-right quarter (columns 4)",
+        ]
 
     all_records: list[dict] = []
-    for idx, label in enumerate(strip_labels):
-        x1 = max(0, int(idx * strip_w) - overlap_px)
-        x2 = min(width, int((idx + 1) * strip_w) + overlap_px)
+    for (x1, x2), label in zip(strip_regions, strip_labels):
         buf = io.BytesIO()
         img.crop((x1, 0, x2, height)).save(buf, format="PNG")
         strip_bytes = buf.getvalue()
@@ -655,24 +730,25 @@ async def _extract_spare_parts_from_image_split(
             context_note=note,
         )
         logger.info(
-            "extract_spare_split[openai]: %s page=%d strip=%s records=%d",
-            filename,
-            page_no,
-            label,
-            len(records),
+            "extract_spare_split: %s page=%d strip=%s records=%d",
+            filename, page_no, label, len(records),
         )
         all_records.extend(records)
 
-    # Deduplicate by part_number → drawing_position → part_name
+    # Deduplicate using the full key: part_number + drawing_number + drawing_position + part_name + page
     seen: set[str] = set()
     deduped: list[dict] = []
     for r in all_records:
-        key = str(
-            r.get("part_number") or r.get("drawing_position") or r.get("part_name") or ""
-        ).strip().lower()
-        if key and key in seen:
+        key = "|".join([
+            (r.get("part_number") or "").strip().lower(),
+            (r.get("drawing_number") or "").strip().lower(),
+            (r.get("drawing_position") or "").strip().lower(),
+            (r.get("part_name") or "").strip().lower(),
+            str(r.get("source_page_number") or ""),
+        ])
+        if key.strip("|") and key in seen:
             continue
-        if key:
+        if key.strip("|"):
             seen.add(key)
         deduped.append(r)
     return deduped
@@ -813,29 +889,35 @@ async def _extract_entities_from_page_image_with_claude(
             text_instructions += f"\n\nAdditional context:\n{context_note}"
 
         client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-        message = await client.messages.create(
-            model=model_id,
-            max_tokens=16000,
-            system=prompt_cfg["system"],
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": b64_data,
-                            },
-                        },
-                        {"type": "text", "text": text_instructions},
-                    ],
-                }
-            ],
-        )
-        raw_text = message.content[0].text.strip()
-        records = _parse_json_records(raw_text)
+        vision_cap: int = getattr(settings, "EXTRACTION_VISION_MAX_TOKENS", 32000)
+        sufficiency_retry: bool = getattr(settings, "EXTRACTION_SUFFICIENCY_RETRY", True)
+        caps = [vision_cap, min(vision_cap * 2, 64000)] if sufficiency_retry else [vision_cap]
+
+        user_content = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": b64_data},
+            },
+            {"type": "text", "text": text_instructions},
+        ]
+        records: list[dict] = []
+        for attempt, cap in enumerate(caps):
+            message = await client.messages.create(
+                model=model_id,
+                max_tokens=cap,
+                system=prompt_cfg["system"],
+                messages=[{"role": "user", "content": user_content}],
+            )
+            raw_text = message.content[0].text.strip()
+            records = _parse_json_records(raw_text)
+            truncated = message.stop_reason == "max_tokens" or not raw_text.rstrip().endswith("]")
+            if not truncated:
+                break
+            logger.warning(
+                "extract_entities[claude-vision]: %s/%s page=%d truncated cap=%d attempt=%d rows=%d — retrying",
+                filename, extraction_type, page_no, cap, attempt, len(records),
+            )
+
         for record in records:
             if record.get("source_page_number") in (None, "", 0):
                 record["source_page_number"] = page_no
@@ -934,10 +1016,28 @@ async def _enrich_pdf_text_for_selected_pages(
     page_count: int,
 ) -> str:
     page_lookup = {page_no: page_body for page_no, page_body in _split_marked_pages(full_text)}
+    _SPARSE_TABLE_HEADERS = re.compile(
+        r"(PC\.?\s*NO|REF\.?\s*NO|DESCRIPTION|PART\s+NO|QTY|REMARKS|CODE\s+NO)",
+        re.I,
+    )
+
+    def _page_needs_ocr(text: str) -> bool:
+        text = (text or "").strip()
+        if len(text) < 120:
+            return True
+        # Text is present but looks like a garbled multi-column table: headers found but very few data rows
+        if _SPARSE_TABLE_HEADERS.search(text):
+            lines = [l for l in text.splitlines() if l.strip()]
+            header_count = sum(1 for l in lines if _SPARSE_TABLE_HEADERS.search(l))
+            data_lines = len(lines) - header_count
+            if data_lines < 10:
+                return True
+        return False
+
     target_pages = [
         page_no
         for page_no in selected_pages
-        if len((page_lookup.get(page_no) or "").strip()) < 120
+        if _page_needs_ocr(page_lookup.get(page_no))
     ]
     if not target_pages:
         return full_text

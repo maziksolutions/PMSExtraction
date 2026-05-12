@@ -100,7 +100,10 @@ class Settings(BaseSettings):
     CLAUDE_MODEL_ID: str = "claude-sonnet-4-6"
     GEMINI_API_KEY: str = ""
     GROQ_API_KEY: str = ""
-    EXTRACTION_MAX_TOKENS: int = 8192
+    EXTRACTION_MAX_TOKENS: int = 32000          # text-mode LLM cap (was 8192 — root cause of 32/226 problem)
+    EXTRACTION_VISION_MAX_TOKENS: int = 32000   # vision-mode cap (was hard-coded 16000)
+    EXTRACTION_SUFFICIENCY_RETRY: bool = True   # retry at 2× tokens when output is truncated
+    EXTRACTION_ENABLE_PROMPT_CACHING: bool = True  # wrap system prompt in cache_control (requires anthropic>=0.40)
     EXTRACTION_CHUNK_CHARS: int = 14000
     EXTRACTION_CHUNK_OVERLAP_CHARS: int = 500
     MANUAL_EXTRACTION_CONCURRENCY: int = 4
