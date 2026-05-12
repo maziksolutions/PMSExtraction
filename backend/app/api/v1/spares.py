@@ -889,3 +889,407 @@ async def snip_save_spares(
         )
 
     return {"saved": len(saved_spares)}
+
+
+# ---------------------------------------------------------------------------
+# QC Review Export / Import
+# ---------------------------------------------------------------------------
+
+_QC_VALUES = ["accepted", "rejected", "modified", "pending"]
+
+_COMP_HEADERS = [
+    "ID", "PDF File", "Page", "Component Name", "Main Machinery",
+    "Group 1", "Group 2", "Maker", "Model", "Location",
+    "Current QC", "Reviewer QC", "Reviewer Notes",
+]
+_JOB_HEADERS = [
+    "ID", "PDF File", "Page", "Component", "Job Name", "Job Code",
+    "Frequency", "Frequency Type", "Performing Rank", "Description",
+    "Current QC", "Reviewer QC", "Reviewer Notes",
+]
+_SPARE_HEADERS = [
+    "ID", "PDF File", "Page", "Component", "Part Name", "Part Number",
+    "Drawing #", "POS", "Specification", "Maker", "Spare Model",
+    "Current QC", "Reviewer QC", "Reviewer Notes",
+]
+
+_QC_COLORS = {
+    "accepted": "C6EFCE",
+    "rejected": "FFC7CE",
+    "modified": "FFEB9C",
+    "pending": "DDEBF7",
+}
+
+
+def _qc_review_workbook(
+    vessel_name: str,
+    components: list,
+    jobs: list,
+    spares: list,
+    component_lookup: dict,
+    manual_lookup: dict,
+) -> bytes:
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    HEADER_FILL = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+    HEADER_FONT = Font(color="FFFFFF", bold=True, size=10)
+    EDIT_FILL = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    ALT_FILL = PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid")
+    thin = Side(style="thin", color="CCCCCC")
+    BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    qc_dv = DataValidation(
+        type="list",
+        formula1='"accepted,rejected,modified,pending"',
+        showDropDown=False,
+        allow_blank=True,
+    )
+
+    wb = openpyxl.Workbook()
+
+    # ── Instructions sheet ──────────────────────────────────────────────────
+    ins = wb.active
+    ins.title = "Instructions"
+    ins["A1"] = f"QC Review Export — {vessel_name}"
+    ins["A1"].font = Font(bold=True, size=14, color="1E3A5F")
+    ins["A3"] = "HOW TO USE THIS FILE"
+    ins["A3"].font = Font(bold=True, size=11)
+    for i, line in enumerate([
+        "1. Open the Components, Jobs, or Spares sheet.",
+        "2. Locate the row using the PDF File and Page columns to find the item in the original manual.",
+        "3. In the 'Reviewer QC' column, select: accepted / rejected / modified  (leave blank to skip).",
+        "4. Optionally add a comment in the 'Reviewer Notes' column.",
+        "5. Save the file and upload it back via the 'Import QC Feedback' button on the Export page.",
+        "",
+        "IMPORTANT: Do not change the ID column or add/remove rows.",
+        "Only the 'Reviewer QC' and 'Reviewer Notes' columns are read during import.",
+    ], start=5):
+        ins[f"A{i}"] = line
+    ins.column_dimensions["A"].width = 90
+
+    def _write_sheet(ws, headers, rows, reviewer_col_idx):
+        ws.add_data_validation(qc_dv)
+        # Header row
+        for c, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=c, value=h)
+            cell.fill = HEADER_FILL
+            cell.font = HEADER_FONT
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = BORDER
+        ws.row_dimensions[1].height = 30
+        ws.freeze_panes = "A2"
+
+        rev_col_letter = get_column_letter(reviewer_col_idx)
+        note_col_letter = get_column_letter(reviewer_col_idx + 1)
+
+        for r, row_data in enumerate(rows, 2):
+            qc_val = str(row_data[10] or "pending").lower()  # Current QC always at index 10
+            fill = ALT_FILL if r % 2 == 0 else PatternFill(fill_type=None)
+            for c, val in enumerate(row_data, 1):
+                cell = ws.cell(row=r, column=c, value=val)
+                cell.border = BORDER
+                cell.alignment = Alignment(vertical="center", wrap_text=(c == len(headers)))
+                # Current QC colour
+                if c == reviewer_col_idx - 1:
+                    color = _QC_COLORS.get(qc_val, "DDEBF7")
+                    cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+                elif c == reviewer_col_idx:
+                    cell.fill = EDIT_FILL
+                elif c == reviewer_col_idx + 1:
+                    cell.fill = EDIT_FILL
+                else:
+                    cell.fill = fill
+            # Attach dropdown validation to reviewer QC cell
+            qc_dv.add(ws[f"{rev_col_letter}{r}"])
+
+        # Auto-width (capped)
+        for col in ws.columns:
+            vals = [str(cell.value or "") for cell in col]
+            width = min(max(len(v) for v in vals) + 4, 45)
+            ws.column_dimensions[col[0].column_letter].width = max(width, 10)
+        # Notes column wider
+        ws.column_dimensions[note_col_letter].width = 30
+
+    # ── Components sheet ────────────────────────────────────────────────────
+    ws_comp = wb.create_sheet("Components")
+    comp_rows = []
+    for comp in components:
+        manual_name = manual_lookup.get(comp.source_manual_id, "")
+        comp_rows.append([
+            str(comp.id),
+            manual_name,
+            comp.page_reference or "",
+            comp.component_name or "",
+            comp.main_machinery or "",
+            comp.group1 or "",
+            comp.group2 or "",
+            comp.maker or "",
+            comp.model or "",
+            comp.location or "",
+            comp.qc_status.value if hasattr(comp.qc_status, "value") else str(comp.qc_status),
+            "",  # Reviewer QC
+            "",  # Reviewer Notes
+        ])
+    _write_sheet(ws_comp, _COMP_HEADERS, comp_rows, reviewer_col_idx=12)
+
+    # ── Jobs sheet ──────────────────────────────────────────────────────────
+    ws_jobs = wb.create_sheet("Jobs")
+    job_rows = []
+    for job in jobs:
+        comp = component_lookup.get(job.component_id)
+        comp_name = comp.component_name if comp else ""
+        freq_str = f"{job.frequency} {job.frequency_type.value}" if job.frequency and job.frequency_type else (str(job.frequency) if job.frequency else "")
+        job_rows.append([
+            str(job.id),
+            job.pdf_reference or "",
+            job.page_reference or "",
+            comp_name,
+            job.job_name or "",
+            job.job_code or "",
+            job.frequency or "",
+            job.frequency_type.value if job.frequency_type else "",
+            job.performing_rank or "",
+            (job.job_description or "")[:300],
+            job.qc_status.value if hasattr(job.qc_status, "value") else str(job.qc_status),
+            "",  # Reviewer QC
+            "",  # Reviewer Notes
+        ])
+    _write_sheet(ws_jobs, _JOB_HEADERS, job_rows, reviewer_col_idx=12)
+
+    # ── Spares sheet ────────────────────────────────────────────────────────
+    ws_spares = wb.create_sheet("Spares")
+    spare_rows = []
+    for spare in spares:
+        comp = component_lookup.get(spare.component_id)
+        comp_name = comp.component_name if comp else ""
+        manual_name = manual_lookup.get(spare.source_manual_id, "")
+        spare_rows.append([
+            str(spare.id),
+            manual_name,
+            spare.page_reference or "",
+            comp_name,
+            spare.part_name or "",
+            spare.part_number or "",
+            spare.drawing_number or "",
+            spare.drawing_position or "",
+            spare.specification or "",
+            spare.spare_maker or "",
+            spare.spare_model or "",
+            spare.qc_status.value if hasattr(spare.qc_status, "value") else str(spare.qc_status),
+            "",  # Reviewer QC
+            "",  # Reviewer Notes
+        ])
+    _write_sheet(ws_spares, _SPARE_HEADERS, spare_rows, reviewer_col_idx=13)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@router.get("/{vessel_id}/spares/qc-export", summary="Export Components, Jobs and Spares for QC review")
+async def export_qc_review(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Response:
+    from fastapi.responses import StreamingResponse
+    import io
+    from app.models.component import Component
+    from app.models.ingestion import Manual
+    from app.models.job import Job
+
+    vessel = await _get_vessel_or_404(vessel_id, db)
+    vessel_name = getattr(vessel, "vessel_name", None) or getattr(vessel, "name", None) or str(vessel_id)
+
+    comps_result = await db.execute(
+        select(Component).where(
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == current_user.tenant_id,
+            Component.is_deleted == False,
+        ).order_by(Component.main_machinery, Component.component_name)
+    )
+    components = list(comps_result.scalars().all())
+
+    jobs_result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == current_user.tenant_id,
+            Job.is_deleted == False,
+        ).order_by(Job.pdf_reference, Job.page_reference, Job.job_name)
+    )
+    jobs = list(jobs_result.scalars().all())
+
+    spares_result = await db.execute(
+        select(Spare).where(
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == current_user.tenant_id,
+            Spare.is_deleted == False,
+        ).order_by(Spare.source_manual_id, Spare.page_reference, Spare.drawing_position)
+    )
+    spares = list(spares_result.scalars().all())
+
+    # Build lookup maps
+    all_component_ids = (
+        {c.id for c in components}
+        | {j.component_id for j in jobs if j.component_id}
+        | {s.component_id for s in spares if s.component_id}
+    )
+    all_manual_ids = (
+        {c.source_manual_id for c in components if c.source_manual_id}
+        | {s.source_manual_id for s in spares if s.source_manual_id}
+    )
+
+    component_lookup: dict = {}
+    if all_component_ids:
+        cr = await db.execute(select(Component).where(Component.id.in_(all_component_ids)))
+        component_lookup = {c.id: c for c in cr.scalars().all()}
+
+    manual_lookup: dict = {}
+    if all_manual_ids:
+        mr = await db.execute(
+            select(Manual).where(Manual.id.in_(all_manual_ids), Manual.is_deleted == False)
+        )
+        manual_lookup = {m.id: m.original_filename for m in mr.scalars().all()}
+
+    xlsx_bytes = _qc_review_workbook(
+        vessel_name=vessel_name,
+        components=components,
+        jobs=jobs,
+        spares=spares,
+        component_lookup=component_lookup,
+        manual_lookup=manual_lookup,
+    )
+
+    safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
+    filename = f"QC_Review_{safe_name}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/{vessel_id}/spares/qc-import", summary="Import QC feedback from review Excel")
+async def import_qc_review(
+    vessel_id: uuid.UUID,
+    file: UploadFile,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    from app.models.component import Component
+    from app.models.job import Job
+
+    await _get_vessel_or_404(vessel_id, db)
+
+    content = await file.read()
+    try:
+        import io
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid Excel file.")
+
+    valid_qc = set(_QC_VALUES)
+    updated = {"components": 0, "jobs": 0, "spares": 0}
+
+    def _parse_sheet(ws, id_col=0, qc_col=11, note_col=12):
+        rows = []
+        for i, row in enumerate(ws.iter_rows(values_only=True)):
+            if i == 0:
+                continue  # skip header
+            if not row or not row[id_col]:
+                continue
+            raw_id = str(row[id_col]).strip()
+            raw_qc = str(row[qc_col] or "").strip().lower()
+            raw_note = str(row[note_col] or "").strip() if len(row) > note_col else ""
+            if not raw_id:
+                continue
+            rows.append((raw_id, raw_qc, raw_note))
+        return rows
+
+    # ── Components sheet ──
+    if "Components" in wb.sheetnames:
+        rows = _parse_sheet(wb["Components"], id_col=0, qc_col=11, note_col=12)
+        for raw_id, raw_qc, _ in rows:
+            if raw_qc not in valid_qc:
+                continue
+            try:
+                entity_id = uuid.UUID(raw_id)
+            except ValueError:
+                continue
+            result = await db.execute(
+                select(Component).where(
+                    Component.id == entity_id,
+                    Component.vessel_id == vessel_id,
+                    Component.tenant_id == current_user.tenant_id,
+                    Component.is_deleted == False,
+                )
+            )
+            obj = result.scalar_one_or_none()
+            if obj and obj.qc_status.value != raw_qc:
+                obj.qc_status = QCStatus(raw_qc)
+                db.add(obj)
+                updated["components"] += 1
+
+    # ── Jobs sheet ──
+    if "Jobs" in wb.sheetnames:
+        rows = _parse_sheet(wb["Jobs"], id_col=0, qc_col=11, note_col=12)
+        for raw_id, raw_qc, _ in rows:
+            if raw_qc not in valid_qc:
+                continue
+            try:
+                entity_id = uuid.UUID(raw_id)
+            except ValueError:
+                continue
+            result = await db.execute(
+                select(Job).where(
+                    Job.id == entity_id,
+                    Job.vessel_id == vessel_id,
+                    Job.tenant_id == current_user.tenant_id,
+                    Job.is_deleted == False,
+                )
+            )
+            obj = result.scalar_one_or_none()
+            if obj and obj.qc_status.value != raw_qc:
+                obj.qc_status = QCStatus(raw_qc)
+                db.add(obj)
+                updated["jobs"] += 1
+
+    # ── Spares sheet ──
+    if "Spares" in wb.sheetnames:
+        rows = _parse_sheet(wb["Spares"], id_col=0, qc_col=12, note_col=13)
+        for raw_id, raw_qc, _ in rows:
+            if raw_qc not in valid_qc:
+                continue
+            try:
+                entity_id = uuid.UUID(raw_id)
+            except ValueError:
+                continue
+            result = await db.execute(
+                select(Spare).where(
+                    Spare.id == entity_id,
+                    Spare.vessel_id == vessel_id,
+                    Spare.tenant_id == current_user.tenant_id,
+                    Spare.is_deleted == False,
+                )
+            )
+            obj = result.scalar_one_or_none()
+            if obj and obj.qc_status.value != raw_qc:
+                obj.qc_status = QCStatus(raw_qc)
+                db.add(obj)
+                updated["spares"] += 1
+
+    total = sum(updated.values())
+    if total:
+        await db.commit()
+
+    return {
+        "updated": total,
+        "components": updated["components"],
+        "jobs": updated["jobs"],
+        "spares": updated["spares"],
+    }

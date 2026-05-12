@@ -1,7 +1,7 @@
 import React, { useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Download, Upload, CheckCircle, AlertTriangle, FileText } from 'lucide-react'
+import { Download, Upload, CheckCircle, AlertTriangle, FileText, ClipboardList } from 'lucide-react'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
 import { UserRole } from '@/types'
@@ -20,8 +20,11 @@ const Export: React.FC = () => {
   const queryClient = useQueryClient()
   const { user } = useAuthStore()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const qcImportRef = useRef<HTMLInputElement>(null)
   const [downloadError, setDownloadError] = React.useState<string | null>(null)
   const [downloadMessage, setDownloadMessage] = React.useState<string | null>(null)
+  const [qcImportResult, setQcImportResult] = React.useState<{ updated: number; components: number; jobs: number; spares: number } | null>(null)
+  const [qcImportError, setQcImportError] = React.useState<string | null>(null)
 
   const directFormats = [
     { key: 'component_master', label: 'Component Master', filename: 'ship_component_master.xlsx' },
@@ -113,6 +116,56 @@ const Export: React.FC = () => {
     URL.revokeObjectURL(url)
     setDownloadError(null)
     setDownloadMessage(`${filename} downloaded successfully.`)
+  }
+
+  const handleQcExport = async () => {
+    setDownloadError(null)
+    try {
+      const res = await apiClient.get(`/vessels/${vesselId}/spares/qc-export`, { responseType: 'blob' })
+      const disposition = res.headers['content-disposition'] ?? ''
+      const match = disposition.match(/filename="?([^"]+)"?/)
+      const filename = match ? match[1] : 'QC_Review.xlsx'
+      const url = URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e: any) {
+      setDownloadError(e?.response?.data?.detail ?? e?.message ?? 'QC export failed.')
+    }
+  }
+
+  const qcImportMutation = useMutation({
+    mutationFn: (file: File) => {
+      const fd = new FormData()
+      fd.append('file', file)
+      return apiClient
+        .post(`/vessels/${vesselId}/spares/qc-import`, fd, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+        .then((r) => r.data)
+    },
+    onSuccess: (data) => {
+      setQcImportResult(data)
+      setQcImportError(null)
+    },
+    onError: (e: any) => {
+      setQcImportError(e?.response?.data?.detail ?? e?.message ?? 'Import failed.')
+      setQcImportResult(null)
+    },
+  })
+
+  const handleQcImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      setQcImportResult(null)
+      setQcImportError(null)
+      qcImportMutation.mutate(file)
+    }
+    e.target.value = ''
   }
 
   const versions: ExportVersion[] = exportsData?.items ?? []
@@ -233,6 +286,56 @@ const Export: React.FC = () => {
               <Download className="h-4 w-4 text-sky-400" />
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* ── QC Review Export ── */}
+      <div className="rounded-xl border border-violet-800 bg-violet-900/10 p-5 space-y-4">
+        <div className="flex items-start gap-3">
+          <ClipboardList className="mt-0.5 h-5 w-5 shrink-0 text-violet-400" />
+          <div>
+            <h2 className="text-base font-semibold text-violet-200">QC Review Export</h2>
+            <p className="mt-1 text-sm text-violet-300/70">
+              Download an Excel workbook with all extracted Components, Jobs, and Spares — including PDF file name
+              and page number for each item. Your team fills in the <strong>Reviewer&nbsp;QC</strong> column
+              (accepted&nbsp;/&nbsp;rejected&nbsp;/&nbsp;modified) offline, then uploads the file back to apply the feedback in bulk.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={handleQcExport}
+            className="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500"
+          >
+            <Download className="h-4 w-4" />
+            Download QC Review Sheet
+          </button>
+
+          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-violet-700 px-4 py-2 text-sm font-medium text-violet-200 hover:bg-violet-800/40">
+            <Upload className="h-4 w-4" />
+            {qcImportMutation.isPending ? 'Importing…' : 'Import QC Feedback'}
+            <input ref={qcImportRef} type="file" accept=".xlsx" className="hidden" onChange={handleQcImport} />
+          </label>
+        </div>
+
+        {qcImportResult && (
+          <div className="rounded-lg border border-green-700 bg-green-900/20 px-4 py-3 text-sm text-green-300">
+            <span className="font-semibold">{qcImportResult.updated} record(s) updated</span>
+            {' — '}Components: {qcImportResult.components} · Jobs: {qcImportResult.jobs} · Spares: {qcImportResult.spares}
+          </div>
+        )}
+        {qcImportError && (
+          <div className="rounded-lg border border-red-700 bg-red-900/20 px-4 py-3 text-sm text-red-300">
+            {qcImportError}
+          </div>
+        )}
+
+        <div className="rounded-lg bg-slate-800/50 px-4 py-3 text-xs text-slate-400 space-y-1">
+          <p className="font-medium text-slate-300">How it works</p>
+          <p>1. Download the sheet — each row shows PDF File + Page number so the reviewer can open the manual side-by-side.</p>
+          <p>2. In the <em>Reviewer QC</em> column, type: <code className="text-violet-300">accepted</code> / <code className="text-violet-300">rejected</code> / <code className="text-violet-300">modified</code>. Leave blank to skip.</p>
+          <p>3. Upload the filled-in file. QC statuses are updated instantly — only rows with a valid Reviewer QC value are changed.</p>
         </div>
       </div>
 
