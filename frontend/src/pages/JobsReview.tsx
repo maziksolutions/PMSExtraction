@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useCallback } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, CheckCircle, Copy, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Upload, XCircle } from 'lucide-react'
+import { AlertCircle, CheckCircle, Copy, Download, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Upload, XCircle } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 import ResizableSplitView from '@/components/layout/ResizableSplitView'
@@ -740,6 +740,20 @@ const JobsReview: React.FC = () => {
     <div className="text-sm text-slate-500">Select a job to review it side by side with the PDF preview.</div>
   )
 
+  const handleQcExport = async () => {
+    try {
+      const res = await apiClient.get(`/vessels/${vesselId}/spares/qc-export`, { responseType: 'blob' })
+      const disposition = res.headers['content-disposition'] ?? ''
+      const match = disposition.match(/filename="?([^"]+)"?/)
+      const filename = match ? match[1] : 'QC_Review.xlsx'
+      const url = URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url; a.download = filename
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(url)
+    } catch { /* silent */ }
+  }
+
   return (
     <>
       <ResizableSplitView
@@ -778,6 +792,14 @@ const JobsReview: React.FC = () => {
                   Merge Selected
                 </button>
             ) : null}
+            <button
+              onClick={handleQcExport}
+              title="Download QC Review Sheet (all spares, jobs & components with PDF page refs)"
+              className="flex items-center gap-1.5 rounded-lg border border-violet-700 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-slate-800"
+            >
+              <Download className="h-3.5 w-3.5" />
+              QC Export
+            </button>
             <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
               <Upload className="h-3.5 w-3.5" />
               Upload CMS Mapping

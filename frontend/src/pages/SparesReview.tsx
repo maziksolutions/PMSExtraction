@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil, Scissors } from 'lucide-react'
+import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil, Scissors, Download } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 import ResizableSplitView from '@/components/layout/ResizableSplitView'
@@ -535,6 +535,20 @@ const SparesReview: React.FC = () => {
     <div className="text-sm text-slate-500">Select a spare to review it against the source PDF.</div>
   )
 
+  const handleQcExport = async () => {
+    try {
+      const res = await apiClient.get(`/vessels/${vesselId}/spares/qc-export`, { responseType: 'blob' })
+      const disposition = res.headers['content-disposition'] ?? ''
+      const match = disposition.match(/filename="?([^"]+)"?/)
+      const filename = match ? match[1] : 'QC_Review.xlsx'
+      const url = URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url; a.download = filename
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(url)
+    } catch { /* silent — server error will surface in network tab */ }
+  }
+
   return (
     <>
     <ResizableSplitView
@@ -575,6 +589,14 @@ const SparesReview: React.FC = () => {
                 </button>
               </>
             )}
+            <button
+              onClick={handleQcExport}
+              title="Download QC Review Sheet (all spares, jobs & components with PDF page refs)"
+              className="flex items-center gap-1.5 rounded-lg border border-violet-700 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-slate-800"
+            >
+              <Download className="h-3.5 w-3.5" />
+              QC Export
+            </button>
             <button
               onClick={() => setShowSnipModal(true)}
               className="flex items-center gap-1.5 rounded-lg border border-sky-700 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-800"
