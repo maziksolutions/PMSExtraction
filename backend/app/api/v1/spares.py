@@ -407,6 +407,176 @@ async def list_spares(
     return {"items": items, "page": page, "page_size": page_size, "total": total, "total_pages": total_pages}
 
 
+@router.get("/{vessel_id}/spares/export", summary="Export spares review data")
+async def export_spares(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    component_id: Optional[uuid.UUID] = Query(None),
+    extraction_method: Optional[str] = Query(None),
+    qc_status: Optional[str] = Query(None),
+    is_critical: Optional[bool] = Query(None),
+    pdf_reference: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("part_name"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
+) -> Response:
+    import io
+    import openpyxl
+    from fastapi.responses import StreamingResponse
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from sqlalchemy import Integer, case, cast, func, or_
+    from app.models.component import Component
+    from app.models.ingestion import Manual
+
+    vessel = await _get_vessel_or_404(vessel_id, db)
+
+    base_where = [
+        Spare.vessel_id == vessel_id,
+        Spare.tenant_id == current_user.tenant_id,
+        Spare.is_deleted == False,
+    ]
+    if component_id:
+        base_where.append(Spare.component_id == component_id)
+    if extraction_method:
+        try:
+            base_where.append(Spare.extraction_method == ExtractionMethod(extraction_method))
+        except ValueError:
+            pass
+    if qc_status:
+        try:
+            base_where.append(Spare.qc_status == QCStatus(qc_status))
+        except ValueError:
+            pass
+    if is_critical is not None:
+        base_where.append(Spare.is_critical == is_critical)
+    if pdf_reference:
+        manual_id_result = await db.execute(
+            select(Manual.id).where(
+                Manual.vessel_id == vessel_id,
+                Manual.original_filename == pdf_reference,
+                Manual.is_deleted == False,
+            )
+        )
+        matched_ids = [row[0] for row in manual_id_result.all()]
+        base_where.append(Spare.source_manual_id.in_(matched_ids) if matched_ids else (Spare.id == None))
+    if search:
+        base_where.append(
+            or_(
+                Spare.part_name.ilike(f"%{search}%"),
+                Spare.part_number.ilike(f"%{search}%"),
+                Spare.spare_maker.ilike(f"%{search}%"),
+            )
+        )
+
+    sort_columns = {
+        "part_name": Spare.part_name,
+        "part_number": Spare.part_number,
+        "drawing_number": Spare.drawing_number,
+        "drawing_position": Spare.drawing_position,
+        "spare_maker": Spare.spare_maker,
+        "component": Spare.component_id,
+        "extraction_method": Spare.extraction_method,
+        "criticality": Spare.is_critical,
+        "qc_status": Spare.qc_status,
+        "page_reference": Spare.page_reference,
+        "created_at": Spare.created_at,
+    }
+    if sort_by == "page_order":
+        leading_digits = func.nullif(func.substring(Spare.drawing_position, r'^\d+'), '')
+        numeric_pos = case(
+            (leading_digits.isnot(None), cast(leading_digits, Integer)),
+            else_=99999,
+        )
+        query = (
+            select(Spare)
+            .where(*base_where)
+            .order_by(
+                Spare.page_reference.asc().nulls_last(),
+                numeric_pos.asc(),
+                Spare.id.asc(),
+            )
+        )
+    else:
+        order_col = sort_columns.get(sort_by, Spare.part_name)
+        order_expr = order_col.desc() if sort_order == "desc" else order_col.asc()
+        query = (
+            select(Spare)
+            .where(*base_where)
+            .order_by(order_expr, Spare.page_reference.asc().nulls_last(), Spare.id.asc())
+        )
+    result = await db.execute(query)
+    spares = result.scalars().all()
+
+    component_ids = {spare.component_id for spare in spares if spare.component_id}
+    manual_ids = {spare.source_manual_id for spare in spares if spare.source_manual_id}
+
+    component_lookup: dict[uuid.UUID, Component] = {}
+    manual_lookup: dict[uuid.UUID, Manual] = {}
+
+    if component_ids:
+        component_result = await db.execute(select(Component).where(Component.id.in_(component_ids)))
+        component_lookup = {component.id: component for component in component_result.scalars().all()}
+    if manual_ids:
+        manual_result = await db.execute(
+            select(Manual).where(Manual.id.in_(manual_ids), Manual.is_deleted == False)
+        )
+        manual_lookup = {manual.id: manual for manual in manual_result.scalars().all()}
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Spares"
+
+    headers = [
+        "ID", "PDF File", "Page", "Component", "Part Name", "Part Number",
+        "Drawing #", "POS", "Specification", "Maker", "Spare Model",
+        "Current QC", "Reviewer QC", "Reviewer Notes",
+    ]
+    header_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for row_idx, spare in enumerate(spares, start=2):
+        component = component_lookup.get(spare.component_id) if spare.component_id else None
+        manual = manual_lookup.get(spare.source_manual_id) if spare.source_manual_id else None
+        ws.cell(row=row_idx, column=1, value=str(spare.id))
+        ws.cell(row=row_idx, column=2, value=manual.original_filename if manual else "")
+        ws.cell(row=row_idx, column=3, value=spare.page_reference or "")
+        ws.cell(row=row_idx, column=4, value=component.component_name if component else "")
+        ws.cell(row=row_idx, column=5, value=spare.part_name or "")
+        ws.cell(row=row_idx, column=6, value=spare.part_number or "")
+        ws.cell(row=row_idx, column=7, value=spare.drawing_number or "")
+        ws.cell(row=row_idx, column=8, value=spare.drawing_position or "")
+        ws.cell(row=row_idx, column=9, value=spare.specification or "")
+        ws.cell(row=row_idx, column=10, value=spare.spare_maker or "")
+        ws.cell(row=row_idx, column=11, value=spare.spare_model or "")
+        ws.cell(row=row_idx, column=12, value=spare.qc_status.value if hasattr(spare.qc_status, "value") else str(spare.qc_status))
+        ws.cell(row=row_idx, column=13, value="")
+        ws.cell(row=row_idx, column=14, value="")
+
+    for col in ws.columns:
+        max_len = max((len(str(cell.value or "")) for cell in col), default=10)
+        ws.column_dimensions[col[0].column_letter].width = min(max(max_len + 4, 12), 45)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    vessel_name = getattr(vessel, "vessel_name", None) or getattr(vessel, "name", None) or str(vessel_id)
+    safe_name = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in vessel_name).strip() or str(vessel_id)
+    filename = f"Spares_Review_{safe_name}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post(
     "/{vessel_id}/spares",
     response_model=SpareOut,

@@ -754,10 +754,27 @@ const JobsReview: React.FC = () => {
 
   const handleQcExport = async () => {
     try {
-      const res = await apiClient.get(`/vessels/${vesselId}/spares/qc-export`, { responseType: 'blob' })
+      const params: Record<string, string> = {
+        sort_by: sortBy,
+        sort_order: sortOrder,
+      }
+      if (filterQC) params.qc_status = filterQC
+      if (filterCritical) params.is_critical = filterCritical
+      if (filterSourceFile) params.pdf_reference = filterSourceFile
+      if (filterUnmapped) params.is_unmapped = 'true'
+      if (filterFreqType) params.frequency_type = filterFreqType
+      if (filterSourceKind && !normalizedJobIds) params.source_kind = filterSourceKind
+      if (normalizedJobIds) params.job_ids = normalizedJobIds
+      if (filterNoCMS) params.cms_pending = 'true'
+      if (search) params.search = search
+
+      const res = await apiClient.get(`/vessels/${vesselId}/jobs/export`, {
+        params,
+        responseType: 'blob',
+      })
       const disposition = res.headers['content-disposition'] ?? ''
       const match = disposition.match(/filename="?([^"]+)"?/)
-      const filename = match ? match[1] : 'QC_Review.xlsx'
+      const filename = match ? match[1] : 'Jobs_Review.xlsx'
       const url = URL.createObjectURL(res.data)
       const a = document.createElement('a')
       a.href = url; a.download = filename
@@ -818,11 +835,11 @@ const JobsReview: React.FC = () => {
             ) : null}
             <button
               onClick={handleQcExport}
-              title="Download QC Review Sheet (all spares, jobs & components with PDF page refs)"
+              title="Download the current jobs review view only"
               className="flex items-center gap-1.5 rounded-lg border border-violet-700 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-slate-800"
             >
               <Download className="h-3.5 w-3.5" />
-              QC Export
+              Export Jobs
             </button>
             <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
               <Upload className="h-3.5 w-3.5" />

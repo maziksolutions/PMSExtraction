@@ -22,7 +22,6 @@ import {
   ArrowRightLeft,
 } from 'lucide-react'
 import apiClient from '@/api/client'
-import { useAuthStore } from '@/store/authStore'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 import ResizableSplitView from '@/components/layout/ResizableSplitView'
 
@@ -642,19 +641,34 @@ const ComponentReview: React.FC = () => {
             Template
           </a>
 
-          {/* Export Accepted */}
+          {/* Export Components */}
           <button
             onClick={async () => {
-              const token = useAuthStore.getState().accessToken
-              const base = (apiClient.defaults.baseURL ?? '/api/v1').replace(/\/$/, '')
-              const url = `${base}/vessels/${vesselId}/components/export?qc_status=accepted`
               try {
-                const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-                if (!resp.ok) { alert('Export failed: ' + resp.status); return }
-                const blob = await resp.blob()
+                const params: Record<string, string> = {
+                  is_unmapped: showUnmapped ? 'true' : 'false',
+                  sort_by: sortBy,
+                  sort_order: sortOrder,
+                }
+                if (showMappedExtracted) params.mapped_extracted = 'true'
+                if (selectedGroup1) params.group1 = selectedGroup1
+                if (selectedGroup2) params.group2 = selectedGroup2
+                if (selectedMachinery) params.main_machinery = selectedMachinery
+                if (filterQC) params.qc_status = filterQC
+                if (filterSourceFile) params.pdf_reference = filterSourceFile
+                if (searchTable) params.search = searchTable
+
+                const resp = await apiClient.get(`/vessels/${vesselId}/components/export`, {
+                  params,
+                  responseType: 'blob',
+                })
+                const disposition = resp.headers['content-disposition'] ?? ''
+                const match = disposition.match(/filename="?([^"]+)"?/)
+                const filename = match ? match[1] : 'components_export.xlsx'
+                const blob = resp.data
                 const a = document.createElement('a')
                 a.href = URL.createObjectURL(blob)
-                a.download = `components_export.xlsx`
+                a.download = filename
                 a.click()
                 setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
               } catch (e: any) { alert('Export failed: ' + e?.message) }
@@ -662,7 +676,7 @@ const ComponentReview: React.FC = () => {
             className="flex items-center gap-1.5 rounded-lg border border-green-700 bg-green-900/30 px-3 py-1.5 text-xs font-medium text-green-300 hover:bg-green-800/40 hover:text-white"
           >
             <FileDown className="h-3.5 w-3.5" />
-            Export Accepted
+            Export Components
           </button>
 
           {/* Add Component */}

@@ -927,34 +927,107 @@ async def download_components_template() -> StreamingResponse:
     )
 
 
-@router.get("/{vessel_id}/components/export", summary="Export QC-accepted components as Excel")
+@router.get("/{vessel_id}/components/export", summary="Export components as Excel")
 async def export_components(
     vessel_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    qc_status: Optional[str] = Query("accepted"),
+    group1: Optional[str] = Query(None),
+    group2: Optional[str] = Query(None),
+    main_machinery: Optional[str] = Query(None),
+    qc_status: Optional[str] = Query(None),
+    is_unmapped: Optional[bool] = Query(None),
+    mapped_extracted: Optional[bool] = Query(None),
+    pdf_reference: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("component_name"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
 ) -> StreamingResponse:
-    """Export components (default: QC accepted) as .xlsx in the import format."""
+    """Export filtered components as .xlsx in the page format."""
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment
+    from sqlalchemy import not_, or_
 
-    await _get_vessel_or_404(vessel_id, db)
+    vessel = await _get_vessel_or_404(vessel_id, db)
+    await ensure_vessel_library_baseline(
+        db=db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        vessel_type_name=vessel.vessel_type,
+    )
 
     base_where = [
         Component.vessel_id == vessel_id,
         Component.tenant_id == current_user.tenant_id,
         Component.is_deleted == False,
     ]
+    if group1:
+        base_where.append(Component.group1 == group1)
+    if group2:
+        base_where.append(Component.group2 == group2)
+    if main_machinery:
+        base_where.append(Component.main_machinery == main_machinery)
     if qc_status:
         try:
             base_where.append(Component.qc_status == QCStatus(qc_status))
         except ValueError:
             pass
+    if is_unmapped is not None:
+        base_where.append(Component.is_unmapped == is_unmapped)
+    if pdf_reference:
+        from app.models.ingestion import Manual as _Manual
+
+        manual_id_result = await db.execute(
+            select(_Manual.id).where(
+                _Manual.vessel_id == vessel_id,
+                _Manual.original_filename == pdf_reference,
+                _Manual.is_deleted == False,
+            )
+        )
+        matched_ids = [row[0] for row in manual_id_result.all()]
+        base_where.append(Component.source_manual_id.in_(matched_ids) if matched_ids else (Component.id == None))
+    if search:
+        search_term = f"%{search}%"
+        base_where.append(
+            or_(
+                Component.component_name.ilike(search_term),
+                Component.maker.ilike(search_term),
+                Component.model.ilike(search_term),
+                Component.main_machinery.ilike(search_term),
+            )
+        )
+    if mapped_extracted is not None:
+        if mapped_extracted:
+            base_where.append(_component_manual_link_clause())
+            base_where.append(Component.is_unmapped == False)
+        else:
+            base_where.append(
+                or_(
+                    not_(_component_manual_link_clause()),
+                    Component.is_unmapped == True,
+                )
+            )
+
+    sort_columns = {
+        "component_name": Component.component_name,
+        "maker": Component.maker,
+        "model": Component.model,
+        "group1": Component.group1,
+        "group2": Component.group2,
+        "main_machinery": Component.main_machinery,
+        "criticality": Component.criticality,
+        "qc_status": Component.qc_status,
+        "confidence": Component.confidence_score,
+        "page_reference": Component.page_reference,
+        "created_at": Component.created_at,
+    }
+    order_col = sort_columns.get(sort_by, Component.component_name)
+    order_expr = order_col.desc() if sort_order == "desc" else order_col.asc()
 
     result = await db.execute(
         select(Component)
         .where(*base_where)
-        .order_by(Component.group1, Component.group2, Component.main_machinery, Component.component_name)
+        .order_by(order_expr, Component.component_name.asc(), Component.id.asc())
     )
     components = result.scalars().all()
 
@@ -1005,7 +1078,7 @@ async def export_components(
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=components_export_{vessel_id}.xlsx"},
+        headers={"Content-Disposition": f'attachment; filename="components_export_{vessel_id}.xlsx"'},
     )
 
 

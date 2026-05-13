@@ -565,6 +565,219 @@ async def list_jobs(
     return {"items": items, "page": page, "page_size": page_size, "total": total}
 
 
+@router.get("/{vessel_id}/jobs/export", summary="Export jobs review data")
+async def export_jobs(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    component_id: Optional[uuid.UUID] = Query(None),
+    job_ids: Optional[str] = Query(None),
+    qc_status: Optional[str] = Query(None),
+    is_critical: Optional[bool] = Query(None),
+    is_unmapped: Optional[bool] = Query(None),
+    frequency_type: Optional[str] = Query(None),
+    source_kind: Optional[str] = Query(None, pattern="^(instruction_manual|standard_library|critical_library|cms_file)$"),
+    pdf_reference: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("job_name"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
+    cms_pending: Optional[bool] = Query(None),
+) -> Response:
+    import openpyxl
+    from fastapi.responses import StreamingResponse
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from app.models.ingestion import Manual
+
+    vessel = await _get_vessel_or_404(vessel_id, db)
+    if _should_run_job_maintenance(vessel_id):
+        await _restore_soft_deleted_manual_jobs_if_vessel_empty(
+            db,
+            vessel_id=vessel_id,
+            tenant_id=current_user.tenant_id,
+        )
+        await _normalize_vessel_job_names(
+            db,
+            vessel_id=vessel_id,
+            tenant_id=current_user.tenant_id,
+        )
+        await backfill_manual_job_ranks(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+        )
+
+    base_where = [
+        Job.vessel_id == vessel_id,
+        Job.tenant_id == current_user.tenant_id,
+        Job.is_deleted == False,
+    ]
+    has_job_ids_filter = False
+    if job_ids:
+        parsed_job_ids: list[uuid.UUID] = []
+        for raw_id in job_ids.split(","):
+            raw_id = raw_id.strip()
+            if not raw_id:
+                continue
+            try:
+                parsed_job_ids.append(uuid.UUID(raw_id))
+            except ValueError:
+                continue
+        if parsed_job_ids:
+            base_where.append(Job.id.in_(parsed_job_ids))
+            has_job_ids_filter = True
+    if component_id:
+        base_where.append(Job.component_id == component_id)
+    if qc_status:
+        try:
+            base_where.append(Job.qc_status == QCStatus(qc_status))
+        except ValueError:
+            pass
+    if is_critical is not None:
+        base_where.append(Job.is_critical == is_critical)
+    if is_unmapped is not None:
+        base_where.append(Job.is_unmapped == is_unmapped)
+    if frequency_type:
+        try:
+            base_where.append(Job.frequency_type == FrequencyType(frequency_type))
+        except ValueError:
+            pass
+    if source_kind == "instruction_manual" and not has_job_ids_filter:
+        base_where.append(Job.source_manual_id.is_not(None))
+    elif source_kind in {"standard_library", "critical_library"} and not has_job_ids_filter:
+        library_job_exists = (
+            select(StandardJob.id)
+            .where(
+                StandardJob.tenant_id == current_user.tenant_id,
+                StandardJob.is_deleted == False,
+                StandardJob.is_critical.is_(source_kind == "critical_library"),
+                or_(
+                    (
+                        StandardJob.library_reference.is_not(None)
+                        & Job.source_reference.is_not(None)
+                        & Job.source_reference.ilike(func.concat("%", StandardJob.library_reference, "%"))
+                    ),
+                    (
+                        Job.source_manual_id.is_(None)
+                        & (Job.job_name == StandardJob.job_name)
+                    ),
+                ),
+            )
+            .limit(1)
+        )
+        base_where.append(exists(library_job_exists))
+    elif source_kind == "cms_file" and not has_job_ids_filter:
+        base_where.append(Job.cms_id.is_not(None))
+    if pdf_reference:
+        manual_id_result = await db.execute(
+            select(Manual.id).where(
+                Manual.vessel_id == vessel_id,
+                Manual.original_filename == pdf_reference,
+                Manual.is_deleted == False,
+            )
+        )
+        matched_ids = [row[0] for row in manual_id_result.all()]
+        base_where.append(Job.source_manual_id.in_(matched_ids) if matched_ids else (Job.id == None))
+    if search:
+        base_where.append(
+            or_(
+                Job.job_name.ilike(f"%{search}%"),
+                Job.job_code.ilike(f"%{search}%"),
+                Job.source_reference.ilike(f"%{search}%"),
+                Job.pdf_reference.ilike(f"%{search}%"),
+            )
+        )
+    if cms_pending:
+        base_where.append(or_(Job.cms_id.is_(None), Job.cms_id == ""))
+
+    sort_columns = {
+        "job_name": Job.job_name,
+        "component": Job.component_id,
+        "job_code": Job.job_code,
+        "frequency": Job.frequency,
+        "frequency_type": Job.frequency_type,
+        "criticality": Job.is_critical,
+        "qc_status": Job.qc_status,
+        "confidence": Job.confidence_score,
+        "page_reference": Job.page_reference,
+        "source_reference": Job.source_reference,
+        "created_at": Job.created_at,
+    }
+    order_col = sort_columns.get(sort_by, Job.job_name)
+    order_expr = order_col.desc() if sort_order == "desc" else order_col.asc()
+
+    result = await db.execute(
+        select(Job)
+        .where(*base_where)
+        .order_by(order_expr, Job.job_name.asc(), Job.id.asc())
+    )
+    jobs = result.scalars().all()
+
+    component_ids = {job.component_id for job in jobs if job.component_id}
+    manual_ids = {job.source_manual_id for job in jobs if job.source_manual_id}
+
+    component_lookup: dict[uuid.UUID, Component] = {}
+    manual_lookup: dict[uuid.UUID, Manual] = {}
+
+    if component_ids:
+        component_result = await db.execute(select(Component).where(Component.id.in_(component_ids)))
+        component_lookup = {component.id: component for component in component_result.scalars().all()}
+    if manual_ids:
+        manual_result = await db.execute(select(Manual).where(Manual.id.in_(manual_ids)))
+        manual_lookup = {manual.id: manual for manual in manual_result.scalars().all()}
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Jobs"
+
+    headers = [
+        "ID", "PDF File", "Page", "Component", "Job Name", "Job Code",
+        "Frequency", "Frequency Type", "Performing Rank", "Description",
+        "Current QC", "Reviewer QC", "Reviewer Notes",
+    ]
+    header_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for row_idx, job in enumerate(jobs, start=2):
+        component = component_lookup.get(job.component_id) if job.component_id else None
+        manual = manual_lookup.get(job.source_manual_id) if job.source_manual_id else None
+        ws.cell(row=row_idx, column=1, value=str(job.id))
+        ws.cell(row=row_idx, column=2, value=manual.original_filename if manual else (job.pdf_reference or ""))
+        ws.cell(row=row_idx, column=3, value=job.page_reference or "")
+        ws.cell(row=row_idx, column=4, value=component.component_name if component else "")
+        ws.cell(row=row_idx, column=5, value=job.job_name or "")
+        ws.cell(row=row_idx, column=6, value=job.job_code or "")
+        ws.cell(row=row_idx, column=7, value=job.frequency or "")
+        ws.cell(row=row_idx, column=8, value=job.frequency_type.value if job.frequency_type else "")
+        ws.cell(row=row_idx, column=9, value=job.performing_rank or "")
+        ws.cell(row=row_idx, column=10, value=(job.job_description or "")[:300])
+        ws.cell(row=row_idx, column=11, value=job.qc_status.value if hasattr(job.qc_status, "value") else str(job.qc_status))
+        ws.cell(row=row_idx, column=12, value="")
+        ws.cell(row=row_idx, column=13, value="")
+
+    for col in ws.columns:
+        max_len = max((len(str(cell.value or "")) for cell in col), default=10)
+        ws.column_dimensions[col[0].column_letter].width = min(max(max_len + 4, 12), 45)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    vessel_name = getattr(vessel, "vessel_name", None) or getattr(vessel, "name", None) or str(vessel_id)
+    safe_name = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in vessel_name).strip() or str(vessel_id)
+    filename = f"Jobs_Review_{safe_name}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post(
     "/{vessel_id}/jobs",
     response_model=JobOut,
