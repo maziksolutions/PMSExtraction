@@ -609,6 +609,46 @@ async def bulk_reject_spares(
     return {"rejected": len(spares)}
 
 
+@router.post("/{vessel_id}/spares/bulk-delete")
+async def bulk_delete_spares(
+    vessel_id: uuid.UUID,
+    body: dict[str, List[str]],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    ids = [uuid.UUID(i) for i in body.get("ids", [])]
+    result = await db.execute(select(Spare).where(Spare.id.in_(ids), Spare.vessel_id == vessel_id, Spare.is_deleted == False))
+    spares = result.scalars().all()
+    should_sync = any(spare.qc_status == QCStatus.accepted for spare in spares)
+    for spare in spares:
+        spare.is_deleted = True
+        db.add(spare)
+    await db.commit()
+    if should_sync:
+        await sync_spares_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            spares=[],
+        )
+        await db.commit()
+    await _run_spare_side_effects(
+        db,
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        user_id=current_user.id,
+        activity_payloads=[
+            {
+                "action_type": "spare.deleted",
+                "entity_id": spare.id,
+                "description": f"Deleted spare '{spare.part_name}'.",
+            }
+            for spare in spares
+        ],
+    )
+    return {"deleted": len(spares)}
+
+
 @router.post("/{vessel_id}/spares/bulk-update")
 async def bulk_update_spares(
     vessel_id: uuid.UUID,

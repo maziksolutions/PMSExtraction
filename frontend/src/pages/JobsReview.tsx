@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useCallback } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, CheckCircle, Copy, Download, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Upload, XCircle } from 'lucide-react'
+import { AlertCircle, CheckCircle, Copy, Download, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Trash2, Upload, XCircle } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 import ResizableSplitView from '@/components/layout/ResizableSplitView'
@@ -465,6 +465,18 @@ const JobsReview: React.FC = () => {
     onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
   })
 
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids: string[]) => apiClient.post(`/vessels/${vesselId}/jobs/bulk-delete`, { ids }).then((r) => r.data),
+    onSuccess: () => {
+      refreshJobs()
+      setSelectedIds(new Set())
+      setEditingJob(null)
+      setActionError(null)
+      setActionMessage('Selected jobs were deleted.')
+    },
+    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
+  })
+
   const mergeJobsMutation = useMutation({
     mutationFn: ({ ids, targetId }: { ids: string[]; targetId?: string }) =>
       apiClient.post(`/vessels/${vesselId}/jobs/merge`, { ids, target_id: targetId }).then((r) => r.data),
@@ -783,6 +795,18 @@ const JobsReview: React.FC = () => {
                 >
                   <Pencil className="h-3.5 w-3.5" />
                   Batch Edit ({selectedIds.size})
+                </button>
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Delete ${selectedIds.size} job(s)? This cannot be undone.`)) {
+                      bulkDeleteMutation.mutate(Array.from(selectedIds))
+                    }
+                  }}
+                  disabled={bulkDeleteMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-lg bg-rose-900 px-3 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-800 disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete ({selectedIds.size})
                 </button>
               </>
             ) : null}

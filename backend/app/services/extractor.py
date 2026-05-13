@@ -2340,12 +2340,28 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         #   Spares     — delete auto-extracted only; preserve manually snipped
         #                records (extraction_method='manual') so user corrections
         #                are not wiped by a background re-extraction
+        #
+        # Also cascade to records from OTHER manual UUIDs that share the same
+        # original_filename on this vessel — handles the case where the same
+        # PDF was uploaded more than once, creating multiple manual UUIDs.
         # ------------------------------------------------------------------
+        # Collect all manual IDs for the same filename on this vessel (includes current)
+        same_filename_result = await db.execute(
+            select(Manual.id).where(
+                Manual.vessel_id == vessel_id,
+                Manual.original_filename == manual.original_filename,
+                Manual.is_deleted == False,
+                Manual.id != manual.id,
+            )
+        )
+        sibling_manual_ids = [row[0] for row in same_filename_result.all()]
+        all_manual_ids = [manual.id, *sibling_manual_ids]
+
         if "component" in extraction_types:
             await db.execute(
                 update(Component)
                 .where(
-                    Component.source_manual_id == manual.id,
+                    Component.source_manual_id.in_(all_manual_ids),
                     Component.is_deleted == False,
                 )
                 .values(is_deleted=True)
@@ -2353,7 +2369,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         if "job" in extraction_types:
             await db.execute(
                 update(Job)
-                .where(Job.source_manual_id == manual.id, Job.is_deleted == False)
+                .where(Job.source_manual_id.in_(all_manual_ids), Job.is_deleted == False)
                 .values(is_deleted=True)
             )
         if "spare" in extraction_types:
@@ -2361,7 +2377,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             await db.execute(
                 update(Spare)
                 .where(
-                    Spare.source_manual_id == manual.id,
+                    Spare.source_manual_id.in_(all_manual_ids),
                     Spare.is_deleted == False,
                     Spare.extraction_method != _EM.manual,
                 )

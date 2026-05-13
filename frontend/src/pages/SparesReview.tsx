@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil, Scissors, Download } from 'lucide-react'
+import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil, Scissors, Download, Trash2 } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 import ResizableSplitView from '@/components/layout/ResizableSplitView'
@@ -389,6 +389,18 @@ const SparesReview: React.FC = () => {
     onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
   })
 
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids: string[]) =>
+      apiClient.post(`/vessels/${vesselId}/spares/bulk-delete`, { ids }).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
+      setSelectedIds(new Set())
+      setActionError(null)
+      setActionMessage('Selected spares were deleted.')
+    },
+    onError: (error: unknown) => setActionError(getApiErrorMessage(error)),
+  })
+
   const saveSpareMutation = useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: Record<string, unknown> }) =>
       apiClient.patch(`/vessels/${vesselId}/spares/${id}`, payload).then((r) => r.data),
@@ -586,6 +598,18 @@ const SparesReview: React.FC = () => {
                 >
                   <Pencil className="h-3.5 w-3.5" />
                   Batch Edit ({selectedIds.size})
+                </button>
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Delete ${selectedIds.size} spare(s)? This cannot be undone.`)) {
+                      bulkDeleteMutation.mutate(Array.from(selectedIds))
+                    }
+                  }}
+                  disabled={bulkDeleteMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-lg bg-rose-900 px-3 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-800 disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete ({selectedIds.size})
                 </button>
               </>
             )}

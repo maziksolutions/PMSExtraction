@@ -522,6 +522,51 @@ async def delete_component(
             await db.commit()
 
 
+@router.post("/{vessel_id}/components/bulk-delete", summary="Bulk soft-delete selected components")
+async def bulk_delete_components(
+    vessel_id: uuid.UUID,
+    body: dict[str, List[str]],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    ids = [uuid.UUID(i) for i in body.get("ids", [])]
+    result = await db.execute(
+        select(Component).where(
+            Component.id.in_(ids), Component.vessel_id == vessel_id, Component.is_deleted == False
+        )
+    )
+    components = result.scalars().all()
+    should_sync = any(comp.qc_status == QCStatus.accepted for comp in components)
+    activities = []
+    for comp in components:
+        comp.is_deleted = True
+        db.add(comp)
+        activities.append(
+            await log_activity(
+                db,
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                user_id=current_user.id,
+                action_type="component.deleted",
+                entity_type="component",
+                entity_id=comp.id,
+                description=f"Deleted component '{comp.component_name}'.",
+            )
+        )
+    await db.commit()
+    if should_sync:
+        await sync_components_to_global_library(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            components=[],
+        )
+        await db.commit()
+    for activity in activities:
+        await broadcast_activity(activity)
+    return {"deleted": len(components)}
+
+
 @router.post("/{vessel_id}/components/bulk-update", summary="Bulk update fields on selected components")
 async def bulk_update_components(
     vessel_id: uuid.UUID,

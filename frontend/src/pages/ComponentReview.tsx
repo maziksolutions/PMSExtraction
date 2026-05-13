@@ -10,6 +10,7 @@ import {
   Upload,
   Plus,
   Save,
+  Trash2,
   X,
   FileText,
   FolderPlus,
@@ -289,6 +290,12 @@ const ComponentReview: React.FC = () => {
   const bulkRejectMutation = useMutation({
     mutationFn: (ids: string[]) =>
       apiClient.post(`/vessels/${vesselId}/components/bulk-reject`, { ids }).then((r) => r.data),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['components', vesselId] }); setSelectedIds(new Set()) },
+  })
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids: string[]) =>
+      apiClient.post(`/vessels/${vesselId}/components/bulk-delete`, { ids }).then((r) => r.data),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['components', vesselId] }); setSelectedIds(new Set()) },
   })
 
@@ -732,6 +739,18 @@ const ComponentReview: React.FC = () => {
                 >
                   <Wrench className="h-3.5 w-3.5" />
                   Batch Edit ({selectedIds.size})
+                </button>
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Delete ${selectedIds.size} component(s)? This cannot be undone.`)) {
+                      bulkDeleteMutation.mutate(Array.from(selectedIds))
+                    }
+                  }}
+                  disabled={bulkDeleteMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-lg bg-rose-900 px-3 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-800 disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete ({selectedIds.size})
                 </button>
               </>
             )}
