@@ -24,6 +24,7 @@ from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.component import ComponentCreate, ComponentOut, ComponentUpdate
 from app.services.component_matcher import merge_component_into_target
+from app.services.feedback_learning import schedule_feedback_learning
 from app.services.review_workflow import (
     broadcast_activity,
     log_activity,
@@ -453,6 +454,7 @@ async def update_component(
         setattr(comp, field, value)
     db.add(comp)
 
+    feedback_id: uuid.UUID | None = None
     if comp.confidence_score and comp.confidence_score > 0 and update_data:
         manual_id = comp.source_manual_id
         if manual_id:
@@ -463,9 +465,13 @@ async def update_component(
                 original_value=original,
                 corrected_value=update_data,
                 correction_type=CorrectionType.wrong_value,
+                page_number=comp.page_reference,
+                context_span=f"Updated component fields: {', '.join(sorted(update_data.keys()))}",
                 created_by=current_user.id,
             )
             db.add(feedback)
+            await db.flush()
+            feedback_id = feedback.id
 
     activity = None
     if update_data:
@@ -488,6 +494,8 @@ async def update_component(
             components=[comp],
         )
     await db.commit()
+    if feedback_id:
+        await schedule_feedback_learning(feedback_id)
     await db.refresh(comp)
     if activity:
         await broadcast_activity(activity)
@@ -1366,3 +1374,106 @@ async def trigger_extraction(
         return {"task_id": task.id, "status": "queued"}
     except Exception:
         return {"status": "queued", "task_id": "mock"}
+
+
+@router.get("/{vessel_id}/components/qc-export", summary="Export Components for QC review (components only)")
+async def export_components_qc(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Response:
+    import io
+    from fastapi.responses import StreamingResponse
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from app.models.ingestion import Manual
+    from app.models.vessel import VesselProject
+
+    vessel_result = await db.execute(select(VesselProject).where(VesselProject.id == vessel_id))
+    vessel = vessel_result.scalar_one_or_none()
+    vessel_name = getattr(vessel, "vessel_name", None) or getattr(vessel, "name", None) or str(vessel_id)
+
+    comps_result = await db.execute(
+        select(Component).where(
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == current_user.tenant_id,
+            Component.is_deleted == False,
+        ).order_by(Component.main_machinery, Component.component_name)
+    )
+    components = list(comps_result.scalars().all())
+
+    manual_ids = {c.source_manual_id for c in components if c.source_manual_id}
+    manual_lookup: dict = {}
+    if manual_ids:
+        mr = await db.execute(select(Manual).where(Manual.id.in_(manual_ids), Manual.is_deleted == False))
+        manual_lookup = {m.id: m.original_filename for m in mr.scalars().all()}
+
+    HEADERS = [
+        "ID", "PDF File", "Page", "Component Name", "Main Machinery",
+        "Group 1", "Group 2", "Maker", "Model", "Location",
+        "Current QC", "Reviewer QC", "Reviewer Notes",
+    ]
+    QC_COLORS = {"accepted": "C6EFCE", "rejected": "FFC7CE", "modified": "FFEB9C", "pending": "DDEBF7"}
+
+    HEADER_FILL = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+    HEADER_FONT = Font(color="FFFFFF", bold=True, size=10)
+    EDIT_FILL = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    ALT_FILL = PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid")
+    thin = Side(style="thin", color="CCCCCC")
+    BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Components"
+    dv = DataValidation(type="list", formula1='"accepted,rejected,modified,pending"', showDropDown=False, allow_blank=True)
+    ws.add_data_validation(dv)
+
+    for c, h in enumerate(HEADERS, 1):
+        cell = ws.cell(row=1, column=c, value=h)
+        cell.fill = HEADER_FILL; cell.font = HEADER_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = BORDER
+    ws.row_dimensions[1].height = 30
+    ws.freeze_panes = "A2"
+
+    rev_col = get_column_letter(12)
+    for r, comp in enumerate(components, 2):
+        manual_name = manual_lookup.get(comp.source_manual_id, "")
+        qc_val = (comp.qc_status.value if hasattr(comp.qc_status, "value") else str(comp.qc_status)).lower()
+        row_data = [
+            str(comp.id), manual_name, comp.page_reference or "",
+            comp.component_name or "", comp.main_machinery or "",
+            comp.group1 or "", comp.group2 or "",
+            comp.maker or "", comp.model or "", comp.location or "",
+            qc_val, "", "",
+        ]
+        fill = ALT_FILL if r % 2 == 0 else PatternFill(fill_type=None)
+        for c, val in enumerate(row_data, 1):
+            cell = ws.cell(row=r, column=c, value=val)
+            cell.border = BORDER
+            cell.alignment = Alignment(vertical="center", wrap_text=(c == len(HEADERS)))
+            if c == 11:
+                color = QC_COLORS.get(qc_val, "DDEBF7")
+                cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+            elif c in (12, 13):
+                cell.fill = EDIT_FILL
+            else:
+                cell.fill = fill
+        dv.add(ws[f"{rev_col}{r}"])
+
+    for col in ws.columns:
+        vals = [str(cell.value or "") for cell in col]
+        width = min(max(len(v) for v in vals) + 4, 45)
+        ws.column_dimensions[col[0].column_letter].width = max(width, 10)
+    ws.column_dimensions[get_column_letter(13)].width = 30
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue()),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="Components_QC_{safe_name}.xlsx"'},
+    )

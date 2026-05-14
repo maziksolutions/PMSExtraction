@@ -121,7 +121,7 @@ const Export: React.FC = () => {
   const handleQcExport = async () => {
     setDownloadError(null)
     try {
-      const res = await apiClient.get(`/vessels/${vesselId}/spares/qc-export`, { responseType: 'blob' })
+      const res = await apiClient.get(`/vessels/${vesselId}/spares/qc-export-all`, { responseType: 'blob' })
       const disposition = res.headers['content-disposition'] ?? ''
       const match = disposition.match(/filename="?([^"]+)"?/)
       const filename = match ? match[1] : 'QC_Review.xlsx'

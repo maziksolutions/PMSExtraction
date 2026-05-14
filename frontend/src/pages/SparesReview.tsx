@@ -549,29 +549,16 @@ const SparesReview: React.FC = () => {
 
   const handleQcExport = async () => {
     try {
-      const params: Record<string, string> = {
-        sort_by: sortBy,
-        sort_order: sortOrder,
-      }
-      if (filterQC) params.qc_status = filterQC
-      if (filterMethod) params.extraction_method = filterMethod
-      if (filterCritical) params.is_critical = filterCritical
-      if (filterSourceFile) params.pdf_reference = filterSourceFile
-      if (search) params.search = search
-
-      const res = await apiClient.get(`/vessels/${vesselId}/spares/export`, {
-        params,
-        responseType: 'blob',
-      })
+      const res = await apiClient.get(`/vessels/${vesselId}/spares/qc-export`, { responseType: 'blob' })
       const disposition = res.headers['content-disposition'] ?? ''
       const match = disposition.match(/filename="?([^"]+)"?/)
-      const filename = match ? match[1] : 'Spares_Review.xlsx'
+      const filename = match ? match[1] : 'Spares_QC.xlsx'
       const url = URL.createObjectURL(res.data)
       const a = document.createElement('a')
       a.href = url; a.download = filename
       document.body.appendChild(a); a.click(); a.remove()
       URL.revokeObjectURL(url)
-    } catch { /* silent — server error will surface in network tab */ }
+    } catch { /* silent */ }
   }
 
   return (
@@ -628,11 +615,11 @@ const SparesReview: React.FC = () => {
             )}
             <button
               onClick={handleQcExport}
-              title="Download the current spares review view only"
+              title="Download Spares QC Review sheet (with Reviewer QC / Notes columns for offline review)"
               className="flex items-center gap-1.5 rounded-lg border border-violet-700 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-slate-800"
             >
               <Download className="h-3.5 w-3.5" />
-              Export Spares
+              QC Export
             </button>
             <button
               onClick={() => setShowSnipModal(true)}

@@ -17,6 +17,7 @@ from app.models.feedback import CorrectionType, FeedbackEntry
 from app.models.job import FrequencyType, Job
 from app.models.standard_jobs import StandardJob
 from app.models.user import User
+from app.services.feedback_learning import schedule_feedback_learning
 from app.services.job_ranks import (
     backfill_manual_job_ranks,
     derive_job_ranks_from_library_context,
@@ -865,6 +866,7 @@ async def update_job(
         job.performing_rank = normalize_rank_name(inferred_rank)
     db.add(job)
 
+    feedback_id: uuid.UUID | None = None
     if job.source_manual_id and update_data:
         feedback = FeedbackEntry(
             tenant_id=current_user.tenant_id,
@@ -873,11 +875,17 @@ async def update_job(
             original_value=original,
             corrected_value=update_data,
             correction_type=CorrectionType.wrong_value,
+            page_number=job.page_reference,
+            context_span=f"Updated job fields: {', '.join(sorted(update_data.keys()))}",
             created_by=current_user.id,
         )
         db.add(feedback)
+        await db.flush()
+        feedback_id = feedback.id
 
     await db.commit()
+    if feedback_id:
+        await schedule_feedback_learning(feedback_id)
     await _apply_job_name_and_references(db, job)
     await db.commit()
     await db.refresh(job)
@@ -1352,3 +1360,106 @@ async def upload_cms_mapping(
                 updated += 1
     await db.commit()
     return {"status": "ok", "updated": updated}
+
+
+@router.get("/{vessel_id}/jobs/qc-export", summary="Export Jobs for QC review (jobs only)")
+async def export_jobs_qc(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Response:
+    from fastapi.responses import StreamingResponse
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from app.models.component import Component
+    from app.models.vessel import VesselProject
+
+    vessel_result = await db.execute(select(VesselProject).where(VesselProject.id == vessel_id))
+    vessel = vessel_result.scalar_one_or_none()
+    vessel_name = getattr(vessel, "vessel_name", None) or getattr(vessel, "name", None) or str(vessel_id)
+
+    jobs_result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == current_user.tenant_id,
+            Job.is_deleted == False,
+        ).order_by(Job.pdf_reference, Job.page_reference, Job.job_name)
+    )
+    jobs = list(jobs_result.scalars().all())
+
+    component_ids = {j.component_id for j in jobs if j.component_id}
+    component_lookup: dict = {}
+    if component_ids:
+        cr = await db.execute(select(Component).where(Component.id.in_(component_ids)))
+        component_lookup = {c.id: c for c in cr.scalars().all()}
+
+    HEADERS = [
+        "ID", "PDF File", "Page", "Component", "Job Name", "Job Code",
+        "Frequency", "Frequency Type", "Performing Rank", "Description",
+        "Current QC", "Reviewer QC", "Reviewer Notes",
+    ]
+    QC_COLORS = {"accepted": "C6EFCE", "rejected": "FFC7CE", "modified": "FFEB9C", "pending": "DDEBF7"}
+
+    HEADER_FILL = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+    HEADER_FONT = Font(color="FFFFFF", bold=True, size=10)
+    EDIT_FILL = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    ALT_FILL = PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid")
+    thin = Side(style="thin", color="CCCCCC")
+    BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Jobs"
+    dv = DataValidation(type="list", formula1='"accepted,rejected,modified,pending"', showDropDown=False, allow_blank=True)
+    ws.add_data_validation(dv)
+
+    for c, h in enumerate(HEADERS, 1):
+        cell = ws.cell(row=1, column=c, value=h)
+        cell.fill = HEADER_FILL; cell.font = HEADER_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = BORDER
+    ws.row_dimensions[1].height = 30
+    ws.freeze_panes = "A2"
+
+    rev_col = get_column_letter(12)
+    for r, job in enumerate(jobs, 2):
+        comp = component_lookup.get(job.component_id)
+        comp_name = comp.component_name if comp else ""
+        qc_val = (job.qc_status.value if hasattr(job.qc_status, "value") else str(job.qc_status)).lower()
+        row_data = [
+            str(job.id), job.pdf_reference or "", job.page_reference or "", comp_name,
+            job.job_name or "", job.job_code or "", job.frequency or "",
+            job.frequency_type.value if job.frequency_type else "",
+            job.performing_rank or "", (job.job_description or "")[:300],
+            qc_val, "", "",
+        ]
+        fill = ALT_FILL if r % 2 == 0 else PatternFill(fill_type=None)
+        for c, val in enumerate(row_data, 1):
+            cell = ws.cell(row=r, column=c, value=val)
+            cell.border = BORDER
+            cell.alignment = Alignment(vertical="center", wrap_text=(c == len(HEADERS)))
+            if c == 11:
+                color = QC_COLORS.get(qc_val, "DDEBF7")
+                cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+            elif c in (12, 13):
+                cell.fill = EDIT_FILL
+            else:
+                cell.fill = fill
+        dv.add(ws[f"{rev_col}{r}"])
+
+    for col in ws.columns:
+        vals = [str(cell.value or "") for cell in col]
+        width = min(max(len(v) for v in vals) + 4, 45)
+        ws.column_dimensions[col[0].column_letter].width = max(width, 10)
+    ws.column_dimensions[get_column_letter(13)].width = 30
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue()),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="Jobs_QC_{safe_name}.xlsx"'},
+    )

@@ -358,7 +358,7 @@ const Ingestion: React.FC = () => {
           {listFilesMutation.isError && (
             <p className="mt-3 text-sm text-red-400">
               <AlertCircle className="inline h-4 w-4 mr-1" />
-              Failed to list files. Check the URL and try again.
+              {(listFilesMutation.error as any)?.response?.data?.detail || 'Failed to list files. Check the URL and try again.'}
             </p>
           )}
         </div>

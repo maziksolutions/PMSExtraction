@@ -16,6 +16,7 @@ from app.models.spare import ExtractionMethod, Spare
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.spare import SpareCreate, SpareOut, SpareUpdate
+from app.services.feedback_learning import schedule_feedback_learning
 from app.services.review_workflow import (
     broadcast_activity,
     log_activity,
@@ -645,6 +646,7 @@ async def update_spare(
         spare.assembly_description = spare.spare_assembly
     db.add(spare)
 
+    feedback_id: uuid.UUID | None = None
     if spare.source_manual_id and update_data:
         feedback = FeedbackEntry(
             tenant_id=current_user.tenant_id,
@@ -653,11 +655,17 @@ async def update_spare(
             original_value=original,
             corrected_value=update_data,
             correction_type=CorrectionType.wrong_value,
+            page_number=spare.page_reference,
+            context_span=f"Updated spare fields: {', '.join(sorted(update_data.keys()))}",
             created_by=current_user.id,
         )
         db.add(feedback)
+        await db.flush()
+        feedback_id = feedback.id
 
     await db.commit()
+    if feedback_id:
+        await schedule_feedback_learning(feedback_id)
     await db.refresh(spare)
     await _run_spare_side_effects(
         db,
@@ -1133,9 +1141,9 @@ _QC_COLORS = {
 
 def _qc_review_workbook(
     vessel_name: str,
-    components: list,
-    jobs: list,
-    spares: list,
+    components: "list | None",
+    jobs: "list | None",
+    spares: "list | None",
     component_lookup: dict,
     manual_lookup: dict,
 ) -> bytes:
@@ -1225,82 +1233,138 @@ def _qc_review_workbook(
         ws.column_dimensions[note_col_letter].width = 30
 
     # ── Components sheet ────────────────────────────────────────────────────
-    ws_comp = wb.create_sheet("Components")
-    comp_rows = []
-    for comp in components:
-        manual_name = manual_lookup.get(comp.source_manual_id, "")
-        comp_rows.append([
-            str(comp.id),
-            manual_name,
-            comp.page_reference or "",
-            comp.component_name or "",
-            comp.main_machinery or "",
-            comp.group1 or "",
-            comp.group2 or "",
-            comp.maker or "",
-            comp.model or "",
-            comp.location or "",
-            comp.qc_status.value if hasattr(comp.qc_status, "value") else str(comp.qc_status),
-            "",  # Reviewer QC
-            "",  # Reviewer Notes
-        ])
-    _write_sheet(ws_comp, _COMP_HEADERS, comp_rows, reviewer_col_idx=12)
+    if components is not None:
+        ws_comp = wb.create_sheet("Components")
+        comp_rows = []
+        for comp in components:
+            manual_name = manual_lookup.get(comp.source_manual_id, "")
+            comp_rows.append([
+                str(comp.id),
+                manual_name,
+                comp.page_reference or "",
+                comp.component_name or "",
+                comp.main_machinery or "",
+                comp.group1 or "",
+                comp.group2 or "",
+                comp.maker or "",
+                comp.model or "",
+                comp.location or "",
+                comp.qc_status.value if hasattr(comp.qc_status, "value") else str(comp.qc_status),
+                "",  # Reviewer QC
+                "",  # Reviewer Notes
+            ])
+        _write_sheet(ws_comp, _COMP_HEADERS, comp_rows, reviewer_col_idx=12)
 
     # ── Jobs sheet ──────────────────────────────────────────────────────────
-    ws_jobs = wb.create_sheet("Jobs")
-    job_rows = []
-    for job in jobs:
-        comp = component_lookup.get(job.component_id)
-        comp_name = comp.component_name if comp else ""
-        freq_str = f"{job.frequency} {job.frequency_type.value}" if job.frequency and job.frequency_type else (str(job.frequency) if job.frequency else "")
-        job_rows.append([
-            str(job.id),
-            job.pdf_reference or "",
-            job.page_reference or "",
-            comp_name,
-            job.job_name or "",
-            job.job_code or "",
-            job.frequency or "",
-            job.frequency_type.value if job.frequency_type else "",
-            job.performing_rank or "",
-            (job.job_description or "")[:300],
-            job.qc_status.value if hasattr(job.qc_status, "value") else str(job.qc_status),
-            "",  # Reviewer QC
-            "",  # Reviewer Notes
-        ])
-    _write_sheet(ws_jobs, _JOB_HEADERS, job_rows, reviewer_col_idx=12)
+    if jobs is not None:
+        ws_jobs = wb.create_sheet("Jobs")
+        job_rows = []
+        for job in jobs:
+            comp = component_lookup.get(job.component_id)
+            comp_name = comp.component_name if comp else ""
+            job_rows.append([
+                str(job.id),
+                job.pdf_reference or "",
+                job.page_reference or "",
+                comp_name,
+                job.job_name or "",
+                job.job_code or "",
+                job.frequency or "",
+                job.frequency_type.value if job.frequency_type else "",
+                job.performing_rank or "",
+                (job.job_description or "")[:300],
+                job.qc_status.value if hasattr(job.qc_status, "value") else str(job.qc_status),
+                "",  # Reviewer QC
+                "",  # Reviewer Notes
+            ])
+        _write_sheet(ws_jobs, _JOB_HEADERS, job_rows, reviewer_col_idx=12)
 
     # ── Spares sheet ────────────────────────────────────────────────────────
-    ws_spares = wb.create_sheet("Spares")
-    spare_rows = []
-    for spare in spares:
-        comp = component_lookup.get(spare.component_id)
-        comp_name = comp.component_name if comp else ""
-        manual_name = manual_lookup.get(spare.source_manual_id, "")
-        spare_rows.append([
-            str(spare.id),
-            manual_name,
-            spare.page_reference or "",
-            comp_name,
-            spare.part_name or "",
-            spare.part_number or "",
-            spare.drawing_number or "",
-            spare.drawing_position or "",
-            spare.specification or "",
-            spare.spare_maker or "",
-            spare.spare_model or "",
-            spare.qc_status.value if hasattr(spare.qc_status, "value") else str(spare.qc_status),
-            "",  # Reviewer QC
-            "",  # Reviewer Notes
-        ])
-    _write_sheet(ws_spares, _SPARE_HEADERS, spare_rows, reviewer_col_idx=13)
+    if spares is not None:
+        ws_spares = wb.create_sheet("Spares")
+        spare_rows = []
+        for spare in spares:
+            comp = component_lookup.get(spare.component_id)
+            comp_name = comp.component_name if comp else ""
+            manual_name = manual_lookup.get(spare.source_manual_id, "")
+            spare_rows.append([
+                str(spare.id),
+                manual_name,
+                spare.page_reference or "",
+                comp_name,
+                spare.part_name or "",
+                spare.part_number or "",
+                spare.drawing_number or "",
+                spare.drawing_position or "",
+                spare.specification or "",
+                spare.spare_maker or "",
+                spare.spare_model or "",
+                spare.qc_status.value if hasattr(spare.qc_status, "value") else str(spare.qc_status),
+                "",  # Reviewer QC
+                "",  # Reviewer Notes
+            ])
+        _write_sheet(ws_spares, _SPARE_HEADERS, spare_rows, reviewer_col_idx=13)
 
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
-@router.get("/{vessel_id}/spares/qc-export", summary="Export Components, Jobs and Spares for QC review")
+@router.get("/{vessel_id}/spares/qc-export", summary="Export Spares for QC review (spares only)")
+async def export_spares_qc(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Response:
+    from fastapi.responses import StreamingResponse
+    import io
+    from app.models.component import Component
+    from app.models.ingestion import Manual
+
+    vessel = await _get_vessel_or_404(vessel_id, db)
+    vessel_name = getattr(vessel, "vessel_name", None) or getattr(vessel, "name", None) or str(vessel_id)
+
+    spares_result = await db.execute(
+        select(Spare).where(
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == current_user.tenant_id,
+            Spare.is_deleted == False,
+        ).order_by(Spare.source_manual_id, Spare.page_reference, Spare.drawing_position)
+    )
+    spares = list(spares_result.scalars().all())
+
+    component_ids = {s.component_id for s in spares if s.component_id}
+    manual_ids = {s.source_manual_id for s in spares if s.source_manual_id}
+
+    component_lookup: dict = {}
+    if component_ids:
+        cr = await db.execute(select(Component).where(Component.id.in_(component_ids)))
+        component_lookup = {c.id: c for c in cr.scalars().all()}
+
+    manual_lookup: dict = {}
+    if manual_ids:
+        mr = await db.execute(select(Manual).where(Manual.id.in_(manual_ids), Manual.is_deleted == False))
+        manual_lookup = {m.id: m.original_filename for m in mr.scalars().all()}
+
+    xlsx_bytes = _qc_review_workbook(
+        vessel_name=vessel_name,
+        components=None,
+        jobs=None,
+        spares=spares,
+        component_lookup=component_lookup,
+        manual_lookup=manual_lookup,
+    )
+
+    safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
+    filename = f"Spares_QC_{safe_name}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{vessel_id}/spares/qc-export-all", summary="Export Components, Jobs and Spares for QC review")
 async def export_qc_review(
     vessel_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],

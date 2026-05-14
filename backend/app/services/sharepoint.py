@@ -81,19 +81,55 @@ class SharePointService:
         """
         site_id, drive_path = self._parse_folder_url(folder_url)
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            # Get the drive for this site so we can use item IDs reliably
+        async with httpx.AsyncClient(timeout=60) as client:
+            drive_id: Optional[str] = None
+
             if drive_path:
-                start_url = (
-                    f"{self.graph_base}/sites/{site_id}"
-                    f"/drive/root:/{drive_path}:/children"
-                )
+                # The first path segment may be a document library name (a separate Drive).
+                # Try to resolve it via the /drives endpoint so we use the correct drive,
+                # not just the site's default "Documents" drive.
+                parts = drive_path.split("/", 1)
+                library_name = parts[0]
+                sub_path = parts[1] if len(parts) > 1 else ""
+
+                drive_id = await self._find_drive_id(client, site_id, library_name)
+
+                if drive_id:
+                    if sub_path:
+                        start_url = (
+                            f"{self.graph_base}/sites/{site_id}"
+                            f"/drives/{drive_id}/root:/{sub_path}:/children"
+                        )
+                    else:
+                        start_url = (
+                            f"{self.graph_base}/sites/{site_id}"
+                            f"/drives/{drive_id}/root/children"
+                        )
+                else:
+                    # Fall back: treat as subfolder of the default drive
+                    start_url = (
+                        f"{self.graph_base}/sites/{site_id}"
+                        f"/drive/root:/{drive_path}:/children"
+                    )
             else:
                 start_url = f"{self.graph_base}/sites/{site_id}/drive/root/children"
 
-            items = await self._list_recursive(client, site_id, url=start_url, depth=0)
+            items = await self._list_recursive(client, site_id, url=start_url, depth=0, drive_id=drive_id)
 
         return items
+
+    async def _find_drive_id(self, client: httpx.AsyncClient, site_id: str, library_name: str) -> Optional[str]:
+        """Return the Graph drive ID whose name matches library_name (case-insensitive), or None."""
+        try:
+            url = f"{self.graph_base}/sites/{site_id}/drives"
+            resp = await client.get(url, headers=self._headers)
+            resp.raise_for_status()
+            for drive in resp.json().get("value", []):
+                if drive.get("name", "").lower() == library_name.lower():
+                    return drive["id"]
+        except Exception as err:
+            logger.warning("Could not list drives for site %s: %s", site_id, err)
+        return None
 
     async def _list_recursive(
         self,
@@ -102,6 +138,7 @@ class SharePointService:
         url: str,
         depth: int,
         folder_path: str = "",
+        drive_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Recursively traverse folders using the Graph API children endpoint."""
         if depth > _MAX_DEPTH:
@@ -122,14 +159,20 @@ class SharePointService:
                 current_path = f"{folder_path}/{name}" if folder_path else name
 
                 if "folder" in item:
-                    # Recurse into subfolder using its item ID (more reliable than path)
-                    sub_url = (
-                        f"{self.graph_base}/sites/{site_id}"
-                        f"/drive/items/{item_id}/children"
-                    )
+                    # Recurse using item ID; use the specific drive if known
+                    if drive_id:
+                        sub_url = (
+                            f"{self.graph_base}/sites/{site_id}"
+                            f"/drives/{drive_id}/items/{item_id}/children"
+                        )
+                    else:
+                        sub_url = (
+                            f"{self.graph_base}/sites/{site_id}"
+                            f"/drive/items/{item_id}/children"
+                        )
                     sub_items = await self._list_recursive(
                         client, site_id, url=sub_url,
-                        depth=depth + 1, folder_path=current_path,
+                        depth=depth + 1, folder_path=current_path, drive_id=drive_id,
                     )
                     items.extend(sub_items)
                     continue

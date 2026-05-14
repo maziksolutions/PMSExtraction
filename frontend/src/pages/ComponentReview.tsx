@@ -641,42 +641,26 @@ const ComponentReview: React.FC = () => {
             Template
           </a>
 
-          {/* Export Components */}
+          {/* QC Export Components */}
           <button
             onClick={async () => {
               try {
-                const params: Record<string, string> = {
-                  is_unmapped: showUnmapped ? 'true' : 'false',
-                  sort_by: sortBy,
-                  sort_order: sortOrder,
-                }
-                if (showMappedExtracted) params.mapped_extracted = 'true'
-                if (selectedGroup1) params.group1 = selectedGroup1
-                if (selectedGroup2) params.group2 = selectedGroup2
-                if (selectedMachinery) params.main_machinery = selectedMachinery
-                if (filterQC) params.qc_status = filterQC
-                if (filterSourceFile) params.pdf_reference = filterSourceFile
-                if (searchTable) params.search = searchTable
-
-                const resp = await apiClient.get(`/vessels/${vesselId}/components/export`, {
-                  params,
-                  responseType: 'blob',
-                })
+                const resp = await apiClient.get(`/vessels/${vesselId}/components/qc-export`, { responseType: 'blob' })
                 const disposition = resp.headers['content-disposition'] ?? ''
                 const match = disposition.match(/filename="?([^"]+)"?/)
-                const filename = match ? match[1] : 'components_export.xlsx'
-                const blob = resp.data
+                const filename = match ? match[1] : 'Components_QC.xlsx'
                 const a = document.createElement('a')
-                a.href = URL.createObjectURL(blob)
+                a.href = URL.createObjectURL(resp.data)
                 a.download = filename
                 a.click()
                 setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
               } catch (e: any) { alert('Export failed: ' + e?.message) }
             }}
-            className="flex items-center gap-1.5 rounded-lg border border-green-700 bg-green-900/30 px-3 py-1.5 text-xs font-medium text-green-300 hover:bg-green-800/40 hover:text-white"
+            className="flex items-center gap-1.5 rounded-lg border border-violet-700 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-slate-800"
+            title="Download Components QC Review sheet (with Reviewer QC / Notes columns for offline review)"
           >
             <FileDown className="h-3.5 w-3.5" />
-            Export Components
+            QC Export
           </button>
 
           {/* Add Component */}
