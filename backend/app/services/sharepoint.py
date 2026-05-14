@@ -106,10 +106,9 @@ class SharePointService:
                             f"/drives/{drive_id}/root/children"
                         )
                 else:
-                    # Fall back: treat as subfolder of the default drive
-                    start_url = (
-                        f"{self.graph_base}/sites/{site_id}"
-                        f"/drive/root:/{drive_path}:/children"
+                    raise ValueError(
+                        f"Document library '{library_name}' not found on the site. "
+                        "Check the URL or the app's SharePoint permissions."
                     )
             else:
                 start_url = f"{self.graph_base}/sites/{site_id}/drive/root/children"
@@ -120,15 +119,25 @@ class SharePointService:
 
     async def _find_drive_id(self, client: httpx.AsyncClient, site_id: str, library_name: str) -> Optional[str]:
         """Return the Graph drive ID whose name matches library_name (case-insensitive), or None."""
-        try:
-            url = f"{self.graph_base}/sites/{site_id}/drives"
-            resp = await client.get(url, headers=self._headers)
+        url = f"{self.graph_base}/sites/{site_id}/drives"
+        resp = await client.get(url, headers=self._headers)
+        if not resp.is_success:
+            logger.error(
+                "Graph API drives listing failed for site %s: HTTP %s — %s",
+                site_id, resp.status_code, resp.text[:500],
+            )
             resp.raise_for_status()
-            for drive in resp.json().get("value", []):
-                if drive.get("name", "").lower() == library_name.lower():
-                    return drive["id"]
-        except Exception as err:
-            logger.warning("Could not list drives for site %s: %s", site_id, err)
+        drives = resp.json().get("value", [])
+        drive_names = [d.get("name", "") for d in drives]
+        logger.info("Drives for site %s: %s", site_id, drive_names)
+        for drive in drives:
+            if drive.get("name", "").lower() == library_name.lower():
+                logger.info("Matched drive '%s' → id=%s", library_name, drive["id"])
+                return drive["id"]
+        logger.error(
+            "No drive named '%s' found in site %s. Available: %s",
+            library_name, site_id, drive_names,
+        )
         return None
 
     async def _list_recursive(
@@ -184,10 +193,15 @@ class SharePointService:
                 # Store the pre-signed download URL so the task can use it directly
                 download_url = item.get("@microsoft.graph.downloadUrl", "")
                 if not download_url:
-                    # Request it explicitly when not included in the listing
+                    # Request it explicitly when not included in the listing.
+                    # Use the drive-specific endpoint when we resolved a non-default drive.
                     try:
+                        if drive_id:
+                            meta_url = f"{self.graph_base}/sites/{site_id}/drives/{drive_id}/items/{item_id}"
+                        else:
+                            meta_url = f"{self.graph_base}/sites/{site_id}/drive/items/{item_id}"
                         meta_resp = await client.get(
-                            f"{self.graph_base}/sites/{site_id}/drive/items/{item_id}",
+                            meta_url,
                             headers={**self._headers, "Prefer": "allowthrottleablequeries"},
                         )
                         meta_resp.raise_for_status()
@@ -291,7 +305,8 @@ class SharePointService:
         try:
             sites_idx = path_parts.index("sites")
             site_name = path_parts[sites_idx + 1]
-            site_id = f"{hostname}:/sites/{site_name}"
+            # Graph API path-encoded site IDs require trailing colon before /drives etc.
+            site_id = f"{hostname}:/sites/{site_name}:"
             remaining = path_parts[sites_idx + 2:]
 
             # Strip SharePoint UI fragments (Forms, AllItems.aspx, etc.)
