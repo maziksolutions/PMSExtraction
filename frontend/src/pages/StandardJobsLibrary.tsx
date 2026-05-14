@@ -1,5 +1,4 @@
 import React, { useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   BookOpen,
@@ -460,7 +459,6 @@ const JobsTable: React.FC<{ jobType: TabType }> = ({ jobType }) => {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 const StandardJobsLibrary: React.FC = () => {
-  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<TabType>('standard')
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
@@ -559,13 +557,6 @@ const StandardJobsLibrary: React.FC = () => {
 
       <div className="flex justify-end">
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => navigate('/library/global?section=ranks')}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
-          >
-            <BookOpen className="h-4 w-4" />
-            Rank Library
-          </button>
           <button
             onClick={() => {
               setAddError(null)
