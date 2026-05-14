@@ -19,9 +19,9 @@ class SharePointService:
       AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
     """
 
-    def __init__(self, access_token: Optional[str] = None) -> None:
+    def __init__(self, access_token: Optional[str] = None, sharepoint_hostname: Optional[str] = None) -> None:
         if not access_token:
-            access_token = self._get_client_credentials_token()
+            access_token = self._get_client_credentials_token(sharepoint_hostname=sharepoint_hostname)
         self.token = access_token
         self.graph_base = "https://graph.microsoft.com/v1.0"
         self._headers = {
@@ -34,23 +34,64 @@ class SharePointService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _get_client_credentials_token() -> str:
+    def _discover_tenant_id(sharepoint_hostname: str) -> str:
         """
-        Obtain an OAuth2 token using the client-credentials flow.
-        Requires AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET.
-        The registered app needs Sites.Read.All and Files.Read.All app permissions.
+        Discover the Azure AD tenant ID from a SharePoint hostname by hitting
+        Microsoft's OpenID discovery endpoint for the matching domain.
+        Falls back to AZURE_TENANT_ID env var if discovery fails.
         """
         from app.core.config import settings
 
-        tenant_id = getattr(settings, "AZURE_TENANT_ID", None)
+        # e.g. unionmaritime.sharepoint.com → unionmaritime.onmicrosoft.com
+        # The oidc discovery endpoint tells us the real tenant GUID.
+        try:
+            domain = sharepoint_hostname.replace(".sharepoint.com", ".onmicrosoft.com")
+            discovery_url = f"https://login.microsoftonline.com/{domain}/v2.0/.well-known/openid-configuration"
+            with httpx.Client(timeout=10) as c:
+                resp = c.get(discovery_url)
+                if resp.is_success:
+                    issuer = resp.json().get("issuer", "")
+                    # issuer = "https://login.microsoftonline.com/{tenant-guid}/v2.0"
+                    parts = issuer.rstrip("/").split("/")
+                    if len(parts) >= 2:
+                        discovered = parts[-2]
+                        if len(discovered) == 36 and discovered.count("-") == 4:
+                            logger.info("Discovered tenant ID %s from %s", discovered, sharepoint_hostname)
+                            return discovered
+        except Exception as err:
+            logger.warning("Tenant discovery failed for %s: %s", sharepoint_hostname, err)
+
+        fallback = getattr(settings, "AZURE_TENANT_ID", None)
+        if not fallback:
+            raise ValueError("Could not discover tenant ID and AZURE_TENANT_ID is not set.")
+        return fallback
+
+    @staticmethod
+    def _get_client_credentials_token(sharepoint_hostname: Optional[str] = None) -> str:
+        """
+        Obtain an OAuth2 token using the client-credentials flow.
+        Requires AZURE_CLIENT_ID and AZURE_CLIENT_SECRET.
+        The registered app needs Sites.Read.All and Files.Read.All app permissions.
+        Tenant ID is auto-discovered from the SharePoint hostname when possible,
+        falling back to the AZURE_TENANT_ID environment variable.
+        """
+        from app.core.config import settings
+
         client_id = getattr(settings, "AZURE_CLIENT_ID", None)
         client_secret = getattr(settings, "AZURE_CLIENT_SECRET", None)
 
-        if not (tenant_id and client_id and client_secret):
+        if not (client_id and client_secret):
             raise ValueError(
-                "AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET "
+                "AZURE_CLIENT_ID and AZURE_CLIENT_SECRET "
                 "must be set to use SharePoint integration."
             )
+
+        if sharepoint_hostname:
+            tenant_id = SharePointService._discover_tenant_id(sharepoint_hostname)
+        else:
+            tenant_id = getattr(settings, "AZURE_TENANT_ID", None)
+            if not tenant_id:
+                raise ValueError("AZURE_TENANT_ID must be set when no SharePoint URL is provided.")
 
         token_url = (
             f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
@@ -61,8 +102,11 @@ class SharePointService:
             "client_secret": client_secret,
             "scope": "https://graph.microsoft.com/.default",
         }
+        logger.info("Requesting Graph token for tenant %s", tenant_id)
         with httpx.Client(timeout=30) as client:
             resp = client.post(token_url, data=data)
+            if not resp.is_success:
+                logger.error("Token request failed: %s — %s", resp.status_code, resp.text[:300])
             resp.raise_for_status()
             return resp.json()["access_token"]
 
