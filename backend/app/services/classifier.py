@@ -829,7 +829,12 @@ def _find_pages_for_topic(pages_text: list[str], keywords: list[str]) -> list[in
 _log = __import__("logging").getLogger(__name__)
 
 
-def _classify_with_claude(pages_text: list[str], filename: str, page_count: int) -> Optional[dict]:
+def _classify_with_claude(
+    pages_text: list[str],
+    filename: str,
+    page_count: int,
+    learning_context: Optional[str] = None,
+) -> Optional[dict]:
     """Call Claude API to classify the manual. Returns parsed JSON or None on failure."""
     try:
         import anthropic
@@ -850,7 +855,7 @@ def _classify_with_claude(pages_text: list[str], filename: str, page_count: int)
             filename, page_count, non_empty, len(marked_text),
         )
 
-        prompt = _build_classification_prompt(filename, page_count, marked_text)
+        prompt = _build_classification_prompt(filename, page_count, marked_text, learning_context)
 
         model_id = getattr(settings, "CLAUDE_MODEL_ID", "claude-sonnet-4-6")
         message = client.messages.create(
@@ -885,8 +890,21 @@ def _classify_with_claude(pages_text: list[str], filename: str, page_count: int)
 # Gemini AI classifier (free tier)
 # ---------------------------------------------------------------------------
 
-def _build_classification_prompt(filename: str, page_count: int, marked_text: str) -> str:
+def _build_classification_prompt(
+    filename: str,
+    page_count: int,
+    marked_text: str,
+    learning_context: Optional[str] = None,
+) -> str:
     """Build a category and page identification prompt."""
+    guidance_block = ""
+    if learning_context:
+        guidance_block = (
+            "\nReviewer-learned correction guidance:\n"
+            f"{learning_context}\n"
+            "Apply this guidance when the current manual is similar, but never invent unsupported data.\n"
+        )
+
     return f"""You are an expert maritime document classifier specialising in ship technical documentation and PMS (Planned Maintenance System) data.
 
 Filename: {filename}
@@ -896,6 +914,7 @@ Document text (page markers for context only):
 ---
 {marked_text}
 ---
+{guidance_block}
 
 Classify this document into EXACTLY ONE of the following categories:
 
@@ -941,7 +960,12 @@ Rules:
 - Page ranges can be expressed as 'start-end' (e.g. '45-67') or individual numbers separated by commas."""
 
 
-def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int) -> Optional[dict]:
+def _classify_with_gemini(
+    pages_text: list[str],
+    filename: str,
+    page_count: int,
+    learning_context: Optional[str] = None,
+) -> Optional[dict]:
     """Call Gemini API (free tier) via HTTP. Returns parsed JSON or None on failure."""
     try:
         import httpx
@@ -957,7 +981,7 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
             filename, page_count, non_empty, len(marked_text),
         )
 
-        prompt = _build_classification_prompt(filename, page_count, marked_text)
+        prompt = _build_classification_prompt(filename, page_count, marked_text, learning_context)
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"gemini-2.0-flash-lite:generateContent?key={settings.GEMINI_API_KEY}"
@@ -969,13 +993,13 @@ def _classify_with_gemini(pages_text: list[str], filename: str, page_count: int)
             response = httpx.post(url, json=payload, timeout=120)
             if response.status_code == 429:
                 wait = 5 * (2 ** attempt)  # 5s, 10s, 20s
-                _log.warning(“classifier[gemini]: 429 rate limit for %s – retrying in %ds”, filename, wait)
+                _log.warning("classifier[gemini]: 429 rate limit for %s - retrying in %ds", filename, wait)
                 time.sleep(wait)
                 continue
             response.raise_for_status()
             break
         else:
-            _log.warning(“classifier[gemini]: exhausted retries for %s – giving up”, filename)
+            _log.warning("classifier[gemini]: exhausted retries for %s - giving up", filename)
             return None
         data = response.json()
         raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -1086,13 +1110,14 @@ def classify_pages_text(
     pages_text: list[str],
     filename: str,
     total_pages: Optional[int] = None,
+    learning_context: Optional[str] = None,
 ) -> ClassificationResult:
     total_pages = total_pages or len(pages_text)
     page_refs = _build_page_references(pages_text)
 
-    ai_result = _classify_with_claude(pages_text, filename, total_pages)
+    ai_result = _classify_with_claude(pages_text, filename, total_pages, learning_context)
     if not ai_result:
-        ai_result = _classify_with_gemini(pages_text, filename, total_pages)
+        ai_result = _classify_with_gemini(pages_text, filename, total_pages, learning_context)
 
     category = ai_result.get("category", "Unknown/Unclassifiable") if ai_result else "Unknown/Unclassifiable"
     if category not in VALID_CATEGORIES:
@@ -1154,14 +1179,18 @@ def classify_pages_text(
     return _sanitise_result(result)
 
 
-def classify_pdf(content: bytes, filename: str) -> ClassificationResult:
-    “””
+def classify_pdf(
+    content: bytes,
+    filename: str,
+    learning_context: Optional[str] = None,
+) -> ClassificationResult:
+    """
     Classify a PDF manual.
     Priority: Groq (free) → Gemini (free fallback) → Claude (paid fallback) → keyword.
-    “””
+    """
     pages_text, total_pages = _extract_pdf_text(content)
-    _log.info(“classifier: extracted %d pages from %s (%d bytes)”, total_pages, filename, len(content))
-    return classify_pages_text(pages_text, filename, total_pages)
+    _log.info("classifier: extracted %d pages from %s (%d bytes)", total_pages, filename, len(content))
+    return classify_pages_text(pages_text, filename, total_pages, learning_context)
 
 
 def _keyword_classify(pages_text: list[str], filename: str, total_pages: int) -> ClassificationResult:

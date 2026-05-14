@@ -11,6 +11,22 @@ CORRECTION_TRIGGER_THRESHOLD = 20
 FINE_TUNE_THRESHOLD = 500
 
 
+@celery_app.task(name="app.tasks.learning.process_feedback_entry")
+def process_feedback_entry(feedback_id: str) -> dict:
+    """Process one reviewer correction into reusable learning guidance."""
+    import asyncio
+    import uuid
+
+    async def _run() -> dict:
+        from app.core.database import AsyncSessionLocal
+        from app.services.feedback_learning import run_feedback_learning_pipeline
+
+        async with AsyncSessionLocal() as db:
+            return await run_feedback_learning_pipeline(db, feedback_id=uuid.UUID(feedback_id))
+
+    return asyncio.run(_run())
+
+
 @celery_app.task(name="app.tasks.learning.check_rule_update_triggers")
 def check_rule_update_triggers() -> dict:
     """

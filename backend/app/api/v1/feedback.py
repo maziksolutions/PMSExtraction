@@ -4,15 +4,15 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.deps import get_current_user, require_role
-from app.models.feedback import CorrectionType, FeedbackAggregate, FeedbackEntry
+from app.deps import get_current_user
+from app.models.feedback import CorrectionType, FeedbackEntry
 from app.models.learning import FewShotStore, FineTuneRequest, FineTuneStatus
-from app.models.user import User, UserRole
+from app.models.user import User
 
 router = APIRouter()
 
@@ -151,33 +151,6 @@ async def list_feedback_entries(
         ],
         "page": page,
     }
-
-
-@router.post(
-    "/feedback/trigger-fine-tune",
-    summary="Trigger fine-tuning (Super Admin only)",
-)
-async def trigger_fine_tune(
-    current_user: Annotated[User, Depends(require_role(UserRole.super_admin))],
-    db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict[str, Any]:
-    total = await db.scalar(
-        select(func.count()).select_from(FeedbackEntry).where(
-            FeedbackEntry.tenant_id == current_user.tenant_id,
-            FeedbackEntry.is_deleted == False,
-        )
-    ) or 0
-
-    req = FineTuneRequest(
-        tenant_id=current_user.tenant_id,
-        trigger_reason="Manual trigger by Super Admin",
-        total_corrections=total,
-        status=FineTuneStatus.pending,
-    )
-    db.add(req)
-    await db.commit()
-    await db.refresh(req)
-    return {"id": str(req.id), "status": req.status.value, "total_corrections": total}
 
 
 @router.get("/feedback/few-shot-examples", summary="List few-shot example stores")

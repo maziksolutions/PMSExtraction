@@ -19,6 +19,7 @@ from app.models.ingestion import Manual, ManualStatus
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.manual import ManualOut, ManualUpdate
+from app.services.feedback_learning import schedule_feedback_learning
 from app.services.review_workflow import broadcast_activity, log_activity
 from app.services.upload_security import validate_uploaded_file_bytes
 
@@ -152,13 +153,13 @@ def _original_manual_snapshot(manual: Manual) -> dict[str, Any]:
     }
 
 
-def _apply_manual_updates(
+async def _apply_manual_updates(
     *,
     manual: Manual,
     update_data: dict[str, Any],
     current_user: User,
     db: AsyncSession,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], uuid.UUID | None]:
     prepared, page_fields_changed = _prepare_manual_update_data(manual, update_data)
     original = _original_manual_snapshot(manual)
 
@@ -171,6 +172,7 @@ def _apply_manual_updates(
 
     db.add(manual)
 
+    feedback_id: uuid.UUID | None = None
     corrected = {k: v for k, v in prepared.items()}
     if corrected:
         feedback = FeedbackEntry(
@@ -181,12 +183,19 @@ def _apply_manual_updates(
             corrected_value=corrected,
             correction_type=CorrectionType.wrong_value,
             vessel_type=None,
-            source_manual_category=manual.category,
+            source_manual_category=prepared.get("category") or manual.category,
+            context_span=(
+                corrected.get("reviewer_comments")
+                if isinstance(corrected.get("reviewer_comments"), str)
+                else f"Updated manual screening fields: {', '.join(sorted(corrected.keys()))}"
+            ),
             created_by=current_user.id,
         )
         db.add(feedback)
+        await db.flush()
+        feedback_id = feedback.id
 
-    return prepared
+    return prepared, feedback_id
 
 
 def _normalise_excel_value(value: Any) -> Optional[str]:
@@ -623,7 +632,7 @@ async def update_manual(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manual not found")
 
     update_data = body.model_dump(exclude_unset=True)
-    prepared = _apply_manual_updates(
+    prepared, feedback_id = await _apply_manual_updates(
         manual=manual,
         update_data=update_data,
         current_user=current_user,
@@ -643,6 +652,8 @@ async def update_manual(
             metadata={"fields": sorted(prepared.keys())},
         )
     await db.commit()
+    if feedback_id:
+        await schedule_feedback_learning(feedback_id)
     await db.refresh(manual)
     if activity:
         await broadcast_activity(activity)
@@ -781,6 +792,7 @@ async def import_manual_screening(
     skipped = 0
     errors: list[str] = []
     activities = []
+    feedback_ids: list[uuid.UUID] = []
 
     for row_number, row in enumerate(rows[1:], start=2):
         row_map = {
@@ -819,12 +831,14 @@ async def import_manual_screening(
                 skipped += 1
                 continue
 
-            prepared = _apply_manual_updates(
+            prepared, feedback_id = await _apply_manual_updates(
                 manual=manual,
                 update_data=update_data,
                 current_user=current_user,
                 db=db,
             )
+            if feedback_id:
+                feedback_ids.append(feedback_id)
             activities.append(
                 await log_activity(
                     db,
@@ -844,6 +858,8 @@ async def import_manual_screening(
             errors.append(f"Row {row_number}: {exc}")
 
     await db.commit()
+    for feedback_id in feedback_ids:
+        await schedule_feedback_learning(feedback_id)
     for activity in activities:
         await broadcast_activity(activity)
 

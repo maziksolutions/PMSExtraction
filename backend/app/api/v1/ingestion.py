@@ -278,8 +278,16 @@ async def _process_uploaded_file(
     from app.core.database import AsyncSessionLocal
     from app.models.ingestion import Manual, ManualStatus
     from sqlalchemy import select as _select, update as _update
+    from app.services.feedback_learning import build_learning_context
 
     async with AsyncSessionLocal() as db:
+        manual = await db.scalar(
+            _select(Manual).where(Manual.id == uuid.UUID(manual_id))
+        )
+        if manual is None:
+            logger.warning("_process_uploaded_file: manual %s not found", manual_id)
+            return
+
         # Extract text from PDF/DOCX
         extracted_text = ""
         page_count_val = 0
@@ -334,9 +342,15 @@ async def _process_uploaded_file(
 
         # Classify with Claude (or keyword fallback)
         from app.services.classifier import classify_pdf, _keyword_classify, ClassificationResult
+        learning_context = await build_learning_context(
+            db,
+            tenant_id=uuid.UUID(tenant_id_str),
+            entity_type="manual_classification",
+            source_manual_category=getattr(manual, "category", None),
+        )
         try:
             if file_ext == "pdf":
-                result = await asyncio.to_thread(classify_pdf, file_bytes, filename)
+                result = await asyncio.to_thread(classify_pdf, file_bytes, filename, learning_context)
             else:
                 result = await asyncio.to_thread(_keyword_classify, [], filename, 0)
         except Exception:
@@ -536,6 +550,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
     """Background task: re-classifies the given manuals using bounded parallelism."""
     from app.core.database import AsyncSessionLocal
     from app.services.classifier import classify_pdf, _keyword_classify
+    from app.services.feedback_learning import build_learning_context
 
     try:
         async with AsyncSessionLocal() as db:
@@ -608,8 +623,19 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                         await db.commit()
 
                         ext = (manual.file_extension or "").lower()
+                        learning_context = await build_learning_context(
+                            db,
+                            tenant_id=uuid.UUID(tenant_id_str),
+                            entity_type="manual_classification",
+                            source_manual_category=getattr(manual, "category", None),
+                        )
                         if content and ext == "pdf":
-                            cr = await asyncio.to_thread(classify_pdf, content, manual.original_filename)
+                            cr = await asyncio.to_thread(
+                                classify_pdf,
+                                content,
+                                manual.original_filename,
+                                learning_context,
+                            )
                         else:
                             stored_text = getattr(manual, "extracted_text", None) or ""
                             if stored_text:
@@ -628,6 +654,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                     pages_text,
                                     manual.original_filename,
                                     page_count,
+                                    learning_context,
                                 )
                             else:
                                 logger.warning(

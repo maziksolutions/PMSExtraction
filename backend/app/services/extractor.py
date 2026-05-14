@@ -1537,6 +1537,13 @@ async def extract_entities(
     return []
 
 
+def _merge_context_notes(*notes: str | None) -> str | None:
+    merged = [note.strip() for note in notes if note and note.strip()]
+    if not merged:
+        return None
+    return "\n\n".join(merged)
+
+
 # ---------------------------------------------------------------------------
 # Post-processing helpers
 # ---------------------------------------------------------------------------
@@ -1748,6 +1755,7 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
     from app.models.ingestion import Manual, ManualStatus
     from app.models.job import FrequencyType, Job
     from app.models.spare import Spare
+    from app.services.feedback_learning import build_learning_context
     from sqlalchemy import select, update
 
     manual_id = uuid.UUID(manual_id_str)
@@ -2152,6 +2160,15 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 for component in existing_component_result.scalars().all()
             ]
 
+        learning_context_by_type: dict[str, str | None] = {}
+        for entity_type in extraction_types:
+            learning_context_by_type[entity_type] = await build_learning_context(
+                db,
+                tenant_id=tenant_id,
+                entity_type=entity_type,
+                source_manual_category=manual.category,
+            )
+
         for etype in extraction_types:
             source_text = type_to_text.get(etype) or full_text
             text_chunks = _chunk_text(source_text)
@@ -2165,11 +2182,14 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             all_records: list[dict] = []
             for chunk_idx, chunk in enumerate(text_chunks):
                 chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
-                context_note = None
+                context_note = learning_context_by_type.get(etype)
                 if etype in {"job", "spare"}:
                     context_components = extracted_component_context or existing_manual_component_context
                     if context_components:
-                        context_note = _build_component_context_text(context_components, manual)
+                        context_note = _merge_context_notes(
+                            _build_component_context_text(context_components, manual),
+                            learning_context_by_type.get(etype),
+                        )
                 records = await extract_entities(chunk, etype, chunk_label, context_note=context_note)
                 all_records.extend(records)
 
@@ -2181,11 +2201,14 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                     resolution=400,
                 )
                 if rendered_pages:
-                    context_note = None
+                    context_note = learning_context_by_type.get(etype)
                     if etype in {"job", "spare"}:
                         context_components = extracted_component_context or existing_manual_component_context
                         if context_components:
-                            context_note = _build_component_context_text(context_components, manual)
+                            context_note = _merge_context_notes(
+                                _build_component_context_text(context_components, manual),
+                                learning_context_by_type.get(etype),
+                            )
                     for page_no in selected_pages:
                         image_bytes = rendered_pages.get(page_no)
                         if not image_bytes:
