@@ -5,6 +5,8 @@ Revises: 0019_job_ranks
 Create Date: 2026-04-17 18:10:00
 """
 
+from alembic import op
+
 # revision identifiers, used by Alembic.
 revision = "0020_add_kr_irs_class_society"
 down_revision = "0019_job_ranks"

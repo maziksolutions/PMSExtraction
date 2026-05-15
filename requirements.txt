@@ -1,6 +1,7 @@
 # Web framework
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
+swagger-ui-bundle==0.0.9
 
 # Database
 sqlalchemy[asyncio]==2.0.25
@@ -15,7 +16,7 @@ email-validator==2.1.0
 
 # Auth / Security
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+bcrypt==4.3.0
 python-multipart==0.0.6
 
 # HTTP client
@@ -39,8 +40,6 @@ anthropic==0.18.1
 openpyxl==3.1.2
 python-docx==1.1.0
 pdfplumber==0.10.3
-pillow==10.0.0
-pytesseract==0.3.13
 
 # Azure AI services
 azure-ai-formrecognizer==3.3.2
@@ -48,6 +47,10 @@ azure-ai-formrecognizer==3.3.2
 # Microsoft Graph / SharePoint
 msal==1.26.0
 msgraph-sdk==1.0.0
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
 
 # WSGI / ASGI
 websockets==12.0

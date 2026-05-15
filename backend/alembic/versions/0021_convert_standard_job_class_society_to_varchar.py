@@ -1,11 +1,11 @@
 """Reserved migration slot after class society enum fix
 
-Revision ID: 0021_convert_standard_job_class_society_to_varchar
+Revision ID: 0021_class_society_varchar
 Revises: 0020_add_kr_irs_class_society
 Create Date: 2026-04-17 18:40:00
 """
 
-revision = "0021_convert_standard_job_class_society_to_varchar"
+revision = "0021_class_society_varchar"
 down_revision = "0020_add_kr_irs_class_society"
 branch_labels = None
 depends_on = None

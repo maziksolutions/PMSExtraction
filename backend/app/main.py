@@ -8,7 +8,9 @@ from typing import Any
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import select
 
@@ -35,15 +37,47 @@ except Exception as exc:
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
+    openapi_version="3.0.3",
     description=(
         "Maritime PMS Data Extraction & Setup Tool API.\n\n"
         "Provides authentication, vessel project management, user administration, "
         "and document extraction endpoints for the Union Maritime platform."
     ),
     openapi_url=f"{settings.API_V1_STR}/openapi.json" if settings.EXPOSE_API_DOCS else None,
-    docs_url=f"{settings.API_V1_STR}/docs" if settings.EXPOSE_API_DOCS else None,
+    docs_url=None,
     redoc_url=f"{settings.API_V1_STR}/redoc" if settings.EXPOSE_API_DOCS else None,
+    servers=[{"url": "http://localhost:8000", "description": "Local development"}],
 )
+app.openapi_version = "3.0.3"
+
+if settings.EXPOSE_API_DOCS:
+    swagger_js_url = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui-bundle.js"
+    swagger_css_url = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css"
+
+    try:
+        from swagger_ui_bundle import swagger_ui_3_path
+
+        app.mount(
+            "/static/swagger-ui",
+            StaticFiles(directory=swagger_ui_3_path),
+            name="swagger-ui",
+        )
+        swagger_js_url = "/static/swagger-ui/swagger-ui-bundle.js"
+        swagger_css_url = "/static/swagger-ui/swagger-ui.css"
+    except Exception as exc:
+        print(
+            f"[DOCS WARNING] Local Swagger UI assets unavailable, falling back to CDN: {exc}",
+            flush=True,
+        )
+
+    @app.get(f"{settings.API_V1_STR}/docs", include_in_schema=False)
+    async def custom_swagger_ui_html():
+        return get_swagger_ui_html(
+            openapi_url=f"{settings.API_V1_STR}/openapi.json",
+            title=f"{settings.PROJECT_NAME} - Swagger UI",
+            swagger_js_url=swagger_js_url,
+            swagger_css_url=swagger_css_url,
+        )
 
 if settings.ENFORCE_TRUSTED_HOST_MIDDLEWARE:
     app.add_middleware(
