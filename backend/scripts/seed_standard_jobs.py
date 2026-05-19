@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
@@ -67,18 +68,39 @@ STANDARD_JOBS = [
 
 
 async def seed(db: AsyncSession) -> None:
+    created_templates = 0
+    updated_templates = 0
+    created_jobs = 0
+    updated_jobs = 0
+
     print("Seeding vessel type templates...")
     for vessel_type, machinery_group, machinery_name, is_mandatory, extraction_types in VESSEL_TYPE_TEMPLATES:
-        template = VesselTypeTemplate(
-            tenant_id=DEFAULT_TENANT_ID,
-            vessel_type=vessel_type,
-            machinery_group=machinery_group,
-            machinery_name=machinery_name,
-            is_mandatory=is_mandatory,
-            extraction_types=extraction_types,
-            is_system=True,
+        existing_template = await db.scalar(
+            select(VesselTypeTemplate).where(
+                VesselTypeTemplate.tenant_id == DEFAULT_TENANT_ID,
+                VesselTypeTemplate.vessel_type == vessel_type,
+                VesselTypeTemplate.machinery_group == machinery_group,
+                VesselTypeTemplate.machinery_name == machinery_name,
+                VesselTypeTemplate.is_deleted == False,
+            )
         )
-        db.add(template)
+        if existing_template:
+            existing_template.is_mandatory = is_mandatory
+            existing_template.extraction_types = extraction_types
+            existing_template.is_system = True
+            updated_templates += 1
+        else:
+            template = VesselTypeTemplate(
+                tenant_id=DEFAULT_TENANT_ID,
+                vessel_type=vessel_type,
+                machinery_group=machinery_group,
+                machinery_name=machinery_name,
+                is_mandatory=is_mandatory,
+                extraction_types=extraction_types,
+                is_system=True,
+            )
+            db.add(template)
+            created_templates += 1
 
     print("Seeding standard jobs...")
     for class_society, machinery_type, job_name, description, frequency, freq_type, is_critical, ref in STANDARD_JOBS:
@@ -89,22 +111,45 @@ async def seed(db: AsyncSession) -> None:
         except ValueError:
             ft = None
 
-        job = StandardJob(
-            tenant_id=DEFAULT_TENANT_ID,
-            class_society=class_society,
-            machinery_type=machinery_type,
-            job_name=job_name,
-            job_description=description,
-            frequency=frequency,
-            frequency_type=ft,
-            is_critical=is_critical,
-            library_reference=ref,
-            is_system=True,
+        existing_job = await db.scalar(
+            select(StandardJob).where(
+                StandardJob.tenant_id == DEFAULT_TENANT_ID,
+                StandardJob.library_reference == ref,
+                StandardJob.is_deleted == False,
+            )
         )
-        db.add(job)
+        if existing_job:
+            existing_job.class_society = class_society
+            existing_job.machinery_type = machinery_type
+            existing_job.job_name = job_name
+            existing_job.job_description = description
+            existing_job.frequency = frequency
+            existing_job.frequency_type = ft
+            existing_job.is_critical = is_critical
+            existing_job.is_system = True
+            updated_jobs += 1
+        else:
+            job = StandardJob(
+                tenant_id=DEFAULT_TENANT_ID,
+                class_society=class_society,
+                machinery_type=machinery_type,
+                job_name=job_name,
+                job_description=description,
+                frequency=frequency,
+                frequency_type=ft,
+                is_critical=is_critical,
+                library_reference=ref,
+                is_system=True,
+            )
+            db.add(job)
+            created_jobs += 1
 
     await db.commit()
-    print("Seeding complete.")
+    print(
+        "Seeding complete: "
+        f"{created_templates} templates created, {updated_templates} templates updated, "
+        f"{created_jobs} jobs created, {updated_jobs} jobs updated."
+    )
 
 
 async def main() -> None:
