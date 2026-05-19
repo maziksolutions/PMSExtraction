@@ -21,4 +21,4 @@ EXPOSE 8000
 
 # Railway sets PORT dynamically. Run migrations and idempotent seeders before
 # starting the API so each deploy brings the database up to date automatically.
-CMD ["sh", "-c", "alembic upgrade head && python -m scripts.seed_standard_jobs && if [ -n \"$SEED_ADMIN_PASSWORD\" ]; then python scripts/seed_admin.py; else echo 'Skipping admin seed because SEED_ADMIN_PASSWORD is not set.'; fi && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "/app/backend/scripts/railway_start.sh"]

@@ -3,6 +3,7 @@ builder = "DOCKERFILE"
 dockerfilePath = "backend/Dockerfile"
 
 [deploy]
+startCommand = "sh /app/backend/scripts/railway_start.sh"
 healthcheckPath = "/health/live"
 healthcheckTimeout = 300
 restartPolicyType = "ALWAYS"
