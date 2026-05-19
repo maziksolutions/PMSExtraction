@@ -41,8 +41,8 @@ services:
   # ----------------------------------------------------------------
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -61,7 +61,7 @@ services:
         condition: service_started
     volumes:
       # Hot-reload: mount source so Uvicorn detects changes
-      - ./backend:/app
+      - ./backend:/app/backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   # ----------------------------------------------------------------

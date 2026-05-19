@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # Set working directory
-WORKDIR /app
+WORKDIR /app/backend
 
 # Install system dependencies for asyncpg / psycopg2
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,11 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies first (layer-cache friendly)
-COPY requirements.txt .
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
-COPY . .
+COPY backend/ .
 
 # Expose API port
 EXPOSE 8000
