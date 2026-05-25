@@ -111,11 +111,15 @@ apiClient.interceptors.response.use(
     // --- Normalise error message ---
     const detail = error.response?.data?.detail
     const message =
-      typeof detail === 'string'
-        ? detail
-        : Array.isArray(detail)
-          ? detail.map((d) => d.msg).join(', ')
-          : error.message
+      error.code === 'ECONNABORTED'
+        ? 'The server took too long to respond. Please try again.'
+        : typeof detail === 'string'
+          ? detail
+          : Array.isArray(detail)
+            ? detail.map((d) => d.msg).join(', ')
+            : error.message === 'Network Error'
+              ? 'Unable to reach the server. Please check the deployment and try again.'
+              : error.message
 
     return Promise.reject(new Error(message))
   }

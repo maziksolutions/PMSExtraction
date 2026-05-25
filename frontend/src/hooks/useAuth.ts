@@ -39,11 +39,13 @@ export function useAuth(): UseAuthReturn {
       } satisfies LoginPayload)
 
       const tokens = tokenResponse.data
-
-      useAuthStore.setState({ accessToken: tokens.access_token })
-
-      const userResponse = await apiClient.get<User>('/users/me')
-      const user = userResponse.data
+      const user = tokens.user
+        ? tokens.user
+        : await (async () => {
+            useAuthStore.setState({ accessToken: tokens.access_token })
+            const userResponse = await apiClient.get<User>('/users/me', { timeout: 5_000 })
+            return userResponse.data
+          })()
 
       storeLogin(user, tokens)
       navigate('/', { replace: true })

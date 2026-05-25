@@ -19,6 +19,7 @@ from app.core.security import (
 )
 from app.models.user import User
 from app.schemas.auth import LoginRequest, LogoutRequest, RefreshRequest, TokenResponse
+from app.schemas.user import UserResponse
 from app.services.token_store import is_token_revoked, revoke_token_payload
 
 router = APIRouter()
@@ -82,6 +83,7 @@ async def login(
         refresh_token=refresh_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=UserResponse.model_validate(user),
     )
 
 
@@ -152,6 +154,7 @@ async def refresh_token(
         refresh_token=new_refresh_token,
         token_type="bearer",
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=UserResponse.model_validate(user),
     )
 
 

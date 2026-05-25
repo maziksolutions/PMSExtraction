@@ -11,7 +11,6 @@ import {
   ChevronRight,
   ChevronLeft,
   MessageSquare,
-  BarChart2,
   Shield,
   FolderOpen,
   ClipboardList,
@@ -52,7 +51,6 @@ const topNavItems = [
   { to: '/library', label: 'Library', icon: Library },
   { to: '/standard-jobs-library', label: 'Standard Jobs', icon: Layers },
   { to: '/users', label: 'Users', icon: Users, requiredRole: UserRole.SuperAdmin },
-  { to: '/feedback', label: 'Feedback', icon: BarChart2, requiredRole: UserRole.SuperAdmin },
   { to: '/admin', label: 'Admin', icon: Shield, requiredRole: UserRole.SuperAdmin },
 ]
 

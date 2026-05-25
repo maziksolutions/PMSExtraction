@@ -37,9 +37,6 @@ const StandardJobs = lazy(() => import('@/pages/StandardJobs'))
 const Export = lazy(() => import('@/pages/Export'))
 const ExportSchemaSetup = lazy(() => import('@/pages/ExportSchemaSetup'))
 
-// Sprint 11
-const FeedbackDashboard = lazy(() => import('@/pages/FeedbackDashboard'))
-
 // Sprint 12
 const Admin = lazy(() => import('@/pages/Admin'))
 
@@ -177,16 +174,6 @@ const App: React.FC = () => {
                 element={
                   <ProtectedRoute>
                     <Export />
-                  </ProtectedRoute>
-                }
-              />
-
-              {/* Sprint 11: Feedback Dashboard (Super Admin) */}
-              <Route
-                path="feedback"
-                element={
-                  <ProtectedRoute roles={[UserRole.SuperAdmin]}>
-                    <FeedbackDashboard />
                   </ProtectedRoute>
                 }
               />

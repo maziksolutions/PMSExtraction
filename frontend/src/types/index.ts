@@ -122,6 +122,7 @@ export interface AuthTokens {
   refresh_token: string
   token_type: string
   expires_in: number
+  user?: User | null
 }
 
 export interface ApiError {

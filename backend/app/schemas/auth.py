@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, EmailStr, Field
 
+from app.schemas.user import UserResponse
+
 
 class LoginRequest(BaseModel):
     email: EmailStr = Field(..., description="User email address")
@@ -13,6 +15,7 @@ class TokenResponse(BaseModel):
     refresh_token: str = Field(..., description="JWT refresh token")
     token_type: str = Field(default="bearer", description="Token type (always 'bearer')")
     expires_in: int = Field(..., description="Access token lifetime in seconds")
+    user: UserResponse | None = Field(default=None, description="Authenticated user profile")
 
 
 class RefreshRequest(BaseModel):
