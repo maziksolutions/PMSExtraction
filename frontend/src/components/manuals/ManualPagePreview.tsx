@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, FileSearch, Maximize2, RefreshCw, RotateCcw, RotateCw, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, FileSearch, Maximize2, RefreshCw, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface PreviewPage {
@@ -46,6 +46,7 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [rotation, setRotation] = useState(0)
   const [activePageNumber, setActivePageNumber] = useState<number | null>(null)
+  const [zoom, setZoom] = useState(1.0)
 
   useEffect(() => {
     const nextValue = defaultPages == null ? '' : String(defaultPages)
@@ -81,15 +82,19 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
       ? -1
       : (data?.pages ?? []).findIndex((page) => page.page_number === activePageNumber)
 
-  const stepPage = (direction: -1 | 1) => {
-    if (!data?.pages?.length) return
-    if (activePageNumber == null) {
-      setActivePageNumber(data.pages[0].page_number)
-      return
-    }
-    const nextIndex = activePageIndex + direction
-    if (nextIndex >= 0 && nextIndex < data.pages.length) {
-      setActivePageNumber(data.pages[nextIndex].page_number)
+  const goToPage = (pageNum: number) => {
+    if (pageNum < 1) return
+    const maxPage = data?.page_count ?? 9999
+    if (pageNum > maxPage) return
+
+    const isLoaded = data?.pages?.some((p) => p.page_number === pageNum)
+    if (isLoaded) {
+      setActivePageNumber(pageNum)
+    } else {
+      const pageStr = String(pageNum)
+      setPageInput(pageStr)
+      setRequestedPages(pageStr)
+      setActivePageNumber(pageNum)
     }
   }
 
@@ -122,7 +127,10 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
           <div className="space-y-3 p-3">
             {page.image_data_url ? (
               <div className="overflow-auto rounded-lg border border-slate-800 bg-slate-900/70">
-                <div className={`flex ${fullscreen ? 'min-w-max justify-center p-4' : 'min-w-max p-3'}`}>
+                <div 
+                  className={`flex ${fullscreen ? 'min-w-max justify-center p-4' : 'min-w-max p-3'}`}
+                  style={{ zoom: zoom }}
+                >
                   <img
                     src={page.image_data_url}
                     alt={`Manual page ${page.page_number}`}
@@ -241,36 +249,75 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
             >
               <RotateCw className="h-3.5 w-3.5" />
             </button>
+            <div className="h-6 w-px bg-slate-800 mx-1 align-middle self-center" />
+            <button
+              type="button"
+              onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))}
+              className="rounded-lg border border-slate-700 px-2.5 py-2 text-xs text-slate-300 hover:bg-slate-800"
+              title="Zoom out"
+            >
+              <ZoomOut className="h-3.5 w-3.5" />
+            </button>
+            <span className="flex items-center px-1 text-[11px] font-medium text-slate-300 min-w-[2.5rem] justify-center">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              type="button"
+              onClick={() => setZoom((z) => Math.min(3.0, z + 0.1))}
+              className="rounded-lg border border-slate-700 px-2.5 py-2 text-xs text-slate-300 hover:bg-slate-800"
+              title="Zoom in"
+            >
+              <ZoomIn className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(1.0)}
+              className="rounded-lg border border-slate-700 px-2 py-2 text-xs text-slate-300 hover:bg-slate-800"
+              title="Reset zoom"
+            >
+              Reset
+            </button>
           </div>
           <p className="mt-2 text-[11px] text-slate-500">
             Load one page or multiple physical pages to verify what the extractor used.
           </p>
-          {multiPage ? (
+          {data?.pages && data.pages.length > 0 ? (
             <div className="mt-3 space-y-2">
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => stepPage(-1)}
-                  disabled={activePageNumber == null || activePageIndex <= 0}
+                  onClick={() => {
+                    const prevPage = activePageNumber !== null 
+                      ? activePageNumber - 1 
+                      : (data?.pages?.[0]?.page_number ?? 1) - 1
+                    goToPage(prevPage)
+                  }}
+                  disabled={
+                    activePageNumber !== null
+                      ? activePageNumber <= 1
+                      : !data?.pages?.length || data.pages[0].page_number <= 1
+                  }
                   className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40"
                   title="Previous page"
                 >
                   <ChevronLeft className="h-3.5 w-3.5" />
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setActivePageNumber(null)}
-                  className={`rounded-lg px-2.5 py-1 text-xs ${activePageNumber == null ? 'bg-sky-600 text-white' : 'border border-slate-700 text-slate-300 hover:bg-slate-800'}`}
-                >
-                  All Pages
-                </button>
+                {multiPage && (
+                  <button
+                    type="button"
+                    onClick={() => setActivePageNumber(null)}
+                    className={`rounded-lg px-2.5 py-1 text-xs ${activePageNumber == null ? 'bg-sky-600 text-white' : 'border border-slate-700 text-slate-300 hover:bg-slate-800'}`}
+                  >
+                    All Pages
+                  </button>
+                )}
                 {(data?.pages ?? []).map((page) => (
                   <button
                     key={page.page_number}
                     type="button"
                     onClick={() => setActivePageNumber(page.page_number)}
                     className={`rounded-lg px-2.5 py-1 text-xs ${
-                      activePageNumber === page.page_number
+                      (activePageNumber === page.page_number || (activePageNumber === null && !multiPage))
                         ? 'bg-sky-600 text-white'
                         : 'border border-slate-700 text-slate-300 hover:bg-slate-800'
                     }`}
@@ -280,8 +327,17 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
                 ))}
                 <button
                   type="button"
-                  onClick={() => stepPage(1)}
-                  disabled={activePageNumber == null || activePageIndex < 0 || activePageIndex >= (data?.pages?.length ?? 1) - 1}
+                  onClick={() => {
+                    const nextPage = activePageNumber !== null 
+                      ? activePageNumber + 1 
+                      : (data?.pages?.[data.pages.length - 1]?.page_number ?? 1) + 1
+                    goToPage(nextPage)
+                  }}
+                  disabled={
+                    activePageNumber !== null
+                      ? (data?.page_count !== null && activePageNumber >= data.page_count)
+                      : !data?.pages?.length || (data?.page_count !== null && data.pages[data.pages.length - 1].page_number >= data.page_count)
+                  }
                   className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40"
                   title="Next page"
                 >
@@ -289,7 +345,10 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
                 </button>
               </div>
               <p className="text-[11px] text-slate-500">
-                Toggle between individual pages or view all selected pages together.
+                {multiPage 
+                  ? "Toggle between individual pages or view all selected pages together."
+                  : `Viewing page ${data.pages[0].page_number} of ${data.page_count ?? 'unknown'}.`
+                }
               </p>
             </div>
           ) : null}
@@ -313,6 +372,34 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
               <div className="mt-1 text-xs text-slate-400">{manualName ?? 'Manual preview'}</div>
             </div>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
+                title="Zoom out"
+              >
+                <ZoomOut className="h-4 w-4" />
+              </button>
+              <span className="flex items-center px-1 text-sm font-medium text-slate-300 min-w-[3rem] justify-center">
+                {Math.round(zoom * 100)}%
+              </span>
+              <button
+                type="button"
+                onClick={() => setZoom((z) => Math.min(3.0, z + 0.1))}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
+                title="Zoom in"
+              >
+                <ZoomIn className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setZoom(1.0)}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
+                title="Reset zoom"
+              >
+                Reset
+              </button>
+              <div className="h-8 w-px bg-slate-800 mx-2" />
               <button
                 type="button"
                 onClick={() => setRotation((value) => (value + 270) % 360)}
