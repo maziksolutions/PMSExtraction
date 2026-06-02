@@ -366,62 +366,161 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
     {isFullscreen ? (
       <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm">
         <div className="flex h-full flex-col">
-          <div className="flex items-center justify-between border-b border-slate-800 bg-slate-950/95 px-5 py-3">
+          <div className="flex items-center justify-between border-b border-slate-800 bg-slate-950/95 px-5 py-3 flex-wrap gap-4 z-10">
             <div>
               <div className="text-sm font-semibold text-white">{title}</div>
               <div className="mt-1 text-xs text-slate-400">{manualName ?? 'Manual preview'}</div>
             </div>
+
+            {/* Middle part: Load Input & Page Navigation Controls */}
+            <div className="flex items-center gap-4 flex-wrap">
+              {/* Load Input */}
+              <div className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900 px-2 py-1">
+                <span className="text-[10px] font-semibold uppercase text-slate-500 px-1">Pages:</span>
+                <input
+                  type="text"
+                  value={pageInput}
+                  onChange={(event) => setPageInput(event.target.value)}
+                  placeholder="e.g. 9-12 or 3"
+                  className="w-24 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-100 focus:border-sky-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setRequestedPages(pageInput.trim())}
+                  className="rounded bg-sky-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-sky-500"
+                >
+                  Load
+                </button>
+                <button
+                  type="button"
+                  onClick={() => refetch()}
+                  className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
+                  title="Refresh preview"
+                >
+                  <RefreshCw className={`h-3 w-3 ${isFetching ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+
+              {/* Page navigation buttons */}
+              {data?.pages && data.pages.length > 0 ? (
+                <div className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900 p-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const prevPage = activePageNumber !== null 
+                        ? activePageNumber - 1 
+                        : (data?.pages?.[0]?.page_number ?? 1) - 1
+                      goToPage(prevPage)
+                    }}
+                    disabled={
+                      activePageNumber !== null
+                        ? activePageNumber <= 1
+                        : !data?.pages?.length || data.pages[0].page_number <= 1
+                    }
+                    className="rounded border border-slate-700 p-1 text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                    title="Previous page"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                  {multiPage && (
+                    <button
+                      type="button"
+                      onClick={() => setActivePageNumber(null)}
+                      className={`rounded px-2 py-0.5 text-xs ${activePageNumber == null ? 'bg-sky-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}
+                    >
+                      All Pages
+                    </button>
+                  )}
+                  {(data?.pages ?? []).map((page) => (
+                    <button
+                      key={page.page_number}
+                      type="button"
+                      onClick={() => setActivePageNumber(page.page_number)}
+                      className={`rounded px-2 py-0.5 text-xs ${
+                        (activePageNumber === page.page_number || (activePageNumber === null && !multiPage))
+                          ? 'bg-sky-600 text-white'
+                          : 'text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      {page.page_number}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextPage = activePageNumber !== null 
+                        ? activePageNumber + 1 
+                        : (data?.pages?.[data.pages.length - 1]?.page_number ?? 1) + 1
+                      goToPage(nextPage)
+                    }}
+                    disabled={
+                      activePageNumber !== null
+                        ? (data?.page_count !== null && activePageNumber >= data.page_count)
+                        : !data?.pages?.length || (data?.page_count !== null && data.pages[data.pages.length - 1].page_number >= data.page_count)
+                    }
+                    className="rounded border border-slate-700 p-1 text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                    title="Next page"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Right part: Zoom/Rotate/Close */}
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))}
-                className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
+                className="rounded-lg border border-slate-700 px-2 py-1.5 text-slate-300 hover:bg-slate-800"
                 title="Zoom out"
               >
-                <ZoomOut className="h-4 w-4" />
+                <ZoomOut className="h-3.5 w-3.5" />
               </button>
-              <span className="flex items-center px-1 text-sm font-medium text-slate-300 min-w-[3rem] justify-center">
+              <span className="flex items-center px-1 text-xs font-medium text-slate-300 min-w-[2.5rem] justify-center">
                 {Math.round(zoom * 100)}%
               </span>
               <button
                 type="button"
                 onClick={() => setZoom((z) => Math.min(3.0, z + 0.1))}
-                className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
+                className="rounded-lg border border-slate-700 px-2 py-1.5 text-slate-300 hover:bg-slate-800"
                 title="Zoom in"
               >
-                <ZoomIn className="h-4 w-4" />
+                <ZoomIn className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
                 onClick={() => setZoom(1.0)}
-                className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
+                className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800"
                 title="Reset zoom"
               >
                 Reset
               </button>
-              <div className="h-8 w-px bg-slate-800 mx-2" />
+              <div className="h-6 w-px bg-slate-800 mx-1" />
               <button
                 type="button"
                 onClick={() => setRotation((value) => (value + 270) % 360)}
-                className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
+                className="rounded-lg border border-slate-700 px-2 py-1.5 text-slate-300 hover:bg-slate-800"
                 title="Rotate left"
               >
-                <RotateCcw className="h-4 w-4" />
+                <RotateCcw className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
                 onClick={() => setRotation((value) => (value + 90) % 360)}
-                className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
+                className="rounded-lg border border-slate-700 px-2 py-1.5 text-slate-300 hover:bg-slate-800"
                 title="Rotate right"
               >
-                <RotateCw className="h-4 w-4" />
+                <RotateCw className="h-3.5 w-3.5" />
               </button>
+              <div className="h-6 w-px bg-slate-800 mx-1" />
               <button
                 type="button"
                 onClick={() => setIsFullscreen(false)}
-                className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:bg-slate-800"
+                className="rounded-lg border border-slate-700 px-2 py-1.5 text-slate-300 hover:bg-slate-800"
+                title="Exit fullscreen"
               >
-                <X className="h-4 w-4" />
+                <X className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
