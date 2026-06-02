@@ -239,6 +239,7 @@ const ComponentReview: React.FC = () => {
   const [showBatchPanel, setShowBatchPanel] = useState(false)
   const [batchFields, setBatchFields] = useState<Record<string, string>>({})
   const [selectedComponent, setSelectedComponent] = useState<Component | null>(null)
+  const [previewComponent, setPreviewComponent] = useState<Component | null>(null)
   const [mergeSource, setMergeSource] = useState<Component | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -616,34 +617,7 @@ const ComponentReview: React.FC = () => {
           </aside>
         }
         right={
-          <ResizableRowSplitView
-            storageKey={`components-review-row-layout-v3:${vesselId ?? 'default'}`}
-            initialTopPercent={40}
-            top={
-              <ManualPagePreview
-                vesselId={vesselId ?? ''}
-                manualId={selectedComponent?.source_manual_id}
-                manualName={selectedComponent?.pdf_reference}
-                title="Component Source Preview"
-                subtitle={
-                  selectedComponent
-                    ? [
-                        selectedComponent.component_name,
-                        selectedComponent.group1,
-                        selectedComponent.group2,
-                        selectedComponent.main_machinery,
-                      ]
-                        .filter(Boolean)
-                        .join(' • ')
-                    : null
-                }
-                defaultPages={selectedComponent?.page_reference}
-                panelClassName="h-full w-full min-w-0"
-                showTextSnippet={false}
-              />
-            }
-            bottom={
-              <div className="h-full min-h-0 overflow-hidden flex flex-col gap-2 bg-slate-950 p-1">
+          <div className="h-full min-h-0 overflow-hidden flex flex-col gap-2 bg-slate-950 p-1">
                 {/* Toolbar */}
                 <div className="flex flex-col gap-1.5 bg-slate-900/50 p-2 rounded-xl border border-slate-800/80 shrink-0">
                   <div className="flex items-center justify-between flex-wrap gap-2">
@@ -971,7 +945,10 @@ const ComponentReview: React.FC = () => {
                               <td className="px-2 py-1">
                                 {comp.source_manual_id ? (
                                   <button
-                                    onClick={() => setSelectedComponent(comp)}
+                                    onClick={() => {
+                                      setSelectedComponent(comp)
+                                      setPreviewComponent(comp)
+                                    }}
                                     className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-2 py-1 text-xs text-sky-300 hover:bg-slate-800"
                                   >
                                     <FileSearch className="h-3.5 w-3.5" />
@@ -1005,7 +982,10 @@ const ComponentReview: React.FC = () => {
                                     </>
                                   ) : (
                                     <button
-                                      onClick={() => setSelectedComponent(comp)}
+                                      onClick={() => {
+                                        setSelectedComponent(comp)
+                                        setPreviewComponent(comp)
+                                      }}
                                       disabled={!comp.source_manual_id}
                                       className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
                                     >
@@ -1060,11 +1040,53 @@ const ComponentReview: React.FC = () => {
                 )}
               </div>
             )}
-              </div>
-            }
-          />
+          </div>
         }
       />
+
+      {previewComponent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="relative w-full max-w-6xl h-[90vh] rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl flex flex-col overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4 bg-slate-950/40">
+              <div>
+                <h2 className="text-base font-semibold text-white">Manual Page Preview</h2>
+                <p className="mt-1 text-xs text-slate-400">
+                  {[
+                    previewComponent.component_name,
+                    previewComponent.group1,
+                    previewComponent.group2,
+                    previewComponent.main_machinery,
+                  ]
+                    .filter(Boolean)
+                    .join(' • ')}
+                </p>
+              </div>
+              <button
+                onClick={() => setPreviewComponent(null)}
+                className="text-slate-400 hover:text-white rounded-lg p-1.5 hover:bg-slate-800 transition-colors"
+                title="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 min-h-0 bg-slate-950 p-4 overflow-hidden">
+              <ManualPagePreview
+                vesselId={vesselId ?? ''}
+                manualId={previewComponent.source_manual_id}
+                manualName={previewComponent.pdf_reference}
+                title="Component Source Preview"
+                subtitle={null}
+                defaultPages={previewComponent.page_reference}
+                panelClassName="h-full w-full min-w-0"
+                showTextSnippet={false}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }
