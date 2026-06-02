@@ -24,6 +24,7 @@ import {
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 import ResizableSplitView from '@/components/layout/ResizableSplitView'
+import ResizableRowSplitView from '@/components/layout/ResizableRowSplitView'
 
 interface Component {
   id: string
@@ -615,9 +616,10 @@ const ComponentReview: React.FC = () => {
           </aside>
         }
         right={
-          <div className="flex flex-col h-full min-h-0 gap-4 overflow-hidden">
-            {/* Top/Center Panel: Manual Preview */}
-            <div className="h-[48%] min-h-[250px] shrink-0 flex flex-col overflow-hidden">
+          <ResizableRowSplitView
+            storageKey={`components-review-row-layout-v3:${vesselId ?? 'default'}`}
+            initialTopPercent={40}
+            top={
               <ManualPagePreview
                 vesselId={vesselId ?? ''}
                 manualId={selectedComponent?.source_manual_id}
@@ -639,160 +641,166 @@ const ComponentReview: React.FC = () => {
                 panelClassName="h-full w-full min-w-0"
                 showTextSnippet={false}
               />
-            </div>
+            }
+            bottom={
+              <div className="h-full min-h-0 overflow-hidden flex flex-col gap-2 bg-slate-950 p-1">
+                {/* Toolbar */}
+                <div className="flex flex-col gap-1.5 bg-slate-900/50 p-2 rounded-xl border border-slate-800/80 shrink-0">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <h1 className="text-sm font-bold text-white flex items-center gap-2">
+                      Components
+                      <span className="text-[11px] text-slate-500 font-normal">({total} total)</span>
+                    </h1>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Import Excel */}
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+                      >
+                        <Upload className="h-3.5 w-3.5" />
+                        Import Excel
+                      </button>
+                      <input ref={fileInputRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={handleExcelImport} />
+                      <a
+                        href={`${apiClient.defaults.baseURL}/vessels/components/import-template`}
+                        download="components_import_template.xlsx"
+                        className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+                      >
+                        <FileDown className="h-3.5 w-3.5" />
+                        Template
+                      </a>
 
-            {/* Bottom Panel: Components list (Toolbar + Table) */}
-            <div className="flex-1 min-h-0 overflow-hidden flex flex-col gap-3">
-              {/* Toolbar */}
-              <div className="flex flex-col gap-2">
-                <h1 className="text-2xl font-bold text-white">Components</h1>
+                      {/* QC Export Components */}
+                      <button
+                        onClick={async () => {
+                          try {
+                            const resp = await apiClient.get(`/vessels/${vesselId}/components/qc-export`, { responseType: 'blob' })
+                            const disposition = resp.headers['content-disposition'] ?? ''
+                            const match = disposition.match(/filename="?([^"]+)"?/)
+                            const filename = match ? match[1] : 'Components_QC.xlsx'
+                            const a = document.createElement('a')
+                            a.href = URL.createObjectURL(resp.data)
+                            a.download = filename
+                            a.click()
+                            setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
+                          } catch (e: any) { alert('Export failed: ' + e?.message) }
+                        }}
+                        className="flex items-center gap-1 rounded-lg border border-violet-700 px-2 py-1 text-xs font-medium text-violet-300 hover:bg-slate-800"
+                        title="Download Components QC Review sheet"
+                      >
+                        <FileDown className="h-3.5 w-3.5" />
+                        QC Export
+                      </button>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* Import Excel */}
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
-                  >
-                    <Upload className="h-3.5 w-3.5" />
-                    Import Excel
-                  </button>
-                  <input ref={fileInputRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={handleExcelImport} />
-                  <a
-                    href={`${apiClient.defaults.baseURL}/vessels/components/import-template`}
-                    download="components_import_template.xlsx"
-                    className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
-                  >
-                    <FileDown className="h-3.5 w-3.5" />
-                    Template
-                  </a>
+                      {/* Add Component */}
+                      <button
+                        onClick={() => { setAddContext({}); setShowAddModal(true) }}
+                        className="flex items-center gap-1 rounded-lg bg-sky-600 px-2 py-1 text-xs font-medium text-white hover:bg-sky-500"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        Add Component
+                      </button>
+                    </div>
+                  </div>
 
-                  {/* QC Export Components */}
-                  <button
-                    onClick={async () => {
-                      try {
-                        const resp = await apiClient.get(`/vessels/${vesselId}/components/qc-export`, { responseType: 'blob' })
-                        const disposition = resp.headers['content-disposition'] ?? ''
-                        const match = disposition.match(/filename="?([^"]+)"?/)
-                        const filename = match ? match[1] : 'Components_QC.xlsx'
-                        const a = document.createElement('a')
-                        a.href = URL.createObjectURL(resp.data)
-                        a.download = filename
-                        a.click()
-                        setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
-                      } catch (e: any) { alert('Export failed: ' + e?.message) }
-                    }}
-                    className="flex items-center gap-1.5 rounded-lg border border-violet-700 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-slate-800"
-                    title="Download Components QC Review sheet (with Reviewer QC / Notes columns for offline review)"
-                  >
-                    <FileDown className="h-3.5 w-3.5" />
-                    QC Export
-                  </button>
+                  <div className="flex items-center justify-between flex-wrap gap-2 border-t border-slate-800/60 pt-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Table search */}
+                      <div className="relative">
+                        <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+                        <input
+                          value={searchTable}
+                          onChange={e => setSearchTable(e.target.value)}
+                          placeholder="Search components..."
+                          className="w-40 rounded-lg border border-slate-700 bg-slate-800 pl-7 pr-6 py-1 text-xs text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                        />
+                        {searchTable && (
+                          <button onClick={() => setSearchTable('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
+                            <X className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
 
-                  {/* Add Component */}
-                  <button
-                    onClick={() => { setAddContext({}); setShowAddModal(true) }}
-                    className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    Add Component
-                  </button>
+                      {/* QC filter */}
+                      <select
+                        value={filterQC}
+                        onChange={(e) => setFilterQC(e.target.value)}
+                        className="rounded-lg border border-slate-700 bg-slate-800 px-1.5 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                      >
+                        <option value="">All QC</option>
+                        <option value="pending">Pending</option>
+                        <option value="accepted">Accepted</option>
+                        <option value="rejected">Rejected</option>
+                        <option value="modified">Modified</option>
+                      </select>
 
-                  <div className="ml-auto flex items-center gap-2">
-                    {/* Table search */}
-                    <div className="relative">
-                      <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
-                      <input
-                        value={searchTable}
-                        onChange={e => setSearchTable(e.target.value)}
-                        placeholder="Search components..."
-                        className="w-48 rounded-lg border border-slate-700 bg-slate-800 pl-7 pr-6 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
-                      />
-                      {searchTable && (
-                        <button onClick={() => setSearchTable('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
-                          <X className="h-3 w-3" />
+                      {/* Source file filter */}
+                      <select
+                        value={filterSourceFile}
+                        onChange={(e) => setFilterSourceFile(e.target.value)}
+                        className="max-w-xs rounded-lg border border-slate-700 bg-slate-800 px-1.5 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                      >
+                        <option value="">All Source Files</option>
+                        {(sourceFilesQuery.data ?? []).map((filename) => (
+                          <option key={filename} value={filename}>{filename}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Bulk actions */}
+                      {selectedIds.size > 0 && (
+                        <>
+                          <button
+                            onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))}
+                            className="flex items-center gap-1 rounded-lg bg-green-700 px-2 py-1 text-xs font-medium text-white hover:bg-green-600"
+                          >
+                            <CheckCircle className="h-3.5 w-3.5" />
+                            Accept ({selectedIds.size})
+                          </button>
+                          <button
+                            onClick={() => bulkRejectMutation.mutate(Array.from(selectedIds))}
+                            className="flex items-center gap-1 rounded-lg bg-red-700 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
+                          >
+                            <XCircle className="h-3.5 w-3.5" />
+                            Reject ({selectedIds.size})
+                          </button>
+                          <button
+                            onClick={() => { setShowBatchPanel(p => !p); setBatchFields({}) }}
+                            className="flex items-center gap-1 rounded-lg bg-violet-700 px-2 py-1 text-xs font-medium text-white hover:bg-violet-600"
+                          >
+                            <Wrench className="h-3.5 w-3.5" />
+                            Batch Edit ({selectedIds.size})
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`Delete ${selectedIds.size} component(s)? This cannot be undone.`)) {
+                                bulkDeleteMutation.mutate(Array.from(selectedIds))
+                              }
+                            }}
+                            disabled={bulkDeleteMutation.isPending}
+                            className="flex items-center gap-1 rounded-lg bg-rose-900 px-2 py-1 text-xs font-medium text-rose-200 hover:bg-rose-800 disabled:opacity-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Delete ({selectedIds.size})
+                          </button>
+                        </>
+                      )}
+
+                      {/* Save all inline edits */}
+                      {Object.keys(edits).length > 0 && (
+                        <button
+                          onClick={() => Object.entries(edits).forEach(([id, data]) => saveMutation.mutate({ id, data }))}
+                          disabled={saveMutation.isPending}
+                          className="flex items-center gap-1 rounded-lg bg-violet-600 px-2 py-1 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-50"
+                        >
+                          <Save className="h-3.5 w-3.5" />
+                          Save {Object.keys(edits).length} edit(s)
                         </button>
                       )}
                     </div>
-
-                    {/* QC filter */}
-                    <select
-                      value={filterQC}
-                      onChange={(e) => setFilterQC(e.target.value)}
-                      className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                    >
-                      <option value="">All QC</option>
-                      <option value="pending">Pending</option>
-                      <option value="accepted">Accepted</option>
-                      <option value="rejected">Rejected</option>
-                      <option value="modified">Modified</option>
-                    </select>
-
-                    {/* Source file filter */}
-                    <select
-                      value={filterSourceFile}
-                      onChange={(e) => setFilterSourceFile(e.target.value)}
-                      className="max-w-xs rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                    >
-                      <option value="">All Source Files</option>
-                      {(sourceFilesQuery.data ?? []).map((filename) => (
-                        <option key={filename} value={filename}>{filename}</option>
-                      ))}
-                    </select>
-
-                    {/* Bulk actions */}
-                    {selectedIds.size > 0 && (
-                      <>
-                        <button
-                          onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))}
-                          className="flex items-center gap-1.5 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600"
-                        >
-                          <CheckCircle className="h-3.5 w-3.5" />
-                          Accept ({selectedIds.size})
-                        </button>
-                        <button
-                          onClick={() => bulkRejectMutation.mutate(Array.from(selectedIds))}
-                          className="flex items-center gap-1.5 rounded-lg bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600"
-                        >
-                          <XCircle className="h-3.5 w-3.5" />
-                          Reject ({selectedIds.size})
-                        </button>
-                        <button
-                          onClick={() => { setShowBatchPanel(p => !p); setBatchFields({}) }}
-                          className="flex items-center gap-1.5 rounded-lg bg-violet-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-600"
-                        >
-                          <Wrench className="h-3.5 w-3.5" />
-                          Batch Edit ({selectedIds.size})
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (window.confirm(`Delete ${selectedIds.size} component(s)? This cannot be undone.`)) {
-                              bulkDeleteMutation.mutate(Array.from(selectedIds))
-                            }
-                          }}
-                          disabled={bulkDeleteMutation.isPending}
-                          className="flex items-center gap-1.5 rounded-lg bg-rose-900 px-3 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-800 disabled:opacity-50"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          Delete ({selectedIds.size})
-                        </button>
-                      </>
-                    )}
-
-                    {/* Save all inline edits */}
-                    {Object.keys(edits).length > 0 && (
-                      <button
-                        onClick={() => Object.entries(edits).forEach(([id, data]) => saveMutation.mutate({ id, data }))}
-                        disabled={saveMutation.isPending}
-                        className="flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-50"
-                      >
-                        <Save className="h-3.5 w-3.5" />
-                        Save {Object.keys(edits).length} edit(s)
-                      </button>
-                    )}
                   </div>
                 </div>
-              </div>
-            </div>
 
             {/* Excel format hint when empty */}
             {!isLoading && components.length === 0 && (
@@ -830,7 +838,7 @@ const ComponentReview: React.FC = () => {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="sticky top-0 border-b border-slate-700 bg-slate-900 text-left text-xs text-slate-500 uppercase z-10">
-                          <th className="px-3 py-3 w-8">
+                          <th className="px-2 py-1.5 w-8">
                             <input
                               type="checkbox"
                               onChange={e => e.target.checked ? setSelectedIds(new Set(components.map(c => c.id))) : setSelectedIds(new Set())}
@@ -838,18 +846,18 @@ const ComponentReview: React.FC = () => {
                               className="h-3.5 w-3.5 rounded"
                             />
                           </th>
-                          <th className="px-3 py-3">Component</th>
-                          <th className="px-3 py-3">Maker</th>
-                          <th className="px-3 py-3">Model</th>
-                          <th className="px-3 py-3">Job Pages</th>
-                          <th className="px-3 py-3">Spare Pages</th>
-                          <th className="px-3 py-3">PDF Reference</th>
-                          <th className="px-3 py-3">Location</th>
-                          <th className="px-3 py-3">Mach. Particulars</th>
-                          <th className="px-3 py-3">Critical</th>
-                          <th className="px-3 py-3">QC</th>
-                          <th className="px-3 py-3">Source</th>
-                          <th className="px-3 py-3">Actions</th>
+                          <th className="px-2 py-1.5">Component</th>
+                          <th className="px-2 py-1.5">Maker</th>
+                          <th className="px-2 py-1.5">Model</th>
+                          <th className="px-2 py-1.5">Job Pages</th>
+                          <th className="px-2 py-1.5">Spare Pages</th>
+                          <th className="px-2 py-1.5">PDF Reference</th>
+                          <th className="px-2 py-1.5">Location</th>
+                          <th className="px-2 py-1.5">Mach. Particulars</th>
+                          <th className="px-2 py-1.5">Critical</th>
+                          <th className="px-2 py-1.5">QC</th>
+                          <th className="px-2 py-1.5">Source</th>
+                          <th className="px-2 py-1.5">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800">
@@ -861,14 +869,14 @@ const ComponentReview: React.FC = () => {
                               key={comp.id}
                               className={`transition-colors hover:bg-slate-800/50 ${changed ? 'bg-violet-900/10' : ''} ${selectedIds.has(comp.id) ? 'bg-sky-900/10' : ''} ${selectedComponent?.id === comp.id ? 'bg-slate-800/70' : ''}`}
                             >
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 <input type="checkbox" checked={selectedIds.has(comp.id)} onChange={() => toggleSelect(comp.id)} className="h-3.5 w-3.5 rounded" />
                               </td>
-                              <td className="px-3 py-2.5 max-w-xs">
+                              <td className="px-2 py-1 max-w-xs">
                                 <p className="font-medium text-slate-200">{comp.component_name}</p>
                                 <p className="text-xs text-slate-500 truncate">{comp.group1} › {comp.group2} › {comp.main_machinery}</p>
                               </td>
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 <>
                                   <input
                                     type="text"
@@ -883,7 +891,7 @@ const ComponentReview: React.FC = () => {
                                   </datalist>
                                 </>
                               </td>
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 <input
                                   value={edit.model ?? comp.model ?? ''}
                                   onChange={e => setEdit(comp.id, 'model', e.target.value)}
@@ -891,7 +899,7 @@ const ComponentReview: React.FC = () => {
                                   placeholder="—"
                                 />
                               </td>
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 <input
                                   value={edit.job_pages ?? comp.job_pages ?? ''}
                                   onChange={e => setEdit(comp.id, 'job_pages', e.target.value)}
@@ -899,7 +907,7 @@ const ComponentReview: React.FC = () => {
                                   placeholder="e.g. 21-50"
                                 />
                               </td>
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 <input
                                   value={edit.spare_pages ?? comp.spare_pages ?? ''}
                                   onChange={e => setEdit(comp.id, 'spare_pages', e.target.value)}
@@ -907,7 +915,7 @@ const ComponentReview: React.FC = () => {
                                   placeholder="e.g. 81-120"
                                 />
                               </td>
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 <input
                                   value={edit.pdf_reference ?? comp.pdf_reference ?? ''}
                                   onChange={e => setEdit(comp.id, 'pdf_reference', e.target.value)}
@@ -915,7 +923,7 @@ const ComponentReview: React.FC = () => {
                                   placeholder="filename"
                                 />
                               </td>
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 <input
                                   value={edit.location ?? comp.location ?? ''}
                                   onChange={e => setEdit(comp.id, 'location', e.target.value)}
@@ -923,7 +931,7 @@ const ComponentReview: React.FC = () => {
                                   placeholder="—"
                                 />
                               </td>
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 <input
                                   value={edit.machinery_particulars ?? comp.machinery_particulars ?? ''}
                                   onChange={e => setEdit(comp.id, 'machinery_particulars', e.target.value)}
@@ -931,7 +939,7 @@ const ComponentReview: React.FC = () => {
                                   placeholder="—"
                                 />
                               </td>
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 <select
                                   value={edit.criticality ?? comp.criticality ?? 'non_critical'}
                                   onChange={e => setEdit(comp.id, 'criticality', e.target.value)}
@@ -948,7 +956,7 @@ const ComponentReview: React.FC = () => {
                                   <option value="critical">Critical</option>
                                 </select>
                               </td>
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 <select
                                   value={edit.qc_status ?? comp.qc_status}
                                   onChange={e => setEdit(comp.id, 'qc_status', e.target.value)}
@@ -960,7 +968,7 @@ const ComponentReview: React.FC = () => {
                                   <option value="modified">modified</option>
                                 </select>
                               </td>
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 {comp.source_manual_id ? (
                                   <button
                                     onClick={() => setSelectedComponent(comp)}
@@ -973,7 +981,7 @@ const ComponentReview: React.FC = () => {
                                   <span className="text-xs text-slate-600">—</span>
                                 )}
                               </td>
-                              <td className="px-3 py-2.5">
+                              <td className="px-2 py-1">
                                 <div className="flex flex-wrap items-center gap-1.5">
                                   {comp.is_unmapped ? (
                                     <>
@@ -1052,7 +1060,9 @@ const ComponentReview: React.FC = () => {
                 )}
               </div>
             )}
-          </div>
+              </div>
+            }
+          />
         }
       />
     </>

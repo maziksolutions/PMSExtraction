@@ -79,6 +79,16 @@ const Layout: React.FC = () => {
   })
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [activityOpen, setActivityOpen] = useState(false)
+  const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem('desktopSidebarCollapsed') === 'true'
+  })
+
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('desktopSidebarCollapsed', String(desktopSidebarCollapsed))
+    }
+  }, [desktopSidebarCollapsed])
 
   const { presenceList, activityFeed, isConnected } = useVesselSocket(vesselId)
 
@@ -197,8 +207,14 @@ const Layout: React.FC = () => {
   return (
     <div className="flex h-screen overflow-hidden bg-slate-950">
       {/* Desktop sidebar */}
-      <aside className="hidden w-64 shrink-0 flex-col bg-slate-900 md:flex">
-        <SidebarContent />
+      <aside
+        className={`hidden shrink-0 flex-col bg-slate-900 transition-all duration-300 md:flex ${
+          desktopSidebarCollapsed ? 'w-0 overflow-hidden' : 'w-64'
+        }`}
+      >
+        <div className="h-full w-64 min-w-[256px]">
+          <SidebarContent />
+        </div>
       </aside>
 
       {/* Mobile sidebar overlay */}
@@ -220,9 +236,15 @@ const Layout: React.FC = () => {
         <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900 px-4 md:px-6">
           <div className="flex items-center gap-3">
             <button
-              className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white md:hidden"
-              onClick={() => setSidebarOpen(true)}
-              aria-label="Open menu"
+              className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+              onClick={() => {
+                if (window.innerWidth < 768) {
+                  setSidebarOpen(true)
+                } else {
+                  setDesktopSidebarCollapsed(prev => !prev)
+                }
+              }}
+              aria-label="Toggle menu"
             >
               <Menu className="h-5 w-5" />
             </button>
