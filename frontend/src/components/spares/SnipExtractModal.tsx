@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Scissors, Upload, X, Loader2, CheckCircle, ChevronDown, RotateCcw, RotateCw } from 'lucide-react'
+import { Scissors, Upload, X, Loader2, CheckCircle, ChevronDown, RotateCcw, RotateCw, ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface ExtractedRecord {
@@ -115,6 +115,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
   const [loadedPage, setLoadedPage] = useState<number | null>(null)
   const [isLoadingPage, setIsLoadingPage] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [zoom, setZoom] = useState(1.0)
 
   const isDraggingRef = useRef(false)
   const [isDragging, setIsDragging] = useState(false)
@@ -149,9 +150,8 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     setSaveMessage(null)
   }
 
-  const loadPage = async () => {
-    const pageNum = parseInt(pageInput, 10)
-    if (!selectedManualId || isNaN(pageNum) || pageNum < 1) return
+  const loadPageWithNum = async (pageNum: number) => {
+    if (!selectedManualId || pageNum < 1) return
     setIsLoadingPage(true)
     setLoadError(null)
     setDisplayImageUrl(null)
@@ -173,6 +173,12 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     } finally {
       setIsLoadingPage(false)
     }
+  }
+
+  const loadPage = () => {
+    const pageNum = parseInt(pageInput, 10)
+    if (isNaN(pageNum) || pageNum < 1) return
+    loadPageWithNum(pageNum)
   }
 
   const handleFileUpload = useCallback(async (file: File) => {
@@ -397,6 +403,21 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                 </select>
                 <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
               </div>
+              {loadedPage !== null && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const newPage = loadedPage - 1
+                    setPageInput(String(newPage))
+                    loadPageWithNum(newPage)
+                  }}
+                  disabled={loadedPage <= 1 || isLoadingPage}
+                  className="rounded-lg border border-slate-700 p-2 text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                  title="Previous page"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+              )}
               <input
                 type="number"
                 value={pageInput}
@@ -406,6 +427,21 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                 min={1}
                 className="w-20 rounded-lg border border-slate-700 bg-slate-800 px-2 py-2 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
               />
+              {loadedPage !== null && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const newPage = loadedPage + 1
+                    setPageInput(String(newPage))
+                    loadPageWithNum(newPage)
+                  }}
+                  disabled={isLoadingPage}
+                  className="rounded-lg border border-slate-700 p-2 text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                  title="Next page"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              )}
               <button
                 onClick={loadPage}
                 disabled={!selectedManualId || !pageInput || isLoadingPage}
@@ -455,6 +491,34 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                 </span>
                 <button
                   type="button"
+                  onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))}
+                  className="rounded border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+                  title="Zoom out"
+                >
+                  <ZoomOut className="h-3.5 w-3.5" />
+                </button>
+                <span className="flex items-center px-1 text-[11px] font-medium text-slate-300 min-w-[2.5rem] justify-center">
+                  {Math.round(zoom * 100)}%
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setZoom((z) => Math.min(3.0, z + 0.1))}
+                  className="rounded border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+                  title="Zoom in"
+                >
+                  <ZoomIn className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setZoom(1.0)}
+                  className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
+                  title="Reset zoom"
+                >
+                  Reset
+                </button>
+                <div className="h-6 w-px bg-slate-800 mx-1 align-middle self-center" />
+                <button
+                  type="button"
                   onClick={() => handleRotate(-90)}
                   disabled={isRotating}
                   className="rounded border border-slate-700 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white disabled:opacity-40"
@@ -480,7 +544,10 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                 selection box perfectly aligned with the visible image.
               */}
               <div className="flex-1 overflow-auto rounded-lg border border-slate-700 bg-slate-900">
-                <div className="inline-block min-w-full select-none">
+                <div 
+                  className="inline-block min-w-full select-none"
+                  style={{ zoom: zoom }}
+                >
                   <div className="relative inline-block">
                     <img
                       ref={imgRef}
