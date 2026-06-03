@@ -1082,6 +1082,7 @@ const ComponentReview: React.FC = () => {
                 defaultPages={previewComponent.page_reference}
                 panelClassName="h-full w-full min-w-0"
                 showTextSnippet={false}
+                hideHeader={true}
               />
             </div>
           </div>

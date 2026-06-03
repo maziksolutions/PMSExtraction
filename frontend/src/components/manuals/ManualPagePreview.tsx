@@ -28,6 +28,7 @@ interface ManualPagePreviewProps {
   panelClassName?: string
   headerContent?: React.ReactNode
   showTextSnippet?: boolean
+  hideHeader?: boolean
 }
 
 const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
@@ -40,6 +41,7 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
   panelClassName,
   headerContent,
   showTextSnippet = true,
+  hideHeader = false,
 }) => {
   const [pageInput, setPageInput] = useState('')
   const [requestedPages, setRequestedPages] = useState('')
@@ -186,104 +188,58 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
 
   return (
     <>
-    <aside className={`${panelClassName ?? 'w-[40rem]'} shrink-0 flex flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900 p-4`}>
-      <div className="mb-3 space-y-2 shrink-0">
-        <div>
-          <h3 className="text-sm font-semibold text-slate-100">{title}</h3>
-          <p className="mt-1 text-xs text-slate-400">{manualName ?? 'Manual preview'}</p>
-          {subtitle ? <p className="mt-1 text-xs text-slate-500">{subtitle}</p> : null}
-        </div>
+    <aside className={`${panelClassName ?? 'w-[40rem]'} shrink-0 flex flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900 p-3`}>
+      <div className="mb-2 space-y-2 shrink-0">
+        {!hideHeader && (
+          <div className="flex items-center justify-between gap-4 border-b border-slate-800 pb-1.5 mb-1.5">
+            <div>
+              <h3 className="text-xs font-semibold text-slate-100 leading-tight">{title}</h3>
+              {subtitle ? <p className="mt-0.5 text-[10px] text-slate-500 leading-none">{subtitle}</p> : null}
+            </div>
+            <div className="text-right text-xs text-slate-400 font-medium truncate max-w-[50%]">
+              {manualName ?? 'Manual preview'}
+            </div>
+          </div>
+        )}
         {headerContent ? (
-          <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+          <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-2">
             {headerContent}
           </div>
         ) : null}
-        <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
-          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            Preview Pages
-          </label>
-          <div className="flex gap-2">
+        
+        {/* Single-line Compact Toolbar */}
+        <div className="flex items-center justify-between flex-wrap gap-2 rounded-lg border border-slate-850 bg-slate-950/40 p-1.5">
+          {/* Left Part: Page Input and Page list pagination controls */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[10px] font-bold text-slate-500 uppercase px-0.5">Pages:</span>
             <input
               type="text"
               value={pageInput}
               onChange={(event) => setPageInput(event.target.value)}
-              placeholder="e.g. 9-12 or 3,5,7"
-              className="flex-1 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-100 focus:border-sky-500 focus:outline-none"
+              placeholder="Pages..."
+              className="w-16 rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-xs text-slate-100 focus:border-sky-500 focus:outline-none"
             />
             <button
               type="button"
               onClick={() => setRequestedPages(pageInput.trim())}
-              className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-medium text-white hover:bg-sky-500"
+              className="rounded bg-sky-600 px-2 py-0.5 text-xs font-semibold text-white hover:bg-sky-500"
             >
               Load
             </button>
             <button
               type="button"
               onClick={() => refetch()}
-              className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
+              className="rounded border border-slate-700 px-1.5 py-0.5 text-xs text-slate-300 hover:bg-slate-800"
               title="Refresh preview"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-3 w-3 ${isFetching ? 'animate-spin' : ''}`} />
             </button>
-            <button
-              type="button"
-              onClick={() => setIsFullscreen(true)}
-              className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
-              title="Open large preview"
-            >
-              <Maximize2 className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setRotation((value) => (value + 270) % 360)}
-              className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
-              title="Rotate left"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setRotation((value) => (value + 90) % 360)}
-              className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:bg-slate-800"
-              title="Rotate right"
-            >
-              <RotateCw className="h-3.5 w-3.5" />
-            </button>
-            <div className="h-6 w-px bg-slate-800 mx-1 align-middle self-center" />
-            <button
-              type="button"
-              onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))}
-              className="rounded-lg border border-slate-700 px-2.5 py-2 text-xs text-slate-300 hover:bg-slate-800"
-              title="Zoom out"
-            >
-              <ZoomOut className="h-3.5 w-3.5" />
-            </button>
-            <span className="flex items-center px-1 text-[11px] font-medium text-slate-300 min-w-[2.5rem] justify-center">
-              {Math.round(zoom * 100)}%
-            </span>
-            <button
-              type="button"
-              onClick={() => setZoom((z) => Math.min(3.0, z + 0.1))}
-              className="rounded-lg border border-slate-700 px-2.5 py-2 text-xs text-slate-300 hover:bg-slate-800"
-              title="Zoom in"
-            >
-              <ZoomIn className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setZoom(1.0)}
-              className="rounded-lg border border-slate-700 px-2 py-2 text-xs text-slate-300 hover:bg-slate-800"
-              title="Reset zoom"
-            >
-              Reset
-            </button>
-          </div>
-          <p className="mt-2 text-[11px] text-slate-500">
-            Load one page or multiple physical pages to verify what the extractor used.
-          </p>
-          {data?.pages && data.pages.length > 0 ? (
-            <div className="mt-3 space-y-2">
-              <div className="flex items-center gap-2">
+
+            <div className="h-4 w-px bg-slate-800 mx-0.5" />
+
+            {/* Previous and Next Page navigation buttons */}
+            {data?.pages && data.pages.length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap">
                 <button
                   type="button"
                   onClick={() => {
@@ -297,18 +253,18 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
                       ? activePageNumber <= 1
                       : !data?.pages?.length || data.pages[0].page_number <= 1
                   }
-                  className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                  className="rounded border border-slate-700 p-0.5 text-slate-300 hover:bg-slate-800 disabled:opacity-40"
                   title="Previous page"
                 >
-                  <ChevronLeft className="h-3.5 w-3.5" />
+                  <ChevronLeft className="h-3 w-3" />
                 </button>
                 {multiPage && (
                   <button
                     type="button"
                     onClick={() => setActivePageNumber(null)}
-                    className={`rounded-lg px-2.5 py-1 text-xs ${activePageNumber == null ? 'bg-sky-600 text-white' : 'border border-slate-700 text-slate-300 hover:bg-slate-800'}`}
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${activePageNumber == null ? 'bg-sky-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
                   >
-                    All Pages
+                    All
                   </button>
                 )}
                 {(data?.pages ?? []).map((page) => (
@@ -316,10 +272,10 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
                     key={page.page_number}
                     type="button"
                     onClick={() => setActivePageNumber(page.page_number)}
-                    className={`rounded-lg px-2.5 py-1 text-xs ${
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
                       (activePageNumber === page.page_number || (activePageNumber === null && !multiPage))
                         ? 'bg-sky-600 text-white'
-                        : 'border border-slate-700 text-slate-300 hover:bg-slate-800'
+                        : 'border border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                     }`}
                   >
                     {page.page_number}
@@ -338,20 +294,77 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
                       ? (data?.page_count !== null && activePageNumber >= data.page_count)
                       : !data?.pages?.length || (data?.page_count !== null && data.pages[data.pages.length - 1].page_number >= data.page_count)
                   }
-                  className="rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                  className="rounded border border-slate-700 p-0.5 text-slate-300 hover:bg-slate-800 disabled:opacity-40"
                   title="Next page"
                 >
-                  <ChevronRight className="h-3.5 w-3.5" />
+                  <ChevronRight className="h-3 w-3" />
                 </button>
+                {data.page_count && (
+                  <span className="text-[10px] text-slate-500 font-medium ml-1">
+                    of {data.page_count}
+                  </span>
+                )}
               </div>
-              <p className="text-[11px] text-slate-500">
-                {multiPage 
-                  ? "Toggle between individual pages or view all selected pages together."
-                  : `Viewing page ${data.pages[0].page_number} of ${data.page_count ?? 'unknown'}.`
-                }
-              </p>
-            </div>
-          ) : null}
+            )}
+          </div>
+
+          {/* Right Part: Rotate, Zoom and Maximize */}
+          <div className="flex items-center gap-1.5 ml-auto">
+            <button
+              type="button"
+              onClick={() => setIsFullscreen(true)}
+              className="rounded border border-slate-700 px-1.5 py-0.5 text-xs text-slate-300 hover:bg-slate-800"
+              title="Open large preview"
+            >
+              <Maximize2 className="h-3 w-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setRotation((value) => (value + 270) % 360)}
+              className="rounded border border-slate-700 px-1.5 py-0.5 text-xs text-slate-300 hover:bg-slate-800"
+              title="Rotate left"
+            >
+              <RotateCcw className="h-3 w-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setRotation((value) => (value + 90) % 360)}
+              className="rounded border border-slate-700 px-1.5 py-0.5 text-xs text-slate-300 hover:bg-slate-800"
+              title="Rotate right"
+            >
+              <RotateCw className="h-3 w-3" />
+            </button>
+            
+            <div className="h-4 w-px bg-slate-800 mx-0.5" />
+            
+            <button
+              type="button"
+              onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))}
+              className="rounded border border-slate-700 px-1.5 py-0.5 text-xs text-slate-300 hover:bg-slate-800"
+              title="Zoom out"
+            >
+              <ZoomOut className="h-3 w-3" />
+            </button>
+            <span className="text-[10px] font-medium text-slate-400 min-w-[2rem] text-center">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              type="button"
+              onClick={() => setZoom((z) => Math.min(3.0, z + 0.1))}
+              className="rounded border border-slate-700 px-1.5 py-0.5 text-xs text-slate-300 hover:bg-slate-800"
+              title="Zoom in"
+            >
+              <ZoomIn className="h-3 w-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setZoom(1.0)}
+              className="rounded border border-slate-700 px-1.5 py-0.5 text-xs text-slate-400 hover:bg-slate-850 hover:text-white"
+              title="Reset zoom"
+            >
+              Reset
+            </button>
+          </div>
         </div>
       </div>
 
