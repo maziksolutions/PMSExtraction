@@ -171,13 +171,13 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
 
   if (!manualId) {
     return (
-      <aside className={`${panelClassName ?? 'w-[40rem]'} shrink-0 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-4`}>
+      <aside className={`${panelClassName ?? 'w-[40rem]'} shrink-0 flex flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900 p-4`}>
         {headerContent ? (
-          <div className="mb-4 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+          <div className="mb-4 rounded-xl border border-slate-800 bg-slate-950/40 p-3 shrink-0">
             {headerContent}
           </div>
         ) : null}
-        <div className="flex h-full min-h-72 items-center justify-center text-center text-sm text-slate-500">
+        <div className="flex-1 flex items-center justify-center text-center text-sm text-slate-500 min-h-72">
           Select a record with a manual reference to preview its pages.
         </div>
       </aside>
@@ -186,8 +186,8 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
 
   return (
     <>
-    <aside className={`${panelClassName ?? 'w-[40rem]'} shrink-0 overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-4`}>
-      <div className="mb-4 space-y-2">
+    <aside className={`${panelClassName ?? 'w-[40rem]'} shrink-0 flex flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900 p-4`}>
+      <div className="mb-3 space-y-2 shrink-0">
         <div>
           <h3 className="text-sm font-semibold text-slate-100">{title}</h3>
           <p className="mt-1 text-xs text-slate-400">{manualName ?? 'Manual preview'}</p>
@@ -356,12 +356,14 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
       </div>
 
       {isError ? (
-        <div className="rounded-lg border border-red-900/60 bg-red-950/40 p-3 text-xs text-red-200">
+        <div className="rounded-lg border border-red-900/60 bg-red-950/40 p-3 text-xs text-red-200 shrink-0 mb-3">
           {(error as Error)?.message ?? 'Preview could not be loaded.'}
         </div>
       ) : null}
 
-      {renderPageCards(false)}
+      <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+        {renderPageCards(false)}
+      </div>
     </aside>
     {isFullscreen ? (
       <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm">
