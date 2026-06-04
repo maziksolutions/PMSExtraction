@@ -226,7 +226,6 @@ function JobEditor({
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-white">{title}</h3>
-          <p className="mt-1 text-xs text-slate-500">Review against the PDF page shown below.</p>
         </div>
         <div className="flex items-center gap-2">
           {onSplit ? <button onClick={onSplit} className="rounded-lg border border-sky-700 px-3 py-1.5 text-xs text-sky-300 hover:bg-slate-800">Split To New</button> : null}

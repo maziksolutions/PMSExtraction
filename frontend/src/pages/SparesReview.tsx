@@ -154,7 +154,6 @@ function SpareEditorModal({ title, submitLabel, isPending, components, initialVa
       <div className="mb-3 flex items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-white">{title}</h3>
-          <p className="mt-1 text-xs text-slate-500">Edit while reviewing the source PDF page below.</p>
         </div>
         {onCancel ? (
           <button onClick={onCancel} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">

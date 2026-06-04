@@ -236,7 +236,7 @@ const Layout: React.FC = () => {
         <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900 px-4 md:px-6">
           <div className="flex items-center gap-3">
             <button
-              className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+              className="flex items-center gap-1 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
               onClick={() => {
                 if (window.innerWidth < 768) {
                   setSidebarOpen(true)
@@ -246,7 +246,17 @@ const Layout: React.FC = () => {
               }}
               aria-label="Toggle menu"
             >
-              <Menu className="h-5 w-5" />
+              {desktopSidebarCollapsed ? (
+                <>
+                  <ChevronRight className="h-4 w-4" />
+                  <Menu className="h-4.5 w-4.5" />
+                </>
+              ) : (
+                <>
+                  <ChevronLeft className="h-4 w-4" />
+                  <Menu className="h-4.5 w-4.5" />
+                </>
+              )}
             </button>
             <h1 className="hidden text-sm font-semibold text-slate-200 md:block">
               Maritime PMS Data Extraction Tool

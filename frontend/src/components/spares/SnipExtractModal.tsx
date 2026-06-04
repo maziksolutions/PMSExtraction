@@ -150,20 +150,20 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     setSaveMessage(null)
   }
 
-  const loadPageWithNum = async (pageNum: number) => {
-    if (!selectedManualId || pageNum < 1) return
+  const loadPageWithNum = async (pageNum: number, manualId = selectedManualId) => {
+    if (!manualId || pageNum < 1) return
     setIsLoadingPage(true)
     setLoadError(null)
     setDisplayImageUrl(null)
     clearSelectionAndResults()
     try {
-      const res = await apiClient.get(`/vessels/${vesselId}/manuals/${selectedManualId}/page-preview`, {
+      const res = await apiClient.get(`/vessels/${vesselId}/manuals/${manualId}/page-preview`, {
         params: { pages: String(pageNum) },
       })
       const page = (res.data.pages ?? [])[0]
       if (page?.image_data_url) {
         setDisplayImageUrl(page.image_data_url)
-        setLoadedManualId(selectedManualId)
+        setLoadedManualId(manualId)
         setLoadedPage(pageNum)
       } else {
         setLoadError('No image available for this page.')
@@ -180,6 +180,19 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     if (isNaN(pageNum) || pageNum < 1) return
     loadPageWithNum(pageNum)
   }
+
+  React.useEffect(() => {
+    if (selectedManualId) {
+      setPageInput('1')
+      loadPageWithNum(1, selectedManualId)
+    } else {
+      setPageInput('')
+      setDisplayImageUrl(null)
+      setLoadedManualId(null)
+      setLoadedPage(null)
+      setLoadError(null)
+    }
+  }, [selectedManualId])
 
   const handleFileUpload = useCallback(async (file: File) => {
     if (!file.type.startsWith('image/')) return
