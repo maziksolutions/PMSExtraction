@@ -20,6 +20,7 @@ import {
   Search,
   FileSearch,
   ArrowRightLeft,
+  ExternalLink,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
@@ -239,9 +240,20 @@ const ComponentReview: React.FC = () => {
   const [showBatchPanel, setShowBatchPanel] = useState(false)
   const [batchFields, setBatchFields] = useState<Record<string, string>>({})
   const [selectedComponent, setSelectedComponent] = useState<Component | null>(null)
-  const [previewComponent, setPreviewComponent] = useState<Component | null>(null)
   const [mergeSource, setMergeSource] = useState<Component | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const openManualInNewTab = (
+    manualId: string | null | undefined,
+    name: string | null | undefined,
+    pages: string | number | null | undefined
+  ) => {
+    if (!manualId) return
+    const pagesStr = pages == null ? '' : String(pages)
+    const nameStr = name || ''
+    const url = `/vessels/${vesselId}/manual-preview/${manualId}?name=${encodeURIComponent(nameStr)}&pages=${encodeURIComponent(pagesStr)}`
+    window.open(url, '_blank')
+  }
 
   const { data, isLoading } = useQuery({
     queryKey: ['components', vesselId, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, filterSourceFile, showUnmapped, showMappedExtracted, searchTable, sortBy, sortOrder, page, pageSize],
@@ -947,11 +959,11 @@ const ComponentReview: React.FC = () => {
                                   <button
                                     onClick={() => {
                                       setSelectedComponent(comp)
-                                      setPreviewComponent(comp)
+                                      openManualInNewTab(comp.source_manual_id, comp.pdf_reference, comp.page_reference)
                                     }}
-                                    className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-2 py-1 text-xs text-sky-300 hover:bg-slate-800"
+                                    className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-2 py-1 text-xs text-sky-300 hover:bg-slate-800 hover:underline"
                                   >
-                                    <FileSearch className="h-3.5 w-3.5" />
+                                    <ExternalLink className="h-3 w-3" />
                                     {comp.page_reference ? `p.${comp.page_reference}` : 'Preview'}
                                   </button>
                                 ) : (
@@ -984,12 +996,12 @@ const ComponentReview: React.FC = () => {
                                     <button
                                       onClick={() => {
                                         setSelectedComponent(comp)
-                                        setPreviewComponent(comp)
+                                        openManualInNewTab(comp.source_manual_id, comp.pdf_reference, comp.page_reference)
                                       }}
                                       disabled={!comp.source_manual_id}
-                                      className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                                      className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800 hover:underline disabled:cursor-not-allowed disabled:opacity-40 disabled:no-underline"
                                     >
-                                      <FileSearch className="h-3.5 w-3.5" />
+                                      <ExternalLink className="h-3 w-3" />
                                       Preview
                                     </button>
                                   )}
@@ -1044,50 +1056,7 @@ const ComponentReview: React.FC = () => {
         }
       />
 
-      {previewComponent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="relative w-full max-w-6xl h-[90vh] rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl flex flex-col overflow-hidden">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4 bg-slate-950/40">
-              <div>
-                <h2 className="text-base font-semibold text-white">Manual Page Preview</h2>
-                <p className="mt-1 text-xs text-slate-400">
-                  {[
-                    previewComponent.component_name,
-                    previewComponent.group1,
-                    previewComponent.group2,
-                    previewComponent.main_machinery,
-                  ]
-                    .filter(Boolean)
-                    .join(' • ')}
-                </p>
-              </div>
-              <button
-                onClick={() => setPreviewComponent(null)}
-                className="text-slate-400 hover:text-white rounded-lg p-1.5 hover:bg-slate-800 transition-colors"
-                title="Close"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            {/* Modal Body */}
-            <div className="flex-1 min-h-0 bg-slate-950 p-4 overflow-hidden">
-              <ManualPagePreview
-                vesselId={vesselId ?? ''}
-                manualId={previewComponent.source_manual_id}
-                manualName={previewComponent.pdf_reference}
-                title="Component Source Preview"
-                subtitle={null}
-                defaultPages={previewComponent.page_reference}
-                panelClassName="h-full w-full min-w-0"
-                showTextSnippet={false}
-                hideHeader={true}
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Standalone manual preview opens in a new tab */}
     </>
   )
 }

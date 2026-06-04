@@ -40,6 +40,9 @@ const ExportSchemaSetup = lazy(() => import('@/pages/ExportSchemaSetup'))
 // Sprint 12
 const Admin = lazy(() => import('@/pages/Admin'))
 
+// Standalone PDF manual preview page
+const ManualStandalonePreview = lazy(() => import('@/pages/ManualStandalonePreview'))
+
 // Addendum A
 const Library = lazy(() => import('@/pages/Library'))
 const PreCheck = lazy(() => import('@/pages/PreCheck'))
@@ -204,6 +207,16 @@ const App: React.FC = () => {
               <Route path="standard-jobs-library" element={<ProtectedRoute><StandardJobsLibrary /></ProtectedRoute>} />
               <Route path="job-ranks-library" element={<Navigate to="/library/global?section=ranks" replace />} />
             </Route>
+
+            {/* Standalone pages — outside Layout but still protected */}
+            <Route
+              path="vessels/:vesselId/manual-preview/:manualId"
+              element={
+                <ProtectedRoute>
+                  <ManualStandalonePreview />
+                </ProtectedRoute>
+              }
+            />
 
             {/* Catch-all */}
             <Route path="*" element={<Navigate to="/" replace />} />

@@ -321,6 +321,18 @@ const SparesReview: React.FC = () => {
   const [batchFields, setBatchFields] = useState<BatchSpareFields>({})
   const [showSnipModal, setShowSnipModal] = useState(false)
 
+  const openManualInNewTab = (
+    manualId: string | null | undefined,
+    name: string | null | undefined,
+    pages: string | number | null | undefined
+  ) => {
+    if (!manualId) return
+    const pagesStr = pages == null ? '' : String(pages)
+    const nameStr = name || ''
+    const url = `/vessels/${vesselId}/manual-preview/${manualId}?name=${encodeURIComponent(nameStr)}&pages=${encodeURIComponent(pagesStr)}`
+    window.open(url, '_blank')
+  }
+
   const sourceFilesQuery = useQuery({
     queryKey: ['spare-source-files', vesselId],
     queryFn: () =>
@@ -527,24 +539,36 @@ const SparesReview: React.FC = () => {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-white">{selectedSpare.part_name}</h3>
-          <p className="mt-1 text-xs text-slate-500">Review the drawing/table page, then edit if required.</p>
         </div>
-        <button onClick={() => setEditingSpare(selectedSpare)} className="rounded-lg border border-sky-700 px-3 py-1.5 text-xs text-sky-300 hover:bg-slate-800">
-          <Pencil className="mr-1 inline h-3.5 w-3.5" />
+        <button onClick={() => setEditingSpare(selectedSpare)} className="rounded border border-sky-700 px-2 py-1 text-xs text-sky-300 hover:bg-slate-800 shrink-0">
+          <Pencil className="mr-1 inline h-3 w-3" />
           Edit
         </button>
       </div>
-      <div className="grid gap-2 text-xs text-slate-400 md:grid-cols-2">
+      <div className="grid gap-x-4 gap-y-1.5 text-xs text-slate-400 md:grid-cols-2">
         <div>Part #: <span className="text-slate-200">{selectedSpare.part_number ?? '-'}</span></div>
         <div>Drawing: <span className="text-slate-200">{selectedSpare.drawing_number ?? '-'}</span></div>
         <div>Position: <span className="text-slate-200">{selectedSpare.drawing_position ?? '-'}</span></div>
         <div>Component: <span className="text-slate-200">{selectedSpare.component_name ?? 'Unmapped'}</span></div>
         <div className="md:col-span-2">Specification / Particulars: <span className="text-slate-200">{selectedSpare.specification ?? '-'}</span></div>
-        <div className="md:col-span-2">Source: <span className="text-slate-200">{selectedSpare.source_reference ?? selectedSpare.pdf_reference ?? selectedSpare.source_manual_name ?? '-'}</span></div>
+        <div className="md:col-span-2">
+          Source PDF: {' '}
+          {selectedSpare.source_manual_id ? (
+            <button
+              onClick={() => openManualInNewTab(selectedSpare.source_manual_id, selectedSpare.source_manual_name || selectedSpare.pdf_reference, selectedSpare.page_reference)}
+              className="text-sky-400 hover:underline inline-flex items-center gap-1 font-medium text-left"
+            >
+              <ExternalLink className="h-3 w-3" />
+              {selectedSpare.source_manual_name || selectedSpare.pdf_reference || 'Manual'} (p.{selectedSpare.page_reference ?? '-'})
+            </button>
+          ) : (
+            <span className="text-slate-500">-</span>
+          )}
+        </div>
       </div>
     </div>
   ) : (
-    <div className="text-sm text-slate-500">Select a spare to review it against the source PDF.</div>
+    <div className="text-sm text-slate-500">Select a spare to review details.</div>
   )
 
   const handleQcExport = async () => {
@@ -952,10 +976,18 @@ const SparesReview: React.FC = () => {
                     <td className="px-4 py-2.5">
                       {spare.page_reference != null ? (
                         <div className="min-w-[240px] text-xs">
-                          <div className="inline-flex items-center gap-1 whitespace-nowrap text-sky-400" title={spare.source_reference ?? `${spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'} - page ${spare.page_reference}`}>
+                          <button
+                            onClick={() => {
+                              setSelectedSpare(spare)
+                              openManualInNewTab(spare.source_manual_id, spare.pdf_reference ?? spare.source_manual_name, spare.page_reference)
+                            }}
+                            disabled={!spare.source_manual_id}
+                            className="inline-flex items-center gap-1 whitespace-nowrap text-sky-400 hover:underline disabled:opacity-40 disabled:no-underline"
+                            title={spare.source_reference ?? `${spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'} - page ${spare.page_reference}`}
+                          >
                             <ExternalLink className="h-3 w-3" />
                             p.{spare.page_reference}
-                          </div>
+                          </button>
                           <p className="mt-1 truncate whitespace-nowrap text-slate-500" title={spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'}>
                             {spare.pdf_reference ?? spare.source_manual_name ?? 'Manual'}
                           </p>
@@ -1017,8 +1049,12 @@ const SparesReview: React.FC = () => {
                     </td>
                     <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
                       <button
-                        onClick={() => setSelectedSpare(spare)}
-                        className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600"
+                        onClick={() => {
+                          setSelectedSpare(spare)
+                          openManualInNewTab(spare.source_manual_id, spare.pdf_reference ?? spare.source_manual_name, spare.page_reference)
+                        }}
+                        disabled={!spare.source_manual_id}
+                        className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
                         title="Preview manual pages"
                       >
                         <FileSearch className="h-3 w-3" />
@@ -1083,29 +1119,15 @@ const SparesReview: React.FC = () => {
 
       }
       right={
-      <ManualPagePreview
-        vesselId={vesselId ?? ''}
-        manualId={selectedSpare?.source_manual_id}
-        manualName={selectedSpare?.source_manual_name ?? selectedSpare?.pdf_reference}
-        title="Spare Source Preview"
-        subtitle={
-          selectedSpare
-            ? [
-                selectedSpare.part_name,
-                selectedSpare.part_number,
-                selectedSpare.component_name,
-                selectedSpare.component_maker,
-                selectedSpare.component_model,
-              ]
-                .filter(Boolean)
-                .join(' • ')
-            : null
-        }
-        defaultPages={selectedSpare?.page_reference}
-        panelClassName="h-full w-full min-w-0"
-        headerContent={editorContent}
-        showTextSnippet={false}
-      />
+        selectedSpare || editingSpare || createDraft ? (
+          <div className="h-full w-full overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-4">
+            {editorContent}
+          </div>
+        ) : (
+          <div className="flex h-full w-full items-center justify-center rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-500">
+            Select a spare to review details.
+          </div>
+        )
       }
     />
 

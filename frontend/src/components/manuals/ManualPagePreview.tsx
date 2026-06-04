@@ -122,15 +122,15 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
 
       {visiblePages.map((page) => (
         <section key={page.page_number} className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950/60">
-          <div className="border-b border-slate-800 px-3 py-2">
-            <div className="text-sm font-medium text-slate-100">Physical Page {page.page_number}</div>
+          <div className="border-b border-slate-800 px-2.5 py-1">
+            <div className="text-xs font-semibold text-slate-300">Physical Page {page.page_number}</div>
             {page.error ? <div className="mt-1 text-xs text-red-300">{page.error}</div> : null}
           </div>
-          <div className="space-y-3 p-3">
+          <div className="space-y-2 p-1.5">
             {page.image_data_url ? (
               <div className="overflow-auto rounded-lg border border-slate-800 bg-slate-900/70">
                 <div 
-                  className={`flex ${fullscreen ? 'min-w-max justify-center p-4' : 'min-w-max p-3'}`}
+                  className={`flex ${fullscreen ? 'min-w-max justify-center p-4' : 'min-w-max p-1.5'}`}
                   style={{ zoom: zoom }}
                 >
                   <img
@@ -156,8 +156,8 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
               </div>
             )}
             {showTextSnippet ? (
-              <div className="rounded-lg border border-slate-800 bg-slate-900/80 p-3">
-                <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/80 p-2">
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                   Extracted Text Snippet
                 </div>
                 <pre className="whitespace-pre-wrap break-words text-xs leading-5 text-slate-300">
@@ -188,8 +188,8 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
 
   return (
     <>
-    <aside className={`${panelClassName ?? 'w-[40rem]'} shrink-0 flex flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900 p-3`}>
-      <div className="mb-2 space-y-2 shrink-0">
+    <aside className={`${panelClassName ?? 'w-[40rem]'} shrink-0 flex flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-900 p-1.5`}>
+      <div className="mb-1.5 space-y-1.5 shrink-0">
         {!hideHeader && (
           <div className="flex items-center justify-between gap-4 border-b border-slate-800 pb-1.5 mb-1.5">
             <div>
@@ -234,6 +234,18 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
             >
               <RefreshCw className={`h-3 w-3 ${isFetching ? 'animate-spin' : ''}`} />
             </button>
+
+            {manualName && (
+              <>
+                <div className="h-4 w-px bg-slate-800 mx-0.5" />
+                <span 
+                  className="max-w-[150px] truncate rounded bg-slate-900 border border-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400 font-medium"
+                  title={manualName}
+                >
+                  {manualName}
+                </span>
+              </>
+            )}
 
             <div className="h-4 w-px bg-slate-800 mx-0.5" />
 

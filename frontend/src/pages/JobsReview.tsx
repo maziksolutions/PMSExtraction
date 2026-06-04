@@ -389,6 +389,18 @@ const JobsReview: React.FC = () => {
   const [showBatchPanel, setShowBatchPanel] = useState(false)
   const [batchFields, setBatchFields] = useState<BatchJobFields>({})
 
+  const openManualInNewTab = (
+    manualId: string | null | undefined,
+    name: string | null | undefined,
+    pages: string | number | null | undefined
+  ) => {
+    if (!manualId) return
+    const pagesStr = pages == null ? '' : String(pages)
+    const nameStr = name || ''
+    const url = `/vessels/${vesselId}/manual-preview/${manualId}?name=${encodeURIComponent(nameStr)}&pages=${encodeURIComponent(pagesStr)}`
+    window.open(url, '_blank')
+  }
+
   const { data, isLoading } = useQuery({
     queryKey: ['jobs', vesselId, filterQC, filterCritical, filterSourceFile, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, filterJobIds, search, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
@@ -724,32 +736,45 @@ const JobsReview: React.FC = () => {
       onSubmit={(payload) => createJobMutation.mutate(payload)}
     />
   ) : selectedJob ? (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-white">{selectedJob.job_name}</h3>
-          <p className="mt-1 text-xs text-slate-500">Select pages below, then edit, merge, or split while reviewing the PDF.</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setCreateDraft(selectedJob)} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
-            <Copy className="mr-1 inline h-3.5 w-3.5" />
-            Split To New
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button onClick={() => setCreateDraft(selectedJob)} className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800">
+            <Copy className="mr-1 inline h-3 w-3" />
+            Split
           </button>
-          <button onClick={() => setEditingJob(selectedJob)} className="rounded-lg border border-sky-700 px-3 py-1.5 text-xs text-sky-300 hover:bg-slate-800">
-            <Pencil className="mr-1 inline h-3.5 w-3.5" />
+          <button onClick={() => setEditingJob(selectedJob)} className="rounded border border-sky-700 px-2 py-1 text-xs text-sky-300 hover:bg-slate-800">
+            <Pencil className="mr-1 inline h-3 w-3" />
             Edit
           </button>
         </div>
       </div>
-      <div className="grid gap-2 text-xs text-slate-400 md:grid-cols-2">
+      <div className="grid gap-x-4 gap-y-1.5 text-xs text-slate-400 md:grid-cols-2">
         <div>Component: <span className="text-slate-200">{selectedJob.component_name ?? 'Unmapped'}</span></div>
         <div>Code: <span className="text-slate-200">{selectedJob.job_code ?? '-'}</span></div>
         <div>Frequency: <span className="text-slate-200">{selectedJob.frequency != null && selectedJob.frequency_type ? `${selectedJob.frequency} ${selectedJob.frequency_type.replace('_', ' ')}` : '-'}</span></div>
         <div>CMS ID: <span className="text-slate-200">{selectedJob.cms_id ?? '-'}</span></div>
+        <div className="md:col-span-2">
+          Source PDF: {' '}
+          {selectedJob.source_manual_id ? (
+            <button
+              onClick={() => openManualInNewTab(selectedJob.source_manual_id, selectedJob.source_manual_name || selectedJob.pdf_reference, selectedJob.source_page_number || selectedJob.page_reference)}
+              className="text-sky-400 hover:underline inline-flex items-center gap-1 font-medium text-left"
+            >
+              <ExternalLink className="h-3 w-3" />
+              {selectedJob.source_manual_name || selectedJob.pdf_reference || 'Manual'} (p.{selectedJob.source_page_number || selectedJob.page_reference || '-'})
+            </button>
+          ) : (
+            <span className="text-slate-500">-</span>
+          )}
+        </div>
       </div>
     </div>
   ) : (
-    <div className="text-sm text-slate-500">Select a job to review it side by side with the PDF preview.</div>
+    <div className="text-sm text-slate-500">Select a job to review details.</div>
   )
 
   const handleQcExport = async () => {
@@ -1149,7 +1174,23 @@ const JobsReview: React.FC = () => {
                           {job.source_reference ?? '-'}
                         </div>
                       </td>
-                      <td className="px-4 py-3"><div className="max-w-[220px] text-xs"><div className="inline-flex items-center gap-1 whitespace-nowrap text-sky-400" title={`${sourceLabel} page ${pageRef ?? '-'}`}><ExternalLink className="h-3 w-3" />{pageRef != null ? `p.${pageRef}` : 'No page'}</div><div className="mt-1 truncate whitespace-nowrap text-slate-500" title={sourceLabel}>{sourceLabel}</div></div></td>
+                      <td className="px-4 py-3">
+                        <div className="max-w-[220px] text-xs">
+                          <button
+                            onClick={() => {
+                              setSelectedJob(job)
+                              openManualInNewTab(job.source_manual_id, job.source_manual_name || job.pdf_reference, pageRef)
+                            }}
+                            disabled={!job.source_manual_id}
+                            className="inline-flex items-center gap-1 whitespace-nowrap text-sky-400 hover:underline disabled:opacity-40 disabled:no-underline"
+                            title={`${sourceLabel} page ${pageRef ?? '-'}`}
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            {pageRef != null ? `p.${pageRef}` : 'No page'}
+                          </button>
+                          <div className="mt-1 truncate whitespace-nowrap text-slate-500" title={sourceLabel}>{sourceLabel}</div>
+                        </div>
+                      </td>
                       <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                         <select
                           value={edits[job.id]?.qc_status ?? job.qc_status}
@@ -1166,7 +1207,7 @@ const JobsReview: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <button onClick={() => { setSelectedJob(job); setEditingJob(job); setCreateDraft(null) }} className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600" title="Edit job"><Pencil className="h-3.5 w-3.5" /></button>
                           <button onClick={() => { setSelectedJob(job); setCreateDraft(job); setEditingJob(null) }} className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600" title="Split to new job"><Copy className="h-3.5 w-3.5" /></button>
-                          <button onClick={() => setSelectedJob(job)} disabled={!job.source_manual_id} className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-40" title="Preview manual pages"><FileSearch className="h-3.5 w-3.5" /></button>
+                          <button onClick={() => { setSelectedJob(job); openManualInNewTab(job.source_manual_id, job.source_manual_name || job.pdf_reference, job.source_page_number || job.page_reference) }} disabled={!job.source_manual_id} className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-40" title="Preview manual pages"><FileSearch className="h-3.5 w-3.5" /></button>
                         </div>
                       </td>
                     </tr>
@@ -1214,17 +1255,15 @@ const JobsReview: React.FC = () => {
 
       }
       right={
-      <ManualPagePreview
-        vesselId={vesselId ?? ''}
-        manualId={selectedJob?.source_manual_id}
-        manualName={selectedJob?.source_manual_name ?? selectedJob?.pdf_reference}
-        title="Job Source Preview"
-        subtitle={selectedJob ? [selectedJob.job_name, selectedJob.component_name, selectedJob.component_maker, selectedJob.component_model].filter(Boolean).join(' / ') : null}
-        defaultPages={selectedJob?.source_page_number ?? selectedJob?.page_reference}
-        panelClassName="h-full w-full min-w-0"
-        headerContent={editorContent}
-        showTextSnippet={false}
-      />
+        selectedJob || editingJob || createDraft ? (
+          <div className="h-full w-full overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-4">
+            {editorContent}
+          </div>
+        ) : (
+          <div className="flex h-full w-full items-center justify-center rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-500">
+            Select a job to review details.
+          </div>
+        )
       }
       />
     </>
