@@ -7,6 +7,7 @@ const ManualStandalonePreview: React.FC = () => {
   const [searchParams] = useSearchParams()
   const name = searchParams.get('name') || 'Manual Preview'
   const pages = searchParams.get('pages') || ''
+  const mode = searchParams.get('mode') || ''
 
   return (
     <div className="h-screen w-screen bg-slate-950 p-2 overflow-hidden flex flex-col">
@@ -19,6 +20,7 @@ const ManualStandalonePreview: React.FC = () => {
         panelClassName="h-full w-full min-w-0"
         showTextSnippet={true}
         hideHeader={true}
+        enableSnipPush={mode === 'snip'}
       />
     </div>
   )

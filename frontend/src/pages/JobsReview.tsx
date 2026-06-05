@@ -206,6 +206,7 @@ function JobEditor({
   onSubmit,
   onCancel,
   onSplit,
+  openManualInNewTab,
 }: {
   title: string
   submitLabel: string
@@ -216,10 +217,39 @@ function JobEditor({
   onSubmit: (payload: Record<string, unknown>) => void
   onCancel?: () => void
   onSplit?: () => void
+  openManualInNewTab?: (
+    manualId: string | null | undefined,
+    name: string | null | undefined,
+    pages: string | number | null | undefined
+  ) => void
 }) {
   const [form, setForm] = useState<JobForm>(() => toForm(initial))
   React.useEffect(() => setForm(toForm(initial)), [initial])
   const set = (key: keyof JobForm, value: string | boolean) => setForm((p) => ({ ...p, [key]: value }))
+
+  React.useEffect(() => {
+    const channel = new BroadcastChannel('job-editor-channel')
+    channel.onmessage = (event) => {
+      if (event.data && event.data.type === 'PUSH_TEXT') {
+        const fieldName = event.data.field as string
+        const text = event.data.text as string
+        if (fieldName === 'job_description' || fieldName === 'safety_precaution' || fieldName === 'tools_required') {
+          const field = fieldName as keyof JobForm
+          setForm((prev) => {
+            const currentValue = prev[field] || ''
+            const newValue = currentValue ? `${currentValue}\n\n${text}` : text
+            return {
+              ...prev,
+              [field]: newValue,
+            }
+          })
+        }
+      }
+    }
+    return () => {
+      channel.close()
+    }
+  }, [])
 
   return (
     <div className="space-y-4">
@@ -228,6 +258,24 @@ function JobEditor({
           <h3 className="text-sm font-semibold text-white">{title}</h3>
         </div>
         <div className="flex items-center gap-2">
+          {initial?.source_manual_id && openManualInNewTab && (
+            <button
+              onClick={() => {
+                const pageRef = initial.source_page_number ?? initial.page_reference
+                openManualInNewTab(
+                  initial.source_manual_id,
+                  initial.source_manual_name || initial.pdf_reference,
+                  pageRef
+                )
+              }}
+              type="button"
+              className="flex items-center gap-1.5 rounded-lg border border-sky-700 px-3 py-1.5 text-xs text-sky-300 hover:bg-slate-800"
+              title="Open manual in a new tab for snipping text"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              <span>Open PDF for Snipping</span>
+            </button>
+          )}
           {onSplit ? <button onClick={onSplit} className="rounded-lg border border-sky-700 px-3 py-1.5 text-xs text-sky-300 hover:bg-slate-800">Split To New</button> : null}
           {onCancel ? <button onClick={onCancel} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">Cancel</button> : null}
         </div>
@@ -396,7 +444,7 @@ const JobsReview: React.FC = () => {
     if (!manualId) return
     const pagesStr = pages == null ? '' : String(pages)
     const nameStr = name || ''
-    const url = `/vessels/${vesselId}/manual-preview/${manualId}?name=${encodeURIComponent(nameStr)}&pages=${encodeURIComponent(pagesStr)}`
+    const url = `/vessels/${vesselId}/manual-preview/${manualId}?name=${encodeURIComponent(nameStr)}&pages=${encodeURIComponent(pagesStr)}&mode=snip`
     window.open(url, '_blank')
   }
 
@@ -711,34 +759,11 @@ const JobsReview: React.FC = () => {
     return Array.from(selectedIds)[0]
   }, [selectedIds, selectedJob])
 
-  const editorContent = editingJob ? (
-    <JobEditor
-      title="Edit Job"
-      submitLabel="Save Changes"
-      initial={editingJob}
-      components={componentOptions}
-      rankOptions={rankOptions}
-      isPending={saveJobMutation.isPending}
-      onCancel={() => setEditingJob(null)}
-      onSplit={() => setCreateDraft(editingJob)}
-      onSubmit={(payload) => saveJobMutation.mutate({ id: editingJob.id, payload })}
-    />
-  ) : createDraft ? (
-    <JobEditor
-      title="Add Job"
-      submitLabel="Create Job"
-      initial={createDraft}
-      components={componentOptions}
-      rankOptions={rankOptions}
-      isPending={createJobMutation.isPending}
-      onCancel={() => setCreateDraft(null)}
-      onSubmit={(payload) => createJobMutation.mutate(payload)}
-    />
-  ) : selectedJob ? (
-    <div className="space-y-2">
-      <div className="flex items-start justify-between gap-3">
+  const selectedJobDetailsCard = selectedJob ? (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3 mb-2">
         <div>
-          <h3 className="text-sm font-semibold text-white">{selectedJob.job_name}</h3>
+          <h3 className="text-base font-semibold text-white">{selectedJob.job_name}</h3>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <button onClick={() => setCreateDraft(selectedJob)} className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800">
@@ -751,7 +776,8 @@ const JobsReview: React.FC = () => {
           </button>
         </div>
       </div>
-      <div className="grid gap-x-4 gap-y-1.5 text-xs text-slate-400 md:grid-cols-2">
+      
+      <div className="grid gap-x-4 gap-y-3 text-xs text-slate-400 md:grid-cols-2">
         <div>Component: <span className="text-slate-200">{selectedJob.component_name ?? 'Unmapped'}</span></div>
         <div>Code: <span className="text-slate-200">{selectedJob.job_code ?? '-'}</span></div>
         <div>Frequency: <span className="text-slate-200">{selectedJob.frequency != null && selectedJob.frequency_type ? `${selectedJob.frequency} ${selectedJob.frequency_type.replace('_', ' ')}` : '-'}</span></div>
@@ -771,9 +797,32 @@ const JobsReview: React.FC = () => {
           )}
         </div>
       </div>
+
+      <div className="mt-4 pt-3 border-t border-slate-800 space-y-3 text-xs">
+        <div>
+          <div className="font-semibold text-slate-300 mb-1">Job Procedure:</div>
+          <div className="text-slate-250 whitespace-pre-wrap leading-relaxed bg-slate-950 p-2.5 rounded-lg border border-slate-800 min-h-16">
+            {selectedJob.job_description ?? '-'}
+          </div>
+        </div>
+        <div>
+          <div className="font-semibold text-slate-300 mb-1">Safety Precaution:</div>
+          <div className="text-slate-250 whitespace-pre-wrap leading-relaxed bg-slate-950 p-2.5 rounded-lg border border-slate-800 min-h-12">
+            {selectedJob.safety_precaution ?? '-'}
+          </div>
+        </div>
+        <div>
+          <div className="font-semibold text-slate-300 mb-1">Tools Required:</div>
+          <div className="text-slate-250 whitespace-pre-wrap leading-relaxed bg-slate-950 p-2.5 rounded-lg border border-slate-800 min-h-8">
+            {selectedJob.tools_required ?? '-'}
+          </div>
+        </div>
+      </div>
     </div>
   ) : (
-    <div className="text-sm text-slate-500">Select a job to review details.</div>
+    <div className="flex h-full w-full items-center justify-center text-sm text-slate-500">
+      Select a job to review details.
+    </div>
   )
 
   const handleQcExport = async () => {
@@ -1253,18 +1302,53 @@ const JobsReview: React.FC = () => {
       </div>
 
       }
-      right={
-        selectedJob || editingJob || createDraft ? (
-          <div className="h-full w-full overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-4">
-            {editorContent}
-          </div>
-        ) : (
-          <div className="flex h-full w-full items-center justify-center rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-500">
-            Select a job to review details.
-          </div>
-        )
-      }
+      right={selectedJobDetailsCard}
       />
+
+      {/* Fullpage Modal overlay for Job Editor */}
+      {(editingJob || createDraft) && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="relative w-full max-w-4xl rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl my-8">
+            <button
+              onClick={() => {
+                setEditingJob(null)
+                setCreateDraft(null)
+              }}
+              className="absolute right-4 top-4 rounded-lg border border-slate-705 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
+              title="Close editor"
+            >
+              <XCircle className="h-5 w-5" />
+            </button>
+            
+            {editingJob ? (
+              <JobEditor
+                title="Edit Job"
+                submitLabel="Save Changes"
+                initial={editingJob}
+                components={componentOptions}
+                rankOptions={rankOptions}
+                isPending={saveJobMutation.isPending}
+                onCancel={() => setEditingJob(null)}
+                onSplit={() => setCreateDraft(editingJob)}
+                onSubmit={(payload) => saveJobMutation.mutate({ id: editingJob.id, payload })}
+                openManualInNewTab={openManualInNewTab}
+              />
+            ) : (
+              <JobEditor
+                title="Add Job"
+                submitLabel="Create Job"
+                initial={createDraft!}
+                components={componentOptions}
+                rankOptions={rankOptions}
+                isPending={createJobMutation.isPending}
+                onCancel={() => setCreateDraft(null)}
+                onSubmit={(payload) => createJobMutation.mutate(payload)}
+                openManualInNewTab={openManualInNewTab}
+              />
+            )}
+          </div>
+        </div>
+      )}
     </>
   )
 }

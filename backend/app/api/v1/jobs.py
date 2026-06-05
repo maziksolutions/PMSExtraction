@@ -1463,3 +1463,26 @@ async def export_jobs_qc(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="Jobs_QC_{safe_name}.xlsx"'},
     )
+
+
+@router.post("/{vessel_id}/jobs/snip-ocr", summary="Perform general OCR on an uploaded image")
+async def snip_ocr_job(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    image: UploadFile = File(...),
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image file is empty")
+
+    from app.services.extractor import _ocr_page_with_openai
+
+    text = await _ocr_page_with_openai(
+        image_bytes=image_bytes,
+        filename=image.filename or "snipped_region.png",
+        page_no=1,
+    )
+    return {"text": text.strip()}
+
