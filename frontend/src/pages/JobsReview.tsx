@@ -4,7 +4,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CheckCircle, Copy, Download, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Trash2, Upload, XCircle } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
-import ResizableSplitView from '@/components/layout/ResizableSplitView'
 
 interface ComponentOption {
   id: string
@@ -224,7 +223,10 @@ function JobEditor({
   ) => void
 }) {
   const [form, setForm] = useState<JobForm>(() => toForm(initial))
-  React.useEffect(() => setForm(toForm(initial)), [initial])
+  const initialId = initial?.id
+  React.useEffect(() => {
+    setForm(toForm(initial))
+  }, [initialId])
   const set = (key: keyof JobForm, value: string | boolean) => setForm((p) => ({ ...p, [key]: value }))
 
   React.useEffect(() => {
@@ -253,10 +255,8 @@ function JobEditor({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-white">{title}</h3>
-        </div>
+      <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+        <h3 className="text-base font-semibold text-white">{title}</h3>
         <div className="flex items-center gap-2">
           {initial?.source_manual_id && openManualInNewTab && (
             <button
@@ -276,8 +276,23 @@ function JobEditor({
               <span>Open PDF for Snipping</span>
             </button>
           )}
-          {onSplit ? <button onClick={onSplit} className="rounded-lg border border-sky-700 px-3 py-1.5 text-xs text-sky-300 hover:bg-slate-800">Split To New</button> : null}
-          {onCancel ? <button onClick={onCancel} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">Cancel</button> : null}
+          {onSplit && (
+            <button
+              onClick={onSplit}
+              className="rounded-lg border border-sky-700 px-3 py-1.5 text-xs text-sky-300 hover:bg-slate-800"
+            >
+              Split To New
+            </button>
+          )}
+          {onCancel && (
+            <button
+              onClick={onCancel}
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+              title="Close editor"
+            >
+              <XCircle className="h-5 w-5" />
+            </button>
+          )}
         </div>
       </div>
       <div className="grid gap-4 md:grid-cols-2">
@@ -371,7 +386,16 @@ function JobEditor({
           </select>
         </div>
       </div>
-      <div className="flex items-center justify-end border-t border-slate-700 pt-4">
+      <div className="flex items-center justify-end gap-3 border-t border-slate-700 pt-4">
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
+          >
+            Cancel
+          </button>
+        )}
         <button
           onClick={() => onSubmit({
             job_name: form.job_name,
@@ -557,7 +581,7 @@ const JobsReview: React.FC = () => {
     onSuccess: (job) => {
       refreshJobs()
       setSelectedJob(job)
-      setEditingJob(job)
+      setEditingJob(null)
       setActionError(null)
       setActionMessage('Job changes were saved.')
     },
@@ -569,7 +593,7 @@ const JobsReview: React.FC = () => {
     onSuccess: (job) => {
       refreshJobs()
       setSelectedJob(job)
-      setEditingJob(job)
+      setEditingJob(null)
       setCreateDraft(null)
       setActionError(null)
       setActionMessage('New job was created.')
@@ -759,72 +783,6 @@ const JobsReview: React.FC = () => {
     return Array.from(selectedIds)[0]
   }, [selectedIds, selectedJob])
 
-  const selectedJobDetailsCard = selectedJob ? (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-3 mb-2">
-        <div>
-          <h3 className="text-base font-semibold text-white">{selectedJob.job_name}</h3>
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <button onClick={() => setCreateDraft(selectedJob)} className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:bg-slate-800">
-            <Copy className="mr-1 inline h-3 w-3" />
-            Split
-          </button>
-          <button onClick={() => setEditingJob(selectedJob)} className="rounded border border-sky-700 px-2 py-1 text-xs text-sky-300 hover:bg-slate-800">
-            <Pencil className="mr-1 inline h-3 w-3" />
-            Edit
-          </button>
-        </div>
-      </div>
-      
-      <div className="grid gap-x-4 gap-y-3 text-xs text-slate-400 md:grid-cols-2">
-        <div>Component: <span className="text-slate-200">{selectedJob.component_name ?? 'Unmapped'}</span></div>
-        <div>Code: <span className="text-slate-200">{selectedJob.job_code ?? '-'}</span></div>
-        <div>Frequency: <span className="text-slate-200">{selectedJob.frequency != null && selectedJob.frequency_type ? `${selectedJob.frequency} ${selectedJob.frequency_type.replace('_', ' ')}` : '-'}</span></div>
-        <div>CMS ID: <span className="text-slate-200">{selectedJob.cms_id ?? '-'}</span></div>
-        <div className="md:col-span-2">
-          Source PDF: {' '}
-          {selectedJob.source_manual_id ? (
-            <button
-              onClick={() => openManualInNewTab(selectedJob.source_manual_id, selectedJob.source_manual_name || selectedJob.pdf_reference, selectedJob.source_page_number || selectedJob.page_reference)}
-              className="text-sky-400 hover:underline inline-flex items-center gap-1 font-medium text-left"
-            >
-              <ExternalLink className="h-3 w-3" />
-              {selectedJob.source_manual_name || selectedJob.pdf_reference || 'Manual'} (p.{selectedJob.source_page_number || selectedJob.page_reference || '-'})
-            </button>
-          ) : (
-            <span className="text-slate-500">-</span>
-          )}
-        </div>
-      </div>
-
-      <div className="mt-4 pt-3 border-t border-slate-800 space-y-3 text-xs">
-        <div>
-          <div className="font-semibold text-slate-300 mb-1">Job Procedure:</div>
-          <div className="text-slate-250 whitespace-pre-wrap leading-relaxed bg-slate-950 p-2.5 rounded-lg border border-slate-800 min-h-16">
-            {selectedJob.job_description ?? '-'}
-          </div>
-        </div>
-        <div>
-          <div className="font-semibold text-slate-300 mb-1">Safety Precaution:</div>
-          <div className="text-slate-250 whitespace-pre-wrap leading-relaxed bg-slate-950 p-2.5 rounded-lg border border-slate-800 min-h-12">
-            {selectedJob.safety_precaution ?? '-'}
-          </div>
-        </div>
-        <div>
-          <div className="font-semibold text-slate-300 mb-1">Tools Required:</div>
-          <div className="text-slate-250 whitespace-pre-wrap leading-relaxed bg-slate-950 p-2.5 rounded-lg border border-slate-800 min-h-8">
-            {selectedJob.tools_required ?? '-'}
-          </div>
-        </div>
-      </div>
-    </div>
-  ) : (
-    <div className="flex h-full w-full items-center justify-center text-sm text-slate-500">
-      Select a job to review details.
-    </div>
-  )
-
   const handleQcExport = async () => {
     try {
       const res = await apiClient.get(`/vessels/${vesselId}/jobs/qc-export`, { responseType: 'blob' })
@@ -841,11 +799,7 @@ const JobsReview: React.FC = () => {
 
   return (
     <>
-      <ResizableSplitView
-      storageKey={`jobs-review-layout:${vesselId ?? 'default'}`}
-      initialLeftPercent={58}
-      left={
-      <div className="flex h-full flex-col gap-6 overflow-hidden">
+      <div className="flex flex-col gap-6">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">Jobs Review</h1>
@@ -1301,25 +1255,10 @@ const JobsReview: React.FC = () => {
         ) : null}
       </div>
 
-      }
-      right={selectedJobDetailsCard}
-      />
-
       {/* Fullpage Modal overlay for Job Editor */}
       {(editingJob || createDraft) && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 backdrop-blur-sm p-4 flex justify-center items-start">
           <div className="relative w-full max-w-4xl rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl my-8">
-            <button
-              onClick={() => {
-                setEditingJob(null)
-                setCreateDraft(null)
-              }}
-              className="absolute right-4 top-4 rounded-lg border border-slate-705 p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
-              title="Close editor"
-            >
-              <XCircle className="h-5 w-5" />
-            </button>
-            
             {editingJob ? (
               <JobEditor
                 title="Edit Job"
@@ -1329,7 +1268,10 @@ const JobsReview: React.FC = () => {
                 rankOptions={rankOptions}
                 isPending={saveJobMutation.isPending}
                 onCancel={() => setEditingJob(null)}
-                onSplit={() => setCreateDraft(editingJob)}
+                onSplit={() => {
+                  setCreateDraft(editingJob)
+                  setEditingJob(null)
+                }}
                 onSubmit={(payload) => saveJobMutation.mutate({ id: editingJob.id, payload })}
                 openManualInNewTab={openManualInNewTab}
               />
