@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil, Scissors, Download, Trash2 } from 'lucide-react'
 import apiClient from '@/api/client'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
-import ResizableSplitView from '@/components/layout/ResizableSplitView'
+
 import SnipExtractModal from '@/components/spares/SnipExtractModal'
 
 interface ComponentOption {
@@ -112,9 +112,24 @@ interface SpareEditorModalProps {
   onCancel?: () => void
   onSubmit: (payload: Record<string, unknown>) => void
   embedded?: boolean
+  openManualInNewTab?: (
+    manualId: string | null | undefined,
+    name: string | null | undefined,
+    pages: string | number | null | undefined
+  ) => void
 }
 
-function SpareEditorModal({ title, submitLabel, isPending, components, initialValues, onCancel, onSubmit, embedded = false }: SpareEditorModalProps) {
+function SpareEditorModal({
+  title,
+  submitLabel,
+  isPending,
+  components,
+  initialValues,
+  onCancel,
+  onSubmit,
+  embedded = false,
+  openManualInNewTab,
+}: SpareEditorModalProps) {
   const [form, setForm] = useState({
     part_name: initialValues?.part_name ?? '',
     part_number: initialValues?.part_number ?? '',
@@ -151,15 +166,36 @@ function SpareEditorModal({ title, submitLabel, isPending, components, initialVa
 
   const formBody = (
     <>
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-white">{title}</h3>
+      <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-4">
+        <h3 className="text-base font-semibold text-white">{title}</h3>
+        <div className="flex items-center gap-2">
+          {initialValues?.source_manual_id && openManualInNewTab && (
+            <button
+              onClick={() => {
+                openManualInNewTab(
+                  initialValues.source_manual_id,
+                  initialValues.source_manual_name || initialValues.pdf_reference,
+                  initialValues.page_reference
+                )
+              }}
+              type="button"
+              className="flex items-center gap-1.5 rounded-lg border border-sky-700 px-3 py-1.5 text-xs text-sky-300 hover:bg-slate-800"
+              title="Open manual in a new tab"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              <span>Open PDF</span>
+            </button>
+          )}
+          {onCancel && (
+            <button
+              onClick={onCancel}
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+              title="Close editor"
+            >
+              <XCircle className="h-5 w-5" />
+            </button>
+          )}
         </div>
-        {onCancel ? (
-          <button onClick={onCancel} className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">
-            Cancel
-          </button>
-        ) : null}
       </div>
       <div className="grid gap-4 md:grid-cols-2">
           <div className="md:col-span-2">
@@ -417,7 +453,7 @@ const SparesReview: React.FC = () => {
       apiClient.patch(`/vessels/${vesselId}/spares/${id}`, payload).then((r) => r.data),
     onSuccess: (spare) => {
       queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
-      setEditingSpare(spare)
+      setEditingSpare(null)
       setSelectedSpare(spare)
       setActionError(null)
       setActionMessage('Spare changes were saved.')
@@ -430,7 +466,7 @@ const SparesReview: React.FC = () => {
     onSuccess: (spare) => {
       queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
       setCreateDraft(null)
-      setEditingSpare(spare)
+      setEditingSpare(null)
       setSelectedSpare(spare)
       setActionError(null)
       setActionMessage('New spare was created.')
@@ -511,65 +547,6 @@ const SparesReview: React.FC = () => {
     }
   }, [page, totalPages])
 
-  const editorContent = editingSpare ? (
-    <SpareEditorModal
-      title="Edit Spare"
-      submitLabel="Save Changes"
-      isPending={saveSpareMutation.isPending}
-      components={componentOptions}
-      initialValues={editingSpare}
-      embedded
-      onCancel={() => setEditingSpare(null)}
-      onSubmit={(payload) => saveSpareMutation.mutate({ id: editingSpare.id, payload })}
-    />
-  ) : createDraft ? (
-    <SpareEditorModal
-      title="Add Spare"
-      submitLabel="Create Spare"
-      isPending={createSpareMutation.isPending}
-      components={componentOptions}
-      initialValues={createDraft}
-      embedded
-      onCancel={() => setCreateDraft(null)}
-      onSubmit={(payload) => createSpareMutation.mutate(payload)}
-    />
-  ) : selectedSpare ? (
-    <div className="space-y-2">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-white">{selectedSpare.part_name}</h3>
-        </div>
-        <button onClick={() => setEditingSpare(selectedSpare)} className="rounded border border-sky-700 px-2 py-1 text-xs text-sky-300 hover:bg-slate-800 shrink-0">
-          <Pencil className="mr-1 inline h-3 w-3" />
-          Edit
-        </button>
-      </div>
-      <div className="grid gap-x-4 gap-y-1.5 text-xs text-slate-400 md:grid-cols-2">
-        <div>Part #: <span className="text-slate-200">{selectedSpare.part_number ?? '-'}</span></div>
-        <div>Drawing: <span className="text-slate-200">{selectedSpare.drawing_number ?? '-'}</span></div>
-        <div>Position: <span className="text-slate-200">{selectedSpare.drawing_position ?? '-'}</span></div>
-        <div>Component: <span className="text-slate-200">{selectedSpare.component_name ?? 'Unmapped'}</span></div>
-        <div className="md:col-span-2">Specification / Particulars: <span className="text-slate-200">{selectedSpare.specification ?? '-'}</span></div>
-        <div className="md:col-span-2">
-          Source PDF: {' '}
-          {selectedSpare.source_manual_id ? (
-            <button
-              onClick={() => openManualInNewTab(selectedSpare.source_manual_id, selectedSpare.source_manual_name || selectedSpare.pdf_reference, selectedSpare.page_reference)}
-              className="text-sky-400 hover:underline inline-flex items-center gap-1 font-medium text-left"
-            >
-              <ExternalLink className="h-3 w-3" />
-              {selectedSpare.source_manual_name || selectedSpare.pdf_reference || 'Manual'} (p.{selectedSpare.page_reference ?? '-'})
-            </button>
-          ) : (
-            <span className="text-slate-500">-</span>
-          )}
-        </div>
-      </div>
-    </div>
-  ) : (
-    <div className="text-sm text-slate-500">Select a spare to review details.</div>
-  )
-
   const handleQcExport = async () => {
     try {
       const res = await apiClient.get(`/vessels/${vesselId}/spares/qc-export`, { responseType: 'blob' })
@@ -586,11 +563,7 @@ const SparesReview: React.FC = () => {
 
   return (
     <>
-    <ResizableSplitView
-      storageKey={`spares-review-layout:${vesselId ?? 'default'}`}
-      initialLeftPercent={58}
-      left={
-      <div className="flex h-full flex-col gap-4 overflow-hidden">
+      <div className="flex flex-col gap-6">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-white">Spares Review</h1>
@@ -831,7 +804,7 @@ const SparesReview: React.FC = () => {
           )}
         </div>
 
-        <div className="flex-1 overflow-auto rounded-xl border border-slate-800 bg-slate-900">
+        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
           {isLoading ? (
             <div className="py-16 text-center text-slate-500">Loading...</div>
           ) : spares.length === 0 ? (
@@ -1116,30 +1089,49 @@ const SparesReview: React.FC = () => {
         </div>
       </div>
 
-      }
-      right={
-        selectedSpare || editingSpare || createDraft ? (
-          <div className="h-full w-full overflow-y-auto rounded-xl border border-slate-800 bg-slate-900 p-4">
-            {editorContent}
+      {/* Scroll Modal overlay for Spare Editor */}
+      {(editingSpare || createDraft) && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 backdrop-blur-sm p-4 flex justify-center items-start">
+          <div className="relative w-full max-w-4xl rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl my-8">
+            {editingSpare ? (
+              <SpareEditorModal
+                title="Edit Spare"
+                submitLabel="Save Changes"
+                isPending={saveSpareMutation.isPending}
+                components={componentOptions}
+                initialValues={editingSpare}
+                embedded={true}
+                onCancel={() => setEditingSpare(null)}
+                onSubmit={(payload) => saveSpareMutation.mutate({ id: editingSpare.id, payload })}
+                openManualInNewTab={openManualInNewTab}
+              />
+            ) : (
+              <SpareEditorModal
+                title="Add Spare"
+                submitLabel="Create Spare"
+                isPending={createSpareMutation.isPending}
+                components={componentOptions}
+                initialValues={createDraft!}
+                embedded={true}
+                onCancel={() => setCreateDraft(null)}
+                onSubmit={(payload) => createSpareMutation.mutate(payload)}
+                openManualInNewTab={openManualInNewTab}
+              />
+            )}
           </div>
-        ) : (
-          <div className="flex h-full w-full items-center justify-center rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-500">
-            Select a spare to review details.
-          </div>
-        )
-      }
-    />
+        </div>
+      )}
 
-    {showSnipModal && vesselId && (
-      <SnipExtractModal
-        vesselId={vesselId}
-        onClose={() => setShowSnipModal(false)}
-        onSaved={() => {
-          queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
-          queryClient.invalidateQueries({ queryKey: ['spare-source-files', vesselId] })
-        }}
-      />
-    )}
+      {showSnipModal && vesselId && (
+        <SnipExtractModal
+          vesselId={vesselId}
+          onClose={() => setShowSnipModal(false)}
+          onSaved={() => {
+            queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
+            queryClient.invalidateQueries({ queryKey: ['spare-source-files', vesselId] })
+          }}
+        />
+      )}
     </>
   )
 }
