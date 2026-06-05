@@ -609,6 +609,25 @@ async def _ocr_page_with_claude(image_bytes: bytes, filename: str, page_no: int)
 
 
 async def _ocr_page_with_openai(image_bytes: bytes, filename: str, page_no: int) -> str:
+    # 1. Try local non-AI OCR (Tesseract) first
+    try:
+        import pytesseract
+        from PIL import Image
+        import io
+        
+        img = Image.open(io.BytesIO(image_bytes))
+        best_ocr = ""
+        for config in ("--psm 6", "--psm 11", "--psm 12"):
+            ocr_text = pytesseract.image_to_string(img, config=config).strip()
+            if len(ocr_text) > len(best_ocr):
+                best_ocr = ocr_text
+        if best_ocr.strip():
+            logger.info("Local pytesseract OCR successfully recognized text (%d chars)", len(best_ocr))
+            return best_ocr.strip()
+    except Exception as exc:
+        logger.warning("Local pytesseract OCR failed, falling back to AI: %s", exc)
+
+    # 2. Fall back to AI-based OCR
     if settings.ANTHROPIC_API_KEY and not settings.OPENAI_API_KEY:
         return await _ocr_page_with_claude(image_bytes, filename, page_no)
 

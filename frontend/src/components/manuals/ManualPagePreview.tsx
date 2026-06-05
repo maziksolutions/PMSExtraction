@@ -640,7 +640,7 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
                 disabled={isExtractingText}
                 className="w-full flex items-center justify-center gap-2 rounded-lg bg-green-700 hover:bg-green-600 py-2.5 text-xs font-semibold text-white disabled:opacity-50"
               >
-                {isExtractingText ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 animate-spin" />}
+                {isExtractingText ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                 {isExtractingText ? 'Extracting Text...' : 'Extract Selection'}
               </button>
             )}
