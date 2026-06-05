@@ -653,7 +653,7 @@ async def update_spare(
             manual_id=spare.source_manual_id,
             entity_type="spare",
             original_value=original,
-            corrected_value=update_data,
+            corrected_value=body.model_dump(mode="json", exclude_unset=True),
             correction_type=CorrectionType.wrong_value,
             page_number=spare.page_reference,
             context_span=f"Updated spare fields: {', '.join(sorted(update_data.keys()))}",

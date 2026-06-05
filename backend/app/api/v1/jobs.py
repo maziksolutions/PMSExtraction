@@ -873,7 +873,7 @@ async def update_job(
             manual_id=job.source_manual_id,
             entity_type="job",
             original_value=original,
-            corrected_value=update_data,
+            corrected_value=body.model_dump(mode="json", exclude_unset=True),
             correction_type=CorrectionType.wrong_value,
             page_number=job.page_reference,
             context_span=f"Updated job fields: {', '.join(sorted(update_data.keys()))}",
