@@ -51,13 +51,22 @@ async function imageElementToBlob(
   const canvas = document.createElement('canvas')
   let sx = 0, sy = 0, sw = imgEl.naturalWidth, sh = imgEl.naturalHeight
   if (cropBox) {
-    const scaleX = imgEl.naturalWidth / imgEl.offsetWidth
-    const scaleY = imgEl.naturalHeight / imgEl.offsetHeight
+    const offsetWidth = imgEl.offsetWidth || 1
+    const offsetHeight = imgEl.offsetHeight || 1
+    const scaleX = imgEl.naturalWidth / offsetWidth
+    const scaleY = imgEl.naturalHeight / offsetHeight
     sx = Math.round(cropBox.x1 * scaleX)
     sy = Math.round(cropBox.y1 * scaleY)
     sw = Math.round((cropBox.x2 - cropBox.x1) * scaleX)
     sh = Math.round((cropBox.y2 - cropBox.y1) * scaleY)
   }
+  
+  // Guard against non-finite or invalid numbers
+  if (!isFinite(sx) || isNaN(sx)) sx = 0
+  if (!isFinite(sy) || isNaN(sy)) sy = 0
+  if (!isFinite(sw) || isNaN(sw) || sw <= 0) sw = imgEl.naturalWidth || 1
+  if (!isFinite(sh) || isNaN(sh) || sh <= 0) sh = imgEl.naturalHeight || 1
+
   canvas.width = Math.max(1, sw)
   canvas.height = Math.max(1, sh)
   const ctx = canvas.getContext('2d')!
@@ -281,7 +290,7 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
                 >
                   <div className="relative inline-block select-none">
                     <img
-                      ref={activePageNumber === page.page_number || !multiPage ? imgRef : undefined}
+                      ref={imgRef}
                       src={page.image_data_url}
                       alt={`Manual page ${page.page_number}`}
                       draggable={false}
@@ -293,6 +302,7 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
                         width: rotation % 180 === 0 && !fullscreen ? '100%' : 'auto',
                         maxWidth: rotation % 180 === 0 && !fullscreen ? '100%' : 'none',
                         userSelect: 'none',
+                        pointerEvents: 'none',
                       }}
                     />
                     {isSnipMode && (

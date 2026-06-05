@@ -568,13 +568,56 @@ def _filter_text_to_pages(text: str, selected_pages: list[int]) -> str:
     return "\n\n".join(selected_blocks).strip() or text
 
 
+async def _ocr_page_with_claude(image_bytes: bytes, filename: str, page_no: int) -> str:
+    if not settings.ANTHROPIC_API_KEY:
+        return ""
+    try:
+        model_id: str = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
+        b64_data = base64.b64encode(image_bytes).decode("ascii")
+        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY, timeout=30.0)
+        
+        user_content = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": b64_data},
+            },
+            {
+                "type": "text",
+                "text": f"Extract all readable text from page {page_no} of {filename}."
+            },
+        ]
+        message = await client.messages.create(
+            model=model_id,
+            max_tokens=4000,
+            system=(
+                "You are extracting visible text from a maritime manual page image. "
+                "Return plain text only. Preserve table rows line by line. "
+                "If you can detect columns, separate them using ' | '. "
+                "Do not explain anything."
+            ),
+            messages=[{"role": "user", "content": user_content}],
+        )
+        return message.content[0].text.strip()
+    except Exception as exc:
+        logger.warning(
+            "extractor OCR[claude]: failed for %s page=%d: %s",
+            filename,
+            page_no,
+            _redact_error_message(exc),
+        )
+        return ""
+
+
 async def _ocr_page_with_openai(image_bytes: bytes, filename: str, page_no: int) -> str:
+    if settings.ANTHROPIC_API_KEY and not settings.OPENAI_API_KEY:
+        return await _ocr_page_with_claude(image_bytes, filename, page_no)
+
     if not settings.OPENAI_API_KEY:
         return ""
     try:
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=30.0)
         data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
         model_id = getattr(settings, "OPENAI_VISION_MODEL_ID", None) or "gpt-4.1"
         response = await client.chat.completions.create(

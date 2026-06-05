@@ -1307,7 +1307,7 @@ const JobsReview: React.FC = () => {
 
       {/* Fullpage Modal overlay for Job Editor */}
       {(editingJob || createDraft) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 backdrop-blur-sm p-4 flex justify-center items-start">
           <div className="relative w-full max-w-4xl rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl my-8">
             <button
               onClick={() => {
