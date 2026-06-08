@@ -690,6 +690,13 @@ const JobsReview: React.FC = () => {
     () => (data?.items ?? []).filter((job: Job) => !(filterNoCMS && job.cms_id)),
     [data?.items, filterNoCMS]
   )
+  const activeSelectedJob = useMemo(() => {
+    if (selectedIds.size === 1) {
+      const selectedId = Array.from(selectedIds)[0]
+      return jobs.find((j) => j.id === selectedId) || null
+    }
+    return null
+  }, [selectedIds, jobs])
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const hasActiveFilters = Boolean(
@@ -806,43 +813,115 @@ const JobsReview: React.FC = () => {
             <p className="mt-1 text-sm text-slate-400">Review, merge, split, and correct extracted maintenance jobs.</p>
           </div>
           <div className="flex items-center gap-2">
-            {selectedIds.size > 0 ? (
-              <>
-                <button onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))} disabled={bulkAcceptMutation.isPending} className="flex items-center gap-1.5 rounded-lg bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50">
-                  <CheckCircle className="h-3.5 w-3.5" />
-                  Accept ({selectedIds.size})
-                </button>
-                <button onClick={() => bulkRejectMutation.mutate(Array.from(selectedIds))} disabled={bulkRejectMutation.isPending} className="flex items-center gap-1.5 rounded-lg bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50">
-                  <XCircle className="h-3.5 w-3.5" />
-                  Reject ({selectedIds.size})
-                </button>
+            {selectedIds.size > 0 && (
+              <div className="flex items-center gap-2 border border-slate-700 bg-slate-900/60 px-3 py-1.5 rounded-xl shadow-inner">
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mr-1">
+                  Actions ({selectedIds.size}):
+                </span>
+                
+                {selectedIds.size === 1 && activeSelectedJob && (
+                  <>
+                    <button
+                      onClick={() => {
+                        setSelectedJob(activeSelectedJob)
+                        setEditingJob(activeSelectedJob)
+                        setCreateDraft(null)
+                      }}
+                      className="flex items-center gap-1 rounded-lg border border-sky-700 px-2.5 py-1 text-xs font-medium text-sky-300 hover:bg-sky-950/40"
+                      title="Edit selected job"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedJob(activeSelectedJob)
+                        setCreateDraft(activeSelectedJob)
+                        setEditingJob(null)
+                      }}
+                      className="flex items-center gap-1 rounded-lg border border-violet-750 px-2.5 py-1 text-xs font-medium text-violet-300 hover:bg-violet-950/40"
+                      title="Split selected job"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                      Split
+                    </button>
+                    <button
+                      onClick={() => {
+                        const pageRef = activeSelectedJob.source_page_number ?? activeSelectedJob.page_reference
+                        openManualInNewTab(
+                          activeSelectedJob.source_manual_id,
+                          activeSelectedJob.source_manual_name || activeSelectedJob.pdf_reference,
+                          pageRef
+                        )
+                      }}
+                      disabled={!activeSelectedJob.source_manual_id}
+                      className="flex items-center gap-1 rounded-lg border border-amber-705 px-2.5 py-1 text-xs font-medium text-amber-300 hover:bg-amber-950/40 disabled:opacity-40"
+                      title="Preview manual pages"
+                    >
+                      <FileSearch className="h-3.5 w-3.5" />
+                      Preview PDF
+                    </button>
+                  </>
+                )}
+                
                 <button
-                  onClick={() => setShowBatchPanel((value) => !value)}
-                  className="flex items-center gap-1.5 rounded-lg border border-violet-700 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-slate-800"
+                  onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))}
+                  disabled={bulkAcceptMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-lg bg-green-700 px-2.5 py-1 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
+                  title="QC Accept selected jobs"
                 >
-                  <Pencil className="h-3.5 w-3.5" />
-                  Batch Edit ({selectedIds.size})
+                  <CheckCircle className="h-3.5 w-3.5" />
+                  Accept
                 </button>
+                
+                <button
+                  onClick={() => bulkRejectMutation.mutate(Array.from(selectedIds))}
+                  disabled={bulkRejectMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-lg bg-red-700 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50"
+                  title="QC Reject selected jobs"
+                >
+                  <XCircle className="h-3.5 w-3.5" />
+                  Reject
+                </button>
+
+                {selectedIds.size > 1 && (
+                  <button
+                    onClick={() => setShowBatchPanel((value) => !value)}
+                    className="flex items-center gap-1.5 rounded-lg border border-violet-750 px-2.5 py-1 text-xs font-medium text-violet-300 hover:bg-slate-800"
+                    title="Batch edit selected jobs"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    Batch Edit
+                  </button>
+                )}
+
+                {selectedIds.size >= 2 && (
+                  <button
+                    onClick={() => mergeJobsMutation.mutate({ ids: Array.from(selectedIds), targetId: mergeTargetId })}
+                    disabled={mergeJobsMutation.isPending}
+                    className="flex items-center gap-1.5 rounded-lg border border-sky-750 px-2.5 py-1 text-xs font-medium text-sky-300 hover:bg-slate-800 disabled:opacity-50"
+                    title="Merge selected jobs"
+                  >
+                    <GitMerge className="h-3.5 w-3.5" />
+                    Merge Selected
+                  </button>
+                )}
+
                 <button
                   onClick={() => {
-                    if (window.confirm(`Delete ${selectedIds.size} job(s)? This cannot be undone.`)) {
+                    if (window.confirm(`Deactivate ${selectedIds.size} selected job(s)? This cannot be undone.`)) {
                       bulkDeleteMutation.mutate(Array.from(selectedIds))
                     }
                   }}
                   disabled={bulkDeleteMutation.isPending}
-                  className="flex items-center gap-1.5 rounded-lg bg-rose-900 px-3 py-1.5 text-xs font-medium text-rose-200 hover:bg-rose-800 disabled:opacity-50"
+                  className="flex items-center gap-1.5 rounded-lg bg-rose-900 px-2.5 py-1 text-xs font-medium text-rose-200 hover:bg-rose-800 disabled:opacity-50"
+                  title="Deactivate selected jobs"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
-                  Delete ({selectedIds.size})
+                  Deactivate
                 </button>
-              </>
-            ) : null}
-            {selectedIds.size >= 2 ? (
-                <button onClick={() => mergeJobsMutation.mutate({ ids: Array.from(selectedIds), targetId: mergeTargetId })} disabled={mergeJobsMutation.isPending} className="flex items-center gap-1.5 rounded-lg border border-sky-700 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-800 disabled:opacity-50">
-                  <GitMerge className="h-3.5 w-3.5" />
-                  Merge Selected
-                </button>
-            ) : null}
+              </div>
+            )}
             <button
               onClick={handleQcExport}
               title="Download Jobs QC Review sheet (with Reviewer QC / Notes columns for offline review)"
@@ -1053,7 +1132,7 @@ const JobsReview: React.FC = () => {
               )}
             </div>
           ) : (
-            <table className="min-w-[2250px] w-full text-sm">
+            <table className="min-w-[2150px] w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-700 text-left text-xs uppercase text-slate-500">
                   <th className="w-8 px-4 py-3"><input type="checkbox" checked={selectedIds.size === jobs.length && jobs.length > 0} onChange={(e) => setSelectedIds(e.target.checked ? new Set(jobs.map((job) => job.id)) : new Set())} className="h-3.5 w-3.5 rounded" /></th>
@@ -1070,7 +1149,6 @@ const JobsReview: React.FC = () => {
                   <th className="px-4 py-3">Source Reference</th>
                   <th className="px-4 py-3">Source</th>
                   <th className="px-4 py-3">QC</th>
-                  <th className="px-4 py-3">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
@@ -1079,9 +1157,21 @@ const JobsReview: React.FC = () => {
                   const sourceLabel = job.source_manual_name ?? job.pdf_reference ?? 'Manual'
                   const sourceKinds = job.source_kinds ?? []
                   return (
-                    <tr key={job.id} className={`cursor-pointer transition-colors hover:bg-slate-800/60 ${selectedIds.has(job.id) ? 'bg-sky-900/10' : ''} ${selectedJob?.id === job.id ? 'bg-slate-800/70' : ''} ${job.is_unmapped ? 'border-l-2 border-amber-600' : ''}`} onClick={() => { setSelectedJob(job); setEditingJob(null); setCreateDraft(null) }}>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(job.id)} onChange={() => toggleSelect(job.id)} className="h-3.5 w-3.5 rounded" /></td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                    <tr
+                      key={job.id}
+                      className={`cursor-pointer transition-colors hover:bg-slate-800/60 ${selectedIds.has(job.id) ? 'bg-sky-900/10' : ''} ${selectedJob?.id === job.id ? 'bg-slate-800/70' : ''} ${job.is_unmapped ? 'border-l-2 border-amber-600' : ''}`}
+                      onClick={() => {
+                        toggleSelect(job.id)
+                        setSelectedJob(job)
+                      }}
+                      onDoubleClick={() => {
+                        setSelectedJob(job)
+                        setEditingJob(job)
+                        setCreateDraft(null)
+                      }}
+                    >
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(job.id)} onChange={() => toggleSelect(job.id)} className="h-3.5 w-3.5 rounded" /></td>
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                         <input
                           value={edits[job.id]?.job_name ?? job.job_name}
                           onChange={(e) => setEdit(job.id, 'job_name', e.target.value)}
@@ -1089,7 +1179,7 @@ const JobsReview: React.FC = () => {
                           title={job.job_name}
                         />
                       </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                         <select
                           value={edits[job.id]?.component_id ?? (job.component_id ?? '')}
                           onChange={(e) => setEdit(job.id, 'component_id', e.target.value)}
@@ -1101,7 +1191,7 @@ const JobsReview: React.FC = () => {
                           ))}
                         </select>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-400" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-400" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                         <input
                           value={edits[job.id]?.job_code ?? (job.job_code ?? '')}
                           onChange={(e) => setEdit(job.id, 'job_code', e.target.value)}
@@ -1109,7 +1199,7 @@ const JobsReview: React.FC = () => {
                         />
                       </td>
                       <td className="px-4 py-3"><div className="max-w-[360px] truncate whitespace-nowrap text-xs text-slate-400" title={job.job_description ?? ''}>{job.job_description ?? '-'}</div></td>
-                      <td className="px-4 py-3 whitespace-nowrap text-slate-300" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap text-slate-300" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-2">
                           <input
                             value={edits[job.id]?.frequency ?? (job.frequency != null ? String(job.frequency) : '')}
@@ -1126,7 +1216,7 @@ const JobsReview: React.FC = () => {
                           </select>
                         </div>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-xs" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap text-xs" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                         <div className="flex flex-col gap-1">
                           <RankSelect
                             value={edits[job.id]?.performing_rank ?? (job.performing_rank ?? '')}
@@ -1144,14 +1234,14 @@ const JobsReview: React.FC = () => {
                           />
                         </div>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-xs" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap text-xs" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                         <input
                           value={edits[job.id]?.cms_id ?? (job.cms_id ?? '')}
                           onChange={(e) => setEdit(job.id, 'cms_id', e.target.value)}
                           className="w-28 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                         />
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                         <select
                           value={String(edits[job.id]?.is_critical ?? job.is_critical)}
                           onChange={(e) => setEdit(job.id, 'is_critical', e.target.value === 'true')}
@@ -1176,7 +1266,7 @@ const JobsReview: React.FC = () => {
                           {job.source_reference ?? '-'}
                         </div>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                         <div className="max-w-[220px] text-xs">
                           <button
                             onClick={() => {
@@ -1193,7 +1283,7 @@ const JobsReview: React.FC = () => {
                           <div className="mt-1 truncate whitespace-nowrap text-slate-500" title={sourceLabel}>{sourceLabel}</div>
                         </div>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                         <select
                           value={edits[job.id]?.qc_status ?? job.qc_status}
                           onChange={(e) => setEdit(job.id, 'qc_status', e.target.value)}
@@ -1204,13 +1294,6 @@ const JobsReview: React.FC = () => {
                           <option value="modified">Modified</option>
                           <option value="rejected">Rejected</option>
                         </select>
-                      </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => { setSelectedJob(job); setEditingJob(job); setCreateDraft(null) }} className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600" title="Edit job"><Pencil className="h-3.5 w-3.5" /></button>
-                          <button onClick={() => { setSelectedJob(job); setCreateDraft(job); setEditingJob(null) }} className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600" title="Split to new job"><Copy className="h-3.5 w-3.5" /></button>
-                          <button onClick={() => { setSelectedJob(job); openManualInNewTab(job.source_manual_id, job.source_manual_name || job.pdf_reference, job.source_page_number || job.page_reference) }} disabled={!job.source_manual_id} className="rounded bg-slate-700 p-1.5 text-slate-300 hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-40" title="Preview manual pages"><FileSearch className="h-3.5 w-3.5" /></button>
-                        </div>
                       </td>
                     </tr>
                   )
