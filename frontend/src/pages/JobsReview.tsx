@@ -1171,7 +1171,7 @@ const JobsReview: React.FC = () => {
                       }}
                     >
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selectedIds.has(job.id)} onChange={() => toggleSelect(job.id)} className="h-3.5 w-3.5 rounded" /></td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3">
                         <input
                           value={edits[job.id]?.job_name ?? job.job_name}
                           onChange={(e) => setEdit(job.id, 'job_name', e.target.value)}
@@ -1179,7 +1179,7 @@ const JobsReview: React.FC = () => {
                           title={job.job_name}
                         />
                       </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3">
                         <select
                           value={edits[job.id]?.component_id ?? (job.component_id ?? '')}
                           onChange={(e) => setEdit(job.id, 'component_id', e.target.value)}
@@ -1191,7 +1191,7 @@ const JobsReview: React.FC = () => {
                           ))}
                         </select>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-400" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-400">
                         <input
                           value={edits[job.id]?.job_code ?? (job.job_code ?? '')}
                           onChange={(e) => setEdit(job.id, 'job_code', e.target.value)}
@@ -1199,7 +1199,7 @@ const JobsReview: React.FC = () => {
                         />
                       </td>
                       <td className="px-4 py-3"><div className="max-w-[360px] truncate whitespace-nowrap text-xs text-slate-400" title={job.job_description ?? ''}>{job.job_description ?? '-'}</div></td>
-                      <td className="px-4 py-3 whitespace-nowrap text-slate-300" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap text-slate-300">
                         <div className="flex items-center gap-2">
                           <input
                             value={edits[job.id]?.frequency ?? (job.frequency != null ? String(job.frequency) : '')}
@@ -1216,7 +1216,7 @@ const JobsReview: React.FC = () => {
                           </select>
                         </div>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-xs" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap text-xs">
                         <div className="flex flex-col gap-1">
                           <RankSelect
                             value={edits[job.id]?.performing_rank ?? (job.performing_rank ?? '')}
@@ -1234,14 +1234,14 @@ const JobsReview: React.FC = () => {
                           />
                         </div>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-xs" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap text-xs">
                         <input
                           value={edits[job.id]?.cms_id ?? (job.cms_id ?? '')}
                           onChange={(e) => setEdit(job.id, 'cms_id', e.target.value)}
                           className="w-28 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                         />
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap">
                         <select
                           value={String(edits[job.id]?.is_critical ?? job.is_critical)}
                           onChange={(e) => setEdit(job.id, 'is_critical', e.target.value === 'true')}
@@ -1266,7 +1266,7 @@ const JobsReview: React.FC = () => {
                           {job.source_reference ?? '-'}
                         </div>
                       </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3">
                         <div className="max-w-[220px] text-xs">
                           <button
                             onClick={() => {
@@ -1283,7 +1283,7 @@ const JobsReview: React.FC = () => {
                           <div className="mt-1 truncate whitespace-nowrap text-slate-500" title={sourceLabel}>{sourceLabel}</div>
                         </div>
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <td className="px-4 py-3 whitespace-nowrap">
                         <select
                           value={edits[job.id]?.qc_status ?? job.qc_status}
                           onChange={(e) => setEdit(job.id, 'qc_status', e.target.value)}
