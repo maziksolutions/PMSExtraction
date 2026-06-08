@@ -853,9 +853,13 @@ const ComponentReview: React.FC = () => {
                           return (
                             <tr
                               key={comp.id}
-                              className={`transition-colors hover:bg-slate-800/50 ${changed ? 'bg-violet-900/10' : ''} ${selectedIds.has(comp.id) ? 'bg-sky-900/10' : ''} ${selectedComponent?.id === comp.id ? 'bg-slate-800/70' : ''}`}
+                              onClick={() => {
+                                toggleSelect(comp.id)
+                                setSelectedComponent(comp)
+                              }}
+                              className={`cursor-pointer transition-colors hover:bg-slate-800/50 ${changed ? 'bg-violet-900/10' : ''} ${selectedIds.has(comp.id) ? 'bg-sky-900/10' : ''} ${selectedComponent?.id === comp.id ? 'bg-slate-800/70' : ''}`}
                             >
-                              <td className="px-2 py-1">
+                              <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
                                 <input type="checkbox" checked={selectedIds.has(comp.id)} onChange={() => toggleSelect(comp.id)} className="h-3.5 w-3.5 rounded" />
                               </td>
                               <td className="px-2 py-1 max-w-xs">
@@ -954,7 +958,7 @@ const ComponentReview: React.FC = () => {
                                   <option value="modified">modified</option>
                                 </select>
                               </td>
-                              <td className="px-2 py-1">
+                              <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
                                 {comp.source_manual_id ? (
                                   <button
                                     onClick={() => {
@@ -970,7 +974,7 @@ const ComponentReview: React.FC = () => {
                                   <span className="text-xs text-slate-600">—</span>
                                 )}
                               </td>
-                              <td className="px-2 py-1">
+                              <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
                                 <div className="flex flex-wrap items-center gap-1.5">
                                   {comp.is_unmapped ? (
                                     <>

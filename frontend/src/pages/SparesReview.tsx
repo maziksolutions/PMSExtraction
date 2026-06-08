@@ -850,7 +850,15 @@ const SparesReview: React.FC = () => {
                 {spares.map((spare) => (
                   <tr
                     key={spare.id}
-                    onClick={() => { setSelectedSpare(spare); setEditingSpare(null); setCreateDraft(null) }}
+                    onClick={() => {
+                      toggleSelect(spare.id)
+                      setSelectedSpare(spare)
+                    }}
+                    onDoubleClick={() => {
+                      setSelectedSpare(spare)
+                      setEditingSpare(spare)
+                      setCreateDraft(null)
+                    }}
                     className={`cursor-pointer hover:bg-slate-800/50 transition-colors ${
                       selectedIds.has(spare.id) ? 'bg-sky-900/10' : ''
                     } ${selectedSpare?.id === spare.id ? 'bg-slate-800' : ''}`}
@@ -863,7 +871,7 @@ const SparesReview: React.FC = () => {
                         className="h-3.5 w-3.5 rounded"
                       />
                     </td>
-                    <td className="px-4 py-2.5 text-slate-200 font-medium" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5 text-slate-200 font-medium">
                       <input
                         value={edits[spare.id]?.part_name ?? spare.part_name}
                         onChange={(e) => setEdit(spare.id, 'part_name', e.target.value)}
@@ -871,28 +879,28 @@ const SparesReview: React.FC = () => {
                         title={spare.part_name}
                       />
                     </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap font-mono text-xs text-slate-400" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5 whitespace-nowrap font-mono text-xs text-slate-400">
                       <input
                         value={edits[spare.id]?.part_number ?? (spare.part_number ?? '')}
                         onChange={(e) => setEdit(spare.id, 'part_number', e.target.value)}
                         className="w-28 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                       />
                     </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap font-mono text-xs text-slate-400" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5 whitespace-nowrap font-mono text-xs text-slate-400">
                       <input
                         value={edits[spare.id]?.drawing_number ?? (spare.drawing_number ?? '')}
                         onChange={(e) => setEdit(spare.id, 'drawing_number', e.target.value)}
                         className="w-28 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                       />
                     </td>
-                    <td className="px-4 py-2.5 whitespace-nowrap text-slate-400" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-slate-400">
                       <input
                         value={edits[spare.id]?.drawing_position ?? (spare.drawing_position ?? '')}
                         onChange={(e) => setEdit(spare.id, 'drawing_position', e.target.value)}
                         className="w-20 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                       />
                     </td>
-                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5">
                       <input
                         value={edits[spare.id]?.spare_maker ?? (spare.spare_maker ?? '')}
                         onChange={(e) => setEdit(spare.id, 'spare_maker', e.target.value)}
@@ -900,7 +908,7 @@ const SparesReview: React.FC = () => {
                         title={spare.spare_maker ?? ''}
                       />
                     </td>
-                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5">
                       <input
                         value={edits[spare.id]?.spare_model ?? (spare.spare_model ?? '')}
                         onChange={(e) => setEdit(spare.id, 'spare_model', e.target.value)}
@@ -908,7 +916,7 @@ const SparesReview: React.FC = () => {
                         title={spare.spare_model ?? ''}
                       />
                     </td>
-                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5">
                       <textarea
                         value={edits[spare.id]?.specification ?? (spare.specification ?? '')}
                         onChange={(e) => setEdit(spare.id, 'specification', e.target.value)}
@@ -917,7 +925,7 @@ const SparesReview: React.FC = () => {
                         title={spare.specification ?? ''}
                       />
                     </td>
-                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5">
                       <input
                         value={edits[spare.id]?.spare_assembly ?? (spare.spare_assembly ?? spare.spare_model ?? '')}
                         onChange={(e) => setEdit(spare.id, 'spare_assembly', e.target.value)}
@@ -925,7 +933,7 @@ const SparesReview: React.FC = () => {
                         title={spare.spare_assembly ?? spare.spare_model ?? ''}
                       />
                     </td>
-                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5">
                       <input
                         value={edits[spare.id]?.assembly_description ?? (spare.assembly_description ?? spare.spare_assembly ?? spare.spare_model ?? '')}
                         onChange={(e) => setEdit(spare.id, 'assembly_description', e.target.value)}
@@ -933,7 +941,7 @@ const SparesReview: React.FC = () => {
                         title={spare.assembly_description ?? spare.spare_assembly ?? spare.spare_model ?? ''}
                       />
                     </td>
-                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5">
                       <select
                         value={edits[spare.id]?.component_id ?? (spare.component_id ?? '')}
                         onChange={(e) => setEdit(spare.id, 'component_id', e.target.value)}
@@ -980,7 +988,7 @@ const SparesReview: React.FC = () => {
                         {spare.extraction_method}
                       </span>
                     </td>
-                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5">
                       <select
                         value={String(edits[spare.id]?.is_critical ?? spare.is_critical)}
                         onChange={(e) => setEdit(spare.id, 'is_critical', e.target.value === 'true')}
@@ -1007,7 +1015,7 @@ const SparesReview: React.FC = () => {
                         '-'
                       )}
                     </td>
-                    <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                    <td className="px-4 py-2.5">
                       <select
                         value={edits[spare.id]?.qc_status ?? spare.qc_status}
                         onChange={(e) => setEdit(spare.id, 'qc_status', e.target.value)}
