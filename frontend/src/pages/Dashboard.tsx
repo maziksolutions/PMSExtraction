@@ -66,7 +66,7 @@ const Dashboard: React.FC = () => {
   const { data: vesselData, isLoading, isError } = useQuery({
     queryKey: ['vessels', 'dashboard'],
     queryFn: async () => {
-      const response = await apiClient.get<PaginatedList<VesselProject>>('/vessels?page=1&page_size=5')
+      const response = await apiClient.get<PaginatedList<VesselProject>>('/vessels?page=1&page_size=100')
       return response.data
     },
   })
@@ -112,21 +112,21 @@ const Dashboard: React.FC = () => {
         />
         <StatCard
           label="Active Projects"
-          value={isLoading ? '...' : activeVessels.length}
+          value={isLoading ? '...' : `${activeVessels.length}/${totalVessels}`}
           icon={FolderOpen}
           color="bg-amber-600"
           onClick={() => navigate(activeVessels[0] ? `/vessels/${activeVessels[0].id}/ingestion` : '/vessels')}
         />
         <StatCard
           label="Pending Reviews"
-          value={isLoading ? '...' : reviewingVessels.length}
+          value={isLoading ? '...' : `${reviewingVessels.length}/${totalVessels}`}
           icon={ClipboardCheck}
           color="bg-violet-600"
           onClick={() => navigate(reviewingVessels[0] ? `/vessels/${reviewingVessels[0].id}/manuals` : '/vessels')}
         />
         <StatCard
           label="Completed Exports"
-          value={isLoading ? '...' : completedVessels.length}
+          value={isLoading ? '...' : `${completedVessels.length}/${totalVessels}`}
           icon={CheckCircle}
           color="bg-emerald-600"
           trend={completedVessels.length > 0 ? 'Ready for export' : undefined}

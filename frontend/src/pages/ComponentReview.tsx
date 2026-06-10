@@ -205,6 +205,7 @@ interface InlineEdit {
   pdf_reference?: string
   maker?: string
   model?: string
+  serial_number?: string
   location?: string
   machinery_particulars?: string
   criticality?: string
@@ -835,6 +836,7 @@ const ComponentReview: React.FC = () => {
                           <th className="px-2 py-1.5">Component</th>
                           <th className="px-2 py-1.5">Maker</th>
                           <th className="px-2 py-1.5">Model</th>
+                          <th className="px-2 py-1.5">Serial Number</th>
                           <th className="px-2 py-1.5">Job Pages</th>
                           <th className="px-2 py-1.5">Spare Pages</th>
                           <th className="px-2 py-1.5">PDF Reference</th>
@@ -885,6 +887,14 @@ const ComponentReview: React.FC = () => {
                                 <input
                                   value={edit.model ?? comp.model ?? ''}
                                   onChange={e => setEdit(comp.id, 'model', e.target.value)}
+                                  className="w-24 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                                  placeholder="—"
+                                />
+                              </td>
+                              <td className="px-2 py-1">
+                                <input
+                                  value={edit.serial_number ?? comp.serial_number ?? ''}
+                                  onChange={e => setEdit(comp.id, 'serial_number', e.target.value)}
                                   className="w-24 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                                   placeholder="—"
                                 />
