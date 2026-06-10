@@ -2051,22 +2051,13 @@ async def view_manual(
 
 
     # Not on local disk -- download from blob storage (R2 / MinIO / Azure)
-
     blob_service = BlobStorageService()
 
-
-
-    if blob_service._use_azure:
-
-        try:
-
-            presigned_url = await blob_service.get_download_url(blob_key, expires_in=3600)
-
-            return JSONResponse({"url": presigned_url}, status_code=200)
-
-        except Exception as exc:
-
-            _log.warning("view_manual: Azure presigned URL failed key=%s: %s -- streaming", blob_key, exc)
+    try:
+        presigned_url = await blob_service.get_download_url(blob_key, expires_in=3600)
+        return JSONResponse({"url": presigned_url}, status_code=200)
+    except Exception as exc:
+        _log.warning("view_manual: presigned URL generation failed key=%s: %s -- falling back to streaming", blob_key, exc)
 
 
 

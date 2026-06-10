@@ -463,6 +463,7 @@ const ManualReview: React.FC = () => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [importMessage, setImportMessage] = useState<string | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
+  const [loadingManualId, setLoadingManualId] = useState<string | null>(null)
 
   // ── Data queries ──────────────────────────────────────────────────────────
 
@@ -1087,6 +1088,8 @@ const ManualReview: React.FC = () => {
                     <td className="px-3 py-3 max-w-xs">
                       <button
                         onClick={async () => {
+                          if (loadingManualId) return
+                          setLoadingManualId(m.id)
                           const token = useAuthStore.getState().accessToken
                           const base = (apiClient.defaults.baseURL ?? '/api/v1').replace(/\/$/, '')
                           const url = `${base}/vessels/${vesselId}/manuals/${m.id}/view`
@@ -1103,11 +1106,11 @@ const ManualReview: React.FC = () => {
                             }
                             const ct = resp.headers.get('content-type') ?? ''
                             if (ct.includes('application/json')) {
-                              // Azure SAS redirect
+                              // Presigned SAS redirect (Azure/MinIO/R2/S3)
                               const json = await resp.json() as { url: string }
                               window.open(json.url, '_blank')
                             } else {
-                              // Binary stream (MinIO) — create a blob URL
+                              // Binary stream (fallback) — create a blob URL
                               const blob = await resp.blob()
                               const blobUrl = URL.createObjectURL(blob)
                               const win = window.open(blobUrl, '_blank')
@@ -1116,12 +1119,18 @@ const ManualReview: React.FC = () => {
                             }
                           } catch (err: any) {
                             alert(`Could not open file:\n${err?.message ?? 'Network error'}`)
+                          } finally {
+                            setLoadingManualId(null)
                           }
                         }}
                         className="flex items-center gap-1.5 text-left hover:text-sky-400 transition-colors group"
                         title="Click to view PDF"
                       >
-                        <FileText className="h-4 w-4 text-slate-500 group-hover:text-sky-400 shrink-0" />
+                        {loadingManualId === m.id ? (
+                          <RefreshCw className="h-4 w-4 animate-spin text-sky-500 shrink-0" />
+                        ) : (
+                          <FileText className="h-4 w-4 text-slate-500 group-hover:text-sky-400 shrink-0" />
+                        )}
                         <span className="font-medium text-slate-200 group-hover:text-sky-400 truncate max-w-[200px]">
                           {m.original_filename}
                         </span>
