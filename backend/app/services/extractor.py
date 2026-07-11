@@ -360,9 +360,10 @@ async def _extract_with_claude(
 
     rows: list[dict] = []
     for attempt, cap in enumerate(caps):
+        api_max_tokens = min(cap, 8192)
         message = await client.messages.create(
             model=model_id,
-            max_tokens=cap,
+            max_tokens=api_max_tokens,
             system=system_arg,
             messages=[{"role": "user", "content": user_message}],
         )
