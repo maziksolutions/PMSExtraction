@@ -989,9 +989,10 @@ async def _extract_entities_from_page_image_with_claude(
         ]
         records: list[dict] = []
         for attempt, cap in enumerate(caps):
+            api_max_tokens = min(cap, 8192)
             message = await client.messages.create(
                 model=model_id,
-                max_tokens=cap,
+                max_tokens=api_max_tokens,
                 system=prompt_cfg["system"],
                 messages=[{"role": "user", "content": user_content}],
             )
