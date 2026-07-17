@@ -304,8 +304,7 @@ async def _process_sharepoint_file_bg(
             resp.headers.get("content-type", "application/octet-stream"),
         )
 
-        # Update manual metadata with key and size
-        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "pdf"
+        # Update manual metadata with key and size, and reset status to queued (ready for user action)
         async with AsyncSessionLocal() as db:
             await db.execute(
                 _update(Manual)
@@ -313,20 +312,10 @@ async def _process_sharepoint_file_bg(
                 .values(
                     blob_storage_key=blob_key,
                     file_size_bytes=len(content),
-                    status=ManualStatus.converting,
+                    status=ManualStatus.queued,
                 )
             )
             await db.commit()
-
-        # Step 4: Process file (text extraction and classification)
-        await _process_uploaded_file(
-            manual_id=manual_id,
-            vessel_id_str=vessel_id_str,
-            tenant_id_str=tenant_id_str,
-            file_bytes=content,
-            file_ext=ext,
-            filename=filename,
-        )
 
         # Step 5: Update the IngestionSession's downloaded_files counter
         async with AsyncSessionLocal() as db:
