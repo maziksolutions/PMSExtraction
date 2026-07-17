@@ -272,111 +272,198 @@ async def list_sharepoint_files(
 
 )
 
-async def start_ingestion(
+async def _process_sharepoint_file_bg(
+    manual_id: str,
+    vessel_id_str: str,
+    tenant_id_str: str,
+    download_url: str,
+    filename: str,
+    session_id_str: str,
+) -> None:
+    """
+    FastAPI BackgroundTask: Download a file from SharePoint, upload it to blob storage,
+    and then run text extraction and classification.
+    """
+    from app.core.database import AsyncSessionLocal
+    from app.models.ingestion import Manual, ManualStatus, IngestionSession, IngestionSessionStatus
+    from app.services.blob_storage import BlobStorageService
+    from sqlalchemy import select as _select, update as _update
+    import httpx
+    import io
 
-    vessel_id: uuid.UUID,
+    # Step 1: Update manual status to downloading
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            _update(Manual)
+            .where(Manual.id == uuid.UUID(manual_id))
+            .values(status=ManualStatus.downloading)
+        )
+        await db.commit()
 
-    body: IngestionStartRequest,
+    # Step 2: Download the file content from SharePoint
+    try:
+        async with httpx.AsyncClient(timeout=300, follow_redirects=True) as client:
+            resp = await client.get(download_url)
+            resp.raise_for_status()
+            content = resp.content
 
-    current_user: Annotated[User, Depends(get_current_user)],
-
-    db: Annotated[AsyncSession, Depends(get_db)],
-
-) -> IngestionSessionOut:
-
-    """Creates an ingestion session and dispatches download tasks for each selected file."""
-
-    vessel = await _get_vessel_or_404(vessel_id, db)
-
-
-
-    session = IngestionSession(
-
-        tenant_id=current_user.tenant_id,
-
-        vessel_id=vessel_id,
-
-        sharepoint_folder_url=body.folder_url,
-
-        total_files=len(body.selected_files),
-
-        downloaded_files=0,
-
-        failed_files=0,
-
-        status=IngestionSessionStatus.active,
-
-        started_by=current_user.id,
-
-    )
-
-    db.add(session)
-
-    await db.flush()
-
-
-
-    # Create manuals and collect (manual_id, download_url) for task dispatch
-
-    manual_tasks: list[tuple[str, str]] = []
-
-    for file_info in body.selected_files:
-
-        name = file_info.get("name", "unknown")
-
-        # Prefer pre-signed download_url from listing; fall back to path
-
-        download_url = file_info.get("download_url") or file_info.get("path", "")
-
-        manual = Manual(
-
-            tenant_id=current_user.tenant_id,
-
-            vessel_id=vessel_id,
-
-            original_filename=name,
-
-            file_extension=name.rsplit(".", 1)[-1].lower() if "." in name else "pdf",
-
-            file_size_bytes=file_info.get("size", 0),
-
-            sharepoint_path=download_url,
-
-            status=ManualStatus.queued,
-
-            uploaded_by=current_user.id,
-
+        # Step 3: Upload to Blob Storage
+        blob_key = f"{tenant_id_str}/{vessel_id_str}/{manual_id}/{filename}"
+        blob_service = BlobStorageService()
+        await blob_service.upload_stream(
+            blob_key,
+            io.BytesIO(content),
+            resp.headers.get("content-type", "application/octet-stream"),
         )
 
+        # Update manual metadata with key and size
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "pdf"
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                _update(Manual)
+                .where(Manual.id == uuid.UUID(manual_id))
+                .values(
+                    blob_storage_key=blob_key,
+                    file_size_bytes=len(content),
+                    status=ManualStatus.converting,
+                )
+            )
+            await db.commit()
+
+        # Step 4: Process file (text extraction and classification)
+        await _process_uploaded_file(
+            manual_id=manual_id,
+            vessel_id_str=vessel_id_str,
+            tenant_id_str=tenant_id_str,
+            file_bytes=content,
+            file_ext=ext,
+            filename=filename,
+        )
+
+        # Step 5: Update the IngestionSession's downloaded_files counter
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                _update(IngestionSession)
+                .where(IngestionSession.id == uuid.UUID(session_id_str))
+                .values(downloaded_files=IngestionSession.downloaded_files + 1)
+            )
+            await db.commit()
+
+            # Check if all files in the session are done
+            session_ref = await db.scalar(
+                _select(IngestionSession).where(IngestionSession.id == uuid.UUID(session_id_str))
+            )
+            if session_ref:
+                processed = session_ref.downloaded_files + session_ref.failed_files
+                if processed >= session_ref.total_files:
+                    session_status = IngestionSessionStatus.completed
+                    if session_ref.failed_files == session_ref.total_files:
+                        session_status = IngestionSessionStatus.failed
+                    
+                    await db.execute(
+                        _update(IngestionSession)
+                        .where(IngestionSession.id == uuid.UUID(session_id_str))
+                        .values(status=session_status)
+                    )
+                    await db.commit()
+
+    except Exception as exc:
+        logger.error("SharePoint download/process background task failed for %s: %s", filename, exc, exc_info=True)
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                _update(Manual)
+                .where(Manual.id == uuid.UUID(manual_id))
+                .values(status=ManualStatus.failed, error_message=str(exc))
+            )
+            await db.execute(
+                _update(IngestionSession)
+                .where(IngestionSession.id == uuid.UUID(session_id_str))
+                .values(failed_files=IngestionSession.failed_files + 1)
+            )
+            await db.commit()
+
+            # Check if all files in the session are done
+            session_ref = await db.scalar(
+                _select(IngestionSession).where(IngestionSession.id == uuid.UUID(session_id_str))
+            )
+            if session_ref:
+                processed = session_ref.downloaded_files + session_ref.failed_files
+                if processed >= session_ref.total_files:
+                    session_status = IngestionSessionStatus.completed
+                    if session_ref.failed_files == session_ref.total_files:
+                        session_status = IngestionSessionStatus.failed
+                    
+                    await db.execute(
+                        _update(IngestionSession)
+                        .where(IngestionSession.id == uuid.UUID(session_id_str))
+                        .values(status=session_status)
+                    )
+                    await db.commit()
+
+
+@router.post(
+    "/{vessel_id}/ingestion/start",
+    response_model=IngestionSessionOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Start an ingestion session for selected files",
+)
+async def start_ingestion(
+    vessel_id: uuid.UUID,
+    body: IngestionStartRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    background_tasks: BackgroundTasks,
+) -> IngestionSessionOut:
+    """Creates an ingestion session and dispatches download tasks for each selected file."""
+    vessel = await _get_vessel_or_404(vessel_id, db)
+
+    session = IngestionSession(
+        tenant_id=current_user.tenant_id,
+        vessel_id=vessel_id,
+        sharepoint_folder_url=body.folder_url,
+        total_files=len(body.selected_files),
+        downloaded_files=0,
+        failed_files=0,
+        status=IngestionSessionStatus.active,
+        started_by=current_user.id,
+    )
+    db.add(session)
+    await db.flush()
+
+    # Create manuals and collect (manual_id, download_url, filename) for task dispatch
+    manual_tasks: list[tuple[str, str, str]] = []
+    for file_info in body.selected_files:
+        name = file_info.get("name", "unknown")
+        # Prefer pre-signed download_url from listing; fall back to path
+        download_url = file_info.get("download_url") or file_info.get("path", "")
+        manual = Manual(
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            original_filename=name,
+            file_extension=name.rsplit(".", 1)[-1].lower() if "." in name else "pdf",
+            file_size_bytes=file_info.get("size", 0),
+            sharepoint_path=download_url,
+            status=ManualStatus.queued,
+            uploaded_by=current_user.id,
+        )
         db.add(manual)
-
         await db.flush()
-
-        manual_tasks.append((str(manual.id), download_url))
-
-
+        manual_tasks.append((str(manual.id), download_url, name))
 
     await db.commit()
-
     await db.refresh(session)
 
-
-
-    # Dispatch Celery tasks with correct manual_id and pre-signed download URL
-
-    try:
-
-        from app.tasks.ingestion import download_sharepoint_file
-
-        for manual_id, download_url in manual_tasks:
-
-            download_sharepoint_file.delay(manual_id, download_url, "")
-
-    except Exception:
-
-        pass  # Celery may not be available in dev
-
-
+    # Dispatch background tasks using FastAPI's BackgroundTasks (bypassing Celery if worker is not running)
+    for manual_id, download_url, name in manual_tasks:
+        background_tasks.add_task(
+            _process_sharepoint_file_bg,
+            manual_id=manual_id,
+            vessel_id_str=str(vessel_id),
+            tenant_id_str=str(current_user.tenant_id),
+            download_url=download_url,
+            filename=name,
+            session_id_str=str(session.id),
+        )
 
     return IngestionSessionOut.model_validate(session)
 
