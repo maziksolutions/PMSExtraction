@@ -149,6 +149,18 @@ class SharePointService:
                             f"{self.graph_base}/sites/{site_id}"
                             f"/drives/{drive_id}/root/children"
                         )
+                elif library_name.lower() in {"shared documents", "documents"}:
+                    logger.info("Drive '%s' not found by name. Falling back to default site drive.", library_name)
+                    if sub_path:
+                        start_url = (
+                            f"{self.graph_base}/sites/{site_id}"
+                            f"/drive/root:/{sub_path}:/children"
+                        )
+                    else:
+                        start_url = (
+                            f"{self.graph_base}/sites/{site_id}"
+                            f"/drive/root/children"
+                        )
                 else:
                     raise ValueError(
                         f"Document library '{library_name}' not found on the site. "
