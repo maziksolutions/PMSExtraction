@@ -110,6 +110,8 @@ const Ingestion: React.FC = () => {
     enabled: !!vesselId,
   })
 
+  const [sessionPolling, setSessionPolling] = useState(true)
+
   // Poll active session
   const { data: sessionDetail } = useQuery({
     queryKey: ['session-detail', activeSessionId],
@@ -118,8 +120,19 @@ const Ingestion: React.FC = () => {
         .get(`/vessels/${vesselId}/ingestion/sessions/${activeSessionId}`)
         .then((r) => r.data),
     enabled: !!activeSessionId,
-    refetchInterval: 3000,
+    refetchInterval: sessionPolling ? 3000 : false,
   })
+
+  React.useEffect(() => {
+    if (sessionDetail) {
+      if (sessionDetail.status === 'completed' || sessionDetail.status === 'failed') {
+        setSessionPolling(false)
+        queryClient.invalidateQueries({ queryKey: ['ingestion-sessions', vesselId] })
+      } else {
+        setSessionPolling(true)
+      }
+    }
+  }, [sessionDetail?.status, vesselId, queryClient])
 
   const listFilesMutation = useMutation({
     mutationFn: (url: string) =>
