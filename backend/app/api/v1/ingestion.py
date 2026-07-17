@@ -260,18 +260,6 @@ async def list_sharepoint_files(
 
 
 
-@router.post(
-
-    "/{vessel_id}/ingestion/start",
-
-    response_model=IngestionSessionOut,
-
-    status_code=status.HTTP_201_CREATED,
-
-    summary="Start an ingestion session for selected files",
-
-)
-
 async def _process_sharepoint_file_bg(
     manual_id: str,
     vessel_id_str: str,
