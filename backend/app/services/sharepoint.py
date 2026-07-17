@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -340,10 +340,16 @@ class SharePointService:
           https://{tenant}.sharepoint.com/sites/{site}/Shared Documents/{path}
           https://{tenant}.sharepoint.com/sites/{site}/LibraryName/Forms/AllItems.aspx
           https://{tenant}.sharepoint.com/sites/{site}/LibraryName/{subfolder}
+          https://{tenant}.sharepoint.com/Shared%20Documents/Forms/AllItems.aspx (root site)
         """
         parsed = urlparse(folder_url)
         hostname = parsed.netloc
-        path_parts = [p for p in parsed.path.split("/") if p]
+        
+        # Decode the path parts to handle spaces and encoded characters consistently
+        path_parts = [unquote(p) for p in parsed.path.split("/") if p]
+
+        # Strip SharePoint UI fragments (Forms, AllItems.aspx, etc.)
+        ui_stops = {"Forms", "AllItems.aspx", "_layouts"}
 
         # Locate /sites/{site_name} in path
         try:
@@ -352,18 +358,16 @@ class SharePointService:
             # Graph API path-encoded site IDs require trailing colon before /drives etc.
             site_id = f"{hostname}:/sites/{site_name}:"
             remaining = path_parts[sites_idx + 2:]
-
-            # Strip SharePoint UI fragments (Forms, AllItems.aspx, etc.)
-            ui_stops = {"Forms", "AllItems.aspx", "_layouts", "Shared%20Documents"}
-            clean = []
-            for part in remaining:
-                if part in ui_stops or part.endswith(".aspx"):
-                    break
-                clean.append(part)
-
-            drive_path = "/".join(clean)
         except (ValueError, IndexError):
+            # Root site case: site_id is just the hostname (or root)
             site_id = hostname
-            drive_path = parsed.path.lstrip("/")
+            remaining = path_parts
 
+        clean = []
+        for part in remaining:
+            if part in ui_stops or part.endswith(".aspx"):
+                break
+            clean.append(part)
+
+        drive_path = "/".join(clean)
         return site_id, drive_path
