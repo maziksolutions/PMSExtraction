@@ -288,6 +288,16 @@ const ComponentReview: React.FC = () => {
     enabled: !!vesselId,
   })
 
+  const pendingComponentsQuery = useQuery({
+    queryKey: ['components', vesselId, 'pending-count'],
+    queryFn: () =>
+      apiClient
+        .get(`/vessels/${vesselId}/components`, { params: { qc_status: 'pending', page_size: 1 } })
+        .then((r) => (r.data.total ?? 0) as number),
+    enabled: !!vesselId,
+  })
+  const pendingCount = pendingComponentsQuery.data
+
   const makersQuery = useQuery({
     queryKey: ['maker-models', 'makers'],
     queryFn: () => apiClient.get('/maker-models/makers').then(r => r.data),
@@ -636,7 +646,12 @@ const ComponentReview: React.FC = () => {
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <h1 className="text-sm font-bold text-white flex items-center gap-2">
                       Components
-                      <span className="text-[11px] text-slate-500 font-normal">({total} total)</span>
+                      <span className="text-[11px] text-slate-500 font-normal">
+                        ({total} total{pendingCount !== undefined ? ' · ' : ''}
+                        {pendingCount !== undefined && (
+                          <span className="text-amber-400 font-medium">{pendingCount} pending</span>
+                        )})
+                      </span>
                     </h1>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       {/* Import Excel */}
