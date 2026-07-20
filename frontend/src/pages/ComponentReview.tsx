@@ -874,9 +874,10 @@ const ComponentReview: React.FC = () => {
                                 toggleSelect(comp.id)
                                 setSelectedComponent(comp)
                               }}
+                              onDoubleClick={() => openManualInNewTab(comp.source_manual_id, comp.pdf_reference, comp.page_reference)}
                               className={`cursor-pointer transition-colors hover:bg-slate-800/50 ${changed ? 'bg-violet-900/10' : ''} ${selectedIds.has(comp.id) ? 'bg-sky-900/10' : ''} ${selectedComponent?.id === comp.id ? 'bg-slate-800/70' : ''}`}
                             >
-                              <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
+                              <td className="px-2 py-1" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                                 <input type="checkbox" checked={selectedIds.has(comp.id)} onChange={() => toggleSelect(comp.id)} className="h-3.5 w-3.5 rounded" />
                               </td>
                               <td className="px-2 py-1 max-w-xs">

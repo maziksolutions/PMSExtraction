@@ -804,7 +804,7 @@ const SparesReview: React.FC = () => {
           )}
         </div>
 
-        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
+        <div className="overflow-auto max-h-[65vh] rounded-xl border border-slate-800 bg-slate-900">
           {isLoading ? (
             <div className="py-16 text-center text-slate-500">Loading...</div>
           ) : spares.length === 0 ? (
@@ -814,7 +814,7 @@ const SparesReview: React.FC = () => {
           ) : (
             <table className="min-w-[2380px] w-full text-sm">
               <thead>
-                <tr className="sticky top-0 border-b border-slate-700 bg-slate-900 text-left text-xs text-slate-500 uppercase">
+                <tr className="sticky top-0 z-10 border-b border-slate-700 bg-slate-900 text-left text-xs text-slate-500 uppercase">
                   <th className="px-4 py-3 w-8">
                     <input
                       type="checkbox"

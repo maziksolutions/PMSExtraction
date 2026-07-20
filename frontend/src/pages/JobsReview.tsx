@@ -1103,7 +1103,7 @@ const JobsReview: React.FC = () => {
           </select>
         </div>
 
-        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
+        <div className="overflow-auto max-h-[65vh] rounded-xl border border-slate-800 bg-slate-900">
           {isLoading ? (
             <div className="py-16 text-center text-slate-500">Loading jobs...</div>
           ) : jobs.length === 0 ? (
@@ -1134,7 +1134,7 @@ const JobsReview: React.FC = () => {
           ) : (
             <table className="min-w-[2150px] w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-700 text-left text-xs uppercase text-slate-500">
+                <tr className="sticky top-0 z-10 border-b border-slate-700 bg-slate-900 text-left text-xs uppercase text-slate-500">
                   <th className="w-8 px-4 py-3"><input type="checkbox" checked={selectedIds.size === jobs.length && jobs.length > 0} onChange={(e) => setSelectedIds(e.target.checked ? new Set(jobs.map((job) => job.id)) : new Set())} className="h-3.5 w-3.5 rounded" /></th>
                   <th className="px-4 py-3">Job Name</th>
                   <th className="px-4 py-3">Component</th>
