@@ -724,6 +724,64 @@ async def bulk_reject_components(
     return {"rejected": len(components)}
 
 
+from pydantic import BaseModel
+
+
+class BulkCopyComponentsRequest(BaseModel):
+    ids: List[uuid.UUID]
+    target_pdf_reference: str
+    target_group1: Optional[str] = None
+    target_group2: Optional[str] = None
+    target_main_machinery: Optional[str] = None
+
+
+@router.post("/{vessel_id}/components/bulk-copy", summary="Bulk copy components to another manual")
+async def bulk_copy_components(
+    vessel_id: uuid.UUID,
+    body: BulkCopyComponentsRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    result = await db.execute(
+        select(Component).where(
+            Component.id.in_(body.ids),
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == current_user.tenant_id,
+            Component.is_deleted == False,
+        )
+    )
+    components = result.scalars().all()
+    copied_count = 0
+    for comp in components:
+        new_comp = Component(
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            group1=body.target_group1 if body.target_group1 else comp.group1,
+            group2=body.target_group2 if body.target_group2 else comp.group2,
+            main_machinery=body.target_main_machinery if body.target_main_machinery else comp.main_machinery,
+            component_name=comp.component_name,
+            maker=comp.maker,
+            model=comp.model,
+            serial_number=comp.serial_number,
+            location=comp.location,
+            specification=comp.specification,
+            machinery_particulars=comp.machinery_particulars,
+            job_pages=comp.job_pages,
+            spare_pages=comp.spare_pages,
+            pdf_reference=body.target_pdf_reference,
+            is_critical=comp.is_critical,
+            criticality=comp.criticality,
+            qc_status=QCStatus.pending,
+            is_unmapped=False,
+            uploaded_by=current_user.id,
+        )
+        db.add(new_comp)
+        copied_count += 1
+
+    await db.commit()
+    return {"copied": copied_count, "target_pdf_reference": body.target_pdf_reference}
+
+
 @router.post("/{vessel_id}/components/{component_id}/remap", summary="Remap component hierarchy")
 async def remap_component(
     vessel_id: uuid.UUID,

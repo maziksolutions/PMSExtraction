@@ -21,8 +21,10 @@ import {
   FileSearch,
   ArrowRightLeft,
   ExternalLink,
+  Copy,
 } from 'lucide-react'
 import apiClient from '@/api/client'
+import { SearchableSelect } from '@/components/SearchableSelect'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 import ResizableSplitView from '@/components/layout/ResizableSplitView'
 import ResizableRowSplitView from '@/components/layout/ResizableRowSplitView'
@@ -72,9 +74,22 @@ interface AddModalProps {
   initialGroup1?: string
   initialGroup2?: string
   initialMachinery?: string
+  initialPdfReference?: string
+  mainMachineryOptions: string[]
+  projectManualOptions: string[]
 }
 
-function AddComponentModal({ vesselId, onClose, onCreated, initialGroup1, initialGroup2, initialMachinery }: AddModalProps) {
+function AddComponentModal({
+  vesselId,
+  onClose,
+  onCreated,
+  initialGroup1,
+  initialGroup2,
+  initialMachinery,
+  initialPdfReference,
+  mainMachineryOptions,
+  projectManualOptions,
+}: AddModalProps) {
   const [form, setForm] = useState({
     group1: initialGroup1 ?? '',
     group2: initialGroup2 ?? '',
@@ -88,7 +103,7 @@ function AddComponentModal({ vesselId, onClose, onCreated, initialGroup1, initia
     criticality: 'non_critical',
     job_pages: '',
     spare_pages: '',
-    pdf_reference: '',
+    pdf_reference: initialPdfReference ?? '',
   })
 
   const mutation = useMutation({
@@ -107,6 +122,7 @@ function AddComponentModal({ vesselId, onClose, onCreated, initialGroup1, initia
   })
 
   const set = (k: string, v: string | boolean) => setForm(p => ({ ...p, [k]: v }))
+  const isSubmitDisabled = !form.component_name.trim() || !form.main_machinery.trim() || mutation.isPending
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -118,27 +134,46 @@ function AddComponentModal({ vesselId, onClose, onCreated, initialGroup1, initia
         <div className="space-y-4 px-6 py-4 max-h-[70vh] overflow-y-auto">
           <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">Hierarchy</p>
           <div className="grid grid-cols-3 gap-3">
-            {[['group1','Group'], ['group2','Sub-Group'], ['main_machinery','Main Machinery']].map(([k,label]) => (
-              <div key={k}>
-                <label className="mb-1 block text-xs text-slate-400">{label}</label>
-                <input
-                  value={(form as any)[k]}
-                  onChange={e => set(k, e.target.value)}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-white focus:border-sky-500 focus:outline-none"
-                  placeholder={label}
-                />
-              </div>
-            ))}
+            <div>
+              <label className="mb-1 block text-xs text-slate-400">Group (Group 1)</label>
+              <input
+                value={form.group1}
+                onChange={e => set('group1', e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-white focus:border-sky-500 focus:outline-none"
+                placeholder="Group 1"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-400">Sub-Group (Group 2)</label>
+              <input
+                value={form.group2}
+                onChange={e => set('group2', e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-white focus:border-sky-500 focus:outline-none"
+                placeholder="Group 2"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-300">Main Machinery *</label>
+              <SearchableSelect
+                options={mainMachineryOptions}
+                value={form.main_machinery}
+                onChange={val => set('main_machinery', val)}
+                placeholder="Select or type..."
+                required
+                allowCustom
+              />
+            </div>
           </div>
 
           <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 pt-2">Component Details</p>
           <div>
-            <label className="mb-1 block text-xs text-slate-400">Component Name *</label>
+            <label className="mb-1 block text-xs font-medium text-slate-300">Component Name *</label>
             <input
               value={form.component_name}
               onChange={e => set('component_name', e.target.value)}
               className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-white focus:border-sky-500 focus:outline-none"
               placeholder="e.g. Main Seawater Pump"
+              required
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -167,30 +202,226 @@ function AddComponentModal({ vesselId, onClose, onCreated, initialGroup1, initia
             </select>
           </div>
 
-          <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 pt-2">Page References</p>
+          <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 pt-2">Page References & Manual</p>
           <div className="grid grid-cols-3 gap-3">
-            {[['job_pages','Job Pages','e.g. 21-50'], ['spare_pages','Spare Pages','e.g. 51-80'], ['pdf_reference','PDF Reference','Filename or link']].map(([k,label,ph]) => (
-              <div key={k}>
-                <label className="mb-1 block text-xs text-slate-400">{label}</label>
-                <input
-                  value={(form as any)[k]}
-                  onChange={e => set(k, e.target.value)}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-white focus:border-sky-500 focus:outline-none"
-                  placeholder={ph}
-                />
-              </div>
-            ))}
+            <div>
+              <label className="mb-1 block text-xs text-slate-400">Job Pages</label>
+              <input
+                value={form.job_pages}
+                onChange={e => set('job_pages', e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-white focus:border-sky-500 focus:outline-none"
+                placeholder="e.g. 21-50"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-400">Spare Pages</label>
+              <input
+                value={form.spare_pages}
+                onChange={e => set('spare_pages', e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-white focus:border-sky-500 focus:outline-none"
+                placeholder="e.g. 51-80"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-400">PDF Reference (Manual)</label>
+              <SearchableSelect
+                options={projectManualOptions}
+                value={form.pdf_reference}
+                onChange={val => set('pdf_reference', val)}
+                placeholder="Select project manual..."
+                allowCustom
+              />
+            </div>
           </div>
         </div>
         <div className="flex justify-end gap-3 border-t border-slate-700 px-6 py-4">
           <button onClick={onClose} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Cancel</button>
           <button
             onClick={() => mutation.mutate()}
-            disabled={!form.component_name || mutation.isPending}
+            disabled={isSubmitDisabled}
             className="flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
           >
             {mutation.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             Add Component
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+// ---- Add Main Machinery Modal ----
+interface AddMachineryModalProps {
+  vesselId: string
+  onClose: () => void
+  onCreated: () => void
+  initialGroup1?: string
+  initialGroup2?: string
+}
+
+function AddMainMachineryModal({ vesselId, onClose, onCreated, initialGroup1, initialGroup2 }: AddMachineryModalProps) {
+  const [form, setForm] = useState({
+    group1: initialGroup1 ?? '',
+    group2: initialGroup2 ?? '',
+    main_machinery: '',
+  })
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/components`, {
+        group1: form.group1.trim(),
+        group2: form.group2.trim(),
+        main_machinery: form.main_machinery.trim(),
+        component_name: `${form.main_machinery.trim()} System`,
+        qc_status: 'pending',
+      }).then(r => r.data),
+    onSuccess: () => { onCreated(); onClose() },
+  })
+
+  const set = (k: string, v: string) => setForm(p => ({ ...p, [k]: v }))
+  const isSubmitDisabled = !form.group1.trim() || !form.group2.trim() || !form.main_machinery.trim() || mutation.isPending
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4">
+          <h2 className="text-base font-semibold text-white">Add Main Machinery</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="space-y-4 px-6 py-4">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-300">Group (Group 1) *</label>
+            <input
+              value={form.group1}
+              onChange={e => set('group1', e.target.value)}
+              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-white focus:border-sky-500 focus:outline-none"
+              placeholder="e.g. 500 DECK MACHINERY"
+              required
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-300">Sub-Group (Group 2) *</label>
+            <input
+              value={form.group2}
+              onChange={e => set('group2', e.target.value)}
+              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-white focus:border-sky-500 focus:outline-none"
+              placeholder="e.g. 510 Anchor Gear"
+              required
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-300">Main Machinery Name *</label>
+            <input
+              value={form.main_machinery}
+              onChange={e => set('main_machinery', e.target.value)}
+              className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-white focus:border-sky-500 focus:outline-none"
+              placeholder="e.g. Windlass Motor"
+              required
+            />
+          </div>
+        </div>
+        <div className="flex justify-end gap-3 border-t border-slate-700 px-6 py-4">
+          <button onClick={onClose} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Cancel</button>
+          <button
+            onClick={() => mutation.mutate()}
+            disabled={isSubmitDisabled}
+            className="flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+          >
+            {mutation.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            Add Main Machinery
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+// ---- Copy Components Modal ----
+interface CopyModalProps {
+  vesselId: string
+  selectedIds: Set<string>
+  projectManualOptions: string[]
+  onClose: () => void
+  onCopied: () => void
+}
+
+function CopyComponentsModal({ vesselId, selectedIds, projectManualOptions, onClose, onCopied }: CopyModalProps) {
+  const [targetPdf, setTargetPdf] = useState('')
+  const [targetG1, setTargetG1] = useState('')
+  const [targetG2, setTargetG2] = useState('')
+  const [targetMM, setTargetMM] = useState('')
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/components/bulk-copy`, {
+        ids: Array.from(selectedIds),
+        target_pdf_reference: targetPdf,
+        target_group1: targetG1.trim() || null,
+        target_group2: targetG2.trim() || null,
+        target_main_machinery: targetMM.trim() || null,
+      }).then(r => r.data),
+    onSuccess: () => { onCopied(); onClose() },
+  })
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4">
+          <h2 className="text-base font-semibold text-white">Copy Components to Manual</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="space-y-4 px-6 py-4">
+          <p className="text-xs text-slate-300">
+            Copying <strong className="text-sky-400">{selectedIds.size}</strong> selected component(s) to another manual reference.
+          </p>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-300">Target Manual (PDF Reference) *</label>
+            <SearchableSelect
+              options={projectManualOptions}
+              value={targetPdf}
+              onChange={setTargetPdf}
+              placeholder="Select target project manual..."
+              required
+            />
+          </div>
+
+          <div className="border-t border-slate-800 pt-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Optional Hierarchy Overrides</p>
+            <div className="space-y-2">
+              <input
+                value={targetG1}
+                onChange={e => setTargetG1(e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-white focus:border-sky-500 focus:outline-none"
+                placeholder="Override Group 1 (optional)"
+              />
+              <input
+                value={targetG2}
+                onChange={e => setTargetG2(e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-white focus:border-sky-500 focus:outline-none"
+                placeholder="Override Group 2 (optional)"
+              />
+              <input
+                value={targetMM}
+                onChange={e => setTargetMM(e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-white focus:border-sky-500 focus:outline-none"
+                placeholder="Override Main Machinery (optional)"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-3 border-t border-slate-700 px-6 py-4">
+          <button onClick={onClose} className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">Cancel</button>
+          <button
+            onClick={() => mutation.mutate()}
+            disabled={!targetPdf.trim() || mutation.isPending}
+            className="flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+          >
+            {mutation.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
+            Copy Components ({selectedIds.size})
           </button>
         </div>
       </div>
@@ -235,6 +466,8 @@ const ComponentReview: React.FC = () => {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
   const [showAddModal, setShowAddModal] = useState(false)
+  const [showAddMachineryModal, setShowAddMachineryModal] = useState(false)
+  const [showCopyModal, setShowCopyModal] = useState(false)
   const [addContext, setAddContext] = useState<{ group1?: string; group2?: string; machinery?: string }>({})
   const [edits, setEdits] = useState<Record<string, InlineEdit>>({})
   const [importResult, setImportResult] = useState<string | null>(null)
@@ -274,6 +507,12 @@ const ComponentReview: React.FC = () => {
     enabled: !!vesselId,
   })
 
+  const manualsQuery = useQuery({
+    queryKey: ['vessel-manuals-list', vesselId],
+    queryFn: () => apiClient.get(`/vessels/${vesselId}/manuals`, { params: { page_size: 1000 } }).then((r) => r.data.items as any[]),
+    enabled: !!vesselId,
+  })
+
   const sourceFilesQuery = useQuery({
     queryKey: ['component-source-files', vesselId],
     queryFn: () => apiClient.get(`/vessels/${vesselId}/components/source-files`).then((r) => r.data.items as string[]),
@@ -297,6 +536,25 @@ const ComponentReview: React.FC = () => {
     enabled: !!vesselId,
   })
   const pendingCount = pendingComponentsQuery.data
+
+  const projectManualOptions = useMemo<string[]>(() => {
+    const list = new Set<string>()
+    for (const m of manualsQuery.data ?? []) {
+      if (m.original_filename) list.add(m.original_filename)
+    }
+    for (const s of sourceFilesQuery.data ?? []) {
+      if (s) list.add(s)
+    }
+    return Array.from(list).sort((a, b) => a.localeCompare(b))
+  }, [manualsQuery.data, sourceFilesQuery.data])
+
+  const mainMachineryOptions = useMemo<string[]>(() => {
+    const set = new Set<string>()
+    for (const comp of allComponentsQuery.data?.items ?? []) {
+      if (comp.main_machinery) set.add(comp.main_machinery)
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  }, [allComponentsQuery.data])
 
   const makersQuery = useQuery({
     queryKey: ['maker-models', 'makers'],
@@ -447,6 +705,35 @@ const ComponentReview: React.FC = () => {
           initialGroup1={addContext.group1}
           initialGroup2={addContext.group2}
           initialMachinery={addContext.machinery}
+          initialPdfReference={filterSourceFile}
+          mainMachineryOptions={mainMachineryOptions}
+          projectManualOptions={projectManualOptions}
+        />
+      )}
+
+      {showAddMachineryModal && vesselId && (
+        <AddMainMachineryModal
+          vesselId={vesselId}
+          onClose={() => setShowAddMachineryModal(false)}
+          onCreated={() => {
+            queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
+            queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
+          }}
+          initialGroup1={addContext.group1}
+          initialGroup2={addContext.group2}
+        />
+      )}
+
+      {showCopyModal && vesselId && selectedIds.size > 0 && (
+        <CopyComponentsModal
+          vesselId={vesselId}
+          selectedIds={selectedIds}
+          projectManualOptions={projectManualOptions}
+          onClose={() => setShowCopyModal(false)}
+          onCopied={() => {
+            queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
+            setSelectedIds(new Set())
+          }}
         />
       )}
       {mergeSource && (
@@ -737,22 +1024,37 @@ const ComponentReview: React.FC = () => {
                       </select>
 
                       {/* Source file filter */}
-                      <select
-                        value={filterSourceFile}
-                        onChange={(e) => setFilterSourceFile(e.target.value)}
-                        className="max-w-xs rounded-lg border border-slate-700 bg-slate-800 px-1.5 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                      >
-                        <option value="">All Source Files</option>
-                        {(sourceFilesQuery.data ?? []).map((filename) => (
-                          <option key={filename} value={filename}>{filename}</option>
-                        ))}
-                      </select>
+                      <div className="w-56">
+                        <SearchableSelect
+                          options={projectManualOptions}
+                          value={filterSourceFile}
+                          onChange={setFilterSourceFile}
+                          placeholder="All Manuals / Sources"
+                          allowCustom
+                        />
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Add Main Machinery */}
+                      <button
+                        onClick={() => setShowAddMachineryModal(true)}
+                        className="flex items-center gap-1 rounded-lg border border-sky-700 bg-slate-900 px-2 py-1 text-xs font-medium text-sky-300 hover:bg-slate-800 hover:text-white"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        Add Main Machinery
+                      </button>
+
                       {/* Bulk actions */}
                       {selectedIds.size > 0 && (
                         <>
+                          <button
+                            onClick={() => setShowCopyModal(true)}
+                            className="flex items-center gap-1 rounded-lg bg-sky-700 px-2 py-1 text-xs font-medium text-white hover:bg-sky-600"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                            Copy to Manual ({selectedIds.size})
+                          </button>
                           <button
                             onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))}
                             className="flex items-center gap-1 rounded-lg bg-green-700 px-2 py-1 text-xs font-medium text-white hover:bg-green-600"

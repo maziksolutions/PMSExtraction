@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil, Scissors, Download, Trash2 } from 'lucide-react'
 import apiClient from '@/api/client'
+import { SearchableSelect } from '@/components/SearchableSelect'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 
 import SnipExtractModal from '@/components/spares/SnipExtractModal'
@@ -755,18 +756,15 @@ const SparesReview: React.FC = () => {
             <option value="accepted">Accepted</option>
             <option value="rejected">Rejected</option>
           </select>
-          <select
-            value={filterSourceFile}
-            onChange={(e) => setFilterSourceFile(e.target.value)}
-            className="max-w-xs rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-          >
-            <option value="">All Source Files</option>
-            {(sourceFilesQuery.data ?? []).map((filename) => (
-              <option key={filename} value={filename}>
-                {filename}
-              </option>
-            ))}
-          </select>
+          <div className="w-56">
+            <SearchableSelect
+              options={sourceFilesQuery.data ?? []}
+              value={filterSourceFile}
+              onChange={setFilterSourceFile}
+              placeholder="All Source Files"
+              allowCustom
+            />
+          </div>
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}

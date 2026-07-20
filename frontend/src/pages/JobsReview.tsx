@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CheckCircle, Copy, Download, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Trash2, Upload, XCircle } from 'lucide-react'
 import apiClient from '@/api/client'
+import { SearchableSelect } from '@/components/SearchableSelect'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 
 interface ComponentOption {
@@ -1081,12 +1082,15 @@ const JobsReview: React.FC = () => {
             <option value="rejected">Rejected</option>
             <option value="modified">Modified</option>
           </select>
-          <select value={filterSourceFile} onChange={(e) => setFilterSourceFile(e.target.value)} className="max-w-xs rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none">
-            <option value="">All Source Files</option>
-            {(sourceFilesQuery.data ?? []).map((filename) => (
-              <option key={filename} value={filename}>{filename}</option>
-            ))}
-          </select>
+          <div className="w-56">
+            <SearchableSelect
+              options={sourceFilesQuery.data ?? []}
+              value={filterSourceFile}
+              onChange={setFilterSourceFile}
+              placeholder="All Source Files"
+              allowCustom
+            />
+          </div>
           <input
             type="text"
             value={search}
