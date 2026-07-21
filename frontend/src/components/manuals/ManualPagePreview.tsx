@@ -210,6 +210,54 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
     })
   }
 
+  // Pointer panning logic for PDF page viewer
+  const [isPanning, setIsPanning] = useState(false)
+  const panStateRef = useRef<{ isPanning: boolean; startX: number; startY: number; scrollLeft: number; scrollTop: number }>({
+    isPanning: false,
+    startX: 0,
+    startY: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+  })
+
+  const handlePanPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (isSnipMode) return
+    const container = e.currentTarget
+    try {
+      container.setPointerCapture(e.pointerId)
+    } catch {
+      // ignore
+    }
+    panStateRef.current = {
+      isPanning: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: container.scrollLeft,
+      scrollTop: container.scrollTop,
+    }
+    setIsPanning(true)
+  }
+
+  const handlePanPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!panStateRef.current.isPanning) return
+    const container = e.currentTarget
+    const dx = e.clientX - panStateRef.current.startX
+    const dy = e.clientY - panStateRef.current.startY
+    container.scrollLeft = panStateRef.current.scrollLeft - dx
+    container.scrollTop = panStateRef.current.scrollTop - dy
+  }
+
+  const handlePanPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!panStateRef.current.isPanning) return
+    panStateRef.current.isPanning = false
+    setIsPanning(false)
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      // ignore
+    }
+  }
+
   const selectionRect =
     dragStart && dragEnd
       ? {
@@ -283,7 +331,15 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
           </div>
           <div className="space-y-2 p-1.5">
             {page.image_data_url ? (
-              <div className="overflow-auto rounded-lg border border-slate-800 bg-slate-900/70">
+              <div
+                className={`overflow-auto rounded-lg border border-slate-800 bg-slate-900/70 ${
+                  !isSnipMode ? 'cursor-grab active:cursor-grabbing select-none' : ''
+                }`}
+                onPointerDown={handlePanPointerDown}
+                onPointerMove={handlePanPointerMove}
+                onPointerUp={handlePanPointerUp}
+                onPointerCancel={handlePanPointerUp}
+              >
                 <div 
                   className={`flex ${fullscreen ? 'min-w-max justify-center p-4' : 'min-w-max p-1.5'}`}
                   style={{ zoom: zoom }}

@@ -1022,14 +1022,14 @@ const ManualReview: React.FC = () => {
       </div>
 
       {/* Manuals table */}
-      <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900">
+      <div className="max-h-[65vh] overflow-auto rounded-xl border border-slate-800 bg-slate-900">
         {isLoading ? (
           <div className="py-16 text-center text-slate-500">Loading manuals...</div>
         ) : manuals.length === 0 ? (
           <div className="py-16 text-center text-slate-500">No manuals found. Upload files from the Ingestion page.</div>
         ) : (
           <table className="w-full text-sm">
-            <thead>
+            <thead className="sticky top-0 z-10 bg-slate-900">
               <tr className="border-b border-slate-700 text-left text-xs text-slate-500 uppercase">
                 <th className="px-3 py-3">
                   <input

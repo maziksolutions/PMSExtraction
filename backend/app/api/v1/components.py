@@ -71,7 +71,6 @@ async def _normalize_pending_extracted_components(
             Component.vessel_id == vessel_id,
             Component.tenant_id == tenant_id,
             Component.is_deleted == False,
-            Component.qc_status == QCStatus.pending,
             Component.source_manual_id.is_not(None),
         )
     )
@@ -79,7 +78,7 @@ async def _normalize_pending_extracted_components(
 
     changed = False
     for comp in components:
-        should_be_unmapped = comp.source_manual_id in current_vessel_manual_ids
+        should_be_unmapped = comp.source_manual_id not in current_vessel_manual_ids
         if (
             should_be_unmapped
             and vessel_updated_at is not None
@@ -262,7 +261,7 @@ async def list_components(
         base_where.append(Component.main_machinery == main_machinery)
     if qc_status:
         try:
-            base_where.append(Component.qc_status == QCStatus(qc_status))
+            base_where.append(Component.qc_status == QCStatus(qc_status.lower()))
         except ValueError:
             pass
     if min_confidence is not None:
