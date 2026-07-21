@@ -111,6 +111,8 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
 
   const imgRef = useRef<HTMLImageElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
+  const mainScrollRef = useRef<HTMLDivElement>(null)
+  const fullscreenScrollRef = useRef<HTMLDivElement>(null)
   const isDraggingRef = useRef(false)
 
   useEffect(() => {
@@ -210,14 +212,22 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
     })
   }
 
-  // Pointer panning logic for PDF page viewer
+  // Pointer panning logic for PDF page viewer (both horizontal & vertical up/down)
   const [isPanning, setIsPanning] = useState(false)
-  const panStateRef = useRef<{ isPanning: boolean; startX: number; startY: number; scrollLeft: number; scrollTop: number }>({
+  const panStateRef = useRef<{
+    isPanning: boolean
+    startX: number
+    startY: number
+    scrollLeft: number
+    scrollTop: number
+    outerScrollTop: number
+  }>({
     isPanning: false,
     startX: 0,
     startY: 0,
     scrollLeft: 0,
     scrollTop: 0,
+    outerScrollTop: 0,
   })
 
   const handlePanPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -228,12 +238,14 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
     } catch {
       // ignore
     }
+    const outerParent = isFullscreen ? fullscreenScrollRef.current : mainScrollRef.current
     panStateRef.current = {
       isPanning: true,
       startX: e.clientX,
       startY: e.clientY,
       scrollLeft: container.scrollLeft,
       scrollTop: container.scrollTop,
+      outerScrollTop: outerParent ? outerParent.scrollTop : 0,
     }
     setIsPanning(true)
   }
@@ -243,8 +255,14 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
     const container = e.currentTarget
     const dx = e.clientX - panStateRef.current.startX
     const dy = e.clientY - panStateRef.current.startY
+
     container.scrollLeft = panStateRef.current.scrollLeft - dx
     container.scrollTop = panStateRef.current.scrollTop - dy
+
+    const outerParent = isFullscreen ? fullscreenScrollRef.current : mainScrollRef.current
+    if (outerParent) {
+      outerParent.scrollTop = panStateRef.current.outerScrollTop - dy
+    }
   }
 
   const handlePanPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -256,6 +274,34 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
     } catch {
       // ignore
     }
+  }
+
+  // Mouse wheel zoom centered at mouse cursor position
+  const handleWheelZoom = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (isSnipMode) return
+    e.preventDefault()
+    e.stopPropagation()
+
+    const container = e.currentTarget
+    const rect = container.getBoundingClientRect()
+    const mouseX = e.clientX - rect.left
+    const mouseY = e.clientY - rect.top
+
+    const oldZoom = zoom
+    const zoomDelta = e.deltaY < 0 ? 0.15 : -0.15
+    const newZoom = Math.max(0.4, Math.min(4.0, Math.round((oldZoom + zoomDelta) * 100) / 100))
+
+    if (newZoom === oldZoom) return
+
+    const contentX = (container.scrollLeft + mouseX) / oldZoom
+    const contentY = (container.scrollTop + mouseY) / oldZoom
+
+    setZoom(newZoom)
+
+    requestAnimationFrame(() => {
+      container.scrollLeft = contentX * newZoom - mouseX
+      container.scrollTop = contentY * newZoom - mouseY
+    })
   }
 
   const selectionRect =
@@ -339,6 +385,7 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
                 onPointerMove={handlePanPointerMove}
                 onPointerUp={handlePanPointerUp}
                 onPointerCancel={handlePanPointerUp}
+                onWheel={handleWheelZoom}
               >
                 <div 
                   className={`flex ${fullscreen ? 'min-w-max justify-center p-4' : 'min-w-max p-1.5'}`}
@@ -651,7 +698,7 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
           </div>
         ) : null}
 
-        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+        <div ref={mainScrollRef} className="flex-1 overflow-y-auto min-h-0 pr-1">
           {renderPageCards(false)}
         </div>
       </aside>
@@ -931,7 +978,7 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
                 </button>
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto p-5">
+            <div ref={fullscreenScrollRef} className="flex-1 overflow-y-auto p-5">
               {renderPageCards(true)}
             </div>
           </div>
