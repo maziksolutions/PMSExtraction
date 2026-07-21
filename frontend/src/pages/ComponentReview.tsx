@@ -861,51 +861,51 @@ const ComponentReview: React.FC = () => {
                         Add Main Machinery
                       </button>
 
-                      {/* Bulk actions */}
-                      {selectedIds.size > 0 && (
-                        <>
-                          <button
-                            onClick={() => setShowCopyModal(true)}
-                            className="flex items-center gap-1 rounded-lg bg-sky-700 px-2 py-1 text-xs font-medium text-white hover:bg-sky-600"
-                          >
-                            <Copy className="h-3.5 w-3.5" />
-                            Copy to Manual ({selectedIds.size})
-                          </button>
-                          <button
-                            onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))}
-                            className="flex items-center gap-1 rounded-lg bg-green-700 px-2 py-1 text-xs font-medium text-white hover:bg-green-600"
-                          >
-                            <CheckCircle className="h-3.5 w-3.5" />
-                            Accept ({selectedIds.size})
-                          </button>
-                          <button
-                            onClick={() => bulkRejectMutation.mutate(Array.from(selectedIds))}
-                            className="flex items-center gap-1 rounded-lg bg-red-700 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
-                          >
-                            <XCircle className="h-3.5 w-3.5" />
-                            Reject ({selectedIds.size})
-                          </button>
-                          <button
-                            onClick={() => { setShowBatchPanel(p => !p); setBatchFields({}) }}
-                            className="flex items-center gap-1 rounded-lg bg-violet-700 px-2 py-1 text-xs font-medium text-white hover:bg-violet-600"
-                          >
-                            <Wrench className="h-3.5 w-3.5" />
-                            Batch Edit ({selectedIds.size})
-                          </button>
-                          <button
-                            onClick={() => {
-                              if (window.confirm(`Delete ${selectedIds.size} component(s)? This cannot be undone.`)) {
-                                bulkDeleteMutation.mutate(Array.from(selectedIds))
-                              }
-                            }}
-                            disabled={bulkDeleteMutation.isPending}
-                            className="flex items-center gap-1 rounded-lg bg-rose-900 px-2 py-1 text-xs font-medium text-rose-200 hover:bg-rose-800 disabled:opacity-50"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Delete ({selectedIds.size})
-                          </button>
-                        </>
-                      )}
+                      {/* Bulk actions (Fixed slots to prevent layout shifting on selection) */}
+                      <button
+                        onClick={() => setShowCopyModal(true)}
+                        disabled={selectedIds.size === 0}
+                        className="flex items-center gap-1 rounded-lg bg-sky-700 px-2 py-1 text-xs font-medium text-white hover:bg-sky-600 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-sky-700"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                        Copy to Manual {selectedIds.size > 0 ? `(${selectedIds.size})` : ''}
+                      </button>
+                      <button
+                        onClick={() => bulkAcceptMutation.mutate(Array.from(selectedIds))}
+                        disabled={selectedIds.size === 0 || bulkAcceptMutation.isPending}
+                        className="flex items-center gap-1 rounded-lg bg-green-700 px-2 py-1 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-green-700"
+                      >
+                        <CheckCircle className="h-3.5 w-3.5" />
+                        Accept {selectedIds.size > 0 ? `(${selectedIds.size})` : ''}
+                      </button>
+                      <button
+                        onClick={() => bulkRejectMutation.mutate(Array.from(selectedIds))}
+                        disabled={selectedIds.size === 0 || bulkRejectMutation.isPending}
+                        className="flex items-center gap-1 rounded-lg bg-red-700 px-2 py-1 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-red-700"
+                      >
+                        <XCircle className="h-3.5 w-3.5" />
+                        Reject {selectedIds.size > 0 ? `(${selectedIds.size})` : ''}
+                      </button>
+                      <button
+                        onClick={() => { setShowBatchPanel(p => !p); setBatchFields({}) }}
+                        disabled={selectedIds.size === 0}
+                        className="flex items-center gap-1 rounded-lg bg-violet-700 px-2 py-1 text-xs font-medium text-white hover:bg-violet-600 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-violet-700"
+                      >
+                        <Wrench className="h-3.5 w-3.5" />
+                        Batch Edit {selectedIds.size > 0 ? `(${selectedIds.size})` : ''}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Delete ${selectedIds.size} component(s)? This cannot be undone.`)) {
+                            bulkDeleteMutation.mutate(Array.from(selectedIds))
+                          }
+                        }}
+                        disabled={selectedIds.size === 0 || bulkDeleteMutation.isPending}
+                        className="flex items-center gap-1 rounded-lg bg-rose-900 px-2 py-1 text-xs font-medium text-rose-200 hover:bg-rose-800 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-900"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Delete {selectedIds.size > 0 ? `(${selectedIds.size})` : ''}
+                      </button>
 
                       {/* Save all inline edits */}
                       {Object.keys(edits).length > 0 && (
