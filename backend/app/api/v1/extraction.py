@@ -20,27 +20,9 @@ from app.models.ingestion import Manual, ManualStatus
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.services.deduplication import is_duplicate_component
-from app.services.extractor import auto_extract_from_manual
+from app.services.extractor import auto_extract_from_manual, get_extraction_state, set_extraction_state
 
 router = APIRouter()
-
-# ---------------------------------------------------------------------------
-# In-memory extraction progress tracker
-# Structure: { vessel_id_str: { "total": int, "done": int, "status": str } }
-# ---------------------------------------------------------------------------
-
-_extract_state: dict[str, dict] = {}
-
-
-def set_extraction_state(vessel_id_str: str, *, total: int, done: int, status: str) -> None:
-    _extract_state[vessel_id_str] = {"total": total, "done": done, "status": status}
-
-
-def get_extraction_state(vessel_id_str: str) -> dict[str, Any]:
-    return _extract_state.get(
-        vessel_id_str,
-        {"total": 0, "done": 0, "status": "idle"},
-    )
 
 # ---------------------------------------------------------------------------
 # Inline SQLAlchemy model for extraction_prompts

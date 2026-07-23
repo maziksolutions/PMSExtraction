@@ -1712,21 +1712,11 @@ async def screen_selected_manuals(
 
 
 
-# In-memory extraction progress tracker (per vessel_id string)
-
-_extract_state: dict[str, dict] = {}
-
-
-
-
-
 async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) -> None:
 
     """Background task: runs auto_extract_from_manual with bounded parallelism."""
 
-    from app.api.v1.extraction import get_extraction_state, set_extraction_state
-
-    from app.services.extractor import auto_extract_from_manual
+    from app.services.extractor import get_extraction_state, set_extraction_state, auto_extract_from_manual
 
 
 

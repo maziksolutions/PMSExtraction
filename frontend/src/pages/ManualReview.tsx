@@ -79,6 +79,10 @@ interface ExtractionStatus {
   total: number
   done: number
   status: 'idle' | 'running' | 'completed' | 'failed'
+  current_manual_name?: string | null
+  current_manual_pages_total?: number
+  current_manual_pages_done?: number
+  detailed_status?: string | null
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -929,16 +933,48 @@ const ManualReview: React.FC = () => {
 
       {/* Extraction progress bar */}
       {isExtracting && extractionData && extractionData.total > 0 && (
-        <div className="rounded-xl border border-emerald-700 bg-emerald-900/20 p-4 space-y-2">
-          <div className="flex items-center justify-between text-sm">
-            <span className="font-medium text-emerald-300">
-              Extracting with Claude AI... {extractionData.done} / {extractionData.total} manuals
-            </span>
-            <span className="text-emerald-400">{extractionProgress}%</span>
+        <div className="rounded-xl border border-emerald-700 bg-emerald-900/20 p-4 space-y-3">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium text-emerald-300">
+                Extracting manuals... {extractionData.done} / {extractionData.total} manuals
+              </span>
+              <span className="text-emerald-400 font-bold">{extractionProgress}%</span>
+            </div>
+            <div className="h-2 w-full rounded-full bg-slate-800 overflow-hidden">
+              <div className="h-2 rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${extractionProgress}%` }} />
+            </div>
           </div>
-          <div className="h-2 w-full rounded-full bg-slate-800 overflow-hidden">
-            <div className="h-2 rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${extractionProgress}%` }} />
-          </div>
+
+          {extractionData.current_manual_name && (
+            <div className="space-y-2 bg-slate-900/40 rounded-lg p-3 border border-emerald-950/40 text-xs">
+              <div className="text-emerald-400 font-medium truncate mb-1">
+                Active: {extractionData.current_manual_name}
+              </div>
+              {extractionData.current_manual_pages_total && extractionData.current_manual_pages_total > 0 ? (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span className="truncate max-w-[80%] italic">
+                      {extractionData.detailed_status || 'Initializing page extraction...'}
+                    </span>
+                    <span className="font-semibold text-emerald-500">
+                      {Math.round((extractionData.current_manual_pages_done || 0) / extractionData.current_manual_pages_total * 100)}%
+                    </span>
+                  </div>
+                  <div className="h-1 w-full rounded-full bg-slate-800 overflow-hidden">
+                    <div 
+                      className="h-1 rounded-full bg-emerald-600 transition-all duration-300" 
+                      style={{ width: `${Math.round((extractionData.current_manual_pages_done || 0) / extractionData.current_manual_pages_total * 100)}%` }} 
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="text-slate-400 italic">
+                  {extractionData.detailed_status || 'Initializing page extraction...'}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

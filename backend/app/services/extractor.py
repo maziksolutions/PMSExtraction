@@ -25,6 +25,71 @@ from app.services.job_naming import (
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# In-memory extraction progress tracker
+# Structure: { vessel_id_str: { "total": int, "done": int, "status": str, ... } }
+# ---------------------------------------------------------------------------
+_extract_state: dict[str, dict] = {}
+
+
+def set_extraction_state(
+    vessel_id_str: str,
+    *,
+    total: int | None = None,
+    done: int | None = None,
+    status: str | None = None,
+    current_manual_name: str | None = None,
+    current_manual_pages_total: int | None = None,
+    current_manual_pages_done: int | None = None,
+    detailed_status: str | None = None,
+) -> None:
+    if vessel_id_str not in _extract_state:
+        _extract_state[vessel_id_str] = {
+            "total": 0,
+            "done": 0,
+            "status": "idle",
+            "current_manual_name": None,
+            "current_manual_pages_total": 0,
+            "current_manual_pages_done": 0,
+            "detailed_status": None,
+        }
+    state = _extract_state[vessel_id_str]
+    if total is not None:
+        state["total"] = total
+    if done is not None:
+        state["done"] = done
+    if status is not None:
+        state["status"] = status
+        if status in ("completed", "failed", "idle"):
+            state["current_manual_name"] = None
+            state["current_manual_pages_total"] = 0
+            state["current_manual_pages_done"] = 0
+            state["detailed_status"] = None
+    if current_manual_name is not None:
+        state["current_manual_name"] = current_manual_name
+    if current_manual_pages_total is not None:
+        state["current_manual_pages_total"] = current_manual_pages_total
+    if current_manual_pages_done is not None:
+        state["current_manual_pages_done"] = current_manual_pages_done
+    if detailed_status is not None:
+        state["detailed_status"] = detailed_status
+
+
+def get_extraction_state(vessel_id_str: str) -> dict[str, Any]:
+    return _extract_state.get(
+        vessel_id_str,
+        {
+            "total": 0,
+            "done": 0,
+            "status": "idle",
+            "current_manual_name": None,
+            "current_manual_pages_total": 0,
+            "current_manual_pages_done": 0,
+            "detailed_status": None,
+        },
+    )
+
+
 class ExtractionProvidersFailed(RuntimeError):
     """Raised when all configured extraction providers fail for a chunk."""
 
@@ -718,6 +783,7 @@ async def _extract_spare_parts_from_image_split(
     filename: str,
     page_no: int,
     context_note: str | None = None,
+    on_strip_start: Any | None = None,
 ) -> list[dict]:
     """Split a dense parts-list page into column-group strips and extract from each.
 
@@ -768,7 +834,9 @@ async def _extract_spare_parts_from_image_split(
         ]
 
     all_records: list[dict] = []
-    for (x1, x2), label in zip(strip_regions, strip_labels):
+    for strip_idx, ((x1, x2), label) in enumerate(zip(strip_regions, strip_labels)):
+        if on_strip_start:
+            on_strip_start(strip_idx, len(strip_regions))
         buf = io.BytesIO()
         img.crop((x1, 0, x2, height)).save(buf, format="PNG")
         strip_bytes = buf.getvalue()
@@ -2195,6 +2263,32 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             filename, len(full_text), len(text_chunks),
         )
 
+        # Calculate total sub-steps for page-level progress tracking
+        total_sub_steps = 0
+        type_chunks_count: dict[str, int] = {}
+        for etype in extraction_types:
+            source_text = type_to_text.get(etype) or full_text
+            chunks = _chunk_text(source_text)
+            type_chunks_count[etype] = len(chunks)
+            total_sub_steps += len(chunks)
+
+            if ext == "pdf" and file_bytes is not None and etype in {"component", "spare"}:
+                selected_pages = entity_pages.get(etype) or []
+                if etype == "spare":
+                    total_sub_steps += len(selected_pages) * 4
+                else:
+                    total_sub_steps += len(selected_pages)
+
+        # Set initial progress state for this manual
+        set_extraction_state(
+            vessel_id_str,
+            current_manual_name=filename,
+            current_manual_pages_total=total_sub_steps,
+            current_manual_pages_done=0,
+            detailed_status="Initializing extraction loop..."
+        )
+        done_sub_steps = 0
+
         # ------------------------------------------------------------------
         # Run extractions across all chunks
         # ------------------------------------------------------------------
@@ -2245,6 +2339,12 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             )
             all_records: list[dict] = []
             for chunk_idx, chunk in enumerate(text_chunks):
+                done_sub_steps += 1
+                set_extraction_state(
+                    vessel_id_str,
+                    current_manual_pages_done=done_sub_steps,
+                    detailed_status=f"Extracting {etype} text (chunk {chunk_idx + 1}/{len(text_chunks)})..."
+                )
                 chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
                 context_note = learning_context_by_type.get(etype)
                 if etype in {"job", "spare"}:
@@ -2278,13 +2378,36 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                         if not image_bytes:
                             continue
                         if etype == "spare":
+                            def on_strip_start(strip_idx, total_strips):
+                                nonlocal done_sub_steps
+                                if strip_idx > 0:
+                                    done_sub_steps += 1
+                                set_extraction_state(
+                                    vessel_id_str,
+                                    current_manual_pages_done=done_sub_steps,
+                                    detailed_status=f"Extracting spares image (page {page_no}, strip {strip_idx + 1}/{total_strips})..."
+                                )
+
+                            done_sub_steps += 1
+                            set_extraction_state(
+                                vessel_id_str,
+                                current_manual_pages_done=done_sub_steps,
+                                detailed_status=f"Extracting spares image (page {page_no}, starting)..."
+                            )
                             vision_records = await _extract_spare_parts_from_image_split(
                                 image_bytes=image_bytes,
                                 filename=filename,
                                 page_no=page_no,
                                 context_note=context_note,
+                                on_strip_start=on_strip_start,
                             )
                         else:
+                            done_sub_steps += 1
+                            set_extraction_state(
+                                vessel_id_str,
+                                current_manual_pages_done=done_sub_steps,
+                                detailed_status=f"Extracting components image (page {page_no})..."
+                            )
                             vision_records = await _extract_entities_from_page_image(
                                 image_bytes=image_bytes,
                                 filename=filename,

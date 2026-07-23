@@ -172,9 +172,13 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
   const getOverlayPoint = (clientX: number, clientY: number): DragPoint => {
     if (!overlayRef.current) return { x: 0, y: 0 }
     const rect = overlayRef.current.getBoundingClientRect()
+    const xRaw = (clientX - rect.left) / zoom
+    const yRaw = (clientY - rect.top) / zoom
+    const widthCss = rect.width / zoom
+    const heightCss = rect.height / zoom
     return {
-      x: Math.max(0, Math.min(clientX - rect.left, rect.width)),
-      y: Math.max(0, Math.min(clientY - rect.top, rect.height)),
+      x: Math.max(0, Math.min(xRaw, widthCss)),
+      y: Math.max(0, Math.min(yRaw, heightCss)),
     }
   }
 
