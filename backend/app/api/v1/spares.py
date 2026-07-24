@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import re
 import uuid
+import logging
 from typing import Annotated, Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import select
