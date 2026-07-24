@@ -1029,7 +1029,7 @@ async def _extract_entities_from_page_image_with_openai(
             page_no,
             _redact_error_message(exc),
         )
-        return []
+        raise exc
 
 
 async def _extract_entities_from_page_image_with_claude(
@@ -1125,7 +1125,7 @@ async def _extract_entities_from_page_image_with_claude(
             "extract_entities[claude-vision]: failed for %s/%s page=%d: %s",
             filename, extraction_type, page_no, _redact_error_message(exc),
         )
-        return []
+        raise exc
 
 
 _claude_vision_billing_failed = False  # module-level circuit breaker; reset on process restart
