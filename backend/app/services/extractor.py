@@ -1141,6 +1141,7 @@ async def _extract_entities_from_page_image(
 ) -> list[dict]:
     """Try Claude vision first; fall back to OpenAI vision."""
     global _claude_vision_billing_failed
+    claude_err = None
     if settings.ANTHROPIC_API_KEY and not _claude_vision_billing_failed:
         try:
             records = await _extract_entities_from_page_image_with_claude(
@@ -1153,6 +1154,7 @@ async def _extract_entities_from_page_image(
             if records:
                 return records
         except Exception as exc:
+            claude_err = exc
             err_str = str(exc)
             if "credit balance" in err_str.lower() or "402" in err_str or (
                 "400" in err_str and "credit" in err_str.lower()
@@ -1162,6 +1164,12 @@ async def _extract_entities_from_page_image(
                     "extract_entities[claude-vision]: billing error — disabling Claude vision for this session, using OpenAI"
                 )
             # Fall through to OpenAI regardless
+
+    if not settings.OPENAI_API_KEY:
+        if claude_err:
+            raise claude_err
+        return []
+
     return await _extract_entities_from_page_image_with_openai(
         image_bytes=image_bytes,
         filename=filename,

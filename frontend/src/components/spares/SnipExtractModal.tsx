@@ -124,6 +124,22 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
   const [hasSelection, setHasSelection] = useState(false)
 
   const [isExtracting, setIsExtracting] = useState(false)
+  const [extractionStep, setExtractionStep] = useState<number>(0)
+
+  React.useEffect(() => {
+    if (!isExtracting) {
+      setExtractionStep(0)
+      return
+    }
+    const timer1 = setTimeout(() => setExtractionStep(1), 1500)
+    const timer2 = setTimeout(() => setExtractionStep(2), 3500)
+    const timer3 = setTimeout(() => setExtractionStep(3), 8500)
+    return () => {
+      clearTimeout(timer1)
+      clearTimeout(timer2)
+      clearTimeout(timer3)
+    }
+  }, [isExtracting])
   const [extractedRecords, setExtractedRecords] = useState<ExtractedRecord[]>([])
   const [checkedIndices, setCheckedIndices] = useState<Set<number>>(new Set())
   const [extractError, setExtractError] = useState<string | null>(null)
@@ -685,10 +701,48 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
           )}
 
           {isExtracting && (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-xl border border-slate-800 text-slate-500">
-              <Loader2 className="h-7 w-7 animate-spin text-sky-500" />
-              <p className="text-sm">Extracting spare parts with AI…</p>
-              <p className="text-xs">This may take 15–30 seconds for dense tables</p>
+            <div className="flex flex-1 flex-col items-center justify-center gap-5 rounded-xl border border-slate-800 bg-slate-950/30 p-6 text-slate-400">
+              <Loader2 className="h-8 w-8 animate-spin text-sky-500 shrink-0" />
+              <div className="text-center space-y-1">
+                <p className="text-sm font-semibold text-sky-400 animate-pulse">Extracting Spare Parts...</p>
+                <p className="text-xs text-slate-500">Processing high-resolution vision OCR</p>
+              </div>
+
+              <div className="w-full max-w-[280px] space-y-2 text-xs text-left bg-slate-900/50 p-4 rounded-lg border border-slate-800">
+                <div className="flex items-center gap-2">
+                  <span className={extractionStep >= 0 ? "text-emerald-400 font-bold" : "text-slate-600"}>
+                    {extractionStep > 0 ? "✓" : "⟳"}
+                  </span>
+                  <span className={extractionStep >= 0 ? "text-slate-200" : "text-slate-500"}>
+                    Cropping and optimizing snippet
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={extractionStep >= 1 ? "text-emerald-400 font-bold" : "text-slate-600"}>
+                    {extractionStep > 1 ? "✓" : extractionStep === 1 ? "⟳" : "○"}
+                  </span>
+                  <span className={extractionStep >= 1 ? "text-slate-200" : "text-slate-500"}>
+                    Uploading image to backend
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={extractionStep >= 2 ? "text-emerald-400 font-bold" : "text-slate-600"}>
+                    {extractionStep > 2 ? "✓" : extractionStep === 2 ? "⟳" : "○"}
+                  </span>
+                  <span className={extractionStep >= 2 ? "text-slate-200" : "text-slate-500"}>
+                    Parsing tables with Vision AI
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={extractionStep >= 3 ? "text-emerald-400 font-bold" : "text-slate-600"}>
+                    {extractionStep === 3 ? "⟳" : "○"}
+                  </span>
+                  <span className={extractionStep >= 3 ? "text-slate-200" : "text-slate-500"}>
+                    Structuring extracted records
+                  </span>
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-500">Usually takes 10–25 seconds</p>
             </div>
           )}
 
