@@ -77,23 +77,35 @@ async def _run_extract_all(
     manual_ids: list[str],
 ) -> None:
     """Run auto_extract_from_manual for each manual with bounded parallelism."""
+    from app.services.extractor import _active_extraction_tasks, _extraction_paused_flags
+    _active_extraction_tasks[vessel_id_str] = asyncio.current_task()
+
     set_extraction_state(vessel_id_str, total=len(manual_ids), done=0, status="running")
     semaphore = asyncio.Semaphore(max(1, int(getattr(settings, "MANUAL_EXTRACTION_CONCURRENCY", 4) or 4)))
     state_lock = asyncio.Lock()
 
     async def _run_one(mid: str) -> None:
         async with semaphore:
+            while _extraction_paused_flags.get(vessel_id_str):
+                await asyncio.sleep(1)
             try:
                 await auto_extract_from_manual(mid)
             except Exception as exc:
                 logger.error("_run_extract_all: extraction failed for manual %s: %s", mid, exc)
             finally:
                 async with state_lock:
-                    _extract_state[vessel_id_str]["done"] += 1
+                    st = get_extraction_state(vessel_id_str)
+                    set_extraction_state(vessel_id_str, done=st.get("done", 0) + 1)
 
-    await asyncio.gather(*[_run_one(mid) for mid in manual_ids])
-
-    _extract_state[vessel_id_str]["status"] = "completed"
+    try:
+        await asyncio.gather(*[_run_one(mid) for mid in manual_ids])
+        set_extraction_state(vessel_id_str, status="completed")
+    except asyncio.CancelledError:
+        logger.info("_run_extract_all: task cancelled")
+        set_extraction_state(vessel_id_str, status="idle")
+    finally:
+        _active_extraction_tasks.pop(vessel_id_str, None)
+        _extraction_paused_flags.pop(vessel_id_str, None)
 
 
 # ---------------------------------------------------------------------------
@@ -366,3 +378,39 @@ async def check_component_duplicates(
         seen.append(comp)
 
     return {"duplicates": duplicates, "total": len(duplicates)}
+
+
+@router.post("/{vessel_id}/extract-pause", summary="Pause active extraction")
+async def pause_extract(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    from app.services.extractor import pause_extraction
+    success = pause_extraction(str(vessel_id))
+    return {"success": success, "status": "paused" if success else "failed"}
+
+
+@router.post("/{vessel_id}/extract-resume", summary="Resume paused extraction")
+async def resume_extract(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    from app.services.extractor import resume_extraction
+    success = resume_extraction(str(vessel_id))
+    return {"success": success, "status": "running" if success else "failed"}
+
+
+@router.post("/{vessel_id}/extract-stop", summary="Stop/Cancel active extraction")
+async def stop_extract(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    from app.services.extractor import stop_extraction
+    success = stop_extraction(str(vessel_id))
+    return {"success": success, "status": "idle" if success else "failed"}

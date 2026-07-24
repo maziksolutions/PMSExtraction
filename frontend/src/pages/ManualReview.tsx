@@ -17,6 +17,9 @@ import {
   XCircle,
   Upload,
   Zap,
+  Pause,
+  Play,
+  Square,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
@@ -73,6 +76,8 @@ interface ScreeningStatus {
   total: number
   done: number
   status: 'idle' | 'running' | 'completed' | 'failed'
+  current_manual_name?: string | null
+  detailed_status?: string | null
 }
 
 interface ExtractionStatus {
@@ -593,6 +598,32 @@ const ManualReview: React.FC = () => {
     },
   })
 
+  const pauseExtractMutation = useMutation({
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/extract-pause`).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+    },
+  })
+
+  const resumeExtractMutation = useMutation({
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/extract-resume`).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+    },
+  })
+
+  const stopExtractMutation = useMutation({
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/extract-stop`).then((r) => r.data),
+    onSuccess: () => {
+      setExtractionPolling(false)
+      queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
+    },
+  })
+
   // ── Editing / saving ──────────────────────────────────────────────────────
 
   const saveMutation = useMutation({
@@ -920,14 +951,27 @@ const ManualReview: React.FC = () => {
 
       {/* Screening progress bar */}
       {isScreening && screeningData && screeningData.total > 0 && (
-        <div className="rounded-xl border border-violet-700 bg-violet-900/20 p-4 space-y-2">
-          <div className="flex items-center justify-between text-sm">
-            <span className="font-medium text-violet-300">Screening manuals... {screeningData.done} / {screeningData.total}</span>
-            <span className="text-violet-400">{screeningProgress}%</span>
+        <div className="rounded-xl border border-violet-700 bg-violet-900/20 p-4 space-y-3">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium text-violet-300">Screening manuals... {screeningData.done} / {screeningData.total} manuals</span>
+              <span className="text-violet-400 font-bold">{screeningProgress}%</span>
+            </div>
+            <div className="h-2 w-full rounded-full bg-slate-800 overflow-hidden">
+              <div className="h-2 rounded-full bg-violet-500 transition-all duration-500" style={{ width: `${screeningProgress}%` }} />
+            </div>
           </div>
-          <div className="h-2 w-full rounded-full bg-slate-800 overflow-hidden">
-            <div className="h-2 rounded-full bg-violet-500 transition-all duration-500" style={{ width: `${screeningProgress}%` }} />
-          </div>
+
+          {screeningData.current_manual_name && (
+            <div className="space-y-1.5 bg-slate-900/40 rounded-lg p-3 border border-violet-950/40 text-xs">
+              <div className="text-violet-400 font-medium truncate">
+                Active: {screeningData.current_manual_name}
+              </div>
+              <div className="text-slate-400 italic">
+                {screeningData.detailed_status || 'Initializing screening...'}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -936,10 +980,40 @@ const ManualReview: React.FC = () => {
         <div className="rounded-xl border border-emerald-700 bg-emerald-900/20 p-4 space-y-3">
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
-              <span className="font-medium text-emerald-300">
-                Extracting manuals... {extractionData.done} / {extractionData.total} manuals
+              <span className="font-medium text-emerald-300 flex items-center gap-1.5">
+                <span className={`h-2.5 w-2.5 rounded-full ${extractionData.status === 'paused' ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500 animate-ping'}`} />
+                {extractionData.status === 'paused' ? 'Extraction Paused' : 'Extracting manuals...'} {extractionData.done} / {extractionData.total} manuals
               </span>
-              <span className="text-emerald-400 font-bold">{extractionProgress}%</span>
+              <div className="flex items-center gap-2">
+                {extractionData.status === 'paused' ? (
+                  <button
+                    onClick={() => resumeExtractMutation.mutate()}
+                    disabled={resumeExtractMutation.isPending}
+                    className="flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40 transition"
+                    title="Resume extraction"
+                  >
+                    <Play className="h-3 w-3" /> Resume
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => pauseExtractMutation.mutate()}
+                    disabled={pauseExtractMutation.isPending}
+                    className="flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded bg-amber-600 hover:bg-amber-500 text-white disabled:opacity-40 transition"
+                    title="Pause extraction (finishing active manual...)"
+                  >
+                    <Pause className="h-3 w-3" /> Pause
+                  </button>
+                )}
+                <button
+                  onClick={() => stopExtractMutation.mutate()}
+                  disabled={stopExtractMutation.isPending}
+                  className="flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded bg-red-700 hover:bg-red-600 text-white disabled:opacity-40 transition"
+                  title="Stop/Cancel extraction"
+                >
+                  <Square className="h-3 w-3" /> Stop
+                </button>
+                <span className="text-emerald-400 font-bold ml-2">{extractionProgress}%</span>
+              </div>
             </div>
             <div className="h-2 w-full rounded-full bg-slate-800 overflow-hidden">
               <div className="h-2 rounded-full bg-emerald-500 transition-all duration-500" style={{ width: `${extractionProgress}%` }} />

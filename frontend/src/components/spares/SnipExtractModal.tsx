@@ -243,6 +243,34 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     }
   }
 
+  // Mouse wheel zoom centered at mouse cursor position (Ctrl + wheel)
+  const handleWheelZoom = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (!e.ctrlKey) return
+    e.preventDefault()
+    e.stopPropagation()
+
+    const container = e.currentTarget
+    const rect = container.getBoundingClientRect()
+    const mouseX = e.clientX - rect.left
+    const mouseY = e.clientY - rect.top
+
+    const oldZoom = zoom
+    const zoomDelta = e.deltaY < 0 ? 0.15 : -0.15
+    const newZoom = Math.max(0.4, Math.min(3.0, Math.round((oldZoom + zoomDelta) * 100) / 100))
+
+    if (newZoom === oldZoom) return
+
+    const contentX = (container.scrollLeft + mouseX) / oldZoom
+    const contentY = (container.scrollTop + mouseY) / oldZoom
+
+    setZoom(newZoom)
+
+    requestAnimationFrame(() => {
+      container.scrollLeft = contentX * newZoom - mouseX
+      container.scrollTop = contentY * newZoom - mouseY
+    })
+  }
+
   // Use pointer events + setPointerCapture so the drag keeps firing even when
   // the cursor moves outside the overlay or the container scrolls.
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -560,9 +588,12 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                 shrinks to exactly the image size — this keeps the overlay and
                 selection box perfectly aligned with the visible image.
               */}
-              <div className="flex-1 overflow-auto rounded-lg border border-slate-700 bg-slate-900">
+              <div 
+                className="flex-1 overflow-auto rounded-lg border border-slate-700 bg-slate-900"
+                onWheel={handleWheelZoom}
+              >
                 <div 
-                  className="inline-block min-w-full select-none"
+                  className="inline-block min-w-max select-none p-4"
                   style={{ zoom: zoom }}
                 >
                   <div className="relative inline-block">
@@ -572,7 +603,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
                       alt="Manual page"
                       draggable={false}
                       className="block bg-white"
-                      style={{ userSelect: 'none', pointerEvents: 'none', maxHeight: '100%' }}
+                      style={{ userSelect: 'none', pointerEvents: 'none' }}
                     />
                     {/* Interaction overlay — pointer capture keeps drag firing outside bounds */}
                     <div

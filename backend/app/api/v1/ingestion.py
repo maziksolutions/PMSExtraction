@@ -75,6 +75,46 @@ router = APIRouter()
 _screening_state: dict[str, dict] = {}
 
 
+def set_screening_state(
+    vessel_id_str: str,
+    *,
+    total: int | None = None,
+    done: int | None = None,
+    status: str | None = None,
+    current_manual_name: str | None = None,
+    detailed_status: str | None = None,
+) -> None:
+    if vessel_id_str not in _screening_state:
+        _screening_state[vessel_id_str] = {
+            "total": 0,
+            "done": 0,
+            "status": "idle",
+            "current_manual_name": None,
+            "detailed_status": None,
+        }
+    state = _screening_state[vessel_id_str]
+    if total is not None:
+        state["total"] = total
+    if done is not None:
+        state["done"] = done
+    if status is not None:
+        state["status"] = status
+        if status in ("completed", "failed", "idle"):
+            state["current_manual_name"] = None
+            state["detailed_status"] = None
+    if current_manual_name is not None:
+        state["current_manual_name"] = current_manual_name
+    if detailed_status is not None:
+        state["detailed_status"] = detailed_status
+
+
+def get_screening_state(vessel_id_str: str) -> dict[str, Any]:
+    return _screening_state.get(
+        vessel_id_str,
+        {"total": 0, "done": 0, "status": "idle", "current_manual_name": None, "detailed_status": None},
+    )
+
+
 
 
 
@@ -1194,9 +1234,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
 
         runnable_manual_ids = [str(manual.id) for manual in manuals]
 
-        _screening_state[vessel_id_str]["total"] = len(runnable_manual_ids)
-
-        _screening_state[vessel_id_str]["done"] = 0
+        set_screening_state(vessel_id_str, total=len(runnable_manual_ids), done=0, status="running")
 
 
 
@@ -1239,6 +1277,16 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
 
 
                         manual_name = manual.original_filename
+
+                        set_screening_state(
+
+                            vessel_id_str,
+
+                            current_manual_name=manual_name,
+
+                            detailed_status="Loading file content..."
+
+                        )
 
                         file_path = manual.blob_storage_key
 
@@ -1326,6 +1374,14 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
 
                         )
 
+                        set_screening_state(
+
+                            vessel_id_str,
+
+                            detailed_status="Running AI classification..."
+
+                        )
+
                         if content and ext == "pdf":
 
                             cr = await asyncio.to_thread(
@@ -1385,7 +1441,9 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                                 logger.warning(
 
                                     "_run_screening_task: no PDF and no extracted_text for %s -- using keyword fallback",
+
                                     manual.original_filename,
+
                                 )
 
                                 cr = _keyword_classify([], manual.original_filename, 0)
@@ -1462,6 +1520,14 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
 
 
 
+                                    set_screening_state(
+
+                                        vessel_id_str,
+
+                                        detailed_status="Parsing and re-extracting text..."
+
+                                    )
+
                                     new_extracted_text = await asyncio.to_thread(_reextract, content)
 
                                 except Exception as re_err:
@@ -1478,7 +1544,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
 
                         update_vals: dict[str, Any] = {
 
-                            "category": cr.category,
+                            "category": getattr(cr, "category", None) or manual.category,
 
                             "classification_confidence": cr.confidence,
 
@@ -1493,6 +1559,8 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                             "supply_type": getattr(cr, "supply_type", "OEM"),
 
                             "status": ManualStatus.classified,
+
+                            "screening_explanation": getattr(cr, "screening_explanation", ""),
 
                         }
 
@@ -1550,7 +1618,9 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
 
                     async with state_lock:
 
-                        _screening_state[vessel_id_str]["done"] += 1
+                        st = get_screening_state(vessel_id_str)
+
+                        set_screening_state(vessel_id_str, done=st.get("done", 0) + 1)
 
 
 
@@ -1562,11 +1632,11 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
 
         await asyncio.gather(*[_screen_one(manual_id) for manual_id in runnable_manual_ids])
 
-        _screening_state[vessel_id_str]["status"] = "completed"
+        set_screening_state(vessel_id_str, status="completed")
 
     except Exception:
 
-        _screening_state[vessel_id_str]["status"] = "failed"
+        set_screening_state(vessel_id_str, status="failed")
 
 
 
@@ -1716,9 +1786,9 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
 
     """Background task: runs auto_extract_from_manual with bounded parallelism."""
 
-    from app.services.extractor import get_extraction_state, set_extraction_state, auto_extract_from_manual
+    from app.services.extractor import get_extraction_state, set_extraction_state, auto_extract_from_manual, _active_extraction_tasks, _extraction_paused_flags
 
-
+    _active_extraction_tasks[vessel_id_str] = asyncio.current_task()
 
     logger.warning(
 
@@ -1738,11 +1808,13 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
 
         state_lock = asyncio.Lock()
 
-
-
         async def _run_one(manual_id: str) -> None:
 
             async with semaphore:
+
+                while _extraction_paused_flags.get(vessel_id_str):
+
+                    await asyncio.sleep(1)
 
                 try:
 
@@ -1780,8 +1852,6 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
 
                         )
 
-
-
         await asyncio.gather(*[_run_one(manual_id) for manual_id in manual_ids])
 
         state = get_extraction_state(vessel_id_str)
@@ -1810,6 +1880,12 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
 
         )
 
+    except asyncio.CancelledError:
+
+        logger.info("_run_extract_selected_task: task cancelled")
+
+        set_extraction_state(vessel_id_str, status="idle")
+
     except Exception as exc:
 
         logger.error("_run_extract_selected_task: task failed: %s", exc)
@@ -1827,6 +1903,12 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
             status="failed",
 
         )
+
+    finally:
+
+        _active_extraction_tasks.pop(vessel_id_str, None)
+
+        _extraction_paused_flags.pop(vessel_id_str, None)
 
 
 

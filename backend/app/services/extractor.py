@@ -31,6 +31,38 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _extract_state: dict[str, dict] = {}
 
+_active_extraction_tasks: dict[str, asyncio.Task] = {}
+_extraction_paused_flags: dict[str, bool] = {}
+
+
+def pause_extraction(vessel_id_str: str) -> bool:
+    if vessel_id_str in _extract_state and _extract_state[vessel_id_str]["status"] == "running":
+        _extraction_paused_flags[vessel_id_str] = True
+        set_extraction_state(vessel_id_str, status="paused")
+        return True
+    return False
+
+
+def resume_extraction(vessel_id_str: str) -> bool:
+    if vessel_id_str in _extract_state and _extract_state[vessel_id_str]["status"] == "paused":
+        _extraction_paused_flags[vessel_id_str] = False
+        set_extraction_state(vessel_id_str, status="running")
+        return True
+    return False
+
+
+def stop_extraction(vessel_id_str: str) -> bool:
+    _extraction_paused_flags.pop(vessel_id_str, None)
+    task = _active_extraction_tasks.pop(vessel_id_str, None)
+    if task and not task.done():
+        task.cancel()
+        set_extraction_state(vessel_id_str, status="idle")
+        return True
+    if vessel_id_str in _extract_state and _extract_state[vessel_id_str]["status"] in ("running", "paused"):
+        set_extraction_state(vessel_id_str, status="idle")
+        return True
+    return False
+
 
 def set_extraction_state(
     vessel_id_str: str,
