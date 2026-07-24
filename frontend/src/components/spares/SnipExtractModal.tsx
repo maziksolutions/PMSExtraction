@@ -41,13 +41,17 @@ function getApiError(err: unknown): string {
 
 async function imageElementToBlob(
   imgEl: HTMLImageElement,
+  zoom: number,
   cropBox?: { x1: number; y1: number; x2: number; y2: number }
 ): Promise<Blob> {
   const canvas = document.createElement('canvas')
   let sx = 0, sy = 0, sw = imgEl.naturalWidth, sh = imgEl.naturalHeight
   if (cropBox) {
-    const scaleX = imgEl.naturalWidth / imgEl.offsetWidth
-    const scaleY = imgEl.naturalHeight / imgEl.offsetHeight
+    const rect = imgEl.getBoundingClientRect()
+    const unzoomedWidth = (rect.width || 1) / zoom
+    const unzoomedHeight = (rect.height || 1) / zoom
+    const scaleX = imgEl.naturalWidth / unzoomedWidth
+    const scaleY = imgEl.naturalHeight / unzoomedHeight
     sx = Math.round(cropBox.x1 * scaleX)
     sy = Math.round(cropBox.y1 * scaleY)
     sw = Math.round((cropBox.x2 - cropBox.x1) * scaleX)
@@ -350,7 +354,7 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
     setSaveMessage(null)
     try {
       const cropBox = useSelection ? getCropBox() : undefined
-      const blob = await imageElementToBlob(imgRef.current, cropBox)
+      const blob = await imageElementToBlob(imgRef.current, zoom, cropBox)
       const formData = new FormData()
       formData.append('image', blob, 'page.png')
       if (loadedPage) formData.append('page_number', String(loadedPage))
