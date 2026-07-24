@@ -1790,6 +1790,9 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
 
     _active_extraction_tasks[vessel_id_str] = asyncio.current_task()
 
+    import app.services.extractor as extractor_module
+    extractor_module._claude_vision_billing_failed = False
+
     logger.warning(
 
         "_run_extract_selected_task: starting vessel=%s manuals=%s",

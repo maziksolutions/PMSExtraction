@@ -1023,23 +1023,33 @@ async def snip_extract_spares(
     if not image_bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image file is empty")
 
+    import app.services.extractor as extractor_module
+    extractor_module._claude_vision_billing_failed = False
+
     from app.services.extractor import _extract_entities_from_page_image
 
     # Claude vision primary, OpenAI fallback. Enhancement applied inside the vision function.
-    records = await _extract_entities_from_page_image(
-        image_bytes=image_bytes,
-        filename=image.filename or "snipped_region.png",
-        page_no=page_number or 0,
-        extraction_type="spare",
-        context_note=(
-            "This is a manually snipped/cropped image of a spare parts table. "
-            "STEP 1: Count the number of data rows visible (not headers). "
-            "STEP 2: Output EXACTLY that many JSON records — do not stop early or skip rows. "
-            "Typical columns: REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS. "
-            "ALL output fields MUST be in English — translate ALL Japanese or non-English text to English. "
-            "Never output Japanese/non-English characters in any field."
-        ),
-    )
+    try:
+        records = await _extract_entities_from_page_image(
+            image_bytes=image_bytes,
+            filename=image.filename or "snipped_region.png",
+            page_no=page_number or 0,
+            extraction_type="spare",
+            context_note=(
+                "This is a manually snipped/cropped image of a spare parts table. "
+                "STEP 1: Count the number of data rows visible (not headers). "
+                "STEP 2: Output EXACTLY that many JSON records — do not stop early or skip rows. "
+                "Typical columns: REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS. "
+                "ALL output fields MUST be in English — translate ALL Japanese or non-English text to English. "
+                "Never output Japanese/non-English characters in any field."
+            ),
+        )
+    except Exception as exc:
+        logger.error("snip_extract_spares: Vision extraction failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Extraction failed: {str(exc)}"
+        )
     return {"records": records, "count": len(records)}
 
 

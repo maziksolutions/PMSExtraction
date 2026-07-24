@@ -80,6 +80,9 @@ async def _run_extract_all(
     from app.services.extractor import _active_extraction_tasks, _extraction_paused_flags
     _active_extraction_tasks[vessel_id_str] = asyncio.current_task()
 
+    import app.services.extractor as extractor_module
+    extractor_module._claude_vision_billing_failed = False
+
     set_extraction_state(vessel_id_str, total=len(manual_ids), done=0, status="running")
     semaphore = asyncio.Semaphore(max(1, int(getattr(settings, "MANUAL_EXTRACTION_CONCURRENCY", 4) or 4)))
     state_lock = asyncio.Lock()
