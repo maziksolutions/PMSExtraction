@@ -1168,6 +1168,8 @@ async def _extract_entities_from_page_image(
     if not settings.OPENAI_API_KEY:
         if claude_err:
             raise claude_err
+        if not settings.ANTHROPIC_API_KEY:
+            raise RuntimeError("No Vision LLM API Key is configured on the server (both ANTHROPIC_API_KEY and OPENAI_API_KEY are empty).")
         return []
 
     return await _extract_entities_from_page_image_with_openai(
