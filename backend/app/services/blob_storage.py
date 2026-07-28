@@ -35,17 +35,38 @@ class BlobStorageService:
 
     def _init_minio(self) -> None:
         from minio import Minio
+        from urllib.parse import urlparse
 
         s = self._settings
-        endpoint = s.MINIO_ENDPOINT.replace("http://", "").replace("https://", "")
-        secure = s.MINIO_ENDPOINT.startswith("https://")
+        raw_endpoint = (s.MINIO_ENDPOINT or "").strip()
+        if not raw_endpoint:
+            raise ValueError("MINIO_ENDPOINT is not configured.")
+
+        # Robustly parse scheme, host, and port
+        if "://" not in raw_endpoint:
+            scheme = "http" if "localhost" in raw_endpoint or "127.0.0.1" in raw_endpoint else "https"
+            raw_endpoint = f"{scheme}://{raw_endpoint}"
+
+        parsed = urlparse(raw_endpoint)
+        endpoint = parsed.netloc
+        secure = parsed.scheme == "https"
+        region = getattr(s, "MINIO_REGION", "us-east-1")
+
+        logger.info(
+            "Initializing MinIO/S3 Client: endpoint=%r, secure=%s, region=%r, bucket=%r, access_key_prefix=%r",
+            endpoint,
+            secure,
+            region,
+            s.MINIO_BUCKET,
+            s.MINIO_ACCESS_KEY[:4] + "..." if s.MINIO_ACCESS_KEY else "None"
+        )
 
         self._client = Minio(
             endpoint,
             access_key=s.MINIO_ACCESS_KEY,
             secret_key=s.MINIO_SECRET_KEY,
             secure=secure,
-            region=getattr(s, "MINIO_REGION", "us-east-1"),
+            region=region,
         )
         self._bucket = s.MINIO_BUCKET
         self._ensure_bucket()
