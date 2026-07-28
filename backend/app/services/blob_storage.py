@@ -45,6 +45,7 @@ class BlobStorageService:
             access_key=s.MINIO_ACCESS_KEY,
             secret_key=s.MINIO_SECRET_KEY,
             secure=secure,
+            region=getattr(s, "MINIO_REGION", "us-east-1"),
         )
         self._bucket = s.MINIO_BUCKET
         self._ensure_bucket()

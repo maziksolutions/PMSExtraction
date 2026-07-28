@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET: str = "pms-manuals"
+    MINIO_REGION: str = "us-east-1"
+
 
     # Azure Blob Storage (production — leave blank in dev to use MinIO)
     AZURE_STORAGE_ACCOUNT: str = ""
