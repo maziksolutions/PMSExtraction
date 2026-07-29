@@ -779,6 +779,29 @@ async def export_jobs(
     )
 
 
+async def _resolve_source_manual_id(
+    db: AsyncSession,
+    vessel_id: uuid.UUID,
+    pdf_reference: str | None,
+) -> uuid.UUID | None:
+    if not pdf_reference:
+        return None
+    from app.models.ingestion import Manual
+    # Find manual by filename (case-insensitive, strip whitespace)
+    cleaned_ref = pdf_reference.strip().lower()
+    result = await db.execute(
+        select(Manual).where(
+            Manual.vessel_id == vessel_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manuals = result.scalars().all()
+    for m in manuals:
+        if m.original_filename.strip().lower() == cleaned_ref:
+            return m.id
+    return None
+
+
 @router.post(
     "/{vessel_id}/jobs",
     response_model=JobOut,
@@ -796,6 +819,8 @@ async def create_job(
         vessel_id=vessel_id,
         **body.model_dump(),
     )
+    if job.pdf_reference and not job.source_manual_id:
+        job.source_manual_id = await _resolve_source_manual_id(db, vessel_id, job.pdf_reference)
     if not job.performing_rank and job.component_id:
         inferred_rank = await infer_rank_from_component(
             db,
@@ -853,6 +878,8 @@ async def update_job(
     update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(job, field, value)
+    if "pdf_reference" in update_data and not update_data.get("source_manual_id"):
+        job.source_manual_id = await _resolve_source_manual_id(db, vessel_id, job.pdf_reference)
     if "performing_rank" in update_data:
         job.performing_rank = normalize_rank_name(job.performing_rank)
     if "verifying_rank" in update_data:
@@ -1208,8 +1235,14 @@ async def merge_jobs(
 
     had_accepted_job = any(job.qc_status == QCStatus.accepted for job in jobs)
     merged_ids: list[str] = []
+    
+    # Strip footer from target description first to prevent truncation loop bug
+    from app.services.job_naming import strip_source_reference_footer
+    target_clean_desc = strip_source_reference_footer(target.job_description)
     merged_names: list[str | None] = [target.job_name]
-    merged_descriptions: list[str | None] = [target.job_description]
+    merged_descriptions: list[str | None] = [target_clean_desc]
+    target.job_description = target_clean_desc
+    
     reference_entries = split_reference_entries(
         pdf_reference=target.pdf_reference,
         page_reference=target.page_reference,
@@ -1219,7 +1252,11 @@ async def merge_jobs(
         if job.id == target.id:
             continue
         merged_names.append(job.job_name)
-        merged_descriptions.append(job.job_description)
+        
+        # Strip footer from job description before merging
+        job_clean_desc = strip_source_reference_footer(job.job_description)
+        merged_descriptions.append(job_clean_desc)
+        target.job_description = _merge_text_values(target.job_description, job_clean_desc)
         target.safety_precaution = _merge_text_values(target.safety_precaution, job.safety_precaution)
         target.tools_required = _merge_text_values(target.tools_required, job.tools_required)
         if not target.job_code and job.job_code:

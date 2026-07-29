@@ -13,6 +13,7 @@ interface ComponentOption {
   main_machinery: string
   qc_status?: string
   source_manual_id?: string | null
+  pdf_reference?: string | null
 }
 
 interface RankOption {
@@ -69,7 +70,6 @@ type JobForm = {
   is_critical: boolean
   qc_status: string
   pdf_reference: string
-  source_manual_id: string
 }
 
 type InlineJobEdit = Partial<{
@@ -197,7 +197,6 @@ function toForm(initial?: Partial<Job>): JobForm {
     is_critical: Boolean(initial?.is_critical),
     qc_status: initial?.qc_status ?? 'pending',
     pdf_reference: initial?.pdf_reference ?? '',
-    source_manual_id: initial?.source_manual_id ?? '',
   }
 }
 
@@ -207,7 +206,7 @@ function JobEditor({
   initial,
   components,
   rankOptions,
-  manuals,
+  sourceFiles = [],
   isPending,
   onSubmit,
   onCancel,
@@ -219,7 +218,7 @@ function JobEditor({
   initial?: Partial<Job>
   components: ComponentOption[]
   rankOptions: RankOption[]
-  manuals: { id: string; original_filename: string }[]
+  sourceFiles?: string[]
   isPending: boolean
   onSubmit: (payload: Record<string, unknown>) => void
   onCancel?: () => void
@@ -237,10 +236,20 @@ function JobEditor({
   }, [initialId])
   const set = (key: keyof JobForm, value: string | boolean) => setForm((p) => ({ ...p, [key]: value }))
 
-  const filteredComponents = React.useMemo(() => {
-    if (!form.source_manual_id) return []
-    return components.filter((c) => c.source_manual_id === form.source_manual_id)
-  }, [components, form.source_manual_id])
+  // Filter components dynamically based on the selected PDF reference
+  const filteredComponents = useMemo(() => {
+    if (!form.pdf_reference) {
+      return components
+    }
+    const selectedPdf = form.pdf_reference.toLowerCase().trim()
+    const filtered = components.filter((c) => {
+      if (c.pdf_reference) {
+        return c.pdf_reference.toLowerCase().trim() === selectedPdf
+      }
+      return false
+    })
+    return filtered.length > 0 ? filtered : components
+  }, [components, form.pdf_reference])
 
   React.useEffect(() => {
     const channel = new BroadcastChannel('job-editor-channel')
@@ -314,40 +323,18 @@ function JobEditor({
           <input value={form.job_name} onChange={(e) => set('job_name', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none" />
         </div>
         <div>
-          <label className="mb-1 block text-xs text-slate-400">PDF Reference</label>
-          <select
-            value={form.source_manual_id}
-            onChange={(e) => {
-              const selectedManualId = e.target.value
-              const selectedManual = manuals.find(m => m.id === selectedManualId)
-              setForm(prev => ({
-                ...prev,
-                source_manual_id: selectedManualId,
-                pdf_reference: selectedManual ? selectedManual.original_filename : '',
-                component_id: '',
-              }))
-            }}
-            className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none"
-          >
-            <option value="">Select Manual</option>
-            {manuals.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.original_filename}
-              </option>
+          <label className="mb-1 block text-xs text-slate-400">PDF Reference (Source File)</label>
+          <select value={form.pdf_reference} onChange={(e) => set('pdf_reference', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
+            <option value="">Select PDF Reference</option>
+            {sourceFiles.map((file) => (
+              <option key={file} value={file}>{file}</option>
             ))}
           </select>
         </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">Component</label>
-          <select
-            value={form.component_id}
-            onChange={(e) => set('component_id', e.target.value)}
-            disabled={!form.source_manual_id}
-            className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none disabled:opacity-60"
-          >
-            <option value="">
-              {!form.source_manual_id ? 'Select PDF manual first' : 'Unmapped'}
-            </option>
+          <select value={form.component_id} onChange={(e) => set('component_id', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
+            <option value="">Unmapped</option>
             {filteredComponents.map((component) => (
               <option key={component.id} value={component.id}>
                 {component.component_name} ({component.group1} / {component.main_machinery})
@@ -464,7 +451,7 @@ function JobEditor({
             page_reference: initial?.page_reference ?? null,
             pdf_reference: form.pdf_reference || null,
             source_reference: initial?.source_reference ?? null,
-            source_manual_id: form.source_manual_id || null,
+            source_manual_id: form.pdf_reference === initial?.pdf_reference ? (initial?.source_manual_id ?? null) : null,
           })}
           disabled={!form.job_name || isPending}
           className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
@@ -552,13 +539,6 @@ const JobsReview: React.FC = () => {
     queryFn: () => apiClient.get(`/vessels/${vesselId}/components`, { params: { page_size: 5000, is_unmapped: 'false' } }).then((r) => r.data),
     enabled: !!vesselId,
   })
-
-  const manualsQuery = useQuery({
-    queryKey: ['vessel-manuals', vesselId],
-    queryFn: () => apiClient.get(`/vessels/${vesselId}/manuals`, { params: { page_size: 1000 } }).then((r) => r.data),
-    enabled: !!vesselId,
-  })
-  const manualOptions = manualsQuery.data?.items ?? []
 
   const rankOptionsQuery = useQuery({
     queryKey: ['job-ranks'],
@@ -840,21 +820,22 @@ const JobsReview: React.FC = () => {
     [componentOptionsQuery.data?.items]
   )
 
-  const selectedJobs = useMemo(() => {
-    return (data?.items ?? []).filter((j: Job) => selectedIds.has(j.id))
-  }, [data?.items, selectedIds])
-
-  const commonSourceManualId = useMemo(() => {
-    if (selectedJobs.length === 0) return null
-    const firstId = selectedJobs[0].source_manual_id
-    const allSame = selectedJobs.every(j => j.source_manual_id === firstId)
-    return allSame ? firstId : null
-  }, [selectedJobs])
-
-  const batchComponentOptions = useMemo(() => {
-    if (!commonSourceManualId) return []
-    return componentOptions.filter(c => c.source_manual_id === commonSourceManualId)
-  }, [componentOptions, commonSourceManualId])
+  const getFilteredComponentsForJob = useCallback((job: Job | null | undefined) => {
+    if (!job) return componentOptions
+    const filtered = componentOptions.filter((c) => {
+      if (job.source_manual_id && c.source_manual_id) {
+        return c.source_manual_id === job.source_manual_id
+      }
+      if (job.pdf_reference && c.pdf_reference) {
+        return c.pdf_reference.toLowerCase().trim() === job.pdf_reference.toLowerCase().trim()
+      }
+      if (!job.source_manual_id && !job.pdf_reference) {
+        return true
+      }
+      return false
+    })
+    return filtered.length > 0 ? filtered : componentOptions
+  }, [componentOptions])
 
   const mergeTargetId = useMemo(() => {
     if (selectedJob && selectedIds.has(selectedJob.id)) return selectedJob.id
@@ -1061,17 +1042,10 @@ const JobsReview: React.FC = () => {
             </div>
             <p className="text-xs text-slate-400">Fill only the fields you want to update. Empty fields are ignored.</p>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-              <select
-                value={batchFields.component_id ?? ''}
-                onChange={(e) => setBatchFields((prev) => ({ ...prev, component_id: e.target.value }))}
-                disabled={!commonSourceManualId}
-                className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none disabled:opacity-60"
-              >
-                <option value="">
-                  {!commonSourceManualId ? 'Select jobs from same manual' : 'Component - no change'}
-                </option>
+              <select value={batchFields.component_id ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, component_id: e.target.value }))} className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none">
+                <option value="">Component - no change</option>
                 <option value="__unmapped__">Unmapped</option>
-                {batchComponentOptions.map((component) => (
+                {componentOptions.map((component) => (
                   <option key={component.id} value={component.id}>{component.component_name}</option>
                 ))}
               </select>
@@ -1267,11 +1241,9 @@ const JobsReview: React.FC = () => {
                           className="w-[240px] rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
                         >
                           <option value="">Unmapped</option>
-                          {componentOptions
-                            .filter((component) => component.source_manual_id === job.source_manual_id)
-                            .map((component) => (
-                              <option key={component.id} value={component.id}>{component.component_name}</option>
-                            ))}
+                          {getFilteredComponentsForJob(job).map((component) => (
+                            <option key={component.id} value={component.id}>{component.component_name}</option>
+                          ))}
                         </select>
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-400">
@@ -1432,7 +1404,7 @@ const JobsReview: React.FC = () => {
                 initial={editingJob}
                 components={componentOptions}
                 rankOptions={rankOptions}
-                manuals={manualOptions}
+                sourceFiles={sourceFilesQuery.data ?? []}
                 isPending={saveJobMutation.isPending}
                 onCancel={() => setEditingJob(null)}
                 onSplit={() => {
@@ -1449,7 +1421,7 @@ const JobsReview: React.FC = () => {
                 initial={createDraft!}
                 components={componentOptions}
                 rankOptions={rankOptions}
-                manuals={manualOptions}
+                sourceFiles={sourceFilesQuery.data ?? []}
                 isPending={createJobMutation.isPending}
                 onCancel={() => setCreateDraft(null)}
                 onSubmit={(payload) => createJobMutation.mutate(payload)}
