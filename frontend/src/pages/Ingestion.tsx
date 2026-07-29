@@ -740,6 +740,42 @@ const Ingestion: React.FC = () => {
                 </div>
               )}
 
+              {/* Previous Sessions */}
+              <div className="border-t border-slate-850 pt-4">
+                <h3 className="mb-3 text-sm font-semibold text-slate-350">
+                  Previous Sessions
+                </h3>
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  {(sessionsData?.items ?? []).map((s: Session) => (
+                    <button
+                      key={s.id}
+                      onClick={() => {
+                        setActiveSessionId(s.id)
+                        setStep(3)
+                        setSessionPolling(true)
+                      }}
+                      className={`flex w-full items-center justify-between rounded-lg border px-4 py-2 text-sm transition-all duration-150 ${
+                        activeSessionId === s.id
+                          ? 'border-sky-600 bg-sky-950/20 text-sky-300 shadow-[0_0_12px_rgba(56,189,248,0.1)]'
+                          : 'border-slate-800 bg-slate-900/40 text-slate-300 hover:border-slate-700 hover:bg-slate-900/80'
+                      }`}
+                    >
+                      <span className="font-medium">{s.created_at?.slice(0, 10)} at {s.created_at?.slice(11, 16)}</span>
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                          statusColors[s.status] ?? ''
+                        }`}
+                      >
+                        {s.status}
+                      </span>
+                      <span className="text-slate-400">
+                        {s.downloaded_files}/{s.total_files} files
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="relative overflow-auto rounded-lg border border-slate-850 max-h-72">
                 <table className="w-full text-sm">
                   <thead>
@@ -835,42 +871,6 @@ const Ingestion: React.FC = () => {
                     Screening complete! Go to <strong className="mx-0.5">Manuals</strong> tab to review results.
                   </div>
                 )}
-              </div>
-
-              {/* Previous Sessions */}
-              <div className="border-t border-slate-850 pt-4">
-                <h3 className="mb-3 text-sm font-semibold text-slate-350">
-                  Previous Sessions
-                </h3>
-                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                  {(sessionsData?.items ?? []).map((s: Session) => (
-                    <button
-                      key={s.id}
-                      onClick={() => {
-                        setActiveSessionId(s.id)
-                        setStep(3)
-                        setSessionPolling(true)
-                      }}
-                      className={`flex w-full items-center justify-between rounded-lg border px-4 py-2 text-sm transition-all duration-150 ${
-                        activeSessionId === s.id
-                          ? 'border-sky-600 bg-sky-950/20 text-sky-300 shadow-[0_0_12px_rgba(56,189,248,0.1)]'
-                          : 'border-slate-800 bg-slate-900/40 text-slate-300 hover:border-slate-700 hover:bg-slate-900/80'
-                      }`}
-                    >
-                      <span className="font-medium">{s.created_at?.slice(0, 10)} at {s.created_at?.slice(11, 16)}</span>
-                      <span
-                        className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                          statusColors[s.status] ?? ''
-                        }`}
-                      >
-                        {s.status}
-                      </span>
-                      <span className="text-slate-400">
-                        {s.downloaded_files}/{s.total_files} files
-                      </span>
-                    </button>
-                  ))}
-                </div>
               </div>
             </div>
           )}
