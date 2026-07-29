@@ -1220,7 +1220,6 @@ async def merge_jobs(
             continue
         merged_names.append(job.job_name)
         merged_descriptions.append(job.job_description)
-        target.job_description = _merge_text_values(target.job_description, job.job_description)
         target.safety_precaution = _merge_text_values(target.safety_precaution, job.safety_precaution)
         target.tools_required = _merge_text_values(target.tools_required, job.tools_required)
         if not target.job_code and job.job_code:
