@@ -12,6 +12,140 @@ ALLOWED_EXTENSIONS = {"pdf", "docx", "doc", "xlsx", "xls", "png", "jpg", "jpeg",
 _MAX_DEPTH = 6  # maximum folder recursion depth
 
 
+MOCK_HIERARCHY = {
+    "root": {
+        "name": "Vessel Manuals Root",
+        "folders": [
+            {"id": "main_engine", "name": "Main Engine", "child_count": 3},
+            {"id": "aux_boiler", "name": "Auxiliary Boiler", "child_count": 2},
+            {"id": "deck_dept", "name": "Deck Department", "child_count": 1},
+        ],
+        "files": [
+            {
+                "name": "Vessel_Particulars.pdf",
+                "id": "file_particulars",
+                "size": 1200000,
+                "mimeType": "application/pdf",
+                "webUrl": "https://mzk09.sharepoint.com/Shared Documents/Vessel_Particulars.pdf",
+                "download_url": "https://mzk09.sharepoint.com/Shared Documents/Vessel_Particulars.pdf",
+                "folder_path": "",
+                "modified": "2026-07-28T10:00:00Z"
+            },
+            {
+                "name": "Safety_Equipment_List.xlsx",
+                "id": "file_safety",
+                "size": 340000,
+                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "webUrl": "https://mzk09.sharepoint.com/Shared Documents/Safety_Equipment_List.xlsx",
+                "download_url": "https://mzk09.sharepoint.com/Shared Documents/Safety_Equipment_List.xlsx",
+                "folder_path": "",
+                "modified": "2026-07-27T14:30:00Z"
+            }
+        ]
+    },
+    "main_engine": {
+        "name": "Main Engine",
+        "parent_id": "root",
+        "folders": [
+            {"id": "me_drawings", "name": "Drawings & Schematics", "child_count": 2}
+        ],
+        "files": [
+            {
+                "name": "main_engine_instruction_manual.pdf",
+                "id": "file_me_manual",
+                "size": 15423000,
+                "mimeType": "application/pdf",
+                "webUrl": "https://mzk09.sharepoint.com/Shared Documents/Main Engine/main_engine_instruction_manual.pdf",
+                "download_url": "https://mzk09.sharepoint.com/Shared Documents/Main Engine/main_engine_instruction_manual.pdf",
+                "folder_path": "Main Engine",
+                "modified": "2026-05-15T08:00:00Z"
+            },
+            {
+                "name": "engine_specifications.docx",
+                "id": "file_me_specs",
+                "size": 2150000,
+                "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "webUrl": "https://mzk09.sharepoint.com/Shared Documents/Main Engine/engine_specifications.docx",
+                "download_url": "https://mzk09.sharepoint.com/Shared Documents/Main Engine/engine_specifications.docx",
+                "folder_path": "Main Engine",
+                "modified": "2026-06-01T11:20:00Z"
+            }
+        ]
+    },
+    "me_drawings": {
+        "name": "Drawings & Schematics",
+        "parent_id": "main_engine",
+        "folders": [],
+        "files": [
+            {
+                "name": "cylinder_liner_assembly.pdf",
+                "id": "file_cyl_liner",
+                "size": 4500000,
+                "mimeType": "application/pdf",
+                "webUrl": "https://mzk09.sharepoint.com/Shared Documents/Main Engine/Drawings/cylinder_liner_assembly.pdf",
+                "download_url": "https://mzk09.sharepoint.com/Shared Documents/Main Engine/Drawings/cylinder_liner_assembly.pdf",
+                "folder_path": "Main Engine/Drawings & Schematics",
+                "modified": "2026-04-10T15:00:00Z"
+            },
+            {
+                "name": "fuel_injection_pump_drawing.png",
+                "id": "file_fuel_pump",
+                "size": 3100000,
+                "mimeType": "image/png",
+                "webUrl": "https://mzk09.sharepoint.com/Shared Documents/Main Engine/Drawings/fuel_injection_pump_drawing.png",
+                "download_url": "https://mzk09.sharepoint.com/Shared Documents/Main Engine/Drawings/fuel_injection_pump_drawing.png",
+                "folder_path": "Main Engine/Drawings & Schematics",
+                "modified": "2026-04-12T09:45:00Z"
+            }
+        ]
+    },
+    "aux_boiler": {
+        "name": "Auxiliary Boiler",
+        "parent_id": "root",
+        "folders": [],
+        "files": [
+            {
+                "name": "boiler_instruction_manual.pdf",
+                "id": "file_boiler_manual",
+                "size": 12400000,
+                "mimeType": "application/pdf",
+                "webUrl": "https://mzk09.sharepoint.com/Shared Documents/Auxiliary Boiler/boiler_instruction_manual.pdf",
+                "download_url": "https://mzk09.sharepoint.com/Shared Documents/Auxiliary Boiler/boiler_instruction_manual.pdf",
+                "folder_path": "Auxiliary Boiler",
+                "modified": "2026-02-20T10:15:00Z"
+            },
+            {
+                "name": "water_level_gauge_maintenance.docx",
+                "id": "file_boiler_gauge",
+                "size": 1800000,
+                "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "webUrl": "https://mzk09.sharepoint.com/Shared Documents/Auxiliary Boiler/water_level_gauge_maintenance.docx",
+                "download_url": "https://mzk09.sharepoint.com/Shared Documents/Auxiliary Boiler/water_level_gauge_maintenance.docx",
+                "folder_path": "Auxiliary Boiler",
+                "modified": "2026-03-05T16:30:00Z"
+            }
+        ]
+    },
+    "deck_dept": {
+        "name": "Deck Department",
+        "parent_id": "root",
+        "folders": [],
+        "files": [
+            {
+                "name": "provision_crane_winch_manual.pdf",
+                "id": "file_winch_manual",
+                "size": 6700000,
+                "mimeType": "application/pdf",
+                "webUrl": "https://mzk09.sharepoint.com/Shared Documents/Deck Department/provision_crane_winch_manual.pdf",
+                "download_url": "https://mzk09.sharepoint.com/Shared Documents/Deck Department/provision_crane_winch_manual.pdf",
+                "folder_path": "Deck Department",
+                "modified": "2025-12-10T13:00:00Z"
+            }
+        ]
+    }
+}
+
+
 class SharePointService:
     """
     Wrapper around Microsoft Graph API for SharePoint file operations.
@@ -20,8 +154,15 @@ class SharePointService:
     """
 
     def __init__(self, access_token: Optional[str] = None, sharepoint_hostname: Optional[str] = None) -> None:
+        self.mock_mode = False
         if not access_token:
-            access_token = self._get_client_credentials_token(sharepoint_hostname=sharepoint_hostname)
+            try:
+                access_token = self._get_client_credentials_token(sharepoint_hostname=sharepoint_hostname)
+            except ValueError as e:
+                logger.warning("Azure credentials missing or incomplete; enabling local mock mode: %s", e)
+                self.mock_mode = True
+                access_token = "MOCK_ACCESS_TOKEN"
+
         self.token = access_token
         self.graph_base = "https://graph.microsoft.com/v1.0"
         self._headers = {
@@ -113,6 +254,162 @@ class SharePointService:
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def get_sharing_token(url: str) -> str:
+        import base64
+        url = url.strip().rstrip("/")
+        url_bytes = url.encode("utf-8")
+        base64_bytes = base64.b64encode(url_bytes)
+        base64_string = base64_bytes.decode("utf-8")
+        safe_base64_string = base64_string.replace('+', '-').replace('/', '_').rstrip('=')
+        return 'u!' + safe_base64_string
+
+    async def list_folder_contents_v2(
+        self,
+        folder_url: str,
+        drive_id: Optional[str] = None,
+        folder_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        List immediate children of a folder (folders and files), supporting sharing links and navigation.
+        """
+        if getattr(self, "mock_mode", False):
+            target_id = folder_id or "root"
+            if target_id not in MOCK_HIERARCHY:
+                target_id = "root"
+            node = MOCK_HIERARCHY[target_id]
+            return {
+                "files": node.get("files", []),
+                "folders": node.get("folders", []),
+                "drive_id": "mock_drive",
+                "folder_id": target_id,
+                "parent_id": node.get("parent_id"),
+                "folder_name": node.get("name"),
+                "total": len(node.get("files", [])) + len(node.get("folders", []))
+            }
+
+        is_share = False
+        parsed_url = urlparse(folder_url)
+        path_parts = [unquote(p) for p in parsed_url.path.split("/") if p]
+        for part in path_parts:
+            if part.startswith(":") and part.endswith(":"):
+                is_share = True
+                break
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            if not drive_id or not folder_id:
+                if is_share:
+                    token = self.get_sharing_token(folder_url)
+                    url = f"{self.graph_base}/shares/{token}/driveItem"
+                    resp = await client.get(url, headers=self._headers)
+                    resp.raise_for_status()
+                    data = resp.json()
+
+                    remote_item = data.get("remoteItem", {})
+                    if remote_item:
+                        folder_id = remote_item.get("id")
+                        drive_id = remote_item.get("parentReference", {}).get("driveId")
+                        folder_name = remote_item.get("name", "Shared Folder")
+                    else:
+                        folder_id = data.get("id")
+                        drive_id = data.get("parentReference", {}).get("driveId")
+                        folder_name = data.get("name", "Shared Folder")
+                else:
+                    site_id, drive_path = self._parse_folder_url(folder_url)
+                    if drive_path:
+                        parts = drive_path.split("/", 1)
+                        library_name = parts[0]
+                        sub_path = parts[1] if len(parts) > 1 else ""
+
+                        resolved_drive_id = await self._find_drive_id(client, site_id, library_name)
+                        if resolved_drive_id:
+                            drive_id = resolved_drive_id
+                            if sub_path:
+                                url = f"{self.graph_base}/sites/{site_id}/drives/{drive_id}/root:/{sub_path}"
+                            else:
+                                url = f"{self.graph_base}/sites/{site_id}/drives/{drive_id}/root"
+                        else:
+                            url = f"{self.graph_base}/sites/{site_id}/drive/root"
+                    else:
+                        url = f"{self.graph_base}/sites/{site_id}/drive/root"
+
+                    resp = await client.get(url, headers=self._headers)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    folder_id = data.get("id")
+                    drive_id = data.get("parentReference", {}).get("driveId") or drive_id
+                    folder_name = data.get("name", "Documents")
+            else:
+                url = f"{self.graph_base}/drives/{drive_id}/items/{folder_id}"
+                resp = await client.get(url, headers=self._headers)
+                resp.raise_for_status()
+                data = resp.json()
+                folder_name = data.get("name", "")
+
+            parent_id = data.get("parentReference", {}).get("id")
+
+            children_url = f"{self.graph_base}/drives/{drive_id}/items/{folder_id}/children"
+            files_list = []
+            folders_list = []
+
+            next_link = children_url
+            while next_link:
+                resp = await client.get(next_link, headers=self._headers)
+                resp.raise_for_status()
+                children_data = resp.json()
+
+                for item in children_data.get("value", []):
+                    name = item.get("name", "")
+                    item_id = item.get("id", "")
+                    
+                    if "folder" in item:
+                        folders_list.append({
+                            "id": item_id,
+                            "name": name,
+                            "child_count": item.get("folder", {}).get("childCount", 0),
+                            "modified": item.get("lastModifiedDateTime", ""),
+                        })
+                    else:
+                        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+                        if ext not in ALLOWED_EXTENSIONS:
+                            continue
+                        
+                        download_url = item.get("@microsoft.graph.downloadUrl", "")
+                        if not download_url:
+                            try:
+                                meta_url = f"{self.graph_base}/drives/{drive_id}/items/{item_id}"
+                                meta_resp = await client.get(
+                                    meta_url,
+                                    headers={**self._headers, "Prefer": "allowthrottleablequeries"},
+                                )
+                                if meta_resp.is_success:
+                                    download_url = meta_resp.json().get("@microsoft.graph.downloadUrl", "")
+                            except Exception as err:
+                                logger.warning("Could not get download URL for %s: %s", name, err)
+
+                        files_list.append({
+                            "name": name,
+                            "id": item_id,
+                            "path": download_url or item_id,
+                            "size": item.get("size", 0),
+                            "mimeType": item.get("file", {}).get("mimeType", "application/octet-stream"),
+                            "webUrl": item.get("webUrl", ""),
+                            "download_url": download_url,
+                            "modified": item.get("lastModifiedDateTime", ""),
+                        })
+
+                next_link = children_data.get("@odata.nextLink")
+
+            return {
+                "files": files_list,
+                "folders": folders_list,
+                "drive_id": drive_id,
+                "folder_id": folder_id,
+                "parent_id": parent_id,
+                "folder_name": folder_name,
+                "total": len(files_list) + len(folders_list)
+            }
 
     async def list_folder_contents(self, folder_url: str) -> List[Dict[str, Any]]:
         """

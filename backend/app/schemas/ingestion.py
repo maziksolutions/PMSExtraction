@@ -131,10 +131,17 @@ class SharePointAuthResponse(BaseModel):
 
 class SharePointFileListRequest(BaseModel):
     folder_url: Optional[str] = None
+    drive_id: Optional[str] = None
+    folder_id: Optional[str] = None
 
 
 class SharePointFileListResponse(BaseModel):
     files: List[Dict[str, Any]]
+    folders: List[Dict[str, Any]] = []
+    drive_id: Optional[str] = None
+    folder_id: Optional[str] = None
+    parent_id: Optional[str] = None
+    folder_name: Optional[str] = None
     total: int
 
 
