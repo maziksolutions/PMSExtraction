@@ -1216,7 +1216,6 @@ const JobsReview: React.FC = () => {
                       key={job.id}
                       className={`cursor-pointer transition-colors hover:bg-slate-800/60 ${selectedIds.has(job.id) ? 'bg-sky-900/10' : ''} ${selectedJob?.id === job.id ? 'bg-slate-800/70' : ''} ${job.is_unmapped ? 'border-l-2 border-amber-600' : ''}`}
                       onClick={() => {
-                        toggleSelect(job.id)
                         setSelectedJob(job)
                       }}
                       onDoubleClick={() => {
