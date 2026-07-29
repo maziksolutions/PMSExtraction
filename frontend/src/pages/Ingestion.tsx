@@ -740,14 +740,14 @@ const Ingestion: React.FC = () => {
                 </div>
               )}
 
-              <div className="overflow-x-auto rounded-lg border border-slate-850">
+              <div className="relative overflow-auto rounded-lg border border-slate-850 max-h-72">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-800 bg-slate-950 text-left text-xs text-slate-500 uppercase font-semibold">
-                      <th className="p-3">File Name</th>
-                      <th className="p-3">Size</th>
-                      <th className="p-3">Status</th>
-                      <th className="p-3">Retries</th>
+                      <th className="p-3 sticky top-0 bg-slate-950 z-10">File Name</th>
+                      <th className="p-3 sticky top-0 bg-slate-950 z-10">Size</th>
+                      <th className="p-3 sticky top-0 bg-slate-950 z-10">Status</th>
+                      <th className="p-3 sticky top-0 bg-slate-950 z-10">Retries</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-850 bg-slate-900/20">
