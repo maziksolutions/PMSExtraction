@@ -611,21 +611,14 @@ async def get_session(
 
 
     # Get manuals for this vessel in this session's time range
-
+    from datetime import timedelta
     manuals_result = await db.execute(
-
         select(Manual).where(
-
             Manual.vessel_id == vessel_id,
-
             Manual.tenant_id == current_user.tenant_id,
-
             Manual.is_deleted == False,
-
-            Manual.created_at >= session.created_at,
-
+            Manual.created_at >= session.created_at - timedelta(seconds=10),
         )
-
     )
 
     manuals = manuals_result.scalars().all()
