@@ -181,6 +181,16 @@ const Ingestion: React.FC = () => {
     }
   }, [sessionDetail?.status, vesselId, queryClient])
 
+  // Retry a failed manual download inside a session
+  const retryMutation = useMutation({
+    mutationFn: (manualId: string) =>
+      apiClient.post(`/vessels/${vesselId}/ingestion/sessions/${activeSessionId}/manuals/${manualId}/retry`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['session-detail', activeSessionId] })
+      queryClient.invalidateQueries({ queryKey: ['ingestion-sessions', vesselId] })
+    },
+  })
+
   const listFilesMutation = useMutation({
     mutationFn: (variables: { url: string; drive_id?: string; folder_id?: string }) =>
       apiClient
@@ -813,6 +823,16 @@ const Ingestion: React.FC = () => {
                             >
                               {m.status}
                             </span>
+                            {m.status === 'failed' && (
+                              <button
+                                onClick={() => retryMutation.mutate(m.id)}
+                                disabled={retryMutation.isPending}
+                                className="ml-3 inline-flex items-center gap-1 rounded bg-red-950/40 hover:bg-red-900/60 px-2 py-0.5 text-xs text-red-200 border border-red-900/30 transition-colors disabled:opacity-50"
+                              >
+                                <RefreshCw className={`h-3 w-3 ${retryMutation.isPending && retryMutation.variables === m.id ? 'animate-spin' : ''}`} />
+                                Retry
+                              </button>
+                            )}
                             {m.error_message && (
                               <span className="ml-2 text-xs text-red-400 block sm:inline mt-1 sm:mt-0">
                                 {m.error_message}

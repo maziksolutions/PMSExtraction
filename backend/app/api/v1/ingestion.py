@@ -628,10 +628,78 @@ async def get_session(
     return {
 
         **IngestionSessionOut.model_validate(session).model_dump(),
-
         "manuals": [ManualOut.model_validate(m) for m in manuals],
-
     }
+
+
+@router.post(
+    "/{vessel_id}/ingestion/sessions/{session_id}/manuals/{manual_id}/retry",
+    summary="Retry a failed manual download inside a session",
+)
+async def retry_manual(
+    vessel_id: uuid.UUID,
+    session_id: uuid.UUID,
+    manual_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+
+    # 1. Fetch manual
+    result = await db.execute(
+        select(Manual).where(
+            Manual.id == manual_id,
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manual = result.scalar_one_or_none()
+    if manual is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manual not found")
+
+    if manual.status != ManualStatus.failed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can only retry failed manuals",
+        )
+
+    # 2. Fetch session
+    session_result = await db.execute(
+        select(IngestionSession).where(
+            IngestionSession.id == session_id,
+            IngestionSession.vessel_id == vessel_id,
+            IngestionSession.is_deleted == False,
+        )
+    )
+    session = session_result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    # 3. Update Manual status
+    manual.status = ManualStatus.queued
+    manual.error_message = None
+    manual.retry_count = 0
+
+    # 4. Update Session status (decrement failed count and set status back to active)
+    session.failed_files = max(0, session.failed_files - 1)
+    session.status = IngestionSessionStatus.active
+
+    await db.commit()
+
+    # 5. Dispatch background task
+    background_tasks.add_task(
+        _process_sharepoint_file_bg,
+        manual_id=str(manual.id),
+        vessel_id_str=str(vessel_id),
+        tenant_id_str=str(current_user.tenant_id),
+        download_url=manual.sharepoint_path or "",
+        filename=manual.original_filename,
+        session_id_str=str(session.id),
+    )
+
+    return {"status": "retry_dispatched", "manual_id": manual_id}
 
 
 
