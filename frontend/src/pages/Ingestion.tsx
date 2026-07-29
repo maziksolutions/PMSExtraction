@@ -103,6 +103,7 @@ const Ingestion: React.FC = () => {
   const [fileTypeFilter, setFileTypeFilter] = useState<'all' | 'pdf' | 'word' | 'excel'>('all')
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  const [isSessionRestored, setIsSessionRestored] = useState(false)
 
   // Direct upload state
   const [uploadFiles, setUploadFiles] = useState<File[]>([])
@@ -144,16 +145,17 @@ const Ingestion: React.FC = () => {
 
   // Restore active session on page mount
   React.useEffect(() => {
-    if (sessionsData?.items && sessionsData.items.length > 0) {
-      const activeSession = sessionsData.items.find(
+    if (sessionsData && !isSessionRestored) {
+      const activeSession = sessionsData.items?.find(
         (s: any) => s.status === 'active'
       )
-      if (activeSession && activeSessionId === null) {
+      if (activeSession) {
         setActiveSessionId(activeSession.id)
         setStep(3)
       }
+      setIsSessionRestored(true)
     }
-  }, [sessionsData, activeSessionId])
+  }, [sessionsData, isSessionRestored])
 
   const [sessionPolling, setSessionPolling] = useState(true)
 
@@ -336,7 +338,7 @@ const Ingestion: React.FC = () => {
       <div>
         <h1 className="text-2xl font-bold text-white">Ingestion</h1>
         <p className="mt-1 text-sm text-slate-400">
-          Upload manuals directly or connect to SharePoint navigations to begin extraction.
+          Upload manuals directly or connect to SharePoint to begin extraction.
         </p>
       </div>
 
@@ -354,7 +356,7 @@ const Ingestion: React.FC = () => {
           className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${tab === 'sharepoint' ? 'bg-sky-600 text-white' : 'text-slate-400 hover:text-white'}`}
         >
           <FolderOpen className="mr-2 inline h-4 w-4" />
-          Navigations
+          SharePoint
         </button>
       </div>
 
@@ -438,8 +440,8 @@ const Ingestion: React.FC = () => {
           {/* Step indicator */}
           <div className="flex items-center gap-2">
             {[
-              { n: 1, label: 'Connect Navigations' },
-              { n: 2, label: 'Explore & Select Files' },
+              { n: 1, label: 'Connect SharePoint' },
+              { n: 2, label: 'Select Files' },
               { n: 3, label: 'Track Progress' },
             ].map(({ n, label }, i) => (
               <React.Fragment key={n}>
@@ -466,7 +468,7 @@ const Ingestion: React.FC = () => {
           {step === 1 && (
             <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
               <h2 className="mb-4 text-lg font-semibold text-white">
-                Connect to SharePoint Navigations
+                Connect to SharePoint
               </h2>
               <p className="mb-4 text-sm text-slate-400">
                 Enter the SharePoint folder or sharing link URL containing the vessel's manuals. 
