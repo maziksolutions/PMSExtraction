@@ -98,6 +98,8 @@ const Ingestion: React.FC = () => {
 
   // Selection states (tracked across all navigated folders)
   const [selectedFiles, setSelectedFiles] = useState<Record<string, SPFile>>({})
+  const [isViewSelectedModalOpen, setIsViewSelectedModalOpen] = useState(false)
+  const [tempSelectedFiles, setTempSelectedFiles] = useState<Record<string, SPFile>>({})
 
   // File type filtering: 'all' | 'pdf' | 'word' | 'excel'
   const [fileTypeFilter, setFileTypeFilter] = useState<'all' | 'pdf' | 'word' | 'excel'>('all')
@@ -536,8 +538,19 @@ const Ingestion: React.FC = () => {
                   <h2 className="text-lg font-semibold text-white font-sans">
                     Explore Folders & Files
                   </h2>
-                  <p className="text-xs text-sky-400 font-medium mt-0.5">
-                    {Object.keys(selectedFiles).length} file(s) selected globally across all folders
+                  <p className="text-xs text-sky-400 font-medium mt-0.5 flex items-center gap-2">
+                    <span>{Object.keys(selectedFiles).length} file(s) selected globally across all folders</span>
+                    {Object.keys(selectedFiles).length > 0 && (
+                      <button
+                        onClick={() => {
+                          setTempSelectedFiles({ ...selectedFiles })
+                          setIsViewSelectedModalOpen(true)
+                        }}
+                        className="text-sky-300 hover:text-sky-200 hover:underline inline-flex items-center gap-1 font-semibold text-[11px] bg-sky-950/40 border border-sky-850 px-2 py-0.5 rounded transition-colors"
+                      >
+                        View / Edit
+                      </button>
+                    )}
                   </p>
                 </div>
 
@@ -909,6 +922,101 @@ const Ingestion: React.FC = () => {
             </div>
           )}
         </>
+      )}
+
+      {/* View Selected Files Modal */}
+      {isViewSelectedModalOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 backdrop-blur-sm p-4 flex justify-center items-start">
+          <div className="relative w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl my-12 animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-4">
+              <div>
+                <h3 className="text-base font-semibold text-white">Selected Files</h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Review and edit selected files before starting ingestion
+                </p>
+              </div>
+              <button
+                onClick={() => setIsViewSelectedModalOpen(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* List */}
+            <div className="max-h-96 overflow-y-auto pr-1 space-y-2 custom-scrollbar">
+              {Object.keys(tempSelectedFiles).length === 0 ? (
+                <div className="py-8 text-center text-sm text-slate-500">
+                  No files selected.
+                </div>
+              ) : (
+                Object.values(tempSelectedFiles).map((file) => (
+                  <div
+                    key={file.id}
+                    className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/40 p-3 hover:border-slate-700 transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0 flex-1 mr-3">
+                      <FileText className="h-4 w-4 shrink-0 text-sky-400" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-slate-200 truncate" title={file.name}>
+                          {file.name}
+                        </p>
+                        <p className="text-[11px] text-slate-500 truncate mt-0.5" title={file.path}>
+                          Size: {formatBytes(file.size)}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setTempSelectedFiles((prev) => {
+                          const next = { ...prev }
+                          delete next[file.id]
+                          return next
+                        })
+                      }}
+                      className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-rose-455 transition-all"
+                      title="Deselect file"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between border-t border-slate-800 pt-4 mt-6">
+              <button
+                type="button"
+                onClick={() => setTempSelectedFiles({})}
+                className="text-xs text-rose-400 hover:text-rose-350 hover:underline transition-colors disabled:opacity-50"
+                disabled={Object.keys(tempSelectedFiles).length === 0}
+              >
+                Clear All
+              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsViewSelectedModalOpen(false)}
+                  className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedFiles(tempSelectedFiles)
+                    setIsViewSelectedModalOpen(false)
+                  }}
+                  className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 transition-colors"
+                >
+                  Update Selection
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
