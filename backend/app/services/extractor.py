@@ -1612,6 +1612,89 @@ async def _consolidate_jobs_for_manual(
 
     return merged_count
 
+
+async def _consolidate_spares_for_manual(
+    *,
+    db: Any,
+    manual: Any,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> int:
+    from sqlalchemy import select
+    from app.models.spare import Spare
+    from app.services.deduplication import fuzzy_similarity
+
+    result = await db.execute(
+        select(Spare).where(
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == tenant_id,
+            Spare.is_deleted == False,
+            Spare.source_manual_id == manual.id,
+        ).order_by(Spare.created_at, Spare.part_name)
+    )
+    spares = list(result.scalars().all())
+    merged_count = 0
+
+    for idx, target in enumerate(spares):
+        if getattr(target, "is_deleted", False):
+            continue
+        for candidate in spares[idx + 1:]:
+            if getattr(candidate, "is_deleted", False):
+                continue
+            
+            # Match component mappings
+            if target.component_id != candidate.component_id:
+                continue
+
+            # Fuzzy name check
+            name_t = (target.part_name or "").strip().lower()
+            name_c = (candidate.part_name or "").strip().lower()
+            if not name_t or not name_c:
+                continue
+            if fuzzy_similarity(name_t, name_c) < 0.88:
+                continue
+
+            # Part number mismatch check
+            pn_t = (target.part_number or "").strip().upper()
+            pn_c = (candidate.part_number or "").strip().upper()
+            if pn_t and pn_c:
+                if pn_t != pn_c:
+                    continue
+
+            # Merge candidates metadata into target
+            if not target.part_number and candidate.part_number:
+                target.part_number = candidate.part_number
+            if not target.drawing_number and candidate.drawing_number:
+                target.drawing_number = candidate.drawing_number
+            if not target.drawing_position and candidate.drawing_position:
+                target.drawing_position = candidate.drawing_position
+            if not target.specification and candidate.specification:
+                target.specification = candidate.specification
+            if not target.spare_assembly and candidate.spare_assembly:
+                target.spare_assembly = candidate.spare_assembly
+            if not target.assembly_description and candidate.assembly_description:
+                target.assembly_description = candidate.assembly_description
+            if not target.spare_maker and candidate.spare_maker:
+                target.spare_maker = candidate.spare_maker
+            if not target.spare_model and candidate.spare_model:
+                target.spare_model = candidate.spare_model
+
+            target.is_critical = bool(target.is_critical or candidate.is_critical)
+            
+            # Confidence score
+            score_t = int(getattr(target, "confidence_score", 0) or 0)
+            score_c = int(getattr(candidate, "confidence_score", 0) or 0)
+            if score_c > score_t:
+                target.confidence_score = score_c
+
+            # Mark candidate duplicate as deleted
+            candidate.is_deleted = True
+            db.add(candidate)
+            db.add(target)
+            merged_count += 1
+
+    return merged_count
+
 # ---------------------------------------------------------------------------
 # Core extraction function
 # ---------------------------------------------------------------------------
@@ -2696,6 +2779,12 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
                 vessel_id=vessel_id,
                 tenant_id=tenant_id,
             )
+            merged_spares = await _consolidate_spares_for_manual(
+                db=db,
+                manual=manual,
+                vessel_id=vessel_id,
+                tenant_id=tenant_id,
+            )
             manual_job_ranks_updated = await backfill_manual_job_ranks(
                 db=db,
                 tenant_id=tenant_id,
@@ -2704,12 +2793,13 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             )
             await db.commit()
             logger.warning(
-                "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d merged_jobs=%d manual_job_ranks=%s",
+                "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d merged_jobs=%d merged_spares=%d manual_job_ranks=%s",
                 vessel_id_str,
                 component_ref_updates,
                 jobs_linked,
                 spares_linked,
                 merged_jobs,
+                merged_spares,
                 manual_job_ranks_updated,
             )
         except Exception as link_exc:

@@ -106,7 +106,7 @@ const Ingestion: React.FC = () => {
   const [tempSelectedFiles, setTempSelectedFiles] = useState<Record<string, SPFile>>({})
   const [modalCheckedIds, setModalCheckedIds] = useState<Set<string>>(new Set())
   const [modalFilterText, setModalFilterText] = useState('')
-  const [modalSortField, setModalSortField] = useState<'name' | 'size' | null>(null)
+  const [modalSortField, setModalSortField] = useState<'name' | 'size' | 'modified' | null>(null)
   const [modalSortOrder, setModalSortOrder] = useState<'asc' | 'desc'>('asc')
 
   // File type filtering: 'all' | 'pdf' | 'word' | 'excel'
@@ -303,17 +303,21 @@ const Ingestion: React.FC = () => {
       list = list.filter((f) => f.name.toLowerCase().includes(q))
     }
 
-    // Sort by name or size
+    // Sort by name, size or date
     if (modalSortField) {
       list.sort((a, b) => {
         if (modalSortField === 'name') {
           const valA = a.name.toLowerCase()
           const valB = b.name.toLowerCase()
           return modalSortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA)
-        } else {
+        } else if (modalSortField === 'size') {
           const valA = a.size
           const valB = b.size
           return modalSortOrder === 'asc' ? valA - valB : valB - valA
+        } else {
+          const timeA = a.modified ? new Date(a.modified).getTime() : 0
+          const timeB = b.modified ? new Date(b.modified).getTime() : 0
+          return modalSortOrder === 'asc' ? timeA - timeB : timeB - timeA
         }
       })
     }
@@ -321,7 +325,7 @@ const Ingestion: React.FC = () => {
     return list
   }, [tempSelectedFiles, modalFilterText, modalSortField, modalSortOrder])
 
-  const handleModalSort = useCallback((field: 'name' | 'size') => {
+  const handleModalSort = useCallback((field: 'name' | 'size' | 'modified') => {
     setModalSortField((prevField) => {
       if (prevField === field) {
         setModalSortOrder((prevOrder) => (prevOrder === 'asc' ? 'desc' : 'asc'))
@@ -716,8 +720,18 @@ const Ingestion: React.FC = () => {
               </div>
 
               {/* Explorer List */}
-              <div className="divide-y divide-slate-850 rounded-lg border border-slate-850 overflow-hidden bg-slate-900/50">
+              <div className="relative divide-y divide-slate-850 rounded-lg border border-slate-850 overflow-hidden bg-slate-900/50 min-h-[200px]">
                 
+                {/* Loader Overlay */}
+                {listFilesMutation.isPending && (
+                  <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-900/70 backdrop-blur-sm transition-all duration-150">
+                    <div className="flex flex-col items-center gap-3 text-sm text-sky-400 font-medium">
+                      <RefreshCw className="h-8 w-8 animate-spin" />
+                      <span>Loading folder contents...</span>
+                    </div>
+                  </div>
+                )}
+
                 {/* Render Folders first */}
                 {folders.map((folder) => (
                   <div
@@ -1072,12 +1086,25 @@ const Ingestion: React.FC = () => {
                         )}
                       </button>
                     </th>
+                    <th className="sticky top-0 bg-slate-900 px-4 py-2.5 z-10 text-[11px] font-semibold text-slate-400 uppercase tracking-wider text-right w-36">
+                      <button
+                        onClick={() => handleModalSort('modified')}
+                        className="flex items-center gap-1.5 hover:text-white transition-colors ml-auto uppercase"
+                      >
+                        Modified
+                        {modalSortField === 'modified' ? (
+                          modalSortOrder === 'asc' ? <ArrowUp className="h-3 w-3 text-sky-400" /> : <ArrowDown className="h-3 w-3 text-sky-400" />
+                        ) : (
+                          <ArrowUpDown className="h-3 w-3 text-slate-500" />
+                        )}
+                      </button>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-850">
                   {modalFilesList.length === 0 ? (
                     <tr>
-                      <td colSpan={3} className="px-4 py-8 text-center text-xs text-slate-550">
+                      <td colSpan={4} className="px-4 py-8 text-center text-xs text-slate-550">
                         {modalFilterText ? 'No matching files found' : 'No selected files'}
                       </td>
                     </tr>
@@ -1107,6 +1134,9 @@ const Ingestion: React.FC = () => {
                           </td>
                           <td className="px-4 py-2 text-right text-[11px] font-mono text-slate-400 whitespace-nowrap">
                             {formatBytes(file.size)}
+                          </td>
+                          <td className="px-4 py-2 text-right text-[11px] font-mono text-slate-400 whitespace-nowrap">
+                            {file.modified ? file.modified.slice(0, 10) : '-'}
                           </td>
                         </tr>
                       )
