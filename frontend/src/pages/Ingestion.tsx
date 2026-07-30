@@ -16,6 +16,10 @@ import {
   X,
   CheckCircle2,
   ScanSearch,
+  Search,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 
@@ -100,6 +104,10 @@ const Ingestion: React.FC = () => {
   const [selectedFiles, setSelectedFiles] = useState<Record<string, SPFile>>({})
   const [isViewSelectedModalOpen, setIsViewSelectedModalOpen] = useState(false)
   const [tempSelectedFiles, setTempSelectedFiles] = useState<Record<string, SPFile>>({})
+  const [modalCheckedIds, setModalCheckedIds] = useState<Set<string>>(new Set())
+  const [modalFilterText, setModalFilterText] = useState('')
+  const [modalSortField, setModalSortField] = useState<'name' | 'size' | null>(null)
+  const [modalSortOrder, setModalSortOrder] = useState<'asc' | 'desc'>('asc')
 
   // File type filtering: 'all' | 'pdf' | 'word' | 'excel'
   const [fileTypeFilter, setFileTypeFilter] = useState<'all' | 'pdf' | 'word' | 'excel'>('all')
@@ -285,6 +293,69 @@ const Ingestion: React.FC = () => {
       handleBreadcrumbClick(breadcrumbs.length - 2)
     }
   }, [breadcrumbs, handleBreadcrumbClick])
+
+  const modalFilesList = React.useMemo(() => {
+    let list = Object.values(tempSelectedFiles)
+
+    // Filter by name
+    if (modalFilterText.trim()) {
+      const q = modalFilterText.toLowerCase().trim()
+      list = list.filter((f) => f.name.toLowerCase().includes(q))
+    }
+
+    // Sort by name or size
+    if (modalSortField) {
+      list.sort((a, b) => {
+        if (modalSortField === 'name') {
+          const valA = a.name.toLowerCase()
+          const valB = b.name.toLowerCase()
+          return modalSortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA)
+        } else {
+          const valA = a.size
+          const valB = b.size
+          return modalSortOrder === 'asc' ? valA - valB : valB - valA
+        }
+      })
+    }
+
+    return list
+  }, [tempSelectedFiles, modalFilterText, modalSortField, modalSortOrder])
+
+  const handleModalSort = useCallback((field: 'name' | 'size') => {
+    setModalSortField((prevField) => {
+      if (prevField === field) {
+        setModalSortOrder((prevOrder) => (prevOrder === 'asc' ? 'desc' : 'asc'))
+        return field
+      }
+      setModalSortOrder('asc')
+      return field
+    })
+  }, [])
+
+  const toggleModalFile = useCallback((fileId: string) => {
+    setModalCheckedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(fileId)) {
+        next.delete(fileId)
+      } else {
+        next.add(fileId)
+      }
+      return next
+    })
+  }, [])
+
+  const toggleModalAllVisible = useCallback(() => {
+    const allVisibleChecked = modalFilesList.length > 0 && modalFilesList.every((f) => modalCheckedIds.has(f.id))
+    setModalCheckedIds((prev) => {
+      const next = new Set(prev)
+      if (allVisibleChecked) {
+        modalFilesList.forEach((f) => next.delete(f.id))
+      } else {
+        modalFilesList.forEach((f) => next.add(f.id))
+      }
+      return next
+    })
+  }, [modalFilesList, modalCheckedIds])
 
   const toggleFile = useCallback((file: SPFile) => {
     setSelectedFiles((prev) => {
@@ -544,6 +615,10 @@ const Ingestion: React.FC = () => {
                       <button
                         onClick={() => {
                           setTempSelectedFiles({ ...selectedFiles })
+                          setModalCheckedIds(new Set(Object.keys(selectedFiles)))
+                          setModalFilterText('')
+                          setModalSortField(null)
+                          setModalSortOrder('asc')
                           setIsViewSelectedModalOpen(true)
                         }}
                         className="text-sky-300 hover:text-sky-200 hover:underline inline-flex items-center gap-1 font-semibold text-[11px] bg-sky-950/40 border border-sky-850 px-2 py-0.5 rounded transition-colors"
@@ -927,13 +1002,13 @@ const Ingestion: React.FC = () => {
       {/* View Selected Files Modal */}
       {isViewSelectedModalOpen && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 backdrop-blur-sm p-4 flex justify-center items-start">
-          <div className="relative w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl my-12 animate-in fade-in zoom-in-95 duration-150">
+          <div className="relative w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl my-12 animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[85vh]">
             {/* Header */}
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4 mb-4 shrink-0">
               <div>
                 <h3 className="text-base font-semibold text-white">Selected Files</h3>
                 <p className="text-xs text-slate-400 mt-1">
-                  Review and edit selected files before starting ingestion
+                  Manage globally selected files across all folders
                 </p>
               </div>
               <button
@@ -944,72 +1019,134 @@ const Ingestion: React.FC = () => {
               </button>
             </div>
 
-            {/* List */}
-            <div className="max-h-96 overflow-y-auto pr-1 space-y-2 custom-scrollbar">
-              {Object.keys(tempSelectedFiles).length === 0 ? (
-                <div className="py-8 text-center text-sm text-slate-500">
-                  No files selected.
-                </div>
-              ) : (
-                Object.values(tempSelectedFiles).map((file) => (
-                  <div
-                    key={file.id}
-                    className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/40 p-3 hover:border-slate-700 transition-colors"
-                  >
-                    <div className="flex items-center gap-3 min-w-0 flex-1 mr-3">
-                      <FileText className="h-4 w-4 shrink-0 text-sky-400" />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-slate-200 truncate" title={file.name}>
-                          {file.name}
-                        </p>
-                        <p className="text-[11px] text-slate-500 truncate mt-0.5" title={file.path}>
-                          Size: {formatBytes(file.size)}
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setTempSelectedFiles((prev) => {
-                          const next = { ...prev }
-                          delete next[file.id]
-                          return next
-                        })
-                      }}
-                      className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-rose-455 transition-all"
-                      title="Deselect file"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                ))
-              )}
+            {/* Filter Bar */}
+            <div className="relative mb-4 shrink-0">
+              <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <Search className="h-4 w-4 text-slate-500" />
+              </span>
+              <input
+                type="text"
+                value={modalFilterText}
+                onChange={(e) => setModalFilterText(e.target.value)}
+                placeholder="Filter files by name..."
+                className="w-full rounded-lg border border-slate-700 bg-slate-950/60 pl-9 pr-4 py-2 text-xs text-white focus:border-sky-500 focus:outline-none placeholder-slate-500"
+              />
+            </div>
+
+            {/* Table Container */}
+            <div className="flex-1 overflow-y-auto border border-slate-800 rounded-lg bg-slate-950/30 custom-scrollbar min-h-0">
+              <table className="w-full table-auto border-collapse text-left">
+                <thead>
+                  <tr className="border-b border-slate-850">
+                    <th className="sticky top-0 bg-slate-900 px-4 py-2.5 z-10 w-12 text-slate-400">
+                      <input
+                        type="checkbox"
+                        checked={modalFilesList.length > 0 && modalFilesList.every((f) => modalCheckedIds.has(f.id))}
+                        onChange={toggleModalAllVisible}
+                        className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-700 text-sky-500 focus:ring-0 focus:ring-offset-0"
+                      />
+                    </th>
+                    <th className="sticky top-0 bg-slate-900 px-4 py-2.5 z-10 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                      <button
+                        onClick={() => handleModalSort('name')}
+                        className="flex items-center gap-1.5 hover:text-white transition-colors uppercase"
+                      >
+                        File Name
+                        {modalSortField === 'name' ? (
+                          modalSortOrder === 'asc' ? <ArrowUp className="h-3 w-3 text-sky-400" /> : <ArrowDown className="h-3 w-3 text-sky-400" />
+                        ) : (
+                          <ArrowUpDown className="h-3 w-3 text-slate-500" />
+                        )}
+                      </button>
+                    </th>
+                    <th className="sticky top-0 bg-slate-900 px-4 py-2.5 z-10 text-[11px] font-semibold text-slate-400 uppercase tracking-wider text-right w-32">
+                      <button
+                        onClick={() => handleModalSort('size')}
+                        className="flex items-center gap-1.5 hover:text-white transition-colors ml-auto uppercase"
+                      >
+                        Size
+                        {modalSortField === 'size' ? (
+                          modalSortOrder === 'asc' ? <ArrowUp className="h-3 w-3 text-sky-400" /> : <ArrowDown className="h-3 w-3 text-sky-400" />
+                        ) : (
+                          <ArrowUpDown className="h-3 w-3 text-slate-500" />
+                        )}
+                      </button>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-850">
+                  {modalFilesList.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="px-4 py-8 text-center text-xs text-slate-550">
+                        {modalFilterText ? 'No matching files found' : 'No selected files'}
+                      </td>
+                    </tr>
+                  ) : (
+                    modalFilesList.map((file) => {
+                      const isChecked = modalCheckedIds.has(file.id)
+                      return (
+                        <tr
+                          key={file.id}
+                          className={`hover:bg-slate-800/20 transition-colors ${isChecked ? 'bg-sky-950/5' : ''}`}
+                        >
+                          <td className="px-4 py-2">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => toggleModalFile(file.id)}
+                              className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-700 text-sky-500 focus:ring-0 focus:ring-offset-0"
+                            />
+                          </td>
+                          <td className="px-4 py-2 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <FileText className={`h-3.5 w-3.5 shrink-0 ${isChecked ? 'text-sky-400' : 'text-slate-500'}`} />
+                              <span className={`text-xs truncate max-w-md ${isChecked ? 'text-slate-200' : 'text-slate-450'}`} title={file.name}>
+                                {file.name}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-2 text-right text-[11px] font-mono text-slate-400 whitespace-nowrap">
+                            {formatBytes(file.size)}
+                          </td>
+                        </tr>
+                      )
+                    })
+                  )}
+                </tbody>
+              </table>
             </div>
 
             {/* Footer */}
-            <div className="flex items-center justify-between border-t border-slate-800 pt-4 mt-6">
+            <div className="flex items-center justify-between border-t border-slate-800 pt-4 mt-4 shrink-0">
               <button
                 type="button"
-                onClick={() => setTempSelectedFiles({})}
+                onClick={() => setModalCheckedIds(new Set())}
                 className="text-xs text-rose-400 hover:text-rose-350 hover:underline transition-colors disabled:opacity-50"
-                disabled={Object.keys(tempSelectedFiles).length === 0}
+                disabled={modalCheckedIds.size === 0}
               >
-                Clear All
+                Deselect All Shown ({modalCheckedIds.size})
               </button>
               <div className="flex items-center gap-3">
                 <button
                   type="button"
                   onClick={() => setIsViewSelectedModalOpen(false)}
-                  className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
+                  className="rounded-lg border border-slate-700 px-4 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={() => {
-                    setSelectedFiles(tempSelectedFiles)
+                    const nextSelected: Record<string, SPFile> = {}
+                    Object.values(tempSelectedFiles).forEach((f) => {
+                      if (modalCheckedIds.has(f.id)) {
+                        nextSelected[f.id] = f
+                      }
+                    })
+                    setSelectedFiles(nextSelected)
                     setIsViewSelectedModalOpen(false)
                   }}
-                  className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 transition-colors"
+                  className="rounded-lg bg-sky-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-sky-500 transition-colors"
                 >
                   Update Selection
                 </button>
