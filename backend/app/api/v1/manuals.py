@@ -79,6 +79,7 @@ def _build_manual_filters(
         Manual.vessel_id == vessel_id,
         Manual.tenant_id == tenant_id,
         Manual.is_deleted == False,
+        Manual.blob_storage_key.is_not(None),
     ]
 
     if category:

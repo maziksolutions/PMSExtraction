@@ -212,6 +212,20 @@ const Ingestion: React.FC = () => {
       setCurrentParentId(data.parent_id)
       setCurrentFolderName(data.folder_name)
 
+      // Refresh pre-signed URLs for already selected files
+      setSelectedFiles((prev) => {
+        const next = { ...prev }
+        let changed = false
+        const incomingFiles = data.files as SPFile[]
+        incomingFiles.forEach((file) => {
+          if (next[file.id]) {
+            next[file.id] = file
+            changed = true
+          }
+        })
+        return changed ? next : prev
+      })
+
       // Update breadcrumbs history stack
       setBreadcrumbs((prev) => {
         const existingIdx = prev.findIndex((item) => item.id === data.folder_id)
@@ -273,10 +287,10 @@ const Ingestion: React.FC = () => {
   const toggleFile = useCallback((file: SPFile) => {
     setSelectedFiles((prev) => {
       const next = { ...prev }
-      if (next[file.path]) {
-        delete next[file.path]
+      if (next[file.id]) {
+        delete next[file.id]
       } else {
-        next[file.path] = file
+        next[file.id] = file
       }
       return next
     })
@@ -292,14 +306,14 @@ const Ingestion: React.FC = () => {
   })
 
   const toggleAll = useCallback(() => {
-    const allFilteredSelected = filteredFiles.every((f) => !!selectedFiles[f.path])
+    const allFilteredSelected = filteredFiles.every((f) => !!selectedFiles[f.id])
     setSelectedFiles((prev) => {
       const next = { ...prev }
       if (allFilteredSelected) {
-        filteredFiles.forEach((f) => delete next[f.path])
+        filteredFiles.forEach((f) => delete next[f.id])
       } else {
         filteredFiles.forEach((f) => {
-          next[f.path] = f
+          next[f.id] = f
         })
       }
       return next
@@ -551,7 +565,7 @@ const Ingestion: React.FC = () => {
                     onClick={toggleAll}
                     className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-350 hover:bg-slate-800"
                   >
-                    {filteredFiles.length > 0 && filteredFiles.every((f) => !!selectedFiles[f.path]) ? (
+                    {filteredFiles.length > 0 && filteredFiles.every((f) => !!selectedFiles[f.id]) ? (
                       <CheckSquare className="h-3.5 w-3.5 text-sky-400" />
                     ) : (
                       <Square className="h-3.5 w-3.5" />
@@ -638,10 +652,10 @@ const Ingestion: React.FC = () => {
 
                 {/* Render Files */}
                 {filteredFiles.map((file) => {
-                  const isChecked = !!selectedFiles[file.path]
+                  const isChecked = !!selectedFiles[file.id]
                   return (
                     <label
-                      key={file.path}
+                      key={file.id}
                       className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-slate-800/30 transition-colors"
                     >
                       <input
