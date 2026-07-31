@@ -148,6 +148,7 @@ class SharePointFileListResponse(BaseModel):
 class IngestionStartRequest(BaseModel):
     folder_url: str
     selected_files: List[Dict[str, Any]]
+    batch_number: Optional[int] = 1
 
 
 class ManualOut(BaseModel):
@@ -159,6 +160,7 @@ class ManualOut(BaseModel):
     sharepoint_path: Optional[str] = None
     blob_storage_key: Optional[str] = None
     status: ManualStatus
+    batch_number: Optional[int] = None
     error_message: Optional[str] = None
     retry_count: int
     detected_language: Optional[str] = None

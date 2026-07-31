@@ -16,7 +16,7 @@ import os
 
 import logging as _log_mod
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
 
 
 
@@ -318,7 +318,9 @@ async def _process_sharepoint_file_bg(
 
     # Step 2: Download the file content from SharePoint
     try:
-        if download_url.startswith("https://mzk09.sharepoint.com/") or "mock" in download_url:
+        import os
+        is_mock = not (os.getenv("AZURE_CLIENT_ID") and os.getenv("AZURE_CLIENT_SECRET"))
+        if is_mock or "mock" in download_url:
             content = (
                 b"%PDF-1.4\n"
                 b"1 0 obj <</Type/Catalog/Pages 2 0 R>> endobj\n"
@@ -474,6 +476,7 @@ async def start_ingestion(
             sharepoint_path=download_url,
             status=ManualStatus.queued,
             uploaded_by=current_user.id,
+            batch_number=body.batch_number,
         )
         db.add(manual)
         await db.flush()
@@ -1002,17 +1005,12 @@ async def _process_uploaded_file(
 )
 
 async def upload_manuals(
-
     vessel_id: uuid.UUID,
-
     current_user: Annotated[User, Depends(get_current_user)],
-
     db: Annotated[AsyncSession, Depends(get_db)],
-
     background_tasks: BackgroundTasks,
-
     files: list[UploadFile] = File(...),
-
+    batch_number: Optional[int] = Form(1),
 ) -> dict[str, Any]:
 
     """
@@ -1126,35 +1124,21 @@ async def upload_manuals(
 
 
         # Save record immediately with status=queued; classification runs in background
-
         manual = Manual(
-
             tenant_id=current_user.tenant_id,
-
             vessel_id=vessel_id,
-
             original_filename=filename,
-
             file_extension=ext,
-
             file_size_bytes=len(content),
-
             sharepoint_path="",
-
             status=ManualStatus.queued,
-
             uploaded_by=current_user.id,
-
             sha256_hash=sha256,
-
             is_duplicate=is_dup,
-
             duplicate_of_id=original_manual.id if is_dup else None,
-
             category=None,
-
             classification_confidence=None,
-
+            batch_number=batch_number,
         )
 
         db.add(manual)

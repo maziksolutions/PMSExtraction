@@ -462,6 +462,7 @@ const ManualReview: React.FC = () => {
   const [filterConfidence, setFilterConfidence] = useState('')
   const [filterFilename, setFilterFilename] = useState('')
   const [filterUseful, setFilterUseful] = useState('')
+  const [filterBatch, setFilterBatch] = useState<number | 'all'>('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
   const [sortBy, setSortBy] = useState('filename')
@@ -476,13 +477,18 @@ const ManualReview: React.FC = () => {
 
   // ── Data queries ──────────────────────────────────────────────────────────
 
+  const { data: batchList = [] } = useQuery<number[]>({
+    queryKey: ['manual-batches', vesselId],
+    queryFn: () => apiClient.get(`/vessels/${vesselId}/manuals/batches`).then((r) => r.data),
+  })
+
   // Reset to page 1 when filters or sort changes
   useEffect(() => {
     setPage(1)
-  }, [filterCategory, filterConfidence, filterFilename, filterUseful, sortBy, sortOrder, pageSize])
+  }, [filterCategory, filterConfidence, filterFilename, filterUseful, filterBatch, sortBy, sortOrder, pageSize])
 
   const { data, isLoading } = useQuery({
-    queryKey: ['manuals', vesselId, filterCategory, filterConfidence, filterFilename, filterUseful, page, pageSize, sortBy, sortOrder],
+    queryKey: ['manuals', vesselId, filterCategory, filterConfidence, filterFilename, filterUseful, filterBatch, page, pageSize, sortBy, sortOrder],
     queryFn: () => {
       const params: Record<string, string | number> = {
         page,
@@ -494,6 +500,7 @@ const ManualReview: React.FC = () => {
       if (filterConfidence) params.min_confidence = filterConfidence
       if (filterFilename) params.search = filterFilename
       if (filterUseful) params.useful_for_extraction = filterUseful
+      if (filterBatch !== 'all') params.batch_number = filterBatch
       return apiClient
         .get(`/vessels/${vesselId}/manuals`, { params })
         .then((r) => r.data)
@@ -1106,6 +1113,18 @@ const ManualReview: React.FC = () => {
           <option value="60">≥60%</option>
           <option value="40">≥40%</option>
         </select>
+        <select
+          value={filterBatch}
+          onChange={(e) => setFilterBatch(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
+          className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
+        >
+          <option value="all">All Batches</option>
+          {batchList.map((b) => (
+            <option key={b} value={b}>
+              Batch {b}
+            </option>
+          ))}
+        </select>
         <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
           <span>Sort:</span>
           <select
@@ -1121,9 +1140,9 @@ const ManualReview: React.FC = () => {
             <option value="confidence:asc">Confidence (low)</option>
           </select>
         </div>
-        {(filterCategory || filterConfidence || filterFilename || filterUseful) && (
+        {(filterCategory || filterConfidence || filterFilename || filterUseful || filterBatch !== 'all') && (
           <button
-            onClick={() => { setFilterCategory(''); setFilterConfidence(''); setFilterFilename(''); setFilterUseful('') }}
+            onClick={() => { setFilterCategory(''); setFilterConfidence(''); setFilterFilename(''); setFilterUseful(''); setFilterBatch('all') }}
             className="rounded border border-slate-700 px-2 py-1.5 text-xs text-slate-400 hover:text-slate-200"
           >
             Clear filters

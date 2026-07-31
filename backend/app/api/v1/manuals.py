@@ -74,6 +74,7 @@ def _build_manual_filters(
     min_confidence: Optional[int] = None,
     search: Optional[str] = None,
     useful_for_extraction: Optional[str] = None,
+    batch_number: Optional[int] = None,
 ) -> list[Any]:
     base_filter: list[Any] = [
         Manual.vessel_id == vessel_id,
@@ -84,6 +85,8 @@ def _build_manual_filters(
 
     if category:
         base_filter.append(Manual.category == category)
+    if batch_number is not None:
+        base_filter.append(Manual.batch_number == batch_number)
     if manual_status:
         try:
             base_filter.append(Manual.status == ManualStatus(manual_status))
@@ -467,6 +470,31 @@ def _build_manual_workbook(manuals: list[Manual], *, include_sample_rows: bool) 
 
 
 @router.get(
+    "/{vessel_id}/manuals/batches",
+    summary="List unique batch numbers of manuals for a vessel",
+)
+async def list_manual_batches(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[int]:
+    await _get_vessel_or_404(vessel_id, db)
+    result = await db.execute(
+        select(Manual.batch_number)
+        .where(
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+            Manual.batch_number.is_not(None),
+        )
+        .distinct()
+        .order_by(Manual.batch_number.asc())
+    )
+    batches = [row[0] for row in result.all()]
+    return batches
+
+
+@router.get(
     "/{vessel_id}/manuals",
     summary="List manuals for a vessel with optional filters",
 )
@@ -479,6 +507,7 @@ async def list_manuals(
     min_confidence: Optional[int] = Query(None),
     search: Optional[str] = Query(None),
     useful_for_extraction: Optional[str] = Query(None),
+    batch_number: Optional[int] = Query(None),
     sort_by: str = Query("filename", regex="^(filename|created_at|confidence)$"),
     sort_order: str = Query("asc", regex="^(asc|desc)$"),
     page: int = Query(1, ge=1),
@@ -494,6 +523,7 @@ async def list_manuals(
         min_confidence=min_confidence,
         search=search,
         useful_for_extraction=useful_for_extraction,
+        batch_number=batch_number,
     )
 
     # Count query

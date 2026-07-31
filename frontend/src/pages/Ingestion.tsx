@@ -104,6 +104,7 @@ const Ingestion: React.FC = () => {
   const [selectedFiles, setSelectedFiles] = useState<Record<string, SPFile>>({})
   const [isViewSelectedModalOpen, setIsViewSelectedModalOpen] = useState(false)
   const [tempSelectedFiles, setTempSelectedFiles] = useState<Record<string, SPFile>>({})
+  const [batchNumber, setBatchNumber] = useState<number>(1)
   const [modalCheckedIds, setModalCheckedIds] = useState<Set<string>>(new Set())
   const [modalFilterText, setModalFilterText] = useState('')
   const [modalSortField, setModalSortField] = useState<'name' | 'size' | 'modified' | null>(null)
@@ -262,6 +263,7 @@ const Ingestion: React.FC = () => {
         .post(`/vessels/${vesselId}/ingestion/start`, {
           folder_url: folderUrl,
           selected_files: Object.values(selectedFiles),
+          batch_number: batchNumber,
         })
         .then((r) => r.data),
     onSuccess: (data: Session) => {
@@ -404,6 +406,7 @@ const Ingestion: React.FC = () => {
     mutationFn: async (selectedFiles: File[]) => {
       const formData = new FormData()
       selectedFiles.forEach(f => formData.append('files', f))
+      formData.append('batch_number', String(batchNumber))
       const res = await apiClient.post(`/vessels/${vesselId}/ingestion/upload`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 300_000, // 5 minutes for large file uploads
@@ -510,6 +513,19 @@ const Ingestion: React.FC = () => {
                 <p className="rounded-lg bg-red-900/30 px-3 py-2 text-sm text-red-400">
                   <AlertCircle className="mr-1 inline h-4 w-4" />{uploadError}
                 </p>
+              )}
+
+              {!uploadDone && (
+                <div className="flex items-center gap-3 bg-slate-950 p-3 rounded-lg border border-slate-800">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Batch Number:</span>
+                  <input
+                    type="number"
+                    min="1"
+                    value={batchNumber}
+                    onChange={(e) => setBatchNumber(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-20 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-white focus:border-sky-500 focus:outline-none"
+                  />
+                </div>
               )}
 
               {uploadDone ? (
@@ -672,10 +688,21 @@ const Ingestion: React.FC = () => {
                       setFiles([])
                       setFolders([])
                     }}
-                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-350 hover:bg-slate-800"
+                    className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-355 hover:bg-slate-800"
                   >
                     Disconnect
                   </button>
+
+                  <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
+                    <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">Batch:</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={batchNumber}
+                      onChange={(e) => setBatchNumber(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-16 rounded border border-slate-750 bg-slate-900 px-2 py-0.5 text-xs text-white focus:border-sky-500 focus:outline-none"
+                    />
+                  </div>
 
                   <button
                     onClick={() => startIngestionMutation.mutate()}
