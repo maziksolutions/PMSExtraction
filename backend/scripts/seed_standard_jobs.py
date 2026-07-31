@@ -6,7 +6,12 @@ Run: python -m scripts.seed_standard_jobs
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 import uuid
+
+# Make sure the backend package is importable
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

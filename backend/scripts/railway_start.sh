@@ -8,7 +8,7 @@ echo "Running database migrations..."
 alembic upgrade head
 
 echo "Running standard data seed..."
-python -m scripts.seed_standard_jobs
+python scripts/seed_standard_jobs.py
 
 if [ -n "$SEED_ADMIN_PASSWORD" ]; then
     echo "Running admin seed..."
