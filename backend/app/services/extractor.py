@@ -2285,18 +2285,6 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                                     text = page.extract_text()
                                     if text and text.strip():
                                         page_parts.append(text)
-                                    try:
-                                        for table in (page.extract_tables() or []):
-                                            if not table:
-                                                continue
-                                            rows = [
-                                                " | ".join(str(c).strip() if c else "" for c in row)
-                                                for row in table if row and any(c for c in row if c)
-                                            ]
-                                            if rows:
-                                                page_parts.append("[TABLE]\n" + "\n".join(rows))
-                                    except Exception:
-                                        pass
                                     if page_parts:
                                         parts.append(f"[PAGE {page_num}]\n" + "\n".join(page_parts))
                                     else:
