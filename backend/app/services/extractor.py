@@ -29,14 +29,28 @@ logger = logging.getLogger(__name__)
 # In-memory extraction progress tracker
 # Structure: { vessel_id_str: { "total": int, "done": int, "status": str, ... } }
 # ---------------------------------------------------------------------------
+import redis
+
 _extract_state: dict[str, dict] = {}
+_sync_redis: Optional[redis.Redis] = None
+
+def _get_sync_redis() -> Optional[redis.Redis]:
+    global _sync_redis
+    if _sync_redis is None:
+        try:
+            _sync_redis = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True, socket_timeout=2.0)
+        except Exception as exc:
+            logger.warning("Failed to initialize sync Redis client: %s", exc)
+    return _sync_redis
+
 
 _active_extraction_tasks: dict[str, asyncio.Task] = {}
 _extraction_paused_flags: dict[str, bool] = {}
 
 
 def pause_extraction(vessel_id_str: str) -> bool:
-    if vessel_id_str in _extract_state and _extract_state[vessel_id_str]["status"] == "running":
+    state = get_extraction_state(vessel_id_str)
+    if state and state.get("status") == "running":
         _extraction_paused_flags[vessel_id_str] = True
         set_extraction_state(vessel_id_str, status="paused")
         return True
@@ -44,7 +58,8 @@ def pause_extraction(vessel_id_str: str) -> bool:
 
 
 def resume_extraction(vessel_id_str: str) -> bool:
-    if vessel_id_str in _extract_state and _extract_state[vessel_id_str]["status"] == "paused":
+    state = get_extraction_state(vessel_id_str)
+    if state and state.get("status") == "paused":
         _extraction_paused_flags[vessel_id_str] = False
         set_extraction_state(vessel_id_str, status="running")
         return True
@@ -58,7 +73,8 @@ def stop_extraction(vessel_id_str: str) -> bool:
         task.cancel()
         set_extraction_state(vessel_id_str, status="idle")
         return True
-    if vessel_id_str in _extract_state and _extract_state[vessel_id_str]["status"] in ("running", "paused"):
+    state = get_extraction_state(vessel_id_str)
+    if state and state.get("status") in ("running", "paused"):
         set_extraction_state(vessel_id_str, status="idle")
         return True
     return False
@@ -75,8 +91,22 @@ def set_extraction_state(
     current_manual_pages_done: int | None = None,
     detailed_status: str | None = None,
 ) -> None:
-    if vessel_id_str not in _extract_state:
-        _extract_state[vessel_id_str] = {
+    key = f"extraction_state:{vessel_id_str}"
+    state = {}
+    try:
+        r = _get_sync_redis()
+        if r:
+            val = r.get(key)
+            if val:
+                state = json.loads(val)
+    except Exception as exc:
+        logger.debug("Failed to read extraction state from Redis: %s", exc)
+
+    if not state:
+        state = _extract_state.get(vessel_id_str, {})
+
+    if not state:
+        state = {
             "total": 0,
             "done": 0,
             "status": "idle",
@@ -85,7 +115,7 @@ def set_extraction_state(
             "current_manual_pages_done": 0,
             "detailed_status": None,
         }
-    state = _extract_state[vessel_id_str]
+
     if total is not None:
         state["total"] = total
     if done is not None:
@@ -106,8 +136,29 @@ def set_extraction_state(
     if detailed_status is not None:
         state["detailed_status"] = detailed_status
 
+    # Save to local cache
+    _extract_state[vessel_id_str] = state
+
+    # Save to Redis
+    try:
+        r = _get_sync_redis()
+        if r:
+            r.set(key, json.dumps(state), ex=86400)
+    except Exception as exc:
+        logger.debug("Failed to write extraction state to Redis: %s", exc)
+
 
 def get_extraction_state(vessel_id_str: str) -> dict[str, Any]:
+    key = f"extraction_state:{vessel_id_str}"
+    try:
+        r = _get_sync_redis()
+        if r:
+            val = r.get(key)
+            if val:
+                return json.loads(val)
+    except Exception as exc:
+        logger.debug("Failed to fetch extraction state from Redis: %s", exc)
+
     return _extract_state.get(
         vessel_id_str,
         {
