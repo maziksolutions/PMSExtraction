@@ -302,6 +302,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "- COUNT FIRST: count only structured table rows (grid rows with Part No/Name/Qty columns — NOT numbers in assembly diagram callouts). Output exactly that many records.\n"
             "- Extract EVERY row from parts tables — never skip rows\n"
             "- ASSEMBLY DIAGRAM RULE: If a page has an exploded-view/assembly diagram with numbered callouts AND a parts table below it, extract ONLY from the parts table rows. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them.\n"
+            "- DUPLICATE TABLE TEXT RULE: Some pages contain the same table represented twice: once as plain unstructured text (where column values are printed inline) and once as a structured `[TABLE]` pipe-delimited block. Do NOT extract duplicate records from both. Extract ONLY from the structured `[TABLE]` block, and ignore the plain unstructured text of those same table rows to prevent duplicate/repeated records.\n"
             "- REMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly variant tags — store in spare_model, NOT in part_name or drawing_number.\n"
             "- For drawing parts tables (NO./NAME/MATERIAL): drawing_position=NO., specification=MATERIAL\n"
             "- Part numbers: include exactly as printed (do not reformat)\n"
