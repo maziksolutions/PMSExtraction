@@ -1657,6 +1657,12 @@ async def _consolidate_spares_for_manual(
             if target.component_id != candidate.component_id:
                 continue
 
+            # If both have different non-empty drawing positions, do NOT merge them
+            pos_t = (target.drawing_position or "").strip().lower()
+            pos_c = (candidate.drawing_position or "").strip().lower()
+            if pos_t and pos_c and pos_t != pos_c:
+                continue
+
             # Fuzzy name check
             name_t = (target.part_name or "").strip().lower()
             name_c = (candidate.part_name or "").strip().lower()
