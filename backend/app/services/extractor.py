@@ -774,7 +774,7 @@ async def _ocr_page_with_openai(image_bytes: bytes, filename: str, page_no: int)
         return ""
 
 
-def _detect_column_bands(img: Any, min_gap_px: int = 20) -> list[tuple[int, int]]:
+def _detect_column_bands(img: Any, min_gap_px: int = 80) -> list[tuple[int, int]]:
     """Detect vertical whitespace bands to find natural column group boundaries.
 
     Returns a list of (x_start, x_end) pixel ranges for each column group.
@@ -840,33 +840,41 @@ async def _extract_spare_parts_from_image_split(
     img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
     width, height = img.size
 
-    # Try column-aware detection; fall back to fixed 4 equal strips
-    bands = _detect_column_bands(img)
-    if bands:
-        overlap_px = max(8, int(width * 0.01))
-        strip_regions = [
-            (max(0, x1 - overlap_px), min(width, x2 + overlap_px))
-            for x1, x2 in bands
-        ]
-        strip_labels = [f"column group {i + 1} of {len(bands)}" for i in range(len(bands))]
+    # Try column-aware detection with 80px gap threshold to avoid splitting columns of a single table
+    bands = _detect_column_bands(img, min_gap_px=80)
+    if not bands:
         logger.info(
-            "extract_spare_split: %s page=%d column-aware bands=%d",
-            filename, page_no, len(bands),
+            "extract_spare_split: %s page=%d no column bands detected, processing as a single full-page table",
+            filename, page_no,
         )
-    else:
-        n_strips = 4
-        strip_w = width / n_strips
-        overlap_px = int(strip_w * 0.08)
-        strip_regions = [
-            (max(0, int(i * strip_w) - overlap_px), min(width, int((i + 1) * strip_w) + overlap_px))
-            for i in range(n_strips)
-        ]
-        strip_labels = [
-            "far-left quarter (columns 1)",
-            "centre-left quarter (columns 2)",
-            "centre-right quarter (columns 3)",
-            "far-right quarter (columns 4)",
-        ]
+        if on_strip_start:
+            on_strip_start(0, 1)
+        full_note = (
+            "This page contains a spare parts table. "
+            "Scan the entire table from left-to-right. "
+            "Translate any Japanese/non-English descriptions to English. "
+            "Return a JSON array with EVERY row — never return prose."
+        )
+        if context_note:
+            full_note += f" {context_note}"
+        return await _extract_entities_from_page_image(
+            image_bytes=image_bytes,
+            filename=filename,
+            page_no=page_no,
+            extraction_type="spare",
+            context_note=full_note,
+        )
+
+    overlap_px = max(8, int(width * 0.01))
+    strip_regions = [
+        (max(0, x1 - overlap_px), min(width, x2 + overlap_px))
+        for x1, x2 in bands
+    ]
+    strip_labels = [f"column group {i + 1} of {len(bands)}" for i in range(len(bands))]
+    logger.info(
+        "extract_spare_split: %s page=%d column-aware bands=%d",
+        filename, page_no, len(bands),
+    )
 
     all_records: list[dict] = []
     for strip_idx, ((x1, x2), label) in enumerate(zip(strip_regions, strip_labels)):
