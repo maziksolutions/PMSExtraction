@@ -2241,16 +2241,11 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
         ext = (manual.file_extension or "").lower()
 
         stored_text = getattr(manual, "extracted_text", None) or ""
-        is_pdf_spares_only = (
-            ext == "pdf"
-            and entity_types is not None
-            and len(entity_types) == 1
-            and entity_types[0] == "spare"
-        )
-        if is_pdf_spares_only:
-            # Skip full text parsing for PDF spares-only extraction as it only uses vision OCR
-            full_text = "[PAGE 1]\nMock spares-only text"
-            logger.info("auto_extract_from_manual: skipping full-text scanning for PDF spares-only extraction")
+        is_pdf = (ext == "pdf")
+        if is_pdf:
+            # Skip full text parsing for all PDF manuals as we extract/OCR target pages on-demand
+            full_text = stored_text or ""
+            logger.info("auto_extract_from_manual: skipping full-text scanning phase for PDF manual %s", filename)
         elif stored_text and "[PAGE " in stored_text:
             # Already has page markers — use as-is
             full_text = stored_text
@@ -2332,7 +2327,7 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                     "auto_extract_from_manual: using stored text without [PAGE] markers for %s", filename
                 )
 
-        if not full_text.strip():
+        if ext != "pdf" and not full_text.strip():
             logger.warning("auto_extract_from_manual: no text extracted from %s, skipping", filename)
             return
 
