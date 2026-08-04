@@ -655,15 +655,17 @@ def _build_marked_text_from_lookup(page_lookup: dict[int, str], page_count: int)
 
 
 def _filter_text_to_pages(text: str, selected_pages: list[int]) -> str:
-    if not selected_pages or "[PAGE " not in text:
+    if not selected_pages:
         return text
+    if "[PAGE " not in text:
+        return ""
     page_set = set(selected_pages)
     selected_blocks = [
         f"[PAGE {page_no}]\n{page_body}".strip()
         for page_no, page_body in _split_marked_pages(text)
         if page_no in page_set
     ]
-    return "\n\n".join(selected_blocks).strip() or text
+    return "\n\n".join(selected_blocks).strip()
 
 
 async def _ocr_page_with_claude(image_bytes: bytes, filename: str, page_no: int) -> str:
@@ -2000,7 +2002,7 @@ async def _link_records_to_components(
 # ---------------------------------------------------------------------------
 
 
-async def auto_extract_from_manual(manual_id_str: str) -> None:
+async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[list[str]] = None) -> None:
     """
     Background task: extract Components, Jobs, and Spares from a Manual.
 
@@ -2074,6 +2076,10 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             entity_type: _selected_manual_pages(manual, entity_type)
             for entity_type in ("component", "job", "spare")
         }
+        if entity_types is not None:
+            entity_pages = {
+                k: v for k, v in entity_pages.items() if k in entity_types
+            }
         selected_extraction_types = [
             entity_type for entity_type, pages in entity_pages.items() if pages
         ]
@@ -2392,10 +2398,17 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
         total_sub_steps = 0
         type_chunks_count: dict[str, int] = {}
         for etype in extraction_types:
-            source_text = type_to_text.get(etype) or full_text
-            chunks = _chunk_text(source_text)
-            type_chunks_count[etype] = len(chunks)
-            total_sub_steps += len(chunks)
+            is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
+            source_text = type_to_text.get(etype)
+            if source_text is None:
+                source_text = full_text
+
+            if not is_pdf_spare and source_text.strip():
+                chunks = _chunk_text(source_text)
+                type_chunks_count[etype] = len(chunks)
+                total_sub_steps += len(chunks)
+            else:
+                type_chunks_count[etype] = 0
 
             if ext == "pdf" and file_bytes is not None and etype in {"component", "spare"}:
                 selected_pages = entity_pages.get(etype) or []
@@ -2453,34 +2466,44 @@ async def auto_extract_from_manual(manual_id_str: str) -> None:
             )
 
         for etype in extraction_types:
-            source_text = type_to_text.get(etype) or full_text
-            text_chunks = _chunk_text(source_text)
-            logger.info(
-                "auto_extract_from_manual: %s -> %s chars=%d chunks=%d",
-                filename,
-                etype,
-                len(source_text),
-                len(text_chunks),
-            )
             all_records: list[dict] = []
-            for chunk_idx, chunk in enumerate(text_chunks):
-                done_sub_steps += 1
-                set_extraction_state(
-                    vessel_id_str,
-                    current_manual_pages_done=done_sub_steps,
-                    detailed_status=f"Extracting {etype} text (chunk {chunk_idx + 1}/{len(text_chunks)})..."
+            is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
+            source_text = type_to_text.get(etype)
+            if source_text is None:
+                source_text = full_text
+
+            if not is_pdf_spare and source_text.strip():
+                text_chunks = _chunk_text(source_text)
+                logger.info(
+                    "auto_extract_from_manual: %s -> %s chars=%d chunks=%d",
+                    filename,
+                    etype,
+                    len(source_text),
+                    len(text_chunks),
                 )
-                chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
-                context_note = learning_context_by_type.get(etype)
-                if etype in {"job", "spare"}:
-                    context_components = extracted_component_context or existing_manual_component_context
-                    if context_components:
-                        context_note = _merge_context_notes(
-                            _build_component_context_text(context_components, manual),
-                            learning_context_by_type.get(etype),
-                        )
-                records = await extract_entities(chunk, etype, chunk_label, context_note=context_note)
-                all_records.extend(records)
+                for chunk_idx, chunk in enumerate(text_chunks):
+                    done_sub_steps += 1
+                    set_extraction_state(
+                        vessel_id_str,
+                        current_manual_pages_done=done_sub_steps,
+                        detailed_status=f"Extracting {etype} text (chunk {chunk_idx + 1}/{len(text_chunks)})..."
+                    )
+                    chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
+                    context_note = learning_context_by_type.get(etype)
+                    if etype in {"job", "spare"}:
+                        context_components = extracted_component_context or existing_manual_component_context
+                        if context_components:
+                            context_note = _merge_context_notes(
+                                _build_component_context_text(context_components, manual),
+                                learning_context_by_type.get(etype),
+                            )
+                    records = await extract_entities(chunk, etype, chunk_label, context_note=context_note)
+                    all_records.extend(records)
+            else:
+                if is_pdf_spare:
+                    logger.info("auto_extract_from_manual: skipping text extraction for spares (will use PDF vision extraction)")
+                elif not source_text.strip():
+                    logger.info("auto_extract_from_manual: source text for %s is empty, skipping text extraction", etype)
 
             if ext == "pdf" and file_bytes is not None and etype in {"component", "spare"}:
                 selected_pages = entity_pages.get(etype) or []

@@ -605,6 +605,22 @@ const ManualReview: React.FC = () => {
     },
   })
 
+  const extractSelectedSparesOnlyMutation = useMutation({
+    mutationFn: async () => {
+      const manualIds = Array.from(selectedIds)
+      await saveManualEdits(manualIds)
+      return apiClient
+        .post(`/vessels/${vesselId}/manuals/extract-selected`, {
+          manual_ids: manualIds,
+          entity_types: ['spare'],
+        })
+        .then((r) => r.data)
+    },
+    onSuccess: (data) => {
+      if (data.started) setExtractionPolling(true)
+    },
+  })
+
   const pauseExtractMutation = useMutation({
     mutationFn: () =>
       apiClient.post(`/vessels/${vesselId}/extract-pause`).then((r) => r.data),
@@ -800,7 +816,7 @@ const ManualReview: React.FC = () => {
   // ── Derived state ─────────────────────────────────────────────────────────
 
   const isScreening = screeningPolling || screenAllMutation.isPending
-  const isExtracting = extractionPolling || extractAllMutation.isPending || extractSelectedMutation.isPending
+  const isExtracting = extractionPolling || extractAllMutation.isPending || extractSelectedMutation.isPending || extractSelectedSparesOnlyMutation.isPending
   const screeningProgress = screeningData && screeningData.total > 0
     ? Math.round((screeningData.done / screeningData.total) * 100) : 0
   const extractionProgress = extractionData && extractionData.total > 0
@@ -883,14 +899,24 @@ const ManualReview: React.FC = () => {
             {isExtracting ? `Extracting ${extractionData?.done ?? 0}/${extractionData?.total ?? '...'}` : 'Extract All'}
           </button>
           {selectedIds.size > 0 && (
-            <button
-              onClick={() => extractSelectedMutation.mutate()}
-              disabled={isExtracting || extractSelectedMutation.isPending}
-              className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-60"
-            >
-              <Zap className="h-4 w-4" />
-              Extract Selected ({selectedIds.size})
-            </button>
+            <>
+              <button
+                onClick={() => extractSelectedMutation.mutate()}
+                disabled={isExtracting || extractSelectedMutation.isPending}
+                className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-60"
+              >
+                <Zap className="h-4 w-4" />
+                Extract Selected ({selectedIds.size})
+              </button>
+              <button
+                onClick={() => extractSelectedSparesOnlyMutation.mutate()}
+                disabled={isExtracting || extractSelectedSparesOnlyMutation.isPending}
+                className="flex items-center gap-2 rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-500 disabled:opacity-60"
+              >
+                <Zap className="h-4 w-4" />
+                Extract Spares Only ({selectedIds.size})
+              </button>
+            </>
           )}
           <button
             onClick={() => screenAllMutation.mutate()}

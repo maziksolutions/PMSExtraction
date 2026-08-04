@@ -1839,7 +1839,11 @@ async def screen_selected_manuals(
 
 
 
-async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) -> None:
+async def _run_extract_selected_task(
+    vessel_id_str: str,
+    manual_ids: list[str],
+    entity_types: Optional[list[str]] = None,
+) -> None:
 
     """Background task: runs auto_extract_from_manual with bounded parallelism."""
 
@@ -1852,11 +1856,13 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
 
     logger.warning(
 
-        "_run_extract_selected_task: starting vessel=%s manuals=%s",
+        "_run_extract_selected_task: starting vessel=%s manuals=%s entity_types=%s",
 
         vessel_id_str,
 
         manual_ids,
+
+        entity_types,
 
     )
 
@@ -1888,7 +1894,7 @@ async def _run_extract_selected_task(vessel_id_str: str, manual_ids: list[str]) 
 
                     )
 
-                    await auto_extract_from_manual(manual_id)
+                    await auto_extract_from_manual(manual_id, entity_types=entity_types)
 
                 except Exception as exc:
 
@@ -2003,6 +2009,7 @@ async def extract_selected_manuals(
 
 
     manual_ids: list[str] = body.get("manual_ids", [])
+    entity_types: Optional[list[str]] = body.get("entity_types", None)
 
     if not manual_ids:
 
@@ -2076,7 +2083,7 @@ async def extract_selected_manuals(
 
     set_extraction_state(vessel_id_str, total=len(runnable_manual_ids), done=0, status="running")
 
-    background_tasks.add_task(_run_extract_selected_task, vessel_id_str, runnable_manual_ids)
+    background_tasks.add_task(_run_extract_selected_task, vessel_id_str, runnable_manual_ids, entity_types)
 
     return {"started": True, "total": len(runnable_manual_ids)}
 
