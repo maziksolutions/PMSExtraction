@@ -1291,7 +1291,7 @@ async def _enrich_pdf_text_for_selected_pages(
                 combined = "\n".join(part for part in page_parts if part).strip()
                 if len(combined) < 120:
                     try:
-                        page_image = page.to_image(resolution=400).original
+                        page_image = page.to_image(resolution=200).original
                     except Exception:
                         page_image = None
 
@@ -2511,7 +2511,7 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                 rendered_pages = await _render_selected_pdf_page_images(
                     file_bytes=file_bytes,
                     selected_pages=selected_pages,
-                    resolution=400,
+                    resolution=200,
                 )
                 if rendered_pages:
                     context_note = learning_context_by_type.get(etype)

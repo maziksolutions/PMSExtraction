@@ -561,8 +561,11 @@ const ManualReview: React.FC = () => {
     queryKey: ['extraction-status', vesselId],
     queryFn: () =>
       apiClient.get(`/vessels/${vesselId}/extraction-status`).then((r) => r.data),
-    enabled: !!vesselId && extractionPolling,
-    refetchInterval: extractionPolling ? 2000 : false,
+    enabled: !!vesselId,
+    refetchInterval: (query) => {
+      const state = query?.state?.data as ExtractionStatus | undefined
+      return (state?.status === 'running' || state?.status === 'paused') ? 2000 : false
+    },
   })
 
   useEffect(() => {
@@ -578,7 +581,10 @@ const ManualReview: React.FC = () => {
       return apiClient.post(`/vessels/${vesselId}/extract-all`).then((r) => r.data)
     },
     onSuccess: (data) => {
-      if (data.started) setExtractionPolling(true)
+      if (data.started) {
+        setExtractionPolling(true)
+        queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+      }
     },
   })
 
@@ -601,7 +607,10 @@ const ManualReview: React.FC = () => {
         .then((r) => r.data)
     },
     onSuccess: (data) => {
-      if (data.started) setExtractionPolling(true)
+      if (data.started) {
+        setExtractionPolling(true)
+        queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+      }
     },
   })
 
@@ -617,7 +626,10 @@ const ManualReview: React.FC = () => {
         .then((r) => r.data)
     },
     onSuccess: (data) => {
-      if (data.started) setExtractionPolling(true)
+      if (data.started) {
+        setExtractionPolling(true)
+        queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+      }
     },
   })
 
@@ -816,7 +828,12 @@ const ManualReview: React.FC = () => {
   // ── Derived state ─────────────────────────────────────────────────────────
 
   const isScreening = screeningPolling || screenAllMutation.isPending
-  const isExtracting = extractionPolling || extractAllMutation.isPending || extractSelectedMutation.isPending || extractSelectedSparesOnlyMutation.isPending
+  const isExtracting =
+    extractionPolling ||
+    (extractionData && (extractionData.status === 'running' || extractionData.status === 'paused')) ||
+    extractAllMutation.isPending ||
+    extractSelectedMutation.isPending ||
+    extractSelectedSparesOnlyMutation.isPending
   const screeningProgress = screeningData && screeningData.total > 0
     ? Math.round((screeningData.done / screeningData.total) * 100) : 0
   const extractionProgress = extractionData && extractionData.total > 0
