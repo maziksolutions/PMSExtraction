@@ -78,6 +78,41 @@ import json
 _screening_state: dict[str, dict] = {}
 _sync_redis_client: Optional[redis.Redis] = None
 
+_active_screening_tasks: dict[str, asyncio.Task] = {}
+_screening_paused_flags: dict[str, bool] = {}
+
+
+def pause_screening(vessel_id_str: str) -> bool:
+    state = get_screening_state(vessel_id_str)
+    if state and state.get("status") == "running":
+        _screening_paused_flags[vessel_id_str] = True
+        set_screening_state(vessel_id_str, status="paused")
+        return True
+    return False
+
+
+def resume_screening(vessel_id_str: str) -> bool:
+    state = get_screening_state(vessel_id_str)
+    if state and state.get("status") == "paused":
+        _screening_paused_flags[vessel_id_str] = False
+        set_screening_state(vessel_id_str, status="running")
+        return True
+    return False
+
+
+def stop_screening(vessel_id_str: str) -> bool:
+    _screening_paused_flags.pop(vessel_id_str, None)
+    task = _active_screening_tasks.pop(vessel_id_str, None)
+    if task and not task.done():
+        task.cancel()
+        set_screening_state(vessel_id_str, status="idle")
+        return True
+    state = get_screening_state(vessel_id_str)
+    if state and state.get("status") in ("running", "paused"):
+        set_screening_state(vessel_id_str, status="idle")
+        return True
+    return False
+
 def _get_sync_redis_client() -> Optional[redis.Redis]:
     global _sync_redis_client
     if _sync_redis_client is None:
@@ -1318,6 +1353,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
 
 
     try:
+        _active_screening_tasks[vessel_id_str] = asyncio.current_task()
 
         async with AsyncSessionLocal() as db:
 
@@ -1354,6 +1390,8 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
         async def _screen_one(manual_id: str) -> None:
 
             async with semaphore:
+                while _screening_paused_flags.get(vessel_id_str):
+                    await asyncio.sleep(1)
 
                 manual_name = manual_id
 
@@ -1690,9 +1728,13 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
 
         set_screening_state(vessel_id_str, status="completed")
 
+    except asyncio.CancelledError:
+        set_screening_state(vessel_id_str, status="idle")
     except Exception:
-
         set_screening_state(vessel_id_str, status="failed")
+    finally:
+        _active_screening_tasks.pop(vessel_id_str, None)
+        _screening_paused_flags.pop(vessel_id_str, None)
 
 
 
@@ -2114,6 +2156,39 @@ async def screening_status(
 
     state = get_screening_state(str(vessel_id))
     return state
+
+
+@router.post("/{vessel_id}/screening-pause", summary="Pause active screening")
+async def pause_screen(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    success = pause_screening(str(vessel_id))
+    return {"success": success, "status": "paused" if success else "failed"}
+
+
+@router.post("/{vessel_id}/screening-resume", summary="Resume paused screening")
+async def resume_screen(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    success = resume_screening(str(vessel_id))
+    return {"success": success, "status": "running" if success else "failed"}
+
+
+@router.post("/{vessel_id}/screening-stop", summary="Stop/Cancel active screening")
+async def stop_screen(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    success = stop_screening(str(vessel_id))
+    return {"success": success, "status": "idle" if success else "failed"}
 
 
 

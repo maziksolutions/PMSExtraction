@@ -633,6 +633,32 @@ const ManualReview: React.FC = () => {
     },
   })
 
+  const pauseScreeningMutation = useMutation({
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/screening-pause`).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['screening-status', vesselId] })
+    },
+  })
+
+  const resumeScreeningMutation = useMutation({
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/screening-resume`).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['screening-status', vesselId] })
+    },
+  })
+
+  const stopScreeningMutation = useMutation({
+    mutationFn: () =>
+      apiClient.post(`/vessels/${vesselId}/screening-stop`).then((r) => r.data),
+    onSuccess: () => {
+      setScreeningPolling(false)
+      queryClient.invalidateQueries({ queryKey: ['screening-status', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
+    },
+  })
+
   const pauseExtractMutation = useMutation({
     mutationFn: () =>
       apiClient.post(`/vessels/${vesselId}/extract-pause`).then((r) => r.data),
@@ -1002,15 +1028,45 @@ const ManualReview: React.FC = () => {
       {/* Screening progress bar */}
       {isScreening && screeningData && screeningData.total > 0 && (
         <div className="rounded-xl border border-violet-700 bg-violet-900/20 p-4 space-y-3">
-          <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
-              <span className="font-medium text-violet-300">Screening manuals... {screeningData.done} / {screeningData.total} manuals</span>
-              <span className="text-violet-400 font-bold">{screeningProgress}%</span>
+              <span className="font-medium text-violet-300 flex items-center gap-1.5">
+                <span className={`h-2.5 w-2.5 rounded-full ${screeningData.status === 'paused' ? 'bg-amber-500 animate-pulse' : 'bg-violet-500 animate-ping'}`} />
+                {screeningData.status === 'paused' ? 'Screening Paused' : 'Screening manuals...'} {screeningData.done} / {screeningData.total} manuals
+              </span>
+              <div className="flex items-center gap-2">
+                {screeningData.status === 'paused' ? (
+                  <button
+                    onClick={() => resumeScreeningMutation.mutate()}
+                    disabled={resumeScreeningMutation.isPending}
+                    className="flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded bg-violet-600 hover:bg-violet-500 text-white disabled:opacity-40 transition"
+                    title="Resume screening"
+                  >
+                    <Play className="h-3 w-3" /> Resume
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => pauseScreeningMutation.mutate()}
+                    disabled={pauseScreeningMutation.isPending}
+                    className="flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded bg-amber-600 hover:bg-amber-500 text-white disabled:opacity-40 transition"
+                    title="Pause screening (finishing active manual...)"
+                  >
+                    <Pause className="h-3 w-3" /> Pause
+                  </button>
+                )}
+                <button
+                  onClick={() => stopScreeningMutation.mutate()}
+                  disabled={stopScreeningMutation.isPending}
+                  className="flex items-center gap-1 px-2 py-0.5 text-xs font-semibold rounded bg-red-700 hover:bg-red-600 text-white disabled:opacity-40 transition"
+                  title="Stop/Cancel screening"
+                >
+                  <Square className="h-3 w-3" /> Stop
+                </button>
+                <span className="text-violet-400 font-bold ml-2">{screeningProgress}%</span>
+              </div>
             </div>
             <div className="h-2 w-full rounded-full bg-slate-800 overflow-hidden">
               <div className="h-2 rounded-full bg-violet-500 transition-all duration-500" style={{ width: `${screeningProgress}%` }} />
             </div>
-          </div>
 
           {screeningData.current_manual_name && (
             <div className="space-y-1.5 bg-slate-900/40 rounded-lg p-3 border border-violet-950/40 text-xs">
