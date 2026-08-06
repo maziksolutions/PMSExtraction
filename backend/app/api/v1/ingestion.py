@@ -1651,11 +1651,7 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                             "pages_with_spares": cr.pages_with_spares,
 
                             "supply_type": getattr(cr, "supply_type", "OEM"),
-
                             "status": ManualStatus.classified,
-
-                            "screening_explanation": getattr(cr, "screening_explanation", ""),
-
                         }
 
 
