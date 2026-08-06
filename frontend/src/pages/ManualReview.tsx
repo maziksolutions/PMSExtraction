@@ -1011,10 +1011,10 @@ const ManualReview: React.FC = () => {
 
       {/* Screening complete banner */}
       {!isScreening && screeningData?.status === 'completed' && (
-        <div className="flex items-center gap-2 rounded-xl border border-emerald-500 bg-emerald-950/80 px-4 py-3 text-sm text-emerald-200 shadow-lg">
-          <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" />
+        <div className="flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-400 px-4 py-3 text-sm text-black font-bold shadow-lg">
+          <CheckCircle2 className="h-5 w-5 shrink-0 text-black animate-bounce" />
           <span>
-            Screening complete — <strong className="font-bold text-white">{screeningData.total} manual{screeningData.total !== 1 ? 's' : ''}</strong> classified. Review the categories below, then run Extract Selected on instruction manuals.
+            Screening complete — {screeningData.total} manual{screeningData.total !== 1 ? 's' : ''} classified. Review the categories below, then run Extract Selected on instruction manuals.
           </span>
         </div>
       )}
