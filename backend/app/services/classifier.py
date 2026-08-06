@@ -32,6 +32,7 @@ class ClassificationResult:
     page_explanations: str
     page_count: int
     supply_type: str = "OEM"  # "OEM" | "yard_supply"
+    pages_text: Optional[list[str]] = None
 
 
 @dataclass(frozen=True)
@@ -1167,7 +1168,9 @@ def classify_pdf(
     """
     pages_text, total_pages = _extract_pdf_text(content, on_page_callback=on_page_callback)
     _log.info("classifier: extracted %d pages from %s (%d bytes)", total_pages, filename, len(content))
-    return classify_pages_text(pages_text, filename, total_pages, learning_context)
+    result = classify_pages_text(pages_text, filename, total_pages, learning_context)
+    result.pages_text = pages_text
+    return result
 
 
 def _keyword_classify(pages_text: list[str], filename: str, total_pages: int) -> ClassificationResult:

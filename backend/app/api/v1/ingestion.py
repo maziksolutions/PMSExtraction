@@ -1558,93 +1558,42 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
 
 
                         new_extracted_text: str | None = None
-
-                        if content and ext == "pdf":
-
+                        if getattr(cr, "pages_text", None) is not None:
+                            # Re-use the already extracted text pages
+                            formatted_pages = []
+                            for idx, p_text in enumerate(cr.pages_text, start=1):
+                                if p_text.strip():
+                                    formatted_pages.append(f"[PAGE {idx}]\n{p_text}")
+                                else:
+                                    formatted_pages.append(f"[PAGE {idx}]\n")
+                            new_extracted_text = "\n\n".join(formatted_pages)
+                        elif content and ext == "pdf":
                             stored = getattr(manual, "extracted_text", None) or ""
-
                             if not stored or "[PAGE " not in stored:
-
                                 try:
-
                                     import io as _io
-
                                     import pdfplumber as _pdfplumber
 
-
-
                                     def _reextract(data: bytes) -> str:
-
                                         parts: list[str] = []
-
                                         with _pdfplumber.open(_io.BytesIO(data)) as pdf:
-
                                             for pnum, pg in enumerate(pdf.pages, start=1):
-
-                                                pparts: list[str] = []
-
-                                                text_value = pg.extract_text()
-
-                                                if text_value and text_value.strip():
-
-                                                    pparts.append(text_value)
-
-                                                try:
-
-                                                    for tbl in (pg.extract_tables() or []):
-
-                                                        if not tbl:
-
-                                                            continue
-
-                                                        rows = [
-
-                                                            " | ".join(str(c).strip() if c else "" for c in row)
-
-                                                            for row in tbl if row and any(c for c in row if c)
-
-                                                        ]
-
-                                                        if rows:
-
-                                                            pparts.append("[TABLE]\n" + "\n".join(rows))
-
-                                                except Exception:
-
-                                                    pass
-
-
-
-                                                if pparts:
-
-                                                    parts.append(f"[PAGE {pnum}]\n" + "\n".join(pparts))
-
+                                                t_val = pg.extract_text() or ""
+                                                if t_val.strip():
+                                                    parts.append(f"[PAGE {pnum}]\n{t_val.strip()}")
                                                 else:
-
                                                     parts.append(f"[PAGE {pnum}]\n")
-
                                         return "\n\n".join(parts)
 
-
-
                                     set_screening_state(
-
                                         vessel_id_str,
-
                                         detailed_status="Parsing and re-extracting text..."
-
                                     )
-
                                     new_extracted_text = await asyncio.to_thread(_reextract, content)
-
                                 except Exception as re_err:
-
                                     logger.warning(
-
                                         "_run_screening_task: text re-extraction failed for %s: %s",
-
                                         manual.original_filename, re_err,
-
                                     )
 
 
