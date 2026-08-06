@@ -2542,10 +2542,16 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                 )
                 for chunk_idx, chunk in enumerate(text_chunks):
                     done_sub_steps += 1
+                    import re as _re
+                    found_pages = _re.findall(r'\[PAGE (\d+)\]', chunk)
+                    if found_pages:
+                        page_desc = f"pages {', '.join(found_pages)}"
+                    else:
+                        page_desc = f"chunk {chunk_idx + 1}/{len(text_chunks)}"
                     set_extraction_state(
                         vessel_id_str,
                         current_manual_pages_done=done_sub_steps,
-                        detailed_status=f"Extracting {etype} text (chunk {chunk_idx + 1}/{len(text_chunks)})..."
+                        detailed_status=f"Extracting {etype}s from text ({page_desc})..."
                     )
                     chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
                     context_note = learning_context_by_type.get(etype)
@@ -2592,14 +2598,14 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                                 set_extraction_state(
                                     vessel_id_str,
                                     current_manual_pages_done=done_sub_steps,
-                                    detailed_status=f"Extracting spares image (page {page_no}, strip {strip_idx + 1}/{total_strips})..."
+                                    detailed_status=f"Extracting spares from image page {page_no} (strip {strip_idx + 1}/{total_strips})..."
                                 )
 
                             done_sub_steps += 1
                             set_extraction_state(
                                 vessel_id_str,
                                 current_manual_pages_done=done_sub_steps,
-                                detailed_status=f"Extracting spares image (page {page_no}, starting)..."
+                                detailed_status=f"Extracting spares from image page {page_no} (starting)..."
                             )
                             vision_records = await _extract_spare_parts_from_image_split(
                                 image_bytes=image_bytes,
@@ -2613,7 +2619,7 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                             set_extraction_state(
                                 vessel_id_str,
                                 current_manual_pages_done=done_sub_steps,
-                                detailed_status=f"Extracting components image (page {page_no})..."
+                                detailed_status=f"Extracting components from image page {page_no} of {manual.page_count or 'N/A'}..."
                             )
                             vision_records = await _extract_entities_from_page_image(
                                 image_bytes=image_bytes,
