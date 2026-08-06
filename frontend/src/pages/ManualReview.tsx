@@ -951,6 +951,7 @@ const ManualReview: React.FC = () => {
                 <Zap className="h-4 w-4" />
                 Extract Selected ({selectedIds.size})
               </button>
+              {/* 
               <button
                 onClick={() => extractSelectedSparesOnlyMutation.mutate()}
                 disabled={isExtracting || extractSelectedSparesOnlyMutation.isPending}
@@ -959,6 +960,7 @@ const ManualReview: React.FC = () => {
                 <Zap className="h-4 w-4" />
                 Extract Spares Only ({selectedIds.size})
               </button>
+              */}
             </>
           )}
           <button
