@@ -344,7 +344,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             '  "drawing_position": "REF.NO or position from the parts table — copy EXACTLY as printed, including ranges (e.g. \'1\', \'11\', \'1~58\', \'155~156\', \'101~105\') or null",\n'
             '  "specification": "material, size, standard, quantity note (e.g. \'QUARTZ GLASS\', \'RUBBER\', \'STAINLESS STEEL\') or null",\n'
             '  "spare_maker": "manufacturer — if manual is for a specific maker (e.g. TAIKO KIKAI), set that maker for all parts; null only if truly unknown",\n'
-            '  "spare_model": "model or sub-assembly this spare belongs to (e.g. \'UV Sterilizer SBH-25\', \'Aeration Blower TSS-25\') or null",\n'
+            '  "spare_model": "the header of the parts table, drawing diagram title, section heading, or sub-assembly this spare belongs to (e.g. \'Machine spare parts list\', \'UV Sterilizer SBH-25\') or null",\n'
             '  "source_page_number": integer from [PAGE N] marker or null,\n'
             '  "confidence_score": integer 70-98\n'
             "}\n\n"
@@ -358,7 +358,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "- For drawing parts tables (NO./NAME/MATERIAL): drawing_position=NO., specification=MATERIAL\n"
             "- Part numbers: include exactly as printed (do not reformat)\n"
             "- spare_maker: infer from document title/header (e.g. 'TAIKO KIKAI INDUSTRIES' → 'Taiko Kikai')\n"
-            "- spare_model: identify which sub-assembly the spare belongs to from context (section heading)\n"
+            "- spare_model: identify the assembly details from the header of the table, section heading, or drawing/diagram title of the page (e.g. 'Machine spare parts list')\n"
             "- If no spare parts found, return []\n"
             "- Return ONLY the JSON array, no markdown fences\n"
             "LANGUAGE RULES (STRICT — NO EXCEPTIONS):\n"
@@ -1051,6 +1051,7 @@ async def _extract_entities_from_page_image_with_openai(
                 "\n  • part_number → PC.NO value"
                 "\n  • part_name → DESCRIPTION translated to English"
                 "\n  • specification → QTY + REMARKS translated to English"
+                "\n  • spare_model → the header/title of the parts table or the diagram title of the page (e.g. 'Machine spare parts list', 'Main Components Exploded View')"
             )
         if context_note:
             text_instructions += f"\n\nAdditional context:\n{context_note}"
@@ -1133,6 +1134,7 @@ async def _extract_entities_from_page_image_with_claude(
                 "\n  • part_number → PC.NO value"
                 "\n  • part_name → DESCRIPTION translated to English"
                 "\n  • specification → QTY + REMARKS translated to English"
+                "\n  • spare_model → the header/title of the parts table or the diagram title of the page (e.g. 'Machine spare parts list', 'Main Components Exploded View')"
             )
         if context_note:
             text_instructions += f"\n\nAdditional context:\n{context_note}"
