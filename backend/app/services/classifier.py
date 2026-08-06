@@ -110,14 +110,23 @@ VALID_CATEGORIES = [
 # PDF text extraction helper
 # ---------------------------------------------------------------------------
 
-def _extract_pdf_text(content: bytes, max_pages: int = 9999) -> tuple[list[str], int]:
+def _extract_pdf_text(
+    content: bytes,
+    max_pages: int = 9999,
+    on_page_callback: Optional[Callable[[int, int], None]] = None,
+) -> tuple[list[str], int]:
     """Extract text per page from PDF bytes. Returns (pages_text, total_pages)."""
     try:
         import pdfplumber  # type: ignore
         pages_text: list[str] = []
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             total = len(pdf.pages)
-            for page in pdf.pages[:max_pages]:
+            for idx, page in enumerate(pdf.pages[:max_pages]):
+                if on_page_callback:
+                    try:
+                        on_page_callback(idx + 1, total)
+                    except Exception:
+                        pass
                 t = page.extract_text() or ""
                 pages_text.append(t.strip())
         return pages_text, total
@@ -1150,12 +1159,13 @@ def classify_pdf(
     content: bytes,
     filename: str,
     learning_context: Optional[str] = None,
+    on_page_callback: Optional[Callable[[int, int], None]] = None,
 ) -> ClassificationResult:
     """
     Classify a PDF manual.
     Priority: Groq (free) → Gemini (free fallback) → Claude (paid fallback) → keyword.
     """
-    pages_text, total_pages = _extract_pdf_text(content)
+    pages_text, total_pages = _extract_pdf_text(content, on_page_callback=on_page_callback)
     _log.info("classifier: extracted %d pages from %s (%d bytes)", total_pages, filename, len(content))
     return classify_pages_text(pages_text, filename, total_pages, learning_context)
 

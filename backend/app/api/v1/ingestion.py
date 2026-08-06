@@ -72,7 +72,20 @@ router = APIRouter()
 
 # Structure: { vessel_id: { "total": int, "done": int, "status": "idle"|"running"|"completed" } }
 
+import redis
+import json
+
 _screening_state: dict[str, dict] = {}
+_sync_redis_client: Optional[redis.Redis] = None
+
+def _get_sync_redis_client() -> Optional[redis.Redis]:
+    global _sync_redis_client
+    if _sync_redis_client is None:
+        try:
+            _sync_redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True, socket_timeout=2.0)
+        except Exception as exc:
+            logger.warning("Failed to initialize sync Redis client for ingestion: %s", exc)
+    return _sync_redis_client
 
 
 def set_screening_state(
@@ -84,15 +97,29 @@ def set_screening_state(
     current_manual_name: str | None = None,
     detailed_status: str | None = None,
 ) -> None:
-    if vessel_id_str not in _screening_state:
-        _screening_state[vessel_id_str] = {
+    key = f"screening_state:{vessel_id_str}"
+    state = {}
+    try:
+        r = _get_sync_redis_client()
+        if r:
+            val = r.get(key)
+            if val:
+                state = json.loads(val)
+    except Exception as exc:
+        logger.debug("Failed to read screening state from Redis: %s", exc)
+
+    if not state:
+        state = _screening_state.get(vessel_id_str, {})
+
+    if not state:
+        state = {
             "total": 0,
             "done": 0,
             "status": "idle",
             "current_manual_name": None,
             "detailed_status": None,
         }
-    state = _screening_state[vessel_id_str]
+
     if total is not None:
         state["total"] = total
     if done is not None:
@@ -107,8 +134,29 @@ def set_screening_state(
     if detailed_status is not None:
         state["detailed_status"] = detailed_status
 
+    # Save to local cache
+    _screening_state[vessel_id_str] = state
+
+    # Save to Redis
+    try:
+        r = _get_sync_redis_client()
+        if r:
+            r.set(key, json.dumps(state), ex=86400)
+    except Exception as exc:
+        logger.debug("Failed to write screening state to Redis: %s", exc)
+
 
 def get_screening_state(vessel_id_str: str) -> dict[str, Any]:
+    key = f"screening_state:{vessel_id_str}"
+    try:
+        r = _get_sync_redis_client()
+        if r:
+            val = r.get(key)
+            if val:
+                return json.loads(val)
+    except Exception as exc:
+        logger.debug("Failed to fetch screening state from Redis: %s", exc)
+
     return _screening_state.get(
         vessel_id_str,
         {"total": 0, "done": 0, "status": "idle", "current_manual_name": None, "detailed_status": None},
@@ -1440,17 +1488,19 @@ async def _run_screening_task(vessel_id_str: str, tenant_id_str: str, manual_ids
                         )
 
                         if content and ext == "pdf":
+                            def _on_page_scanned(page_num: int, total_pages: int):
+                                set_screening_state(
+                                    vessel_id_str,
+                                    current_manual_name=manual_name,
+                                    detailed_status=f"Scanning page {page_num} / {total_pages}..."
+                                )
 
                             cr = await asyncio.to_thread(
-
                                 classify_pdf,
-
                                 content,
-
                                 manual.original_filename,
-
                                 learning_context,
-
+                                _on_page_scanned,
                             )
 
                         else:
@@ -2113,14 +2163,7 @@ async def screening_status(
 
     await _get_vessel_or_404(vessel_id, db)
 
-    state = _screening_state.get(
-
-        str(vessel_id),
-
-        {"total": 0, "done": 0, "status": "idle"},
-
-    )
-
+    state = get_screening_state(str(vessel_id))
     return state
 
 
