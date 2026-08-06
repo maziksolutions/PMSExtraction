@@ -1,4 +1,4 @@
-﻿"""
+"""
 Automatic manual classifier.
 
 Primary: Uses Claude AI (Anthropic) for intelligent classification when
@@ -111,48 +111,15 @@ VALID_CATEGORIES = [
 # ---------------------------------------------------------------------------
 
 def _extract_pdf_text(content: bytes, max_pages: int = 9999) -> tuple[list[str], int]:
-    """Extract text per page from PDF bytes. Returns (pages_text, total_pages).
-    pages_text[i] is the text for page (i+1); tables are included inline."""
+    """Extract text per page from PDF bytes. Returns (pages_text, total_pages)."""
     try:
         import pdfplumber  # type: ignore
         pages_text: list[str] = []
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             total = len(pdf.pages)
             for page in pdf.pages[:max_pages]:
-                parts: list[str] = []
-                t = page.extract_text()
-                if t and t.strip():
-                    parts.append(t)
-
-                try:
-                    for tbl in (page.extract_tables() or []):
-                        if not tbl:
-                            continue
-                        rows = [
-                            " | ".join(str(c).strip() if c else "" for c in row)
-                            for row in tbl if row and any(c for c in row if c)
-                        ]
-                        if rows:
-                            parts.append("[TABLE] " + " // ".join(rows[:5]))  # first 5 rows for brevity
-                except Exception:
-                    pass
-
-                # If no searchable text is extracted, try OCR on the footer to capture page numbers.
-                if not parts:
-                    try:
-                        import pytesseract  # type: ignore
-                        from PIL import Image  # type: ignore
-
-                        page_image = page.to_image(resolution=200).original
-                        w, h = page_image.size
-                        footer_crop = page_image.crop((0, int(h * 0.7), w, h))
-                        ocr_text = pytesseract.image_to_string(footer_crop, config='--psm 6').strip()
-                        if ocr_text:
-                            parts.append(ocr_text)
-                    except Exception:
-                        pass
-
-                pages_text.append("\n".join(parts).strip())
+                t = page.extract_text() or ""
+                pages_text.append(t.strip())
         return pages_text, total
     except Exception:
         return [], 0
