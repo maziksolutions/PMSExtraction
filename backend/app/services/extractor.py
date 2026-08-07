@@ -744,6 +744,31 @@ def _filter_text_to_pages(text: str, selected_pages: list[int], include_context:
     return "\n\n".join(selected_blocks).strip()
 
 
+def _build_preceding_titles_history(text: str, target_page: int, max_lookback: int = 10) -> str:
+    if "[PAGE " not in text:
+        return ""
+    all_pages = dict(_split_marked_pages(text))
+    
+    history_lines = []
+    start_page = max(1, target_page - max_lookback)
+    for pno in range(start_page, target_page):
+        pbody = all_pages.get(pno) or ""
+        # Get the first 3 non-empty lines to find headers/titles
+        lines = [line.strip() for line in pbody.splitlines() if line.strip()]
+        title_lines = lines[:3]
+        if title_lines:
+            joined_title = " | ".join(title_lines)
+            if len(joined_title) > 200:
+                joined_title = joined_title[:197] + "..."
+            history_lines.append(f"Page {pno}: \"{joined_title}\"")
+        else:
+            history_lines.append(f"Page {pno}: [Empty or no text]")
+            
+    if history_lines:
+        return "\n".join(history_lines)
+    return ""
+
+
 async def _ocr_page_with_claude(image_bytes: bytes, filename: str, page_no: int) -> str:
     if not settings.ANTHROPIC_API_KEY:
         return ""
@@ -2594,7 +2619,20 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                                 _build_component_context_text(context_components, manual),
                                 learning_context_by_type.get(etype),
                             )
-                    records = await extract_entities(chunk, etype, chunk_label, context_note=context_note)
+                    
+                    # Fetch preceding page titles context
+                    chunk_context = context_note
+                    if found_pages:
+                        try:
+                            first_pno = min(int(p) for p in found_pages)
+                            titles_history = _build_preceding_titles_history(full_text, first_pno, max_lookback=10)
+                            if titles_history:
+                                history_note = f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
+                                chunk_context = _merge_context_notes(chunk_context, history_note)
+                        except Exception:
+                            pass
+
+                    records = await extract_entities(chunk, etype, chunk_label, context_note=chunk_context)
                     all_records.extend(records)
             else:
                 if is_pdf_spare:
@@ -2630,6 +2668,12 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                             prev_page_text = _filter_text_to_pages(full_text, [prev_page], include_context=False)
                             if prev_page_text.strip():
                                 page_context = f"\nPreceding Page {prev_page} Text (For Header/Assembly/Title Context):\n{prev_page_text}\n"
+
+                        # Add preceding page headers/titles history for deep lookbacks (up to 10 pages earlier)
+                        if full_text:
+                            titles_history = _build_preceding_titles_history(full_text, page_no, max_lookback=10)
+                            if titles_history:
+                                page_context += f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
 
                         current_context_note = context_note
                         if page_context:
