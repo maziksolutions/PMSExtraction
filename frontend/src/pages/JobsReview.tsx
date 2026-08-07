@@ -1,10 +1,11 @@
 import React, { useMemo, useState, useCallback } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, CheckCircle, Copy, Download, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Trash2, Upload, XCircle, ArrowUp, ArrowDown } from 'lucide-react'
+import { AlertCircle, CheckCircle, Copy, Download, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Scissors, Trash2, Upload, XCircle, ArrowUp, ArrowDown } from 'lucide-react'
 import apiClient from '@/api/client'
 import { SearchableSelect } from '@/components/SearchableSelect'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
+import SnipExtractJobsModal from '@/components/jobs/SnipExtractJobsModal'
 
 interface ComponentOption {
   id: string
@@ -543,6 +544,7 @@ const JobsReview: React.FC = () => {
   const [edits, setEdits] = useState<Record<string, InlineJobEdit>>({})
   const [showBatchPanel, setShowBatchPanel] = useState(false)
   const [batchFields, setBatchFields] = useState<BatchJobFields>({})
+  const [showSnipModal, setShowSnipModal] = useState(false)
 
   const openManualInNewTab = (
     manualId: string | null | undefined,
@@ -1081,6 +1083,13 @@ const JobsReview: React.FC = () => {
               Upload CMS Mapping
               <input type="file" accept=".csv" className="hidden" onChange={handleCMSUpload} />
             </label>
+            <button
+              onClick={() => setShowSnipModal(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-sky-700 px-3 py-1.5 text-xs font-medium text-sky-300 hover:bg-slate-800"
+            >
+              <Scissors className="h-3.5 w-3.5" />
+              Snip &amp; Extract
+            </button>
             <button onClick={() => { setCreateDraft({ qc_status: 'pending' }); setEditingJob(null) }} className="flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500">
               <Plus className="h-3.5 w-3.5" />
               Add Job
@@ -1540,6 +1549,17 @@ const JobsReview: React.FC = () => {
             )}
           </div>
         </div>
+      )}
+
+      {showSnipModal && vesselId && (
+        <SnipExtractJobsModal
+          vesselId={vesselId}
+          onClose={() => setShowSnipModal(false)}
+          onSaved={() => {
+            queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
+            queryClient.invalidateQueries({ queryKey: ['jobs/frequencies', vesselId] })
+          }}
+        />
       )}
     </>
   )

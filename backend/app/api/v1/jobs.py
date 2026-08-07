@@ -1555,3 +1555,128 @@ async def snip_ocr_job(
     )
     return {"text": text.strip()}
 
+
+@router.post("/{vessel_id}/jobs/snip-extract", summary="Extract jobs from an uploaded image (snip tool)")
+async def snip_extract_jobs(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    image: UploadFile = File(...),
+    page_number: Optional[int] = Form(None),
+) -> dict[str, Any]:
+    from fastapi import Form
+    import logging
+    logger = logging.getLogger("app.jobs.snip")
+    
+    await _get_vessel_or_404(vessel_id, db)
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image file is empty")
+
+    import app.services.extractor as extractor_module
+    extractor_module._claude_vision_billing_failed = False
+
+    from app.services.extractor import _extract_entities_from_page_image
+
+    try:
+        records = await _extract_entities_from_page_image(
+            image_bytes=image_bytes,
+            filename=image.filename or "snipped_region.png",
+            page_no=page_number or 0,
+            extraction_type="job",
+            context_note=(
+                "This is a manually snipped/cropped image of a maintenance jobs or schedule list. "
+                "STEP 1: Count the number of data rows/procedure sections visible. "
+                "STEP 2: Output EXACTLY that many JSON records. "
+                "All output fields MUST be in English — translate all Japanese/non-English text."
+            ),
+        )
+    except Exception as exc:
+        logger.error("snip_extract_jobs: Vision extraction failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Extraction failed: {str(exc)}"
+        )
+    return {"records": records, "count": len(records)}
+
+
+@router.post("/{vessel_id}/jobs/snip-save", summary="Save job records extracted via the snip tool")
+async def snip_save_jobs(
+    vessel_id: uuid.UUID,
+    body: dict[str, Any],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    records: list[dict[str, Any]] = body.get("records", [])
+    source_manual_id_str: Optional[str] = body.get("source_manual_id")
+    page_number: Optional[int] = body.get("page_number")
+
+    source_manual_id: Optional[uuid.UUID] = None
+    if source_manual_id_str:
+        try:
+            source_manual_id = uuid.UUID(source_manual_id_str)
+        except ValueError:
+            pass
+
+    saved_jobs: list[Job] = []
+    for record in records:
+        job_name = str(record.get("job_name") or "").strip()
+        if not job_name:
+            continue
+        
+        freq_raw = record.get("frequency")
+        frequency: Optional[int] = None
+        if freq_raw is not None:
+            try:
+                frequency = int(freq_raw)
+            except (ValueError, TypeError):
+                pass
+                
+        freq_type = record.get("frequency_type")
+        if freq_type not in ["daily", "weekly", "monthly", "yearly", "hourly"]:
+            freq_type = None
+
+        job = Job(
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            job_name=job_name,
+            job_code=record.get("job_code") or None,
+            job_description=record.get("job_description") or None,
+            safety_precaution=record.get("safety_precaution") or None,
+            frequency=frequency,
+            frequency_type=freq_type,
+            source_manual_id=source_manual_id,
+            page_reference=page_number,
+            is_critical=bool(record.get("is_critical", False)),
+            qc_status=QCStatus.pending,
+            confidence_score=int(record.get("confidence_score") or 75),
+        )
+        db.add(job)
+        saved_jobs.append(job)
+
+    if saved_jobs:
+        await db.commit()
+        
+        # Apply name normalized side-effects
+        for job in saved_jobs:
+            await _apply_job_name_and_references(db, job)
+            await db.commit()
+            
+        await _run_job_side_effects(
+            db,
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            user_id=current_user.id,
+            activity_payloads=[
+                {
+                    "action_type": "job.created",
+                    "entity_id": job.id,
+                    "description": f"Added job '{job.job_name}' via snip extraction.",
+                }
+                for job in saved_jobs
+            ],
+        )
+
+    return {"saved": len(saved_jobs)}
+
