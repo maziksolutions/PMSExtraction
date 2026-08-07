@@ -453,6 +453,14 @@ async def update_component(
         setattr(comp, field, value)
     db.add(comp)
 
+    if "component_name" in update_data and update_data["component_name"]:
+        from app.models.spare import Spare as _Spare
+        await db.execute(
+            update(_Spare)
+            .where(_Spare.component_id == component_id)
+            .values(spare_assembly=update_data["component_name"])
+        )
+
     feedback_id: uuid.UUID | None = None
     if comp.confidence_score and comp.confidence_score > 0 and update_data:
         manual_id = comp.source_manual_id

@@ -249,6 +249,7 @@ function CopyComponentsModal({ vesselId, selectedIds, projectManualOptions, onCl
 
 // ---- Edit row inline ----
 interface InlineEdit {
+  component_name?: string
   job_pages?: string
   spare_pages?: string
   pdf_reference?: string
@@ -1028,8 +1029,14 @@ const ComponentReview: React.FC = () => {
                                 <input type="checkbox" checked={selectedIds.has(comp.id)} onChange={() => toggleSelect(comp.id)} className="h-3.5 w-3.5 rounded" />
                               </td>
                               <td className="px-2 py-1 max-w-xs">
-                                <p className="font-medium text-slate-200">{comp.component_name}</p>
-                                <p className="text-xs text-slate-500 truncate">{comp.group1} › {comp.group2} › {comp.main_machinery}</p>
+                                <input
+                                  type="text"
+                                  value={edit.component_name ?? comp.component_name ?? ''}
+                                  onChange={(e) => setEdit(comp.id, 'component_name', e.target.value)}
+                                  className="w-full font-medium text-slate-200 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs focus:border-sky-500 focus:outline-none mb-1"
+                                  placeholder="Component Name..."
+                                />
+                                <p className="text-[10px] text-slate-500 truncate px-2">{comp.group1} › {comp.group2} › {comp.main_machinery}</p>
                               </td>
                               <td className="px-2 py-1">
                                 <>
