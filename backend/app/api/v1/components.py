@@ -468,6 +468,11 @@ async def update_component(
             from app.models.job import Job as _Job
             from app.models.spare import Spare as _Spare
             
+            # Copy correct classification tree path properties to the renamed component
+            comp.group1 = matched_target.group1
+            comp.group2 = matched_target.group2
+            comp.main_machinery = matched_target.main_machinery
+            
             # Merge component properties
             merge_component_into_target(comp, matched_target)
             matched_target.qc_status = QCStatus.accepted

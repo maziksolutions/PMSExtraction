@@ -438,6 +438,7 @@ const ComponentReview: React.FC = () => {
       apiClient.patch(`/vessels/${vesselId}/components/${id}`, data).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
       setEdits({})
     },
   })
@@ -447,6 +448,7 @@ const ComponentReview: React.FC = () => {
       apiClient.post(`/vessels/${vesselId}/components/bulk-update`, { ids, updates }).then((r) => r.data),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['components-all', vesselId] })
       setImportResult(`Batch updated ${data.updated} component(s).`)
       setSelectedIds(new Set())
       setShowBatchPanel(false)
