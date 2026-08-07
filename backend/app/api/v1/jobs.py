@@ -351,6 +351,33 @@ async def list_job_source_files(
     return {"items": filenames}
 
 
+@router.get("/{vessel_id}/jobs/frequencies", summary="List unique frequencies (value and type) for jobs")
+async def list_job_frequencies(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    result = await db.execute(
+        select(Job.frequency, Job.frequency_type)
+        .where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == current_user.tenant_id,
+            Job.is_deleted == False,
+        )
+        .distinct()
+    )
+    items = []
+    for row in result.all():
+        freq, freq_type = row[0], row[1]
+        if freq_type:
+            items.append({
+                "frequency": freq,
+                "frequency_type": freq_type.value if hasattr(freq_type, "value") else str(freq_type)
+            })
+    return {"items": items}
+
+
 @router.get("/{vessel_id}/jobs", summary="List jobs with filters")
 async def list_jobs(
     vessel_id: uuid.UUID,

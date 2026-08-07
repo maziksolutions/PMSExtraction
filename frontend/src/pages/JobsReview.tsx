@@ -584,6 +584,12 @@ const JobsReview: React.FC = () => {
     enabled: !!vesselId,
   })
 
+  const frequenciesQuery = useQuery({
+    queryKey: ['job-frequencies', vesselId],
+    queryFn: () => apiClient.get(`/vessels/${vesselId}/jobs/frequencies`).then((r) => r.data.items as { frequency: number | null, frequency_type: string }[]),
+    enabled: !!vesselId,
+  })
+
   const componentOptionsQuery = useQuery({
     queryKey: ['job-components', vesselId],
     queryFn: () => apiClient.get(`/vessels/${vesselId}/components`, { params: { page_size: 5000, is_unmapped: 'false' } }).then((r) => r.data),
@@ -785,40 +791,26 @@ const JobsReview: React.FC = () => {
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
-  const dynamicFrequencies = useMemo(() => {
-    const list = [...FREQUENCY_FILTER_OPTIONS]
-    if (data?.items) {
-      data.items.forEach((job: any) => {
-        if (job.frequency_type) {
-          const type = job.frequency_type.toLowerCase()
-          const val = job.frequency ? parseInt(job.frequency) : 1
-          const exists = list.some(item => item.type === type && item.value === val)
-          if (!exists) {
-            const label = `${val} ${type.charAt(0).toUpperCase() + type.slice(1)}`
-            list.push({ label, type, value: val })
-          }
-        }
-      })
-    }
-    // Sort by type then value
-    return list.sort((a, b) => a.type.localeCompare(b.type) || a.value - b.value)
-  }, [data?.items])
-
   const frequencySearchOptions = useMemo(() => {
+    const items = frequenciesQuery.data ?? []
     const list: { label: string; value: string }[] = []
     
-    // Add standard categories
-    FREQUENCY_OPTIONS.forEach((opt) => {
-      list.push({ label: opt.charAt(0).toUpperCase() + opt.slice(1), value: opt })
+    items.forEach((item) => {
+      if (item.frequency_type) {
+        const type = item.frequency_type.toLowerCase()
+        const val = item.frequency ? parseInt(String(item.frequency)) : 1
+        const label = item.frequency ? `${val} ${type.charAt(0).toUpperCase() + type.slice(1)}` : type.charAt(0).toUpperCase() + type.slice(1)
+        const value = item.frequency ? `${val}_${type}` : type
+        
+        if (!list.some((x) => x.value === value)) {
+          list.push({ label, value })
+        }
+      }
     })
     
-    // Add specific combinations
-    dynamicFrequencies.forEach((opt) => {
-      list.push({ label: opt.label, value: `${opt.value}_${opt.type}` })
-    })
-    
-    return list
-  }, [dynamicFrequencies])
+    // Sort alphabetically
+    return list.sort((a, b) => a.label.localeCompare(b.label))
+  }, [frequenciesQuery.data])
 
   const hasActiveFilters = Boolean(
     filterQC ||
