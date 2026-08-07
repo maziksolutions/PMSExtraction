@@ -449,6 +449,59 @@ async def update_component(
     original_qc_status = comp.qc_status
 
     update_data = body.model_dump(exclude_unset=True)
+
+    # Check if we should auto-merge this unmapped component to an existing vessel tree component
+    if comp.is_unmapped and "component_name" in update_data and update_data["component_name"]:
+        new_name = update_data["component_name"].strip()
+        matched_result = await db.execute(
+            select(Component).where(
+                Component.vessel_id == vessel_id,
+                Component.tenant_id == current_user.tenant_id,
+                Component.is_unmapped == False,
+                Component.is_deleted == False,
+                func.lower(Component.component_name) == func.lower(new_name),
+            )
+        )
+        matched_target = matched_result.scalar_one_or_none()
+        if matched_target and comp.id != matched_target.id:
+            from app.services.component_matcher import merge_component_into_target
+            from app.models.job import Job as _Job
+            from app.models.spare import Spare as _Spare
+            
+            # Merge component properties
+            merge_component_into_target(comp, matched_target)
+            matched_target.qc_status = QCStatus.accepted
+            db.add(matched_target)
+            
+            # Map jobs
+            await db.execute(
+                update(_Job)
+                .where(
+                    _Job.vessel_id == vessel_id,
+                    _Job.component_id == comp.id,
+                    _Job.is_deleted == False,
+                )
+                .values(component_id=matched_target.id, is_unmapped=False)
+            )
+            
+            # Map spares
+            await db.execute(
+                update(_Spare)
+                .where(
+                    _Spare.vessel_id == vessel_id,
+                    _Spare.component_id == comp.id,
+                    _Spare.is_deleted == False,
+                )
+                .values(component_id=matched_target.id, spare_assembly=matched_target.component_name)
+            )
+            
+            # Soft delete the unmapped component
+            comp.is_deleted = True
+            db.add(comp)
+            
+            await db.commit()
+            return matched_target
+
     for field, value in update_data.items():
         setattr(comp, field, value)
     db.add(comp)

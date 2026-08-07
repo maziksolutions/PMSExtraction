@@ -373,6 +373,12 @@ const ComponentReview: React.FC = () => {
     enabled: !!vesselId,
   })
 
+  const existingComponentNames = useMemo(() => {
+    const items = allComponentsQuery.data?.items ?? []
+    const names = items.map((c: any) => c.component_name).filter(Boolean)
+    return Array.from(new Set(names)).sort()
+  }, [allComponentsQuery.data?.items])
+
   const pendingComponentsQuery = useQuery({
     queryKey: ['components', vesselId, 'pending-count'],
     queryFn: () =>
@@ -1028,14 +1034,18 @@ const ComponentReview: React.FC = () => {
                               <td className="px-2 py-1" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                                 <input type="checkbox" checked={selectedIds.has(comp.id)} onChange={() => toggleSelect(comp.id)} className="h-3.5 w-3.5 rounded" />
                               </td>
-                              <td className="px-2 py-1 max-w-xs">
+                              <td className="px-2 py-1 max-w-xs" onClick={(e) => e.stopPropagation()}>
                                 <input
                                   type="text"
+                                  list={`comp-names-list-${comp.id}`}
                                   value={edit.component_name ?? comp.component_name ?? ''}
                                   onChange={(e) => setEdit(comp.id, 'component_name', e.target.value)}
                                   className="w-full font-medium text-slate-200 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs focus:border-sky-500 focus:outline-none mb-1"
                                   placeholder="Component Name..."
                                 />
+                                <datalist id={`comp-names-list-${comp.id}`}>
+                                  {existingComponentNames.map(name => <option key={name} value={name} />)}
+                                </datalist>
                                 <p className="text-[10px] text-slate-500 truncate px-2">{comp.group1} › {comp.group2} › {comp.main_machinery}</p>
                               </td>
                               <td className="px-2 py-1">
