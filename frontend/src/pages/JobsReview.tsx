@@ -805,11 +805,25 @@ const JobsReview: React.FC = () => {
         if (!list.some((x) => x.value === value)) {
           list.push({ label, value })
         }
+      } else if (item.frequency) {
+        const val = parseInt(String(item.frequency))
+        const label = `${val} Hours`
+        const value = `${val}_`
+        if (!list.some((x) => x.value === value)) {
+          list.push({ label, value })
+        }
       }
     })
     
-    // Sort alphabetically
-    return list.sort((a, b) => a.label.localeCompare(b.label))
+    // Sort numerically by frequency value
+    return list.sort((a, b) => {
+      const aMatch = a.value.match(/^(\d+)/)
+      const bMatch = b.value.match(/^(\d+)/)
+      if (aMatch && bMatch) {
+        return parseInt(aMatch[1]) - parseInt(bMatch[1])
+      }
+      return a.label.localeCompare(b.label)
+    })
   }, [frequenciesQuery.data])
 
   const hasActiveFilters = Boolean(

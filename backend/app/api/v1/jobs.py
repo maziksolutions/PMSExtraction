@@ -370,10 +370,10 @@ async def list_job_frequencies(
     items = []
     for row in result.all():
         freq, freq_type = row[0], row[1]
-        if freq_type:
+        if freq is not None or freq_type is not None:
             items.append({
                 "frequency": freq,
-                "frequency_type": freq_type.value if hasattr(freq_type, "value") else str(freq_type)
+                "frequency_type": freq_type.value if hasattr(freq_type, "value") else (str(freq_type) if freq_type else None)
             })
     return {"items": items}
 
@@ -448,7 +448,7 @@ async def list_jobs(
         base_where.append(Job.is_critical == is_critical)
     if is_unmapped is not None:
         base_where.append(Job.is_unmapped == is_unmapped)
-    if frequency_type:
+    if frequency_type and frequency is None:
         try:
             base_where.append(Job.frequency_type == FrequencyType(frequency_type))
         except ValueError:
@@ -668,7 +668,7 @@ async def export_jobs(
         base_where.append(Job.is_critical == is_critical)
     if is_unmapped is not None:
         base_where.append(Job.is_unmapped == is_unmapped)
-    if frequency_type:
+    if frequency_type and frequency is None:
         try:
             base_where.append(Job.frequency_type == FrequencyType(frequency_type))
         except ValueError:
