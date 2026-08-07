@@ -5,7 +5,7 @@ import time
 import uuid
 from typing import Annotated, Any, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1564,7 +1564,6 @@ async def snip_extract_jobs(
     image: UploadFile = File(...),
     page_number: Optional[int] = Form(None),
 ) -> dict[str, Any]:
-    from fastapi import Form
     import logging
     logger = logging.getLogger("app.jobs.snip")
     
