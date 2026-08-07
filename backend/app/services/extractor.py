@@ -185,7 +185,8 @@ DEFAULT_PROMPTS: dict[str, dict] = {
         "system": (
             "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist "
             "with deep knowledge of ship machinery, equipment nomenclature, and maintenance systems.\n\n"
-            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n\n"
+            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n"
+            "It may also contain [CONTEXT PAGE N] markers which provide preceding page content for header and title lookup. Do NOT extract any components or records from pages labeled with [CONTEXT PAGE N]. Use them only to find the maker, model, or group/assembly context for components listed on the adjacent [PAGE N] pages.\n\n"
             "DOCUMENT TYPES — handle all of these:\n\n"
             "1. MACHINERY LIST / REGISTER (tabular, one row = one component)\n"
             "   Columns: No. | Equipment | Maker | Model/Type | Serial No. | Capacity | Location\n"
@@ -269,7 +270,8 @@ DEFAULT_PROMPTS: dict[str, dict] = {
     "job": {
         "system": (
             "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist.\n\n"
-            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n\n"
+            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n"
+            "It may also contain [CONTEXT PAGE N] markers which provide preceding page content for header and title lookup. Do NOT extract any jobs or records from pages labeled with [CONTEXT PAGE N]. Use them only to find the frequency or frequency context for jobs listed on the adjacent [PAGE N] pages.\n\n"
             "Extract ALL maintenance jobs, service intervals, and inspection tasks.\n"
             "Maintenance schedules appear as:\n"
             "  - Tables with columns: Interval | Description/Job (e.g. 'Every day', 'Weekly', 'Monthly')\n"
@@ -317,7 +319,8 @@ DEFAULT_PROMPTS: dict[str, dict] = {
     "spare": {
         "system": (
             "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist.\n\n"
-            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n\n"
+            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n"
+            "It may also contain [CONTEXT PAGE N] markers which provide preceding page content for header and title lookup. Do NOT extract any parts or records from pages labeled with [CONTEXT PAGE N]. Use them only to find the table title, heading, or drawing/diagram title for the items listed on the adjacent [PAGE N] pages.\n\n"
             "Extract ALL spare parts, recommended spares, and consumables.\n"
             "Spare parts lists appear as:\n"
             "  1. Tables: NO. | NAME | MATERIAL | QTY | REMARKS  (or similar columns)\n"
@@ -706,17 +709,38 @@ def _build_marked_text_from_lookup(page_lookup: dict[int, str], page_count: int)
     return "\n\n".join(parts).strip()
 
 
-def _filter_text_to_pages(text: str, selected_pages: list[int]) -> str:
+def _filter_text_to_pages(text: str, selected_pages: list[int], include_context: bool = False) -> str:
     if not selected_pages:
         return text
     if "[PAGE " not in text:
         return ""
-    page_set = set(selected_pages)
-    selected_blocks = [
-        f"[PAGE {page_no}]\n{page_body}".strip()
-        for page_no, page_body in _split_marked_pages(text)
-        if page_no in page_set
-    ]
+    
+    if not include_context:
+        page_set = set(selected_pages)
+        selected_blocks = [
+            f"[PAGE {page_no}]\n{page_body}".strip()
+            for page_no, page_body in _split_marked_pages(text)
+            if page_no in page_set
+        ]
+        return "\n\n".join(selected_blocks).strip()
+
+    all_pages = list(_split_marked_pages(text))
+    all_pages_dict = {pno: pbody for pno, pbody in all_pages}
+    
+    selected_blocks = []
+    appended = set()
+    for page_no in sorted(selected_pages):
+        prev_page = page_no - 1
+        if prev_page > 0 and prev_page in all_pages_dict and prev_page not in appended and prev_page not in selected_pages:
+            body = all_pages_dict[prev_page].strip()
+            selected_blocks.append(f"[CONTEXT PAGE {prev_page}]\n{body}")
+            appended.add(prev_page)
+            
+        if page_no in all_pages_dict and page_no not in appended:
+            body = all_pages_dict[page_no].strip()
+            selected_blocks.append(f"[PAGE {page_no}]\n{body}")
+            appended.add(page_no)
+            
     return "\n\n".join(selected_blocks).strip()
 
 
@@ -2356,7 +2380,13 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
             await db.commit()
             return
 
+        # Add preceding pages for context to the OCR/enrichment page list
         selected_pages_all = sorted({page for pages in entity_pages.values() for page in pages})
+        ocr_pages = set(selected_pages_all)
+        for p in selected_pages_all:
+            if p > 1:
+                ocr_pages.add(p - 1)
+        selected_pages_all = sorted(list(ocr_pages))
         if ext == "pdf" and selected_pages_all:
             if file_bytes is None:
                 is_local_path = file_path and (
@@ -2390,7 +2420,7 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
         type_to_text: dict[str, str] = {}
         for entity_type in extraction_types:
             selected_pages = entity_pages[entity_type]
-            filtered_text = _filter_text_to_pages(full_text, selected_pages)
+            filtered_text = _filter_text_to_pages(full_text, selected_pages, include_context=True)
             type_to_text[entity_type] = filtered_text
             logger.warning(
                 "auto_extract_from_manual: %s using %s screened pages=%s chars=%d",
@@ -2592,6 +2622,19 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                         image_bytes = rendered_pages.get(page_no)
                         if not image_bytes:
                             continue
+
+                        # Fetch preceding page text context if available to help identify assembly/header
+                        page_context = ""
+                        prev_page = page_no - 1
+                        if prev_page > 0 and full_text:
+                            prev_page_text = _filter_text_to_pages(full_text, [prev_page], include_context=False)
+                            if prev_page_text.strip():
+                                page_context = f"\nPreceding Page {prev_page} Text (For Header/Assembly/Title Context):\n{prev_page_text}\n"
+
+                        current_context_note = context_note
+                        if page_context:
+                            current_context_note = _merge_context_notes(current_context_note, page_context)
+
                         if etype == "spare":
                             def on_strip_start(strip_idx, total_strips):
                                 nonlocal done_sub_steps
@@ -2613,7 +2656,7 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                                 image_bytes=image_bytes,
                                 filename=filename,
                                 page_no=page_no,
-                                context_note=context_note,
+                                context_note=current_context_note,
                                 on_strip_start=on_strip_start,
                             )
                         else:
@@ -2628,7 +2671,7 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                                 filename=filename,
                                 page_no=page_no,
                                 extraction_type=etype,
-                                context_note=context_note,
+                                context_note=current_context_note,
                             )
                         all_records.extend(vision_records)
 
