@@ -22,6 +22,8 @@ import {
   ArrowRightLeft,
   ExternalLink,
   Copy,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import { SearchableSelect } from '@/components/SearchableSelect'
@@ -279,6 +281,33 @@ const ComponentReview: React.FC = () => {
   const [searchTree, setSearchTree] = useState('')
   const [sortBy, setSortBy] = useState('component_name')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
+
+  const handleSort = (field: string) => {
+    if (sortBy === field) {
+      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortBy(field)
+      setSortOrder('asc')
+    }
+  }
+
+  const renderSortHeader = (label: string, field: string) => {
+    const isSorted = sortBy === field
+    return (
+      <button
+        onClick={() => handleSort(field)}
+        className="group inline-flex items-center gap-1 hover:text-white uppercase font-bold tracking-wider text-xs focus:outline-none"
+      >
+        {label}
+        {isSorted ? (
+          sortOrder === 'asc' ? <ArrowUp className="h-3 w-3 text-emerald-400" /> : <ArrowDown className="h-3 w-3 text-emerald-400" />
+        ) : (
+          <ArrowDown className="h-3 w-3 opacity-0 group-hover:opacity-50 transition-opacity" />
+        )}
+      </button>
+    )
+  }
+
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
   const [showAddModal, setShowAddModal] = useState(false)
@@ -966,18 +995,18 @@ const ComponentReview: React.FC = () => {
                               className="h-3.5 w-3.5 rounded"
                             />
                           </th>
-                          <th className="px-2 py-1.5">Component</th>
-                          <th className="px-2 py-1.5">Maker</th>
-                          <th className="px-2 py-1.5">Model</th>
+                          <th className="px-2 py-1.5">{renderSortHeader('Component', 'component_name')}</th>
+                          <th className="px-2 py-1.5">{renderSortHeader('Maker', 'maker')}</th>
+                          <th className="px-2 py-1.5">{renderSortHeader('Model', 'model')}</th>
                           <th className="px-2 py-1.5">Serial Number</th>
-                          <th className="px-2 py-1.5">Job Pages</th>
-                          <th className="px-2 py-1.5">Spare Pages</th>
-                          <th className="px-2 py-1.5">PDF Reference</th>
-                          <th className="px-2 py-1.5">Location</th>
-                          <th className="px-2 py-1.5">Mach. Particulars</th>
-                          <th className="px-2 py-1.5">Critical</th>
-                          <th className="px-2 py-1.5">QC</th>
-                          <th className="px-2 py-1.5">Source</th>
+                          <th className="px-2 py-1.5">{renderSortHeader('Job Pages', 'job_pages')}</th>
+                          <th className="px-2 py-1.5">{renderSortHeader('Spare Pages', 'spare_pages')}</th>
+                          <th className="px-2 py-1.5">{renderSortHeader('PDF Reference', 'pdf_reference')}</th>
+                          <th className="px-2 py-1.5">{renderSortHeader('Location', 'location')}</th>
+                          <th className="px-2 py-1.5">{renderSortHeader('Mach. Particulars', 'machinery_particulars')}</th>
+                          <th className="px-2 py-1.5">{renderSortHeader('Critical', 'criticality')}</th>
+                          <th className="px-2 py-1.5">{renderSortHeader('QC', 'qc_status')}</th>
+                          <th className="px-2 py-1.5">{renderSortHeader('Source', 'created_at')}</th>
                           <th className="px-2 py-1.5">Actions</th>
                         </tr>
                       </thead>

@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useCallback } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, CheckCircle, Copy, Download, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Trash2, Upload, XCircle } from 'lucide-react'
+import { AlertCircle, CheckCircle, Copy, Download, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Trash2, Upload, XCircle, ArrowUp, ArrowDown } from 'lucide-react'
 import apiClient from '@/api/client'
 import { SearchableSelect } from '@/components/SearchableSelect'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
@@ -129,6 +129,27 @@ const QC_COLORS: Record<string, string> = {
 }
 
 const FREQUENCY_OPTIONS = ['daily', 'weekly', 'monthly', 'yearly', 'hourly']
+const FREQUENCY_FILTER_OPTIONS = [
+  { label: 'Daily', type: 'daily', value: 1 },
+  { label: 'Weekly', type: 'weekly', value: 1 },
+  { label: 'Monthly', type: 'monthly', value: 1 },
+  { label: '3 Monthly', type: 'monthly', value: 3 },
+  { label: '6 Monthly', type: 'monthly', value: 6 },
+  { label: '12 Monthly', type: 'monthly', value: 12 },
+  { label: '24 Monthly', type: 'monthly', value: 24 },
+  { label: '36 Monthly', type: 'monthly', value: 36 },
+  { label: '60 Monthly', type: 'monthly', value: 60 },
+  { label: 'Yearly', type: 'yearly', value: 1 },
+  { label: '2 Yearly', type: 'yearly', value: 2 },
+  { label: '5 Yearly', type: 'yearly', value: 5 },
+  { label: '125 Hours', type: 'hourly', value: 125 },
+  { label: '250 Hours', type: 'hourly', value: 250 },
+  { label: '500 Hours', type: 'hourly', value: 500 },
+  { label: '1000 Hours', type: 'hourly', value: 1000 },
+  { label: '2000 Hours', type: 'hourly', value: 2000 },
+  { label: '4000 Hours', type: 'hourly', value: 4000 },
+  { label: '8000 Hours', type: 'hourly', value: 8000 },
+]
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200]
 const SORT_OPTIONS = [
   { value: 'job_name', label: 'Job Name' },
@@ -472,6 +493,7 @@ const JobsReview: React.FC = () => {
   const [filterSourceFile, setFilterSourceFile] = useState('')
   const [filterUnmapped, setFilterUnmapped] = useState(false)
   const [filterFreqType, setFilterFreqType] = useState('')
+  const [filterFreqValue, setFilterFreqValue] = useState('')
   const [filterNoCMS, setFilterNoCMS] = useState(false)
   const [filterSourceKind, setFilterSourceKind] = useState(searchParams.get('source_kind') ?? '')
   const [filterJobIds, setFilterJobIds] = useState(searchParams.get('job_ids') ?? '')
@@ -483,6 +505,33 @@ const JobsReview: React.FC = () => {
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('job_name')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
+
+  const handleSort = (field: string) => {
+    if (sortBy === field) {
+      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortBy(field)
+      setSortOrder('asc')
+    }
+  }
+
+  const renderSortHeader = (label: string, field: string) => {
+    const isSorted = sortBy === field
+    return (
+      <button
+        onClick={() => handleSort(field)}
+        className="group inline-flex items-center gap-1 hover:text-white uppercase font-bold tracking-wider text-xs focus:outline-none"
+      >
+        {label}
+        {isSorted ? (
+          sortOrder === 'asc' ? <ArrowUp className="h-3 w-3 text-emerald-400" /> : <ArrowDown className="h-3 w-3 text-emerald-400" />
+        ) : (
+          <ArrowDown className="h-3 w-3 opacity-0 group-hover:opacity-50 transition-opacity" />
+        )}
+      </button>
+    )
+  }
+
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(100)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -508,7 +557,7 @@ const JobsReview: React.FC = () => {
   }
 
   const { data, isLoading } = useQuery({
-    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterSourceFile, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, filterJobIds, search, sortBy, sortOrder, page, pageSize],
+    queryKey: ['jobs', vesselId, filterQC, filterCritical, filterSourceFile, filterUnmapped, filterFreqType, filterFreqValue, filterNoCMS, filterSourceKind, filterJobIds, search, sortBy, sortOrder, page, pageSize],
     queryFn: () => {
       const params: Record<string, string> = {}
       if (filterQC) params.qc_status = filterQC
@@ -516,6 +565,7 @@ const JobsReview: React.FC = () => {
       if (filterSourceFile) params.pdf_reference = filterSourceFile
       if (filterUnmapped) params.is_unmapped = 'true'
       if (filterFreqType) params.frequency_type = filterFreqType
+      if (filterFreqValue) params.frequency = filterFreqValue
       if (filterSourceKind && !normalizedJobIds) params.source_kind = filterSourceKind
       if (normalizedJobIds) params.job_ids = normalizedJobIds
       if (search) params.search = search
@@ -734,12 +784,32 @@ const JobsReview: React.FC = () => {
   }, [selectedIds, jobs])
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  const dynamicFrequencies = useMemo(() => {
+    const list = [...FREQUENCY_FILTER_OPTIONS]
+    if (data?.items) {
+      data.items.forEach((job: any) => {
+        if (job.frequency_type) {
+          const type = job.frequency_type.toLowerCase()
+          const val = job.frequency ? parseInt(job.frequency) : 1
+          const exists = list.some(item => item.type === type && item.value === val)
+          if (!exists) {
+            const label = `${val} ${type.charAt(0).toUpperCase() + type.slice(1)}`
+            list.push({ label, type, value: val })
+          }
+        }
+      })
+    }
+    // Sort by type then value
+    return list.sort((a, b) => a.type.localeCompare(b.type) || a.value - b.value)
+  }, [data?.items])
   const hasActiveFilters = Boolean(
     filterQC ||
     filterCritical ||
     filterSourceFile ||
     filterUnmapped ||
     filterFreqType ||
+    filterFreqValue ||
     filterNoCMS ||
     filterSourceKind ||
     normalizedJobIds ||
@@ -747,23 +817,24 @@ const JobsReview: React.FC = () => {
   )
   const activeSourceFilterLabel =
     SOURCE_FILTER_OPTIONS.find((option) => option.value === filterSourceKind)?.label ?? filterSourceKind
-
+  
   const clearFilters = useCallback(() => {
     setFilterQC('')
     setFilterCritical('')
     setFilterSourceFile('')
     setFilterUnmapped(false)
     setFilterFreqType('')
+    setFilterFreqValue('')
     setFilterNoCMS(false)
     setFilterSourceKind('')
     setFilterJobIds('')
     setSearch('')
     setPage(1)
   }, [])
-
+  
   React.useEffect(() => {
     setPage(1)
-  }, [filterQC, filterCritical, filterSourceFile, filterUnmapped, filterFreqType, filterNoCMS, filterSourceKind, filterJobIds, search, sortBy, sortOrder, pageSize])
+  }, [filterQC, filterCritical, filterSourceFile, filterUnmapped, filterFreqType, filterFreqValue, filterNoCMS, filterSourceKind, filterJobIds, search, sortBy, sortOrder, pageSize])
 
   React.useEffect(() => {
     const sourceKindParam = searchParams.get('source_kind') ?? ''
@@ -1117,9 +1188,37 @@ const JobsReview: React.FC = () => {
               <option key={option.value || 'all'} value={option.value}>{option.label}</option>
             ))}
           </select>
-          <select value={filterFreqType} onChange={(e) => setFilterFreqType(e.target.value)} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none">
+          <select 
+            value={filterFreqType && filterFreqValue ? `${filterFreqValue}_${filterFreqType}` : filterFreqType} 
+            onChange={(e) => {
+              const val = e.target.value
+              if (!val) {
+                setFilterFreqType('')
+                setFilterFreqValue('')
+              } else if (val.includes('_')) {
+                const [fVal, fType] = val.split('_')
+                setFilterFreqType(fType)
+                setFilterFreqValue(fVal)
+              } else {
+                setFilterFreqType(val)
+                setFilterFreqValue('')
+              }
+            }} 
+            className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+          >
             <option value="">All Frequency</option>
-            {FREQUENCY_OPTIONS.map((option) => <option key={option} value={option}>{option.replace('_', ' ')}</option>)}
+            <optgroup label="Frequency Types">
+              {FREQUENCY_OPTIONS.map((option) => (
+                <option key={option} value={option}>{option.replace('_', ' ')}</option>
+              ))}
+            </optgroup>
+            <optgroup label="Specific Intervals">
+              {dynamicFrequencies.map((option) => (
+                <option key={`${option.value}_${option.type}`} value={`${option.value}_${option.type}`}>
+                  {option.label}
+                </option>
+              ))}
+            </optgroup>
           </select>
           <select value={filterCritical} onChange={(e) => setFilterCritical(e.target.value)} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none">
             <option value="">All Criticality</option>
@@ -1191,19 +1290,19 @@ const JobsReview: React.FC = () => {
               <thead>
                 <tr className="sticky top-0 z-10 border-b border-slate-700 bg-slate-900 text-left text-xs uppercase text-slate-500">
                   <th className="w-8 px-4 py-3"><input type="checkbox" checked={selectedIds.size === jobs.length && jobs.length > 0} onChange={(e) => setSelectedIds(e.target.checked ? new Set(jobs.map((job) => job.id)) : new Set())} className="h-3.5 w-3.5 rounded" /></th>
-                  <th className="px-4 py-3">Job Name</th>
-                  <th className="px-4 py-3">Component</th>
-                  <th className="px-4 py-3">Code</th>
+                  <th className="px-4 py-3">{renderSortHeader('Job Name', 'job_name')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Component', 'component')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Code', 'job_code')}</th>
                   <th className="px-4 py-3">Procedure</th>
-                  <th className="px-4 py-3">Frequency</th>
+                  <th className="px-4 py-3">{renderSortHeader('Frequency', 'frequency')}</th>
                   <th className="px-4 py-3">Ranks</th>
                   <th className="px-4 py-3">CMS ID</th>
-                  <th className="px-4 py-3">Critical</th>
-                  <th className="px-4 py-3">Confidence</th>
+                  <th className="px-4 py-3">{renderSortHeader('Critical', 'criticality')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Confidence', 'confidence')}</th>
                   <th className="px-4 py-3">Source Type</th>
-                  <th className="px-4 py-3">Source Reference</th>
-                  <th className="px-4 py-3">Source</th>
-                  <th className="px-4 py-3">QC</th>
+                  <th className="px-4 py-3">{renderSortHeader('Source Reference', 'source_reference')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Source', 'created_at')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('QC', 'qc_status')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">

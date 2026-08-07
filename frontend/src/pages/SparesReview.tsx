@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil, Scissors, Download, Trash2 } from 'lucide-react'
+import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil, Scissors, Download, Trash2, ArrowUp, ArrowDown } from 'lucide-react'
 import apiClient from '@/api/client'
 import { SearchableSelect } from '@/components/SearchableSelect'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
@@ -344,6 +344,33 @@ const SparesReview: React.FC = () => {
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('page_order')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
+
+  const handleSort = (field: string) => {
+    if (sortBy === field) {
+      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortBy(field)
+      setSortOrder('asc')
+    }
+  }
+
+  const renderSortHeader = (label: string, field: string) => {
+    const isSorted = sortBy === field
+    return (
+      <button
+        onClick={() => handleSort(field)}
+        className="group inline-flex items-center gap-1 hover:text-white uppercase font-bold tracking-wider text-xs focus:outline-none"
+      >
+        {label}
+        {isSorted ? (
+          sortOrder === 'asc' ? <ArrowUp className="h-3 w-3 text-emerald-400" /> : <ArrowDown className="h-3 w-3 text-emerald-400" />
+        ) : (
+          <ArrowDown className="h-3 w-3 opacity-0 group-hover:opacity-50 transition-opacity" />
+        )}
+      </button>
+    )
+  }
+
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -825,21 +852,21 @@ const SparesReview: React.FC = () => {
                       className="h-3.5 w-3.5 rounded"
                     />
                   </th>
-                  <th className="px-4 py-3">Part Name</th>
-                  <th className="px-4 py-3">Part #</th>
-                  <th className="px-4 py-3">Drawing #</th>
-                  <th className="px-4 py-3">Pos</th>
-                  <th className="px-4 py-3">Maker</th>
-                  <th className="px-4 py-3">Model</th>
+                  <th className="px-4 py-3">{renderSortHeader('Part Name', 'part_name')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Part #', 'part_number')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Drawing #', 'drawing_number')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Pos', 'drawing_position')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Maker', 'spare_maker')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Model', 'spare_model')}</th>
                   <th className="px-4 py-3">Specification / Particulars</th>
                   <th className="px-4 py-3">Assembly</th>
                   <th className="px-4 py-3">Assembly Description</th>
-                  <th className="px-4 py-3">Component</th>
-                  <th className="px-4 py-3">Source</th>
-                  <th className="px-4 py-3">Method</th>
-                  <th className="px-4 py-3">Critical</th>
+                  <th className="px-4 py-3">{renderSortHeader('Component', 'component')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Source', 'page_reference')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Method', 'extraction_method')}</th>
+                  <th className="px-4 py-3">{renderSortHeader('Critical', 'criticality')}</th>
                   <th className="px-4 py-3">Conf</th>
-                  <th className="px-4 py-3">QC</th>
+                  <th className="px-4 py-3">{renderSortHeader('QC', 'qc_status')}</th>
                   <th className="px-4 py-3">View</th>
                   <th className="px-4 py-3">Actions</th>
                 </tr>

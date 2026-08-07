@@ -362,6 +362,7 @@ async def list_jobs(
     is_critical: Optional[bool] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
     frequency_type: Optional[str] = Query(None),
+    frequency: Optional[int] = Query(None),
     source_kind: Optional[str] = Query(None, pattern="^(instruction_manual|standard_library|critical_library|cms_file)$"),
     pdf_reference: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
@@ -425,6 +426,8 @@ async def list_jobs(
             base_where.append(Job.frequency_type == FrequencyType(frequency_type))
         except ValueError:
             pass
+    if frequency is not None:
+        base_where.append(Job.frequency == frequency)
     if source_kind == "instruction_manual" and not has_job_ids_filter:
         base_where.append(Job.source_manual_id.is_not(None))
     elif source_kind in {"standard_library", "critical_library"} and not has_job_ids_filter:
@@ -577,6 +580,7 @@ async def export_jobs(
     is_critical: Optional[bool] = Query(None),
     is_unmapped: Optional[bool] = Query(None),
     frequency_type: Optional[str] = Query(None),
+    frequency: Optional[int] = Query(None),
     source_kind: Optional[str] = Query(None, pattern="^(instruction_manual|standard_library|critical_library|cms_file)$"),
     pdf_reference: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
@@ -642,6 +646,8 @@ async def export_jobs(
             base_where.append(Job.frequency_type == FrequencyType(frequency_type))
         except ValueError:
             pass
+    if frequency is not None:
+        base_where.append(Job.frequency == frequency)
     if source_kind == "instruction_manual" and not has_job_ids_filter:
         base_where.append(Job.source_manual_id.is_not(None))
     elif source_kind in {"standard_library", "critical_library"} and not has_job_ids_filter:
