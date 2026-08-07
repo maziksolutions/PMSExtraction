@@ -260,6 +260,10 @@ interface InlineEdit {
   machinery_particulars?: string
   criticality?: string
   qc_status?: string
+  group1?: string
+  group2?: string
+  main_machinery?: string
+  is_unmapped?: boolean
 }
 
 const COMP_PAGE_SIZE_OPTIONS = [100, 200, 500, 1000]
@@ -504,7 +508,7 @@ const ComponentReview: React.FC = () => {
     setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
   }, [])
 
-  const setEdit = (id: string, field: keyof InlineEdit, value: string) => {
+  const setEdit = (id: string, field: keyof InlineEdit, value: any) => {
     setEdits(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }))
   }
 
@@ -1041,14 +1045,32 @@ const ComponentReview: React.FC = () => {
                                   type="text"
                                   list={`comp-names-list-${comp.id}`}
                                   value={edit.component_name ?? comp.component_name ?? ''}
-                                  onChange={(e) => setEdit(comp.id, 'component_name', e.target.value)}
+                                  onChange={(e) => {
+                                    const val = e.target.value
+                                    setEdit(comp.id, 'component_name', val)
+                                    const allItems = allComponentsQuery.data?.items ?? []
+                                    const matched = allItems.find((c: any) => c.component_name?.toLowerCase() === val.toLowerCase())
+                                    if (matched) {
+                                      setEdit(comp.id, 'group1', matched.group1)
+                                      setEdit(comp.id, 'group2', matched.group2)
+                                      setEdit(comp.id, 'main_machinery', matched.main_machinery)
+                                      setEdit(comp.id, 'is_unmapped', false)
+                                    } else {
+                                      setEdit(comp.id, 'group1', comp.group1)
+                                      setEdit(comp.id, 'group2', comp.group2)
+                                      setEdit(comp.id, 'main_machinery', comp.main_machinery)
+                                      setEdit(comp.id, 'is_unmapped', comp.is_unmapped)
+                                    }
+                                  }}
                                   className="w-full font-medium text-slate-200 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs focus:border-sky-500 focus:outline-none mb-1"
                                   placeholder="Component Name..."
                                 />
                                 <datalist id={`comp-names-list-${comp.id}`}>
                                   {existingComponentNames.map(name => <option key={name} value={name} />)}
                                 </datalist>
-                                <p className="text-[10px] text-slate-500 truncate px-2">{comp.group1} › {comp.group2} › {comp.main_machinery}</p>
+                                <p className="text-[10px] text-slate-500 truncate px-2">
+                                  {edit.group1 ?? comp.group1} › {edit.group2 ?? comp.group2} › {edit.main_machinery ?? comp.main_machinery}
+                                </p>
                               </td>
                               <td className="px-2 py-1">
                                 <>

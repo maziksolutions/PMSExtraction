@@ -75,3 +75,4 @@ class ComponentUpdate(BaseModel):
     job_pages: Optional[str] = None
     spare_pages: Optional[str] = None
     pdf_reference: Optional[str] = None
+    is_unmapped: Optional[bool] = None
