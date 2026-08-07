@@ -464,21 +464,21 @@ async def update_component(
         )
         matched_target = matched_result.scalar_one_or_none()
         if matched_target and comp.id != matched_target.id:
-            from app.services.component_matcher import merge_component_into_target
             from app.models.job import Job as _Job
             from app.models.spare import Spare as _Spare
             
-            # Copy correct classification tree path properties to the renamed component
+            # Map this component to the matched component's path in the classification tree
             comp.group1 = matched_target.group1
             comp.group2 = matched_target.group2
             comp.main_machinery = matched_target.main_machinery
+            comp.is_unmapped = False
+            comp.qc_status = QCStatus.accepted
             
-            # Merge component properties
-            merge_component_into_target(comp, matched_target)
-            matched_target.qc_status = QCStatus.accepted
-            db.add(matched_target)
+            # Apply updated component name
+            comp.component_name = new_name
+            db.add(comp)
             
-            # Map jobs
+            # Update jobs to be mapped
             await db.execute(
                 update(_Job)
                 .where(
@@ -486,10 +486,10 @@ async def update_component(
                     _Job.component_id == comp.id,
                     _Job.is_deleted == False,
                 )
-                .values(component_id=matched_target.id, is_unmapped=False)
+                .values(is_unmapped=False)
             )
             
-            # Map spares
+            # Update spares assembly name
             await db.execute(
                 update(_Spare)
                 .where(
@@ -497,15 +497,11 @@ async def update_component(
                     _Spare.component_id == comp.id,
                     _Spare.is_deleted == False,
                 )
-                .values(component_id=matched_target.id, spare_assembly=matched_target.component_name)
+                .values(spare_assembly=new_name)
             )
             
-            # Soft delete the unmapped component
-            comp.is_deleted = True
-            db.add(comp)
-            
             await db.commit()
-            return matched_target
+            return comp
 
     for field, value in update_data.items():
         setattr(comp, field, value)
