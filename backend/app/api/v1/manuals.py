@@ -107,6 +107,12 @@ def _manual_order_expr(sort_by: str, sort_order: str):
         order_col = Manual.original_filename
     elif sort_by == "created_at":
         order_col = Manual.created_at
+    elif sort_by == "file_size":
+        order_col = Manual.file_size
+    elif sort_by == "category":
+        order_col = Manual.category
+    elif sort_by == "useful_for_extraction":
+        order_col = Manual.useful_for_extraction
     else:
         order_col = Manual.classification_confidence
     return order_col.asc() if sort_order == "asc" else order_col.desc()
@@ -508,7 +514,7 @@ async def list_manuals(
     search: Optional[str] = Query(None),
     useful_for_extraction: Optional[str] = Query(None),
     batch_number: Optional[int] = Query(None),
-    sort_by: str = Query("filename", regex="^(filename|created_at|confidence)$"),
+    sort_by: str = Query("filename", regex="^(filename|created_at|confidence|file_size|category|useful_for_extraction)$"),
     sort_order: str = Query("asc", regex="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=1000),

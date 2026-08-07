@@ -20,6 +20,8 @@ import {
   Pause,
   Play,
   Square,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
@@ -467,6 +469,33 @@ const ManualReview: React.FC = () => {
   const [pageSize, setPageSize] = useState(100)
   const [sortBy, setSortBy] = useState('filename')
   const [sortOrder, setSortOrder] = useState('asc')
+
+  const handleSort = (field: string) => {
+    if (sortBy === field) {
+      setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortBy(field)
+      setSortOrder('asc')
+    }
+  }
+
+  const renderSortHeader = (label: string, field: string) => {
+    const isSorted = sortBy === field
+    return (
+      <button
+        onClick={() => handleSort(field)}
+        className="group inline-flex items-center gap-1 hover:text-white uppercase font-bold tracking-wider text-xs focus:outline-none"
+      >
+        {label}
+        {isSorted ? (
+          sortOrder === 'asc' ? <ArrowUp className="h-3 w-3 text-emerald-400" /> : <ArrowDown className="h-3 w-3 text-emerald-400" />
+        ) : (
+          <ArrowDown className="h-3 w-3 opacity-0 group-hover:opacity-50 transition-opacity" />
+        )}
+      </button>
+    )
+  }
+
   const [edits, setEdits] = useState<Record<string, Partial<Manual>>>({})
   const [screeningPolling, setScreeningPolling] = useState(false)
   const [extractionPolling, setExtractionPolling] = useState(false)
@@ -1271,15 +1300,15 @@ const ManualReview: React.FC = () => {
                     className="rounded border-slate-600"
                   />
                 </th>
-                <th className="px-3 py-3">File Name</th>
-                <th className="px-3 py-3">Size</th>
-                <th className="px-3 py-3">Category</th>
-                <th className="px-3 py-3">Useful</th>
+                <th className="px-3 py-3">{renderSortHeader('File Name', 'filename')}</th>
+                <th className="px-3 py-3">{renderSortHeader('Size', 'file_size')}</th>
+                <th className="px-3 py-3">{renderSortHeader('Category', 'category')}</th>
+                <th className="px-3 py-3">{renderSortHeader('Useful', 'useful_for_extraction')}</th>
                 <th className="px-3 py-3">Comp. Ref</th>
                 <th className="px-3 py-3">Job Ref</th>
                 <th className="px-3 py-3">Spare Ref</th>
-                <th className="px-3 py-3">Source</th>
-                <th className="px-3 py-3">Confidence</th>
+                <th className="px-3 py-3">{renderSortHeader('Source', 'created_at')}</th>
+                <th className="px-3 py-3">{renderSortHeader('Confidence', 'confidence')}</th>
                 <th className="px-3 py-3">Comments</th>
                 <th className="px-3 py-3">Actions</th>
               </tr>
