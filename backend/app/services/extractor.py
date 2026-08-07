@@ -2821,6 +2821,17 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                         if source_page is not None
                         else filename
                     )
+                    _assembly = record.get("spare_assembly") or record.get("spare_model") or None
+                    if not _assembly:
+                        # Fallback to component name if available
+                        candidates = extracted_component_context or existing_manual_component_context
+                        if candidates:
+                            _assembly = candidates[0].get("component_name")
+                        else:
+                            # Otherwise format the manual name as fallback
+                            base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+                            _assembly = base_name.replace("-", " ").replace("_", " ").title()
+
                     spare = Spare(
                         tenant_id=tenant_id,
                         vessel_id=vessel_id,
@@ -2832,10 +2843,10 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                         drawing_number=record.get("drawing_number") or None,
                         drawing_position=record.get("drawing_position") or None,
                         specification=record.get("specification") or None,
-                        spare_assembly=record.get("spare_assembly") or record.get("spare_model") or None,
-                        assembly_description=record.get("assembly_description") or record.get("spare_assembly") or record.get("spare_model") or None,
+                        spare_assembly=_assembly,
+                        assembly_description=record.get("assembly_description") or _assembly or None,
                         spare_maker=record.get("spare_maker") or None,
-                        spare_model=record.get("spare_model") or None,
+                        spare_model=record.get("spare_model") or _assembly or None,
                         page_reference=int(source_page) if source_page is not None else None,
                     )
                     spares_to_add.append(spare)
