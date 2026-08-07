@@ -803,6 +803,23 @@ const JobsReview: React.FC = () => {
     // Sort by type then value
     return list.sort((a, b) => a.type.localeCompare(b.type) || a.value - b.value)
   }, [data?.items])
+
+  const frequencySearchOptions = useMemo(() => {
+    const list: { label: string; value: string }[] = []
+    
+    // Add standard categories
+    FREQUENCY_OPTIONS.forEach((opt) => {
+      list.push({ label: opt.charAt(0).toUpperCase() + opt.slice(1), value: opt })
+    })
+    
+    // Add specific combinations
+    dynamicFrequencies.forEach((opt) => {
+      list.push({ label: opt.label, value: `${opt.value}_${opt.type}` })
+    })
+    
+    return list
+  }, [dynamicFrequencies])
+
   const hasActiveFilters = Boolean(
     filterQC ||
     filterCritical ||
@@ -1188,38 +1205,27 @@ const JobsReview: React.FC = () => {
               <option key={option.value || 'all'} value={option.value}>{option.label}</option>
             ))}
           </select>
-          <select 
-            value={filterFreqType && filterFreqValue ? `${filterFreqValue}_${filterFreqType}` : filterFreqType} 
-            onChange={(e) => {
-              const val = e.target.value
-              if (!val) {
-                setFilterFreqType('')
-                setFilterFreqValue('')
-              } else if (val.includes('_')) {
-                const [fVal, fType] = val.split('_')
-                setFilterFreqType(fType)
-                setFilterFreqValue(fVal)
-              } else {
-                setFilterFreqType(val)
-                setFilterFreqValue('')
-              }
-            }} 
-            className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-          >
-            <option value="">All Frequency</option>
-            <optgroup label="Frequency Types">
-              {FREQUENCY_OPTIONS.map((option) => (
-                <option key={option} value={option}>{option.replace('_', ' ')}</option>
-              ))}
-            </optgroup>
-            <optgroup label="Specific Intervals">
-              {dynamicFrequencies.map((option) => (
-                <option key={`${option.value}_${option.type}`} value={`${option.value}_${option.type}`}>
-                  {option.label}
-                </option>
-              ))}
-            </optgroup>
-          </select>
+          <div className="w-48">
+            <SearchableSelect
+              options={frequencySearchOptions}
+              value={filterFreqType && filterFreqValue ? `${filterFreqValue}_${filterFreqType}` : filterFreqType}
+              onChange={(val) => {
+                if (!val) {
+                  setFilterFreqType('')
+                  setFilterFreqValue('')
+                } else if (val.includes('_')) {
+                  const [fVal, fType] = val.split('_')
+                  setFilterFreqType(fType)
+                  setFilterFreqValue(fVal)
+                } else {
+                  setFilterFreqType(val)
+                  setFilterFreqValue('')
+                }
+              }}
+              placeholder="All Frequency"
+              allowCustom={false}
+            />
+          </div>
           <select value={filterCritical} onChange={(e) => setFilterCritical(e.target.value)} className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none">
             <option value="">All Criticality</option>
             <option value="true">Critical</option>
