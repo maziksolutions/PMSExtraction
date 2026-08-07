@@ -124,7 +124,7 @@ const SnipExtractJobsModal: React.FC<SnipExtractJobsModalProps> = ({ vesselId, o
   const [pageLoadError, setPageLoadError] = useState<string | null>(null)
 
   // Current image state
-  const [displayImageUrl, setDisplayImageUrl] = useState<string>('')
+  const [displayImageUrl, setDisplayImageUrl] = useState<string | null>(null)
 
   // Crop / Selection tools
   const [zoom, setZoom] = useState<number>(1.0)
@@ -147,23 +147,33 @@ const SnipExtractJobsModal: React.FC<SnipExtractJobsModalProps> = ({ vesselId, o
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
 
-  // Handle manual selection & page loading
-  const loadPageWithNum = async (pageNum: number) => {
-    if (!selectedManualId) return
-    setIsLoadingPage(true)
-    setPageLoadError(null)
-    setLoadedManualId(null)
-    setLoadedPage(null)
+  const clearSelectionAndResults = () => {
     setUseSelection(false)
     setCropRect(null)
+    setExtractedRecords([])
+    setSaveMessage(null)
+  }
+
+  // Handle manual selection & page loading
+  const loadPageWithNum = async (pageNum: number, manualId = selectedManualId) => {
+    if (!manualId || pageNum < 1) return
+    setIsLoadingPage(true)
+    setPageLoadError(null)
+    setDisplayImageUrl(null)
+    setLoadedManualId(null)
+    setLoadedPage(null)
+    clearSelectionAndResults()
     try {
-      const res = await apiClient.get(`/vessels/${vesselId}/manuals/${selectedManualId}/pages/${pageNum}/image`)
-      if (res.data?.image_url) {
-        setDisplayImageUrl(res.data.image_url)
-        setLoadedManualId(selectedManualId)
+      const res = await apiClient.get(`/vessels/${vesselId}/manuals/${manualId}/page-preview`, {
+        params: { pages: String(pageNum) },
+      })
+      const page = (res.data.pages ?? [])[0]
+      if (page?.image_data_url) {
+        setDisplayImageUrl(page.image_data_url)
+        setLoadedManualId(manualId)
         setLoadedPage(pageNum)
       } else {
-        setPageLoadError('Page image not available from server.')
+        setPageLoadError('No image available for this page.')
       }
     } catch (err) {
       setPageLoadError(getApiError(err))
@@ -174,9 +184,22 @@ const SnipExtractJobsModal: React.FC<SnipExtractJobsModalProps> = ({ vesselId, o
 
   const loadPage = () => {
     const pageNum = parseInt(pageInput, 10)
-    if (isNaN(pageNum) || pageNum <= 0) return
+    if (isNaN(pageNum) || pageNum < 1) return
     loadPageWithNum(pageNum)
   }
+
+  React.useEffect(() => {
+    if (selectedManualId) {
+      setPageInput('1')
+      loadPageWithNum(1, selectedManualId)
+    } else {
+      setPageInput('')
+      setDisplayImageUrl(null)
+      setLoadedManualId(null)
+      setLoadedPage(null)
+      setPageLoadError(null)
+    }
+  }, [selectedManualId])
 
   // Handle drag screenshot upload/paste
   const handleImageFile = async (file: File) => {
