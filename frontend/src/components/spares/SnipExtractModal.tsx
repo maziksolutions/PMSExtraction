@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Scissors, Upload, X, Loader2, CheckCircle, ChevronDown, RotateCcw, RotateCw, ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react'
+import { Scissors, Upload, X, Loader2, CheckCircle, ChevronDown, RotateCcw, RotateCw, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, ExternalLink } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface ExtractedRecord {
@@ -514,6 +514,22 @@ const SnipExtractModal: React.FC<SnipExtractModalProps> = ({ vesselId, onClose, 
               >
                 {isLoadingPage ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Load'}
               </button>
+              {selectedManualId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const m = manuals.find(x => x.id === selectedManualId)
+                    if (m) {
+                      const url = `/vessels/${vesselId}/manual-preview/${m.id}?name=${encodeURIComponent(m.original_filename)}&pages=${pageInput}&mode=snip`
+                      window.open(url, '_blank')
+                    }
+                  }}
+                  className="rounded-lg border border-slate-700 p-2 text-sky-400 hover:bg-slate-800"
+                  title="Open manual in a new tab"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
           )}
 
