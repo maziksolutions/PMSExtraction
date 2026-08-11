@@ -213,45 +213,26 @@ function buildExplanationRows(
 }
 
 interface PageReferenceEditorProps {
-  printedValue: string | null | undefined
   physicalValue: string | null | undefined
-  onPrintedChange: (value: string) => void
   onPhysicalChange: (value: string) => void
   explanationRows: Array<{ physicalPage: number; printedPage: number | null; reasons: string[] }>
-  printedPlaceholder: string
   physicalPlaceholder: string
 }
 
 const PageReferenceEditor: React.FC<PageReferenceEditorProps> = ({
-  printedValue,
   physicalValue,
-  onPrintedChange,
   onPhysicalChange,
   explanationRows,
-  printedPlaceholder,
   physicalPlaceholder,
 }) => (
-  <div className="min-w-[160px] space-y-1">
-    <div>
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Printed</div>
-      <input
-        type="text"
-        value={printedValue ?? ''}
-        onChange={(e) => onPrintedChange(e.target.value)}
-        className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-        placeholder={printedPlaceholder}
-      />
-    </div>
-    <div>
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">Physical</div>
-      <input
-        type="text"
-        value={physicalValue ?? ''}
-        onChange={(e) => onPhysicalChange(e.target.value)}
-        className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-        placeholder={physicalPlaceholder}
-      />
-    </div>
+  <div className="min-w-[120px] space-y-1">
+    <input
+      type="text"
+      value={physicalValue ?? ''}
+      onChange={(e) => onPhysicalChange(e.target.value)}
+      className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+      placeholder={physicalPlaceholder || "e.g. 20-25"}
+    />
     {explanationRows.length > 0 && (
       <details className="rounded border border-slate-800 bg-slate-950/60 px-2 py-1.5 text-xs text-slate-300">
         <summary className="cursor-pointer select-none text-sky-400">Why selected?</summary>
@@ -259,8 +240,8 @@ const PageReferenceEditor: React.FC<PageReferenceEditorProps> = ({
           {explanationRows.map((row) => (
             <div key={row.physicalPage} className="rounded bg-slate-900/80 px-2 py-1.5">
               <div className="font-medium text-slate-200">
-                Physical {row.physicalPage}
-                {row.printedPage !== null ? ` • Printed ${row.printedPage}` : ' • No printed page'}
+                Page {row.physicalPage}
+                {row.printedPage !== null ? ` (Printed ${row.printedPage})` : ''}
               </div>
               <div className="mt-1 space-y-1 text-slate-400">
                 {row.reasons.map((reason, index) => (
@@ -1454,34 +1435,25 @@ const ManualReview: React.FC = () => {
                     </td>
                     <td className="px-3 py-3">
                       <PageReferenceEditor
-                        printedValue={(edit.pages_with_components_printed as string | undefined) ?? m.pages_with_components_printed}
                         physicalValue={(edit.pages_with_components_physical as string | undefined) ?? m.pages_with_components_physical}
-                        onPrintedChange={(value) => handleEdit(m.id, 'pages_with_components_printed', value)}
                         onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_components_physical', value)}
                         explanationRows={componentExplanationRows}
-                        printedPlaceholder=""
                         physicalPlaceholder=""
                       />
                     </td>
                     <td className="px-3 py-3">
                       <PageReferenceEditor
-                        printedValue={(edit.pages_with_jobs_printed as string | undefined) ?? m.pages_with_jobs_printed}
                         physicalValue={(edit.pages_with_jobs_physical as string | undefined) ?? m.pages_with_jobs_physical}
-                        onPrintedChange={(value) => handleEdit(m.id, 'pages_with_jobs_printed', value)}
                         onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_jobs_physical', value)}
                         explanationRows={jobExplanationRows}
-                        printedPlaceholder=""
                         physicalPlaceholder=""
                       />
                     </td>
                     <td className="px-3 py-3">
                       <PageReferenceEditor
-                        printedValue={(edit.pages_with_spares_printed as string | undefined) ?? m.pages_with_spares_printed}
                         physicalValue={(edit.pages_with_spares_physical as string | undefined) ?? m.pages_with_spares_physical}
-                        onPrintedChange={(value) => handleEdit(m.id, 'pages_with_spares_printed', value)}
                         onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_spares_physical', value)}
                         explanationRows={spareExplanationRows}
-                        printedPlaceholder=""
                         physicalPlaceholder=""
                       />
                     </td>
