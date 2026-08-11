@@ -2140,8 +2140,12 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
         # ------------------------------------------------------------------
         # Load the manual (vessel_id and tenant_id come from the record itself)
         # ------------------------------------------------------------------
+        from sqlalchemy.orm import undefer
+
         result = await db.execute(
-            select(Manual).where(
+            select(Manual)
+            .options(undefer(Manual.extracted_text))
+            .where(
                 Manual.id == manual_id,
                 Manual.is_deleted == False,
             )
@@ -2292,6 +2296,8 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
         ext = (manual.file_extension or "").lower()
 
         stored_text = getattr(manual, "extracted_text", None) or ""
+        if isinstance(stored_text, str):
+            stored_text = stored_text.replace("\r\n", "\n")
         is_pdf = (ext == "pdf")
         if is_pdf:
             # Skip full text parsing for all PDF manuals as we extract/OCR target pages on-demand
