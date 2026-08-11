@@ -662,6 +662,25 @@ const ManualReview: React.FC = () => {
     },
   })
 
+  const extractSelectedJobsOnlyMutation = useMutation({
+    mutationFn: async () => {
+      const manualIds = Array.from(selectedIds)
+      await saveManualEdits(manualIds)
+      return apiClient
+        .post(`/vessels/${vesselId}/manuals/extract-selected`, {
+          manual_ids: manualIds,
+          entity_types: ['job'],
+        })
+        .then((r) => r.data)
+    },
+    onSuccess: (data) => {
+      if (data.started) {
+        setExtractionPolling(true)
+        queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+      }
+    },
+  })
+
   const pauseScreeningMutation = useMutation({
     mutationFn: () =>
       apiClient.post(`/vessels/${vesselId}/screening-pause`).then((r) => r.data),
@@ -888,7 +907,8 @@ const ManualReview: React.FC = () => {
     (extractionData && (extractionData.status === 'running' || extractionData.status === 'paused')) ||
     extractAllMutation.isPending ||
     extractSelectedMutation.isPending ||
-    extractSelectedSparesOnlyMutation.isPending
+    extractSelectedSparesOnlyMutation.isPending ||
+    extractSelectedJobsOnlyMutation.isPending
   const screeningProgress = screeningData && screeningData.total > 0
     ? Math.round((screeningData.done / screeningData.total) * 100) : 0
   const extractionProgress = extractionData && extractionData.total > 0
@@ -980,7 +1000,14 @@ const ManualReview: React.FC = () => {
                 <Zap className="h-4 w-4" />
                 Extract Selected ({selectedIds.size})
               </button>
-              {/* 
+              <button
+                onClick={() => extractSelectedJobsOnlyMutation.mutate()}
+                disabled={isExtracting || extractSelectedJobsOnlyMutation.isPending}
+                className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-60"
+              >
+                <Zap className="h-4 w-4" />
+                Extract Jobs Only ({selectedIds.size})
+              </button>
               <button
                 onClick={() => extractSelectedSparesOnlyMutation.mutate()}
                 disabled={isExtracting || extractSelectedSparesOnlyMutation.isPending}
@@ -989,7 +1016,6 @@ const ManualReview: React.FC = () => {
                 <Zap className="h-4 w-4" />
                 Extract Spares Only ({selectedIds.size})
               </button>
-              */}
             </>
           )}
           <button
