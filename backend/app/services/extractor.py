@@ -1361,9 +1361,12 @@ async def _enrich_pdf_text_for_selected_pages(
 
     try:
         import pdfplumber
-        import pytesseract  # type: ignore
     except Exception:
         pdfplumber = None
+
+    try:
+        import pytesseract  # type: ignore
+    except Exception:
         pytesseract = None
 
     if pdfplumber is None:
