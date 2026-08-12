@@ -22,9 +22,11 @@ import {
   Square,
   ArrowUp,
   ArrowDown,
+  Activity,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
+import { ManualPageStatusModal } from '@/components/manuals/ManualPageStatusModal'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -484,6 +486,7 @@ const ManualReview: React.FC = () => {
   const [importMessage, setImportMessage] = useState<string | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
   const [loadingManualId, setLoadingManualId] = useState<string | null>(null)
+  const [selectedManualForStatus, setSelectedManualForStatus] = useState<Manual | null>(null)
 
   // ── Data queries ──────────────────────────────────────────────────────────
 
@@ -1314,6 +1317,7 @@ const ManualReview: React.FC = () => {
                 <th className="px-3 py-3">Comp. Ref</th>
                 <th className="px-3 py-3">Job Ref</th>
                 <th className="px-3 py-3">Spare Ref</th>
+                <th className="px-3 py-3">Page Status</th>
                 <th className="px-3 py-3">{renderSortHeader('Source', 'created_at')}</th>
                 <th className="px-3 py-3">{renderSortHeader('Confidence', 'confidence')}</th>
                 <th className="px-3 py-3">Comments</th>
@@ -1458,6 +1462,16 @@ const ManualReview: React.FC = () => {
                       />
                     </td>
                     <td className="px-3 py-3">
+                      <button
+                        onClick={() => setSelectedManualForStatus(m)}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 border border-slate-700 px-2 py-1 text-xs text-sky-400 hover:bg-slate-700 hover:text-sky-300 transition-colors"
+                        title="View page-by-page processing and extraction status"
+                      >
+                        <Activity className="h-3.5 w-3.5" />
+                        <span>Status</span>
+                      </button>
+                    </td>
+                    <td className="px-3 py-3">
                       {(() => {
                         const supplyVal = edit.supply_type ?? m.supply_type ?? 'OEM'
                         return (
@@ -1558,6 +1572,26 @@ const ManualReview: React.FC = () => {
             </select>
           </div>
         </div>
+      )}
+      {selectedManualForStatus && (
+        <ManualPageStatusModal
+          vesselId={vesselId ?? ''}
+          manualId={selectedManualForStatus.id}
+          manualTitle={selectedManualForStatus.original_filename}
+          unsavedComponentsPages={
+            (edits[selectedManualForStatus.id]?.pages_with_components_physical as string | undefined) ??
+            selectedManualForStatus.pages_with_components_physical
+          }
+          unsavedJobsPages={
+            (edits[selectedManualForStatus.id]?.pages_with_jobs_physical as string | undefined) ??
+            selectedManualForStatus.pages_with_jobs_physical
+          }
+          unsavedSparesPages={
+            (edits[selectedManualForStatus.id]?.pages_with_spares_physical as string | undefined) ??
+            selectedManualForStatus.pages_with_spares_physical
+          }
+          onClose={() => setSelectedManualForStatus(null)}
+        />
       )}
     </div>
   )

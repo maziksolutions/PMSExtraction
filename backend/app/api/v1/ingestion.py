@@ -1880,6 +1880,7 @@ async def _run_extract_selected_task(
     vessel_id_str: str,
     manual_ids: list[str],
     entity_types: Optional[list[str]] = None,
+    page_numbers: Optional[list[int]] = None,
 ) -> None:
 
     """Background task: runs auto_extract_from_manual with bounded parallelism."""
@@ -1893,13 +1894,15 @@ async def _run_extract_selected_task(
 
     logger.warning(
 
-        "_run_extract_selected_task: starting vessel=%s manuals=%s entity_types=%s",
+        "_run_extract_selected_task: starting vessel=%s manuals=%s entity_types=%s page_numbers=%s",
 
         vessel_id_str,
 
         manual_ids,
 
         entity_types,
+
+        page_numbers,
 
     )
 
@@ -1923,15 +1926,17 @@ async def _run_extract_selected_task(
 
                     logger.warning(
 
-                        "_run_extract_selected_task: extracting manual_id=%s vessel=%s",
+                        "_run_extract_selected_task: extracting manual_id=%s vessel=%s page_numbers=%s",
 
                         manual_id,
 
                         vessel_id_str,
 
+                        page_numbers,
+
                     )
 
-                    await auto_extract_from_manual(manual_id, entity_types=entity_types)
+                    await auto_extract_from_manual(manual_id, entity_types=entity_types, page_numbers=page_numbers)
 
                 except Exception as exc:
 
@@ -2047,6 +2052,7 @@ async def extract_selected_manuals(
 
     manual_ids: list[str] = body.get("manual_ids", [])
     entity_types: Optional[list[str]] = body.get("entity_types", None)
+    page_numbers: Optional[list[int]] = body.get("page_numbers", None)
 
     if not manual_ids:
 
@@ -2120,7 +2126,7 @@ async def extract_selected_manuals(
 
     set_extraction_state(vessel_id_str, total=len(runnable_manual_ids), done=0, status="running")
 
-    background_tasks.add_task(_run_extract_selected_task, vessel_id_str, runnable_manual_ids, entity_types)
+    background_tasks.add_task(_run_extract_selected_task, vessel_id_str, runnable_manual_ids, entity_types, page_numbers)
 
     return {"started": True, "total": len(runnable_manual_ids)}
 
@@ -2350,6 +2356,173 @@ async def view_manual(
         _log.error("view_manual: blob download FAILED key=%s error=%s", blob_key, exc, exc_info=True)
 
         raise HTTPException(status_code=502, detail=f"Could not retrieve file from storage: {exc}")
+
+
+
+
+
+@router.get(
+    "/{vessel_id}/manuals/{manual_id}/page-status",
+    summary="Get page-by-page extraction status and count breakdown for a manual",
+)
+async def get_manual_page_status(
+    vessel_id: uuid.UUID,
+    manual_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    components_pages_unsaved: Optional[str] = Query(None),
+    jobs_pages_unsaved: Optional[str] = Query(None),
+    spares_pages_unsaved: Optional[str] = Query(None),
+) -> dict[str, Any]:
+    """
+    Returns the page-by-page status and count breakdown for a manual.
+    Allows passing unsaved page references to reform pages dynamically.
+    """
+    await _get_vessel_or_404(vessel_id, db)
+
+    # Fetch manual
+    result = await db.execute(
+        select(Manual).where(
+            Manual.id == manual_id,
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manual: Optional[Manual] = result.scalar_one_or_none()
+    if manual is None:
+        raise HTTPException(status_code=404, detail="Manual not found")
+
+    from app.services.extractor import _parse_page_tokens
+
+    # Use unsaved query params if provided, otherwise fallback to DB physical / canonical fields
+    comp_ref_str = (
+        components_pages_unsaved
+        if components_pages_unsaved is not None
+        else (manual.pages_with_components_physical or manual.pages_with_components)
+    )
+    job_ref_str = (
+        jobs_pages_unsaved
+        if jobs_pages_unsaved is not None
+        else (manual.pages_with_jobs_physical or manual.pages_with_jobs)
+    )
+    spare_ref_str = (
+        spares_pages_unsaved
+        if spares_pages_unsaved is not None
+        else (manual.pages_with_spares_physical or manual.pages_with_spares)
+    )
+
+    component_pages = set(_parse_page_tokens(comp_ref_str))
+    job_pages = set(_parse_page_tokens(job_ref_str))
+    spare_pages = set(_parse_page_tokens(spare_ref_str))
+    all_targeted_pages = component_pages.union(job_pages).union(spare_pages)
+
+    # Determine page range
+    max_page = max(all_targeted_pages) if all_targeted_pages else 0
+    total_pages = max(manual.page_count or 0, max_page)
+    if total_pages == 0 and all_targeted_pages:
+        total_pages = max_page
+
+    # Fetch all active components, jobs, spares for this manual
+    from app.models.component import Component
+    from app.models.job import Job
+    from app.models.spare import Spare
+
+    comp_res = await db.execute(
+        select(Component).where(
+            Component.source_manual_id == manual_id,
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == current_user.tenant_id,
+            Component.is_deleted == False,
+        )
+    )
+    components = comp_res.scalars().all()
+
+    job_res = await db.execute(
+        select(Job).where(
+            Job.source_manual_id == manual_id,
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == current_user.tenant_id,
+            Job.is_deleted == False,
+        )
+    )
+    jobs = job_res.scalars().all()
+
+    spare_res = await db.execute(
+        select(Spare).where(
+            Spare.source_manual_id == manual_id,
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == current_user.tenant_id,
+            Spare.is_deleted == False,
+        )
+    )
+    spares = spare_res.scalars().all()
+
+    # Group by page number
+    items_by_page = {}
+    for comp in components:
+        p = comp.page_reference
+        if p is not None:
+            items_by_page.setdefault(p, []).append({
+                "type": "component",
+                "name": comp.component_name,
+                "detail": f"{comp.maker or ''} {comp.model or ''}".strip(),
+            })
+
+    for job in jobs:
+        p = job.page_reference
+        if p is not None:
+            items_by_page.setdefault(p, []).append({
+                "type": "job",
+                "name": job.job_name,
+                "detail": job.job_code or "",
+            })
+
+    for spare in spares:
+        p = spare.page_reference
+        if p is not None:
+            items_by_page.setdefault(p, []).append({
+                "type": "spare",
+                "name": spare.part_name,
+                "detail": spare.part_number or "",
+            })
+
+    pages_data = []
+    for p in range(1, total_pages + 1):
+        is_targeted = (p in component_pages) or (p in job_pages) or (p in spare_pages)
+        page_items = items_by_page.get(p, [])
+        extracted_count = len(page_items)
+
+        if not is_targeted:
+            page_status = "skipped"
+        else:
+            if manual.status == ManualStatus.failed:
+                page_status = "failed"
+            elif manual.status in [ManualStatus.queued, ManualStatus.downloading, ManualStatus.converting, ManualStatus.translating, ManualStatus.scanning]:
+                page_status = "pending"
+            else:
+                page_status = "success"
+
+        pages_data.append({
+            "page_number": p,
+            "is_targeted": is_targeted,
+            "status": page_status,
+            "extracted_count": extracted_count,
+            "targeted_types": {
+                "component": p in component_pages,
+                "job": p in job_pages,
+                "spare": p in spare_pages,
+            },
+            "items": page_items
+        })
+
+    return {
+        "manual_id": str(manual_id),
+        "original_filename": manual.original_filename,
+        "page_count": manual.page_count,
+        "status": manual.status,
+        "pages": pages_data,
+    }
 
 
 

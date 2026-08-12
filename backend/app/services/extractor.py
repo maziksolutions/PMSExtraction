@@ -2122,7 +2122,11 @@ async def _link_records_to_components(
 # ---------------------------------------------------------------------------
 
 
-async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[list[str]] = None) -> None:
+async def auto_extract_from_manual(
+    manual_id_str: str,
+    entity_types: Optional[list[str]] = None,
+    page_numbers: Optional[list[int]] = None,
+) -> None:
     """
     Background task: extract Components, Jobs, and Spares from a Manual.
 
@@ -2607,9 +2611,13 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
                     len(text_chunks),
                 )
                 for chunk_idx, chunk in enumerate(text_chunks):
-                    done_sub_steps += 1
                     import re as _re
                     found_pages = _re.findall(r'\[PAGE (\d+)\]', chunk)
+                    if page_numbers is not None and found_pages:
+                        chunk_pages = [int(p) for p in found_pages]
+                        if not any(p in page_numbers for p in chunk_pages):
+                            continue
+                    done_sub_steps += 1
                     if found_pages:
                         page_desc = f"pages {', '.join(found_pages)}"
                     else:
@@ -2651,6 +2659,8 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
 
             if ext == "pdf" and file_bytes is not None and etype in {"component", "spare"}:
                 selected_pages = entity_pages.get(etype) or []
+                if page_numbers is not None:
+                    selected_pages = [p for p in selected_pages if p in page_numbers]
                 rendered_pages = await _render_selected_pdf_page_images(
                     file_bytes=file_bytes,
                     selected_pages=selected_pages,
@@ -2890,31 +2900,31 @@ async def auto_extract_from_manual(manual_id_str: str, entity_types: Optional[li
         all_manual_ids = [manual.id, *sibling_manual_ids]
 
         if "component" in extraction_types:
-            await db.execute(
-                update(Component)
-                .where(
-                    Component.source_manual_id.in_(all_manual_ids),
-                    Component.is_deleted == False,
-                )
-                .values(is_deleted=True)
+            comp_delete_query = update(Component).where(
+                Component.source_manual_id.in_(all_manual_ids),
+                Component.is_deleted == False,
             )
+            if page_numbers is not None:
+                comp_delete_query = comp_delete_query.where(Component.page_reference.in_(page_numbers))
+            await db.execute(comp_delete_query)
         if "job" in extraction_types:
-            await db.execute(
-                update(Job)
-                .where(Job.source_manual_id.in_(all_manual_ids), Job.is_deleted == False)
-                .values(is_deleted=True)
+            job_delete_query = update(Job).where(
+                Job.source_manual_id.in_(all_manual_ids),
+                Job.is_deleted == False
             )
+            if page_numbers is not None:
+                job_delete_query = job_delete_query.where(Job.page_reference.in_(page_numbers))
+            await db.execute(job_delete_query)
         if "spare" in extraction_types:
             from app.models.spare import ExtractionMethod as _EM
-            await db.execute(
-                update(Spare)
-                .where(
-                    Spare.source_manual_id.in_(all_manual_ids),
-                    Spare.is_deleted == False,
-                    Spare.extraction_method != _EM.manual,
-                )
-                .values(is_deleted=True)
+            spare_delete_query = update(Spare).where(
+                Spare.source_manual_id.in_(all_manual_ids),
+                Spare.is_deleted == False,
+                Spare.extraction_method != _EM.manual,
             )
+            if page_numbers is not None:
+                spare_delete_query = spare_delete_query.where(Spare.page_reference.in_(page_numbers))
+            await db.execute(spare_delete_query)
 
         # ------------------------------------------------------------------
         # Persist all records
