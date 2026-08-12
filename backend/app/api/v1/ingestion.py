@@ -2544,11 +2544,12 @@ async def get_vessel_manual_statistics(
     """
     await _get_vessel_or_404(vessel_id, db)
 
-    # 1. Fetch all manuals (both active and soft-deleted)
+    # 1. Fetch all manuals (both active and soft-deleted) that have valid blob storage keys
     result = await db.execute(
         select(Manual).where(
             Manual.vessel_id == vessel_id,
             Manual.tenant_id == current_user.tenant_id,
+            Manual.blob_storage_key.is_not(None),
         )
     )
     manuals = result.scalars().all()
