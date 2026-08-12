@@ -20,6 +20,7 @@ interface ManualStats {
   comp_pages: number[]
   job_pages: number[]
   spare_pages: number[]
+  is_deleted: boolean
 }
 
 interface StatsResponse {
@@ -49,6 +50,19 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedVesselId, setSelectedVesselId] = useState(vesselId)
 
+  // Calculator states
+  const [dailyCostInput, setDailyCostInput] = useState('15.00')
+  const [dailyRequestsInput, setDailyRequestsInput] = useState('200')
+  const [selectedDateForCalibrate, setSelectedDateForCalibrate] = useState('all')
+  const [expandedManualId, setExpandedManualId] = useState<string | null>(null)
+
+  // Date range filters
+  const [activityStartDate, setActivityStartDate] = useState('')
+  const [activityEndDate, setActivityEndDate] = useState('')
+
+  // Soft-deleted filter state
+  const [manualStatusFilter, setManualStatusFilter] = useState<'available' | 'deleted' | 'all'>('available')
+
   // Fetch all vessels for project switcher
   const { data: vesselsList } = useQuery<{ items: { id: string; name: string; imo_number?: string }[] }>({
     queryKey: ['vessels-list-stats'],
@@ -60,24 +74,65 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
     return vesselsList?.items?.find((v) => v.id === selectedVesselId)
   }, [vesselsList, selectedVesselId])
 
-  // Calculator states
-  const [dailyCostInput, setDailyCostInput] = useState('15.00')
-  const [dailyRequestsInput, setDailyRequestsInput] = useState('200')
-  const [selectedDateForCalibrate, setSelectedDateForCalibrate] = useState('all')
-  const [expandedManualId, setExpandedManualId] = useState<string | null>(null)
-
-  // Date range filters
-  const [activityStartDate, setActivityStartDate] = useState('')
-  const [activityEndDate, setActivityEndDate] = useState('')
-
+  // Fetch stats (returns both active and soft-deleted manuals for selected vessel)
   const { data, isLoading, error } = useQuery<StatsResponse>({
     queryKey: ['manuals-statistics', selectedVesselId],
     queryFn: () => apiClient.get(`/vessels/${selectedVesselId}/manuals/statistics`).then((r) => r.data),
   })
 
-  // Group manual statistics by date
-  const dateWiseActivity = useMemo(() => {
+  // 1. Filter manuals by availability (soft-deletion status)
+  const filteredByStatusManuals = useMemo(() => {
     if (!data?.manuals) return []
+    return data.manuals.filter((m) => {
+      if (manualStatusFilter === 'available') return !m.is_deleted
+      if (manualStatusFilter === 'deleted') return !!m.is_deleted
+      return true
+    })
+  }, [data?.manuals, manualStatusFilter])
+
+  // 2. Dynamically re-calculate summary totals based on filtered manuals list
+  const summary = useMemo(() => {
+    let total_manuals = 0
+    let total_pages = 0
+    let total_targeted_pages = 0
+    let total_components = 0
+    let total_jobs = 0
+    let total_spares = 0
+    let total_requests_estimate = 0
+    let total_cost_estimate = 0
+
+    for (const m of filteredByStatusManuals) {
+      total_manuals++
+      total_pages += m.page_count
+      total_targeted_pages += m.targeted_count
+      total_components += m.components_count
+      total_jobs += m.jobs_count
+      total_spares += m.spares_count
+      total_requests_estimate += m.requests_estimate
+      total_cost_estimate += m.cost_estimate
+    }
+
+    const total_extracted_items = total_components + total_jobs + total_spares
+    const claude_cost = total_cost_estimate * 0.75
+    const openai_cost = total_cost_estimate * 0.25
+
+    return {
+      total_manuals,
+      total_pages,
+      total_targeted_pages,
+      total_components,
+      total_jobs,
+      total_spares,
+      total_extracted_items,
+      total_requests_estimate,
+      total_cost_estimate,
+      claude_cost,
+      openai_cost,
+    }
+  }, [filteredByStatusManuals])
+
+  // 3. Dynamically re-calculate date-wise activity logs
+  const dateWiseActivity = useMemo(() => {
     const groups: Record<string, {
       date: string
       manualsCount: number
@@ -88,7 +143,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
       costEstimate: number
     }> = {}
 
-    for (const m of data.manuals) {
+    for (const m of filteredByStatusManuals) {
       const dateStr = m.created_at ? m.created_at.substring(0, 10) : 'Unknown Date'
       if (!groups[dateStr]) {
         groups[dateStr] = {
@@ -111,7 +166,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
     }
 
     return Object.values(groups).sort((a, b) => b.date.localeCompare(a.date))
-  }, [data?.manuals])
+  }, [filteredByStatusManuals])
 
   // Filtered date-wise activity based on date range inputs
   const filteredDateWiseActivity = useMemo(() => {
@@ -127,26 +182,24 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
 
   // Sync calculator request input field when calibration target date changes
   useEffect(() => {
-    if (!data?.summary) return
     if (selectedDateForCalibrate === 'all') {
-      setDailyRequestsInput(data.summary.total_requests_estimate.toString())
+      setDailyRequestsInput(summary.total_requests_estimate.toString())
     } else {
       const day = dateWiseActivity.find((d) => d.date === selectedDateForCalibrate)
       if (day) {
         setDailyRequestsInput(day.requestsEstimate.toString())
       }
     }
-  }, [selectedDateForCalibrate, dateWiseActivity, data?.summary])
+  }, [selectedDateForCalibrate, dateWiseActivity, summary.total_requests_estimate])
 
   // Filter breakdown list
   const filteredManuals = useMemo(() => {
-    if (!data?.manuals) return []
-    return data.manuals.filter((m) =>
+    return filteredByStatusManuals.filter((m) =>
       m.filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
       m.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
       m.status.toLowerCase().includes(searchQuery.toLowerCase())
     )
-  }, [data?.manuals, searchQuery])
+  }, [filteredByStatusManuals, searchQuery])
 
   // Calibrated cost parameters
   const calibrationResult = useMemo(() => {
@@ -160,14 +213,13 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
 
   // Average metrics calculation
   const averages = useMemo(() => {
-    if (!data?.summary || data.summary.total_manuals === 0) return { pagesPerManual: 0, itemsPerManual: 0, costPerManual: 0 }
-    const s = data.summary
+    if (summary.total_manuals === 0) return { pagesPerManual: 0, itemsPerManual: 0, costPerManual: 0 }
     return {
-      pagesPerManual: Math.round(s.total_pages / s.total_manuals),
-      itemsPerManual: Math.round(s.total_extracted_items / s.total_manuals),
-      costPerManual: s.total_cost_estimate / s.total_manuals,
+      pagesPerManual: Math.round(summary.total_pages / summary.total_manuals),
+      itemsPerManual: Math.round(summary.total_extracted_items / summary.total_manuals),
+      costPerManual: summary.total_cost_estimate / summary.total_manuals,
     }
-  }, [data?.summary])
+  }, [summary])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -192,13 +244,27 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
               <select
                 value={selectedVesselId}
                 onChange={(e) => setSelectedVesselId(e.target.value)}
-                className="bg-transparent border-0 text-xs font-semibold text-white focus:ring-0 focus:outline-none cursor-pointer max-w-[200px]"
+                className="bg-transparent border-0 text-xs font-semibold text-white focus:ring-0 focus:outline-none cursor-pointer max-w-[150px]"
               >
                 {vesselsList?.items?.map((v) => (
                   <option key={v.id} value={v.id} className="bg-slate-900 text-white">
                     {v.name} {v.imo_number ? `(IMO: ${v.imo_number})` : ''}
                   </option>
                 ))}
+              </select>
+            </div>
+
+            {/* Manual Status Filter Selector */}
+            <div className="flex items-center gap-1.5 bg-slate-950/40 border border-slate-800 rounded-lg px-2.5 py-1">
+              <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Manuals:</span>
+              <select
+                value={manualStatusFilter}
+                onChange={(e) => setManualStatusFilter(e.target.value as any)}
+                className="bg-transparent border-0 text-xs font-semibold text-white focus:ring-0 focus:outline-none cursor-pointer"
+              >
+                <option value="available" className="bg-slate-900 text-white">Available Only</option>
+                <option value="deleted" className="bg-slate-900 text-white">Deleted Only</option>
+                <option value="all" className="bg-slate-900 text-white">All Manuals</option>
               </select>
             </div>
 
@@ -218,10 +284,6 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
             <AlertCircle className="h-10 w-10 text-rose-500" />
             <span className="text-sm font-semibold text-slate-200">Failed to load statistics</span>
             <span className="text-xs text-slate-400">{(error as any)?.response?.data?.detail ?? error.message}</span>
-          </div>
-        ) : !data ? (
-          <div className="flex-grow flex flex-col items-center justify-center py-20 text-slate-400 text-sm">
-            No statistics data available.
           </div>
         ) : (
           <>
@@ -262,9 +324,9 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                         <FileText className="h-3.5 w-3.5 text-sky-400" /> manuals
                       </span>
                       <span className="text-2xl font-bold text-white mt-2">
-                        {data.summary.total_manuals}
+                        {summary.total_manuals}
                       </span>
-                      <span className="text-[10px] text-slate-400 mt-1">Uploaded in project</span>
+                      <span className="text-[10px] text-slate-400 mt-1">Filtered count</span>
                     </div>
 
                     <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-4 flex flex-col justify-between hover:border-slate-700 transition-colors">
@@ -272,11 +334,11 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                         <Layers className="h-3.5 w-3.5 text-emerald-400" /> Pages processed
                       </span>
                       <span className="text-2xl font-bold text-white mt-2">
-                        {data.summary.total_targeted_pages} <span className="text-xs font-normal text-slate-400">/ {data.summary.total_pages} total</span>
+                        {summary.total_targeted_pages} <span className="text-xs font-normal text-slate-400">/ {summary.total_pages} total</span>
                       </span>
                       <span className="text-[10px] text-slate-400 mt-1">
-                        {data.summary.total_pages > 0
-                          ? `${Math.round((data.summary.total_targeted_pages / data.summary.total_pages) * 100)}% targeted page coverage`
+                        {summary.total_pages > 0
+                          ? `${Math.round((summary.total_targeted_pages / summary.total_pages) * 100)}% targeted page coverage`
                           : '0% coverage'}
                       </span>
                     </div>
@@ -286,10 +348,10 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                         <Sparkles className="h-3.5 w-3.5 text-purple-400" /> Items Extracted
                       </span>
                       <span className="text-2xl font-bold text-white mt-2">
-                        {data.summary.total_extracted_items}
+                        {summary.total_extracted_items}
                       </span>
                       <span className="text-[10px] text-slate-400 mt-1">
-                        {data.summary.total_components} comps, {data.summary.total_jobs} jobs, {data.summary.total_spares} spares
+                        {summary.total_components} comps, {summary.total_jobs} jobs, {summary.total_spares} spares
                       </span>
                     </div>
 
@@ -298,10 +360,10 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                         <DollarSign className="h-3.5 w-3.5 text-sky-400" /> Estimated Cost
                       </span>
                       <span className="text-2xl font-bold text-sky-400 mt-2">
-                        ${data.summary.total_cost_estimate.toFixed(2)}
+                        ${summary.total_cost_estimate.toFixed(2)}
                       </span>
                       <span className="text-[10px] text-slate-400 mt-1">
-                        Avg: ${(data.summary.total_cost_estimate / (data.summary.total_manuals || 1)).toFixed(2)} / manual
+                        Avg: ${(summary.total_cost_estimate / (summary.total_manuals || 1)).toFixed(2)} / manual
                       </span>
                     </div>
                   </div>
@@ -322,7 +384,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                         <div className="flex justify-between text-xs pt-3">
                           <span className="text-slate-400">Yield per Page (Items/Targeted Page)</span>
                           <span className="font-semibold text-slate-200">
-                            {(data.summary.total_extracted_items / (data.summary.total_targeted_pages || 1)).toFixed(2)} items/pg
+                            {(summary.total_extracted_items / (summary.total_targeted_pages || 1)).toFixed(2)} items/pg
                           </span>
                         </div>
                       </div>
@@ -332,9 +394,9 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                       <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Extraction Coverage Breakdown</h3>
                       <div className="space-y-3.5">
                         {[
-                          ['Components', data.summary.total_components, 'bg-emerald-500', data.summary.total_extracted_items],
-                          ['Jobs', data.summary.total_jobs, 'bg-sky-500', data.summary.total_extracted_items],
-                          ['Spares', data.summary.total_spares, 'bg-amber-500', data.summary.total_extracted_items],
+                          ['Components', summary.total_components, 'bg-emerald-500', summary.total_extracted_items],
+                          ['Jobs', summary.total_jobs, 'bg-sky-500', summary.total_extracted_items],
+                          ['Spares', summary.total_spares, 'bg-amber-500', summary.total_extracted_items],
                         ].map(([label, count, color, total]) => {
                           const totalNum = total as number
                           const countNum = count as number
@@ -357,6 +419,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                 </div>
               )}
 
+              {/* TAB 2: DATE-WISE ACTIVITY */}
               {activeTab === 'datewise' && (
                 <div className="space-y-4 animate-fade-in">
                   {/* Date range controls */}
@@ -438,20 +501,20 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
 
               {/* TAB 3: PER-MANUAL BREAKDOWN */}
               {activeTab === 'breakdown' && (
-                <div className="space-y-4 animate-fade-in">
-                  <div className="flex items-center justify-between gap-3">
+                <div className="space-y-4 animate-fade-in flex flex-col h-full">
+                  <div className="flex items-center justify-between gap-3 shrink-0">
                     <div className="relative w-full max-w-sm">
                       <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-500" />
                       <input
                         type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search manuals by filename, category..."
+                        placeholder="Search manual breakdown by filename, category..."
                         className="w-full rounded-lg border border-slate-700 bg-slate-800 pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
                       />
                     </div>
                     <span className="text-[11px] text-slate-500">
-                      Showing {filteredManuals.length} of {data.manuals.length} manuals
+                      Showing {filteredManuals.length} of {filteredByStatusManuals.length} manuals
                     </span>
                   </div>
 
@@ -469,9 +532,16 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                       </thead>
                       <tbody className="divide-y divide-slate-800/40">
                         {filteredManuals.map((m) => (
-                          <tr key={m.id} className="hover:bg-slate-800/20 transition-colors">
-                            <td className="py-3 px-3 font-medium text-slate-200 max-w-[240px] truncate" title={m.filename}>
-                              {m.filename}
+                          <tr key={m.id} className={`hover:bg-slate-800/20 transition-colors ${m.is_deleted ? 'bg-red-950/10 opacity-70' : ''}`}>
+                            <td className="py-3 px-3 font-medium text-slate-200 max-w-[200px] truncate" title={m.filename}>
+                              <div className="flex items-center gap-1.5">
+                                <span>{m.filename}</span>
+                                {m.is_deleted && (
+                                  <span className="inline-flex rounded bg-red-950/50 border border-red-800/50 px-1 py-0.5 text-[8px] text-red-400 font-bold uppercase tracking-wider">
+                                    Deleted
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className="py-3 px-3 text-slate-400">{m.category}</td>
                             <td className="py-3 px-3 text-slate-300">
@@ -581,7 +651,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800/40">
-                          {data.manuals.map((m) => {
+                          {filteredByStatusManuals.map((m) => {
                             const isExpanded = expandedManualId === m.id
                             const calibratedManualCost = m.requests_estimate * calibrationResult.costPerRequest
 
@@ -626,6 +696,11 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                                         <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />
                                       )}
                                       <span className="truncate max-w-[280px]" title={m.filename}>{m.filename}</span>
+                                      {m.is_deleted && (
+                                        <span className="inline-flex rounded bg-red-950/50 border border-red-800/50 px-1 py-0.5 text-[8px] text-red-400 font-bold uppercase tracking-wider ml-1">
+                                          Deleted
+                                        </span>
+                                      )}
                                     </button>
                                   </td>
                                   <td className="py-3 px-4 text-slate-300 font-medium">{m.requests_estimate}</td>

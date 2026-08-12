@@ -2544,12 +2544,11 @@ async def get_vessel_manual_statistics(
     """
     await _get_vessel_or_404(vessel_id, db)
 
-    # 1. Fetch all manuals
+    # 1. Fetch all manuals (both active and soft-deleted)
     result = await db.execute(
         select(Manual).where(
             Manual.vessel_id == vessel_id,
             Manual.tenant_id == current_user.tenant_id,
-            Manual.is_deleted == False,
         )
     )
     manuals = result.scalars().all()
@@ -2684,6 +2683,7 @@ async def get_vessel_manual_statistics(
             "comp_pages": comp_pages,
             "job_pages": job_pages,
             "spare_pages": spare_pages,
+            "is_deleted": manual.is_deleted,
         })
 
     claude_cost = total_cost * 0.75
