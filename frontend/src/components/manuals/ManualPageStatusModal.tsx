@@ -228,19 +228,23 @@ export function ManualPageStatusModal({
       <div className="w-full max-w-4xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4 shrink-0">
-          <div className="space-y-1">
-            <h2 className="text-base font-semibold text-white flex items-center gap-2">
-              <FileText className="h-5 w-5 text-sky-400" />
-              <span className="truncate max-w-[500px]" title={manualTitle}>{manualTitle}</span>
-              <span className="text-xs text-slate-400 font-normal">Extraction Status Details</span>
-            </h2>
+          <div className="space-y-1.5 min-w-0 flex-1 pr-4">
+            <div className="flex items-center gap-2 min-w-0">
+              <FileText className="h-5 w-5 text-sky-400 shrink-0" />
+              <h2 className="text-base font-semibold text-white truncate max-w-[550px]" title={manualTitle}>
+                {manualTitle}
+              </h2>
+            </div>
             {data && (
-              <p className="text-xs text-slate-400">
-                Manual Status: <span className="capitalize font-semibold text-slate-300">{data.status}</span>
+              <p className="text-xs text-slate-400 flex items-center gap-2">
+                <span>Extraction Status Details</span>
+                <span className="text-slate-600">&bull;</span>
+                <span>Manual Status:</span>
+                <span className="capitalize font-semibold text-slate-300">{data.status}</span>
               </p>
             )}
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors p-1.5 hover:bg-slate-800 rounded-lg">
+          <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors p-1.5 hover:bg-slate-800 rounded-lg shrink-0">
             <X className="h-5 w-5" />
           </button>
         </div>

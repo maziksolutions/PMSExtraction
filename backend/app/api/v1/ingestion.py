@@ -2529,6 +2529,179 @@ async def get_manual_page_status(
     }
 
 
+@router.get(
+    "/{vessel_id}/manuals/statistics",
+    summary="Get manual extraction statistics for a vessel",
+)
+async def get_vessel_manual_statistics(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """
+    Returns high-level and granular statistics on the manual extraction process
+    for the vessel, including pages processed, counts of items, LLM requests, and estimated costs.
+    """
+    await _get_vessel_or_404(vessel_id, db)
+
+    # 1. Fetch all manuals
+    result = await db.execute(
+        select(Manual).where(
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manuals = result.scalars().all()
+
+    # 2. Fetch all extracted active items for this vessel
+    from app.models.component import Component
+    from app.models.job import Job
+    from app.models.spare import Spare
+
+    comp_res = await db.execute(
+        select(Component.source_manual_id, Component.page_reference).where(
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == current_user.tenant_id,
+            Component.is_deleted == False,
+        )
+    )
+    components = comp_res.all()
+
+    job_res = await db.execute(
+        select(Job.source_manual_id, Job.page_reference).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == current_user.tenant_id,
+            Job.is_deleted == False,
+        )
+    )
+    jobs = job_res.all()
+
+    spare_res = await db.execute(
+        select(Spare.source_manual_id, Spare.page_reference).where(
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == current_user.tenant_id,
+            Spare.is_deleted == False,
+        )
+    )
+    spares = spare_res.all()
+
+    # Map item lists to manuals
+    comps_by_manual = {}
+    jobs_by_manual = {}
+    spares_by_manual = {}
+    for source_manual_id, page_ref in components:
+        if source_manual_id:
+            comps_by_manual.setdefault(source_manual_id, []).append(page_ref)
+    for source_manual_id, page_ref in jobs:
+        if source_manual_id:
+            jobs_by_manual.setdefault(source_manual_id, []).append(page_ref)
+    for source_manual_id, page_ref in spares:
+        if source_manual_id:
+            spares_by_manual.setdefault(source_manual_id, []).append(page_ref)
+
+    # Constants for estimation
+    # Claude Sonnet 3.5 is the primary provider.
+    # Input tokens per page: 1600 tokens (image vision) or 800 tokens (text)
+    # Output tokens per page: 300 tokens
+    # Pricing: Input=$3.00/MTok, Output=$15.00/MTok
+    CLAUDE_INPUT_COST = 3.0 / 1_000_000
+    CLAUDE_OUTPUT_COST = 15.0 / 1_000_000
+    
+    total_manuals = len(manuals)
+    total_pages = 0
+    total_targeted_pages = 0
+    total_components = len(components)
+    total_jobs = len(jobs)
+    total_spares = len(spares)
+    total_requests = 0
+    total_cost = 0.0
+
+    manuals_breakdown = []
+
+    from app.services.extractor import _parse_page_tokens
+
+    for manual in manuals:
+        m_id = manual.id
+        m_filename = manual.original_filename
+        m_category = manual.category or "Unclassified"
+        m_page_count = manual.page_count or 0
+        m_status = manual.status
+
+        # Calculate targeted pages
+        comp_pages = _parse_page_tokens(manual.pages_with_components_physical or manual.pages_with_components)
+        job_pages = _parse_page_tokens(manual.pages_with_jobs_physical or manual.pages_with_jobs)
+        spare_pages = _parse_page_tokens(manual.pages_with_spares_physical or manual.pages_with_spares)
+        
+        all_targeted = set(comp_pages).union(job_pages).union(spare_pages)
+        m_targeted_count = len(all_targeted)
+        
+        # Extracted items
+        m_comps_count = len(comps_by_manual.get(m_id, []))
+        m_jobs_count = len(jobs_by_manual.get(m_id, []))
+        m_spares_count = len(spares_by_manual.get(m_id, []))
+        
+        # Estimate requests
+        m_requests = 0
+        if manual.status == "failed":
+            m_requests = 0
+        elif manual.status == "classified" or m_comps_count > 0 or m_jobs_count > 0 or m_spares_count > 0:
+            m_requests += len(comp_pages)
+            m_requests += len(spare_pages) * 4
+            m_requests += max(1, len(job_pages) // 2)
+
+        # Estimate tokens and cost
+        m_input_tokens = 0
+        m_output_tokens = 0
+        
+        if m_requests > 0:
+            m_input_tokens += len(comp_pages) * 1600
+            m_input_tokens += len(spare_pages) * 4 * 1600
+            m_input_tokens += max(1, len(job_pages) // 2) * 800
+            m_output_tokens += m_requests * 300
+            
+        m_cost = (m_input_tokens * CLAUDE_INPUT_COST) + (m_output_tokens * CLAUDE_OUTPUT_COST)
+
+        total_pages += m_page_count
+        total_targeted_pages += m_targeted_count
+        total_requests += m_requests
+        total_cost += m_cost
+
+        manuals_breakdown.append({
+            "id": str(m_id),
+            "filename": m_filename,
+            "category": m_category,
+            "status": m_status,
+            "page_count": m_page_count,
+            "targeted_count": m_targeted_count,
+            "components_count": m_comps_count,
+            "jobs_count": m_jobs_count,
+            "spares_count": m_spares_count,
+            "requests_estimate": m_requests,
+            "cost_estimate": round(m_cost, 4),
+        })
+
+    claude_cost = total_cost * 0.75
+    openai_cost = total_cost * 0.25
+
+    return {
+        "summary": {
+            "total_manuals": total_manuals,
+            "total_pages": total_pages,
+            "total_targeted_pages": total_targeted_pages,
+            "total_components": total_components,
+            "total_jobs": total_jobs,
+            "total_spares": total_spares,
+            "total_extracted_items": total_components + total_jobs + total_spares,
+            "total_requests_estimate": total_requests,
+            "total_cost_estimate": round(total_cost, 2),
+            "claude_cost": round(claude_cost, 2),
+            "openai_cost": round(openai_cost, 2),
+        },
+        "manuals": manuals_breakdown
+    }
+
+
 
 
 

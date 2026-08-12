@@ -23,10 +23,12 @@ import {
   ArrowUp,
   ArrowDown,
   Activity,
+  BarChart3,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
 import { ManualPageStatusModal } from '@/components/manuals/ManualPageStatusModal'
+import { ManualsStatsModal } from '@/components/manuals/ManualsStatsModal'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -487,6 +489,7 @@ const ManualReview: React.FC = () => {
   const [importError, setImportError] = useState<string | null>(null)
   const [loadingManualId, setLoadingManualId] = useState<string | null>(null)
   const [selectedManualForStatus, setSelectedManualForStatus] = useState<Manual | null>(null)
+  const [showStatsModal, setShowStatsModal] = useState(false)
 
   // ── Data queries ──────────────────────────────────────────────────────────
 
@@ -947,6 +950,13 @@ const ManualReview: React.FC = () => {
           >
             <FileText className="h-4 w-4" />
             {downloadTemplateMutation.isPending ? 'Preparing...' : 'Template'}
+          </button>
+          <button
+            onClick={() => setShowStatsModal(true)}
+            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 transition-colors"
+          >
+            <BarChart3 className="h-4 w-4 text-sky-400" />
+            <span>Statistics</span>
           </button>
           <button
             onClick={() => importFileInputRef.current?.click()}
@@ -1591,6 +1601,12 @@ const ManualReview: React.FC = () => {
             selectedManualForStatus.pages_with_spares_physical
           }
           onClose={() => setSelectedManualForStatus(null)}
+        />
+      )}
+      {showStatsModal && (
+        <ManualsStatsModal
+          vesselId={vesselId ?? ''}
+          onClose={() => setShowStatsModal(false)}
         />
       )}
     </div>
