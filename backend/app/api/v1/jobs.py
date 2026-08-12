@@ -448,7 +448,7 @@ async def list_jobs(
         base_where.append(Job.is_critical == is_critical)
     if is_unmapped is not None:
         base_where.append(Job.is_unmapped == is_unmapped)
-    if frequency_type and frequency is None:
+    if frequency_type:
         try:
             base_where.append(Job.frequency_type == FrequencyType(frequency_type))
         except ValueError:
@@ -668,7 +668,7 @@ async def export_jobs(
         base_where.append(Job.is_critical == is_critical)
     if is_unmapped is not None:
         base_where.append(Job.is_unmapped == is_unmapped)
-    if frequency_type and frequency is None:
+    if frequency_type:
         try:
             base_where.append(Job.frequency_type == FrequencyType(frequency_type))
         except ValueError:
