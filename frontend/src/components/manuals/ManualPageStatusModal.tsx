@@ -82,7 +82,7 @@ export function ManualPageStatusModal({
 }: ManualPageStatusModalProps) {
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'targeted' | 'skipped' | 'success' | 'failed'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all')
   const [expandedPages, setExpandedPages] = useState<Record<number, boolean>>({})
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
 
@@ -184,8 +184,6 @@ export function ManualPageStatusModal({
 
     return data.pages.filter((page) => {
       // 1. Status Filter
-      if (statusFilter === 'targeted' && !page.is_targeted) return false
-      if (statusFilter === 'skipped' && page.is_targeted) return false
       if (statusFilter === 'success' && page.status !== 'success') return false
       if (statusFilter === 'failed' && page.status !== 'failed') return false
 
@@ -322,8 +320,6 @@ export function ManualPageStatusModal({
                   {(
                     [
                       ['all', 'All'],
-                      ['targeted', 'Targeted'],
-                      ['skipped', 'Skipped'],
                       ['success', 'Processed'],
                       ['failed', 'Failed'],
                     ] as const

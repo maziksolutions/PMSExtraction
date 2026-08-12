@@ -2493,6 +2493,10 @@ async def get_manual_page_status(
         page_items = items_by_page.get(p, [])
         extracted_count = len(page_items)
 
+        # Skip pages that are not targeted and have no items extracted to keep the list focused
+        if not is_targeted and extracted_count == 0:
+            continue
+
         if not is_targeted:
             page_status = "skipped"
         else:
