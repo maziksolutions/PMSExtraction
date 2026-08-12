@@ -47,6 +47,18 @@ interface ManualsStatsModalProps {
 export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'datewise' | 'breakdown' | 'calculator'>('overview')
   const [searchQuery, setSearchQuery] = useState('')
+  const [selectedVesselId, setSelectedVesselId] = useState(vesselId)
+
+  // Fetch all vessels for project switcher
+  const { data: vesselsList } = useQuery<{ items: { id: string; name: string; imo_number?: string }[] }>({
+    queryKey: ['vessels-list-stats'],
+    queryFn: () => apiClient.get('/vessels?page=1&page_size=100').then((r) => r.data),
+  })
+
+  // Find active vessel info
+  const activeVesselInfo = useMemo(() => {
+    return vesselsList?.items?.find((v) => v.id === selectedVesselId)
+  }, [vesselsList, selectedVesselId])
 
   // Calculator states
   const [dailyCostInput, setDailyCostInput] = useState('15.00')
@@ -59,8 +71,8 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
   const [activityEndDate, setActivityEndDate] = useState('')
 
   const { data, isLoading, error } = useQuery<StatsResponse>({
-    queryKey: ['manuals-statistics', vesselId],
-    queryFn: () => apiClient.get(`/vessels/${vesselId}/manuals/statistics`).then((r) => r.data),
+    queryKey: ['manuals-statistics', selectedVesselId],
+    queryFn: () => apiClient.get(`/vessels/${selectedVesselId}/manuals/statistics`).then((r) => r.data),
   })
 
   // Group manual statistics by date
@@ -162,16 +174,38 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
       <div className="w-full max-w-4xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-700 px-6 py-4 shrink-0">
-          <div className="flex items-center gap-2">
-            <BarChart3 className="h-5 w-5 text-sky-400" />
+          <div className="flex items-center gap-3">
+            <BarChart3 className="h-5 w-5 text-sky-400 shrink-0" />
             <div>
               <h2 className="text-base font-semibold text-white">Manuals Extraction Statistics</h2>
-              <p className="text-xs text-slate-400">Granular audit details, daily analytics, and cost calibration calculator</p>
+              <p className="text-xs text-slate-400 flex items-center gap-1">
+                <span>Active Vessel Project:</span>
+                <span className="font-semibold text-sky-400">{activeVesselInfo?.name ?? 'Loading...'}</span>
+              </p>
             </div>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors p-1.5 hover:bg-slate-800 rounded-lg">
-            <X className="h-5 w-5" />
-          </button>
+          
+          <div className="flex items-center gap-3">
+            {/* Vessel Filter Selector */}
+            <div className="flex items-center gap-1.5 bg-slate-950/40 border border-slate-800 rounded-lg px-2.5 py-1">
+              <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Vessel:</span>
+              <select
+                value={selectedVesselId}
+                onChange={(e) => setSelectedVesselId(e.target.value)}
+                className="bg-transparent border-0 text-xs font-semibold text-white focus:ring-0 focus:outline-none cursor-pointer max-w-[200px]"
+              >
+                {vesselsList?.items?.map((v) => (
+                  <option key={v.id} value={v.id} className="bg-slate-900 text-white">
+                    {v.name} {v.imo_number ? `(IMO: ${v.imo_number})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors p-1.5 hover:bg-slate-800 rounded-lg">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {isLoading ? (
@@ -643,7 +677,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
             {/* Footer */}
             <div className="px-6 py-3 border-t border-slate-800 bg-slate-950/20 text-[11px] text-slate-500 flex items-center justify-between shrink-0 rounded-b-2xl">
               <span>All cost statistics are estimates based on active LLM API model pricing.</span>
-              <span>Project ID: {vesselId}</span>
+              <span>Project ID: {selectedVesselId}</span>
             </div>
           </>
         )}
