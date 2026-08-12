@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { X, FileText, BarChart3, BrainCircuit, DollarSign, Table, Search, AlertCircle, Loader2, Sparkles, Calculator, Layers, Calendar, ChevronDown, ChevronRight, HelpCircle } from 'lucide-react'
+import { X, FileText, BarChart3, BrainCircuit, DollarSign, Table, Search, AlertCircle, Loader2, Sparkles, Calculator, Layers, Calendar, ChevronDown, ChevronRight, HelpCircle, Filter } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface ManualStats {
@@ -54,6 +54,10 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
   const [selectedDateForCalibrate, setSelectedDateForCalibrate] = useState('all')
   const [expandedManualId, setExpandedManualId] = useState<string | null>(null)
 
+  // Date range filters
+  const [activityStartDate, setActivityStartDate] = useState('')
+  const [activityEndDate, setActivityEndDate] = useState('')
+
   const { data, isLoading, error } = useQuery<StatsResponse>({
     queryKey: ['manuals-statistics', vesselId],
     queryFn: () => apiClient.get(`/vessels/${vesselId}/manuals/statistics`).then((r) => r.data),
@@ -96,6 +100,18 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
 
     return Object.values(groups).sort((a, b) => b.date.localeCompare(a.date))
   }, [data?.manuals])
+
+  // Filtered date-wise activity based on date range inputs
+  const filteredDateWiseActivity = useMemo(() => {
+    let result = dateWiseActivity
+    if (activityStartDate) {
+      result = result.filter((day) => day.date >= activityStartDate)
+    }
+    if (activityEndDate) {
+      result = result.filter((day) => day.date <= activityEndDate)
+    }
+    return result
+  }, [dateWiseActivity, activityStartDate, activityEndDate])
 
   // Sync calculator request input field when calibration target date changes
   useEffect(() => {
@@ -307,9 +323,41 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                 </div>
               )}
 
-              {/* TAB 2: DATE-WISE ACTIVITY */}
               {activeTab === 'datewise' && (
                 <div className="space-y-4 animate-fade-in">
+                  {/* Date range controls */}
+                  <div className="flex items-center gap-3 bg-slate-950/20 border border-slate-800 rounded-xl p-3 shrink-0">
+                    <span className="text-xs text-slate-400 font-semibold flex items-center gap-1">
+                      <Filter className="h-3.5 w-3.5 text-sky-400" /> Filter by Date Range:
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="date"
+                        value={activityStartDate}
+                        onChange={(e) => setActivityStartDate(e.target.value)}
+                        className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                      />
+                      <span className="text-slate-600 text-xs">to</span>
+                      <input
+                        type="date"
+                        value={activityEndDate}
+                        onChange={(e) => setActivityEndDate(e.target.value)}
+                        className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
+                      />
+                      {(activityStartDate || activityEndDate) && (
+                        <button
+                          onClick={() => {
+                            setActivityStartDate('')
+                            setActivityEndDate('')
+                          }}
+                          className="rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 hover:text-white px-2 py-1 text-xs transition-colors"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
                   <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/20">
                     <table className="w-full text-left text-xs border-collapse">
                       <thead>
@@ -322,7 +370,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/40">
-                        {dateWiseActivity.map((day) => (
+                        {filteredDateWiseActivity.map((day) => (
                           <tr key={day.date} className="hover:bg-slate-800/20 transition-colors">
                             <td className="py-3.5 px-4 font-semibold text-slate-200">
                               {day.date}

@@ -922,114 +922,134 @@ const ManualReview: React.FC = () => {
             <button
               onClick={handleSaveAll}
               disabled={saveMutation.isPending}
-              className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+              className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50 shadow"
             >
               <Save className="h-4 w-4" />
               Save {Object.keys(edits).length}
             </button>
           )}
-          <input
-            ref={importFileInputRef}
-            type="file"
-            accept=".xlsx"
-            className="hidden"
-            onChange={handleImportExcel}
-          />
-          <button
-            onClick={() => exportScreeningMutation.mutate()}
-            disabled={exportScreeningMutation.isPending}
-            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-50"
-          >
-            <Download className="h-4 w-4" />
-            {exportScreeningMutation.isPending ? 'Exporting...' : 'Export Screening'}
-          </button>
-          <button
-            onClick={() => downloadTemplateMutation.mutate()}
-            disabled={downloadTemplateMutation.isPending}
-            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 disabled:opacity-50"
-          >
-            <FileText className="h-4 w-4" />
-            {downloadTemplateMutation.isPending ? 'Preparing...' : 'Template'}
-          </button>
           <button
             onClick={() => setShowStatsModal(true)}
-            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 transition-colors"
+            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 transition-colors shadow"
           >
             <BarChart3 className="h-4 w-4 text-sky-400" />
             <span>Statistics</span>
           </button>
-          <button
-            onClick={() => importFileInputRef.current?.click()}
-            disabled={importScreeningMutation.isPending}
-            className="flex items-center gap-2 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
-          >
-            <Upload className="h-4 w-4" />
-            {importScreeningMutation.isPending ? 'Importing...' : 'Import Screening'}
-          </button>
-          {selectedIds.size > 0 && (
+        </div>
+      </div>
+
+      {/* Actions Toolbar Panel */}
+      <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 shadow-md space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          {/* Screening Actions Group */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mr-1.5">Screening:</span>
             <button
-              onClick={handleDeleteSelected}
-              disabled={deleteMutation.isPending}
-              className="flex items-center gap-2 rounded-lg bg-red-700 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50"
+              onClick={() => screenAllMutation.mutate()}
+              disabled={isScreening}
+              className="flex items-center gap-1.5 rounded-lg bg-violet-750 border border-violet-700 hover:bg-violet-700 disabled:opacity-60 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
             >
-              <Trash2 className="h-4 w-4" />
-              Delete {selectedIds.size}
+              {isScreening ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <ScanSearch className="h-3.5 w-3.5" />}
+              <span>{isScreening ? `Screening ${screeningData?.done ?? 0}/${screeningData?.total ?? '...'}` : 'Screen All'}</span>
             </button>
-          )}
-          <button
-            onClick={() => extractAllMutation.mutate()}
-            disabled={isExtracting}
-            className="flex items-center gap-2 rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-60"
-          >
-            {isExtracting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-            {isExtracting ? `Extracting ${extractionData?.done ?? 0}/${extractionData?.total ?? '...'}` : 'Extract All'}
-          </button>
-          {selectedIds.size > 0 && (
-            <>
+            {selectedIds.size > 0 && (
               <button
-                onClick={() => extractSelectedMutation.mutate()}
-                disabled={isExtracting || extractSelectedMutation.isPending}
-                className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-60"
+                onClick={() => screenSelectedMutation.mutate()}
+                disabled={isScreening || screenSelectedMutation.isPending}
+                className="flex items-center gap-1.5 rounded-lg bg-violet-650 border border-violet-600 hover:bg-violet-600 disabled:opacity-60 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
               >
-                <Zap className="h-4 w-4" />
-                Extract Selected ({selectedIds.size})
+                <ScanSearch className="h-3.5 w-3.5" />
+                <span>Screen Selected ({selectedIds.size})</span>
               </button>
-              <button
-                onClick={() => extractSelectedJobsOnlyMutation.mutate()}
-                disabled={isExtracting || extractSelectedJobsOnlyMutation.isPending}
-                className="flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-60"
-              >
-                <Zap className="h-4 w-4" />
-                Extract Jobs Only ({selectedIds.size})
-              </button>
-              <button
-                onClick={() => extractSelectedSparesOnlyMutation.mutate()}
-                disabled={isExtracting || extractSelectedSparesOnlyMutation.isPending}
-                className="flex items-center gap-2 rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-500 disabled:opacity-60"
-              >
-                <Zap className="h-4 w-4" />
-                Extract Spares Only ({selectedIds.size})
-              </button>
-            </>
-          )}
-          <button
-            onClick={() => screenAllMutation.mutate()}
-            disabled={isScreening}
-            className="flex items-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-60"
-          >
-            {isScreening ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ScanSearch className="h-4 w-4" />}
-            {isScreening ? `Screening ${screeningData?.done ?? 0}/${screeningData?.total ?? '...'}` : 'Screen All'}
-          </button>
-          {selectedIds.size > 0 && (
+            )}
             <button
-              onClick={() => screenSelectedMutation.mutate()}
-              disabled={isScreening || screenSelectedMutation.isPending}
-              className="flex items-center gap-2 rounded-lg bg-violet-500 px-4 py-2 text-sm font-medium text-white hover:bg-violet-400 disabled:opacity-60"
+              onClick={() => exportScreeningMutation.mutate()}
+              disabled={exportScreeningMutation.isPending}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 disabled:opacity-50 text-xs font-medium px-3 py-1.5 transition-colors"
             >
-              <ScanSearch className="h-4 w-4" />
-              Screen Selected ({selectedIds.size})
+              <Download className="h-3.5 w-3.5" />
+              <span>{exportScreeningMutation.isPending ? 'Exporting...' : 'Export Screening'}</span>
             </button>
-          )}
+            <input
+              ref={importFileInputRef}
+              type="file"
+              accept=".xlsx"
+              className="hidden"
+              onChange={handleImportExcel}
+            />
+            <button
+              onClick={() => importFileInputRef.current?.click()}
+              disabled={importScreeningMutation.isPending}
+              className="flex items-center gap-1.5 rounded-lg bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              <span>{importScreeningMutation.isPending ? 'Importing...' : 'Import Screening'}</span>
+            </button>
+          </div>
+
+          {/* Extraction Actions Group */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mr-1.5">Extraction:</span>
+            <button
+              onClick={() => extractAllMutation.mutate()}
+              disabled={isExtracting}
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
+            >
+              {isExtracting ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+              <span>{isExtracting ? `Extracting ${extractionData?.done ?? 0}/${extractionData?.total ?? '...'}` : 'Extract All'}</span>
+            </button>
+            {selectedIds.size > 0 && (
+              <>
+                <button
+                  onClick={() => extractSelectedMutation.mutate()}
+                  disabled={isExtracting || extractSelectedMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  <span>Extract Selected ({selectedIds.size})</span>
+                </button>
+                <button
+                  onClick={() => extractSelectedJobsOnlyMutation.mutate()}
+                  disabled={isExtracting || extractSelectedJobsOnlyMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  <span>Extract Jobs Only ({selectedIds.size})</span>
+                </button>
+                <button
+                  onClick={() => extractSelectedSparesOnlyMutation.mutate()}
+                  disabled={isExtracting || extractSelectedSparesOnlyMutation.isPending}
+                  className="flex items-center gap-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-60 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  <span>Extract Spares Only ({selectedIds.size})</span>
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Admin / Utility Group */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mr-1.5">Admin:</span>
+            <button
+              onClick={() => downloadTemplateMutation.mutate()}
+              disabled={downloadTemplateMutation.isPending}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 disabled:opacity-50 text-xs font-medium px-3 py-1.5 transition-colors"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              <span>{downloadTemplateMutation.isPending ? 'Preparing...' : 'Template'}</span>
+            </button>
+            {selectedIds.size > 0 && (
+              <button
+                onClick={handleDeleteSelected}
+                disabled={deleteMutation.isPending}
+                className="flex items-center gap-1.5 rounded-lg bg-red-800 hover:bg-red-700 disabled:opacity-50 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Delete {selectedIds.size}</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
