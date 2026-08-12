@@ -2679,6 +2679,11 @@ async def get_vessel_manual_statistics(
             "spares_count": m_spares_count,
             "requests_estimate": m_requests,
             "cost_estimate": round(m_cost, 4),
+            "created_at": manual.created_at.isoformat() if manual.created_at else None,
+            "updated_at": manual.updated_at.isoformat() if manual.updated_at else None,
+            "comp_pages": comp_pages,
+            "job_pages": job_pages,
+            "spare_pages": spare_pages,
         })
 
     claude_cost = total_cost * 0.75

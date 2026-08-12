@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { X, FileText, BarChart3, BrainCircuit, DollarSign, Table, Search, AlertCircle, Loader2, Sparkles, Calculator, Layers } from 'lucide-react'
+import { X, FileText, BarChart3, BrainCircuit, DollarSign, Table, Search, AlertCircle, Loader2, Sparkles, Calculator, Layers, Calendar, ChevronDown, ChevronRight, HelpCircle } from 'lucide-react'
 import apiClient from '@/api/client'
 
 interface ManualStats {
@@ -15,6 +15,11 @@ interface ManualStats {
   spares_count: number
   requests_estimate: number
   cost_estimate: number
+  created_at: string | null
+  updated_at: string | null
+  comp_pages: number[]
+  job_pages: number[]
+  spare_pages: number[]
 }
 
 interface StatsResponse {
@@ -40,13 +45,70 @@ interface ManualsStatsModalProps {
 }
 
 export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'usage' | 'breakdown'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'datewise' | 'breakdown' | 'calculator'>('overview')
   const [searchQuery, setSearchQuery] = useState('')
+
+  // Calculator states
+  const [dailyCostInput, setDailyCostInput] = useState('15.00')
+  const [dailyRequestsInput, setDailyRequestsInput] = useState('200')
+  const [selectedDateForCalibrate, setSelectedDateForCalibrate] = useState('all')
+  const [expandedManualId, setExpandedManualId] = useState<string | null>(null)
 
   const { data, isLoading, error } = useQuery<StatsResponse>({
     queryKey: ['manuals-statistics', vesselId],
     queryFn: () => apiClient.get(`/vessels/${vesselId}/manuals/statistics`).then((r) => r.data),
   })
+
+  // Group manual statistics by date
+  const dateWiseActivity = useMemo(() => {
+    if (!data?.manuals) return []
+    const groups: Record<string, {
+      date: string
+      manualsCount: number
+      manualNames: string[]
+      pagesProcessed: number
+      itemsExtracted: number
+      requestsEstimate: number
+      costEstimate: number
+    }> = {}
+
+    for (const m of data.manuals) {
+      const dateStr = m.created_at ? m.created_at.substring(0, 10) : 'Unknown Date'
+      if (!groups[dateStr]) {
+        groups[dateStr] = {
+          date: dateStr,
+          manualsCount: 0,
+          manualNames: [],
+          pagesProcessed: 0,
+          itemsExtracted: 0,
+          requestsEstimate: 0,
+          costEstimate: 0,
+        }
+      }
+      const g = groups[dateStr]
+      g.manualsCount++
+      g.manualNames.push(m.filename)
+      g.pagesProcessed += m.targeted_count
+      g.itemsExtracted += m.components_count + m.jobs_count + m.spares_count
+      g.requestsEstimate += m.requests_estimate
+      g.costEstimate += m.cost_estimate
+    }
+
+    return Object.values(groups).sort((a, b) => b.date.localeCompare(a.date))
+  }, [data?.manuals])
+
+  // Sync calculator request input field when calibration target date changes
+  useEffect(() => {
+    if (!data?.summary) return
+    if (selectedDateForCalibrate === 'all') {
+      setDailyRequestsInput(data.summary.total_requests_estimate.toString())
+    } else {
+      const day = dateWiseActivity.find((d) => d.date === selectedDateForCalibrate)
+      if (day) {
+        setDailyRequestsInput(day.requestsEstimate.toString())
+      }
+    }
+  }, [selectedDateForCalibrate, dateWiseActivity, data?.summary])
 
   // Filter breakdown list
   const filteredManuals = useMemo(() => {
@@ -57,6 +119,16 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
       m.status.toLowerCase().includes(searchQuery.toLowerCase())
     )
   }, [data?.manuals, searchQuery])
+
+  // Calibrated cost parameters
+  const calibrationResult = useMemo(() => {
+    const dailyCost = parseFloat(dailyCostInput) || 0
+    const dailyRequests = parseInt(dailyRequestsInput, 10) || 1
+    const costPerRequest = dailyRequests > 0 ? dailyCost / dailyRequests : 0
+    return {
+      costPerRequest,
+    }
+  }, [dailyCostInput, dailyRequestsInput])
 
   // Average metrics calculation
   const averages = useMemo(() => {
@@ -78,7 +150,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
             <BarChart3 className="h-5 w-5 text-sky-400" />
             <div>
               <h2 className="text-base font-semibold text-white">Manuals Extraction Statistics</h2>
-              <p className="text-xs text-slate-400">Granular audit details and estimated LLM costs</p>
+              <p className="text-xs text-slate-400">Granular audit details, daily analytics, and cost calibration calculator</p>
             </div>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors p-1.5 hover:bg-slate-800 rounded-lg">
@@ -89,7 +161,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
         {isLoading ? (
           <div className="flex-grow flex flex-col items-center justify-center py-20 gap-3">
             <Loader2 className="h-8 w-8 animate-spin text-sky-500" />
-            <span className="text-sm text-slate-400">Calculating statistics...</span>
+            <span className="text-sm text-slate-400">Calculating project statistics...</span>
           </div>
         ) : error ? (
           <div className="flex-grow flex flex-col items-center justify-center py-20 gap-3 px-6 text-center">
@@ -108,8 +180,9 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
               {(
                 [
                   ['overview', 'Overview', BarChart3],
-                  ['usage', 'Cost & AI Usage', BrainCircuit],
+                  ['datewise', 'Date-wise Activity', Calendar],
                   ['breakdown', 'Manual Breakdown', Table],
+                  ['calculator', 'AI Rate Calculator', Calculator],
                 ] as const
               ).map(([key, label, Icon]) => (
                 <button
@@ -220,7 +293,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                             <div key={label as string} className="space-y-1.5">
                               <div className="flex justify-between text-xs">
                                 <span className="text-slate-400">{label as string}</span>
-                                <span className="font-medium text-slate-200">{count as number} ({pct}%)</span>
+                                <span className="font-medium text-slate-200">{countNum} ({pct}%)</span>
                               </div>
                               <div className="h-2 w-full rounded bg-slate-800 overflow-hidden">
                                 <div className={`h-full ${color as string}`} style={{ width: `${pct}%` }} />
@@ -234,88 +307,64 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                 </div>
               )}
 
-              {/* TAB 2: AI COST & USAGE */}
-              {activeTab === 'usage' && (
-                <div className="space-y-6 animate-fade-in">
-                  <div className="bg-slate-950/20 border border-slate-800/80 rounded-xl p-5 space-y-5">
-                    <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                      <Calculator className="h-4 w-4 text-sky-400" />
-                      Usage & Cost Matrix
-                    </h3>
-                    <div className="grid grid-cols-3 gap-4">
-                      <div className="border border-slate-800/50 bg-slate-900/40 rounded-lg p-3">
-                        <span className="text-[10px] text-slate-500 uppercase tracking-wide">LLM API Requests</span>
-                        <p className="text-xl font-bold text-slate-200 mt-1">{data.summary.total_requests_estimate}</p>
-                        <p className="text-[9px] text-slate-500 mt-0.5">Approximate request count</p>
-                      </div>
-                      <div className="border border-slate-800/50 bg-slate-900/40 rounded-lg p-3">
-                        <span className="text-[10px] text-slate-500 uppercase tracking-wide">Avg Request Cost</span>
-                        <p className="text-xl font-bold text-slate-200 mt-1">
-                          ${(data.summary.total_cost_estimate / (data.summary.total_requests_estimate || 1)).toFixed(4)}
-                        </p>
-                        <p className="text-[9px] text-slate-500 mt-0.5">Weighted average cost per call</p>
-                      </div>
-                      <div className="border border-slate-800/50 bg-slate-900/40 rounded-lg p-3">
-                        <span className="text-[10px] text-slate-500 uppercase tracking-wide">Cost per Manual</span>
-                        <p className="text-xl font-bold text-slate-200 mt-1">${averages.costPerManual.toFixed(3)}</p>
-                        <p className="text-[9px] text-slate-500 mt-0.5">Average manual cost estimate</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    {/* Cost by LLM Provider */}
-                    <div className="bg-slate-950/20 border border-slate-800/80 rounded-xl p-5 space-y-4">
-                      <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Cost by LLM Provider</h3>
-                      <div className="space-y-4 pt-2">
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-xs">
-                            <span className="text-slate-400">Claude 3.5 Sonnet (Primary)</span>
-                            <span className="font-semibold text-slate-200">${data.summary.claude_cost.toFixed(2)} (75%)</span>
-                          </div>
-                          <div className="h-2 w-full rounded bg-slate-800 overflow-hidden">
-                            <div className="h-full bg-sky-500" style={{ width: '75%' }} />
-                          </div>
-                        </div>
-
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-xs">
-                            <span className="text-slate-400">GPT-4o (Fallback / Vision)</span>
-                            <span className="font-semibold text-slate-200">${data.summary.openai_cost.toFixed(2)} (25%)</span>
-                          </div>
-                          <div className="h-2 w-full rounded bg-slate-800 overflow-hidden">
-                            <div className="h-full bg-emerald-500" style={{ width: '25%' }} />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Cost Pricing Parameters Details */}
-                    <div className="bg-slate-950/20 border border-slate-800/80 rounded-xl p-5 space-y-3 text-xs text-slate-400">
-                      <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider pb-1">Cost Assumptions</h3>
-                      <p>Cost calculations are model-based estimations calculated using typical technical manuals processing benchmarks:</p>
-                      <ul className="list-disc list-inside space-y-1.5 pl-1">
-                        <li>**Vision Extractions**: Image overhead processing ~1600 tokens ($0.0048) per image page input.</li>
-                        <li>**Text Extractions**: Text prompt chunks ~800 tokens ($0.0024) per page input.</li>
-                        <li>**Output Responses**: average JSON structure size of ~300 tokens per API call.</li>
-                        <li>**Model Rates**: Claude Sonnet 3.5 input token rate $3/MTok, output token rate $15/MTok.</li>
-                      </ul>
-                    </div>
+              {/* TAB 2: DATE-WISE ACTIVITY */}
+              {activeTab === 'datewise' && (
+                <div className="space-y-4 animate-fade-in">
+                  <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/20">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-500 font-semibold uppercase tracking-wider bg-slate-900/10">
+                          <th className="py-2.5 px-4 w-[15%]">Processing Date</th>
+                          <th className="py-2.5 px-4 w-[40%]">Manuals Processed</th>
+                          <th className="py-2.5 px-4 w-[15%]">Pages Target</th>
+                          <th className="py-2.5 px-4 w-[15%]">Items Extracted</th>
+                          <th className="py-2.5 px-4 w-[15%] text-right">Est. Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/40">
+                        {dateWiseActivity.map((day) => (
+                          <tr key={day.date} className="hover:bg-slate-800/20 transition-colors">
+                            <td className="py-3.5 px-4 font-semibold text-slate-200">
+                              {day.date}
+                            </td>
+                            <td className="py-3.5 px-4">
+                              <div className="space-y-1">
+                                <p className="font-medium text-slate-300">
+                                  {day.manualsCount} {day.manualsCount === 1 ? 'manual' : 'manuals'}
+                                </p>
+                                <p className="text-[10px] text-slate-500 truncate max-w-[320px]" title={day.manualNames.join(', ')}>
+                                  {day.manualNames.join(', ')}
+                                </p>
+                              </div>
+                            </td>
+                            <td className="py-3.5 px-4 text-slate-300 font-medium">
+                              {day.pagesProcessed} pages
+                            </td>
+                            <td className="py-3.5 px-4 text-slate-300 font-medium">
+                              {day.itemsExtracted} items
+                            </td>
+                            <td className="py-3.5 px-4 text-right font-bold text-sky-400">
+                              ${day.costEstimate.toFixed(2)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
 
               {/* TAB 3: PER-MANUAL BREAKDOWN */}
               {activeTab === 'breakdown' && (
-                <div className="space-y-4 animate-fade-in flex flex-col h-full">
-                  <div className="flex items-center justify-between gap-3 shrink-0">
+                <div className="space-y-4 animate-fade-in">
+                  <div className="flex items-center justify-between gap-3">
                     <div className="relative w-full max-w-sm">
                       <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-500" />
                       <input
                         type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search manual breakdown by filename, category..."
+                        placeholder="Search manuals by filename, category..."
                         className="w-full rounded-lg border border-slate-700 bg-slate-800 pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none"
                       />
                     </div>
@@ -339,7 +388,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                       <tbody className="divide-y divide-slate-800/40">
                         {filteredManuals.map((m) => (
                           <tr key={m.id} className="hover:bg-slate-800/20 transition-colors">
-                            <td className="py-3 px-3 font-medium text-slate-200 max-w-[200px] truncate" title={m.filename}>
+                            <td className="py-3 px-3 font-medium text-slate-200 max-w-[240px] truncate" title={m.filename}>
                               {m.filename}
                             </td>
                             <td className="py-3 px-3 text-slate-400">{m.category}</td>
@@ -360,6 +409,184 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: CALIBRATOR CALCULATOR */}
+              {activeTab === 'calculator' && (
+                <div className="space-y-6 animate-fade-in">
+                  <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-5 space-y-4">
+                    <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <Calculator className="h-4 w-4 text-sky-400" />
+                      LLM Pricing Rate Calibration
+                    </h3>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      Enter the actual cost recorded on your AI console (e.g., Anthropic or OpenAI API logs) for a specific day or overall, alongside the request count, to calibrate the exact per-request rate and obtain calibrated pricing projections per manual and page.
+                    </p>
+
+                    <div className="grid grid-cols-4 gap-4 pt-2">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex items-center gap-1">
+                          <Calendar className="h-3 w-3" /> Target Date
+                        </label>
+                        <select
+                          value={selectedDateForCalibrate}
+                          onChange={(e) => setSelectedDateForCalibrate(e.target.value)}
+                          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-white focus:border-sky-500 focus:outline-none"
+                        >
+                          <option value="all">Entire Project (All Dates)</option>
+                          {dateWiseActivity.map((day) => (
+                            <option key={day.date} value={day.date}>
+                              {day.date} ({day.requestsEstimate} requests)
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex items-center gap-1">
+                          <DollarSign className="h-3 w-3" /> Actual Console Cost ($)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={dailyCostInput}
+                          onChange={(e) => setDailyCostInput(e.target.value)}
+                          placeholder="e.g. 15.00"
+                          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-white focus:border-sky-500 focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex items-center gap-1">
+                          <Layers className="h-3 w-3" /> Console Request Count
+                        </label>
+                        <input
+                          type="number"
+                          value={dailyRequestsInput}
+                          onChange={(e) => setDailyRequestsInput(e.target.value)}
+                          placeholder="e.g. 200"
+                          className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-white focus:border-sky-500 focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                          Calibrated Unit Rate
+                        </label>
+                        <div className="rounded-lg bg-slate-950/60 border border-slate-800 px-3 py-1.5 text-xs font-semibold text-sky-400 h-[34px] flex items-center">
+                          ${calibrationResult.costPerRequest.toFixed(5)} <span className="text-[9px] text-slate-500 font-normal ml-1">/ request</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Calibrated Manual & Page breakdown */}
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                      Calibrated Cost Breakdown per Manual & Page
+                    </h3>
+
+                    <div className="overflow-hidden border border-slate-800 rounded-xl bg-slate-950/20">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-500 font-semibold uppercase tracking-wider bg-slate-900/10">
+                            <th className="py-2.5 px-4 w-[45%]">Manual Name</th>
+                            <th className="py-2.5 px-4 w-[15%]">Est. Requests</th>
+                            <th className="py-2.5 px-4 w-[25%] text-right font-medium">Original Cost Est.</th>
+                            <th className="py-2.5 px-4 w-[15%] text-right text-sky-400 font-bold">Calibrated Cost</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/40">
+                          {data.manuals.map((m) => {
+                            const isExpanded = expandedManualId === m.id
+                            const calibratedManualCost = m.requests_estimate * calibrationResult.costPerRequest
+
+                            // Build unique pages set and their cost
+                            const pageCalculations = []
+                            const allPages = Array.from(new Set([...m.comp_pages, ...m.job_pages, ...m.spare_pages])).sort((a, b) => a - b)
+                            
+                            for (const p of allPages) {
+                              let pageRequests = 0
+                              const types = []
+                              if (m.comp_pages.includes(p)) {
+                                pageRequests += 1
+                                types.push('Component')
+                              }
+                              if (m.spare_pages.includes(p)) {
+                                pageRequests += 4
+                                types.push('Spare')
+                              }
+                              if (m.job_pages.includes(p)) {
+                                pageRequests += 0.5
+                                types.push('Job')
+                              }
+                              pageCalculations.push({
+                                page: p,
+                                requests: pageRequests,
+                                types: types.join(' & '),
+                                cost: pageRequests * calibrationResult.costPerRequest
+                              })
+                            }
+
+                            return (
+                              <React.Fragment key={m.id}>
+                                <tr className="hover:bg-slate-800/20 transition-colors">
+                                  <td className="py-3 px-4 font-medium text-slate-200">
+                                    <button
+                                      onClick={() => setExpandedManualId(isExpanded ? null : m.id)}
+                                      className="flex items-center gap-1.5 hover:text-white text-left font-medium min-w-0 w-full"
+                                    >
+                                      {isExpanded ? (
+                                        <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" />
+                                      ) : (
+                                        <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />
+                                      )}
+                                      <span className="truncate max-w-[280px]" title={m.filename}>{m.filename}</span>
+                                    </button>
+                                  </td>
+                                  <td className="py-3 px-4 text-slate-300 font-medium">{m.requests_estimate}</td>
+                                  <td className="py-3 px-4 text-right text-slate-500 font-medium">${m.cost_estimate.toFixed(3)}</td>
+                                  <td className="py-3 px-4 text-right font-bold text-sky-400">${calibratedManualCost.toFixed(3)}</td>
+                                </tr>
+
+                                {isExpanded && (
+                                  <tr>
+                                    <td colSpan={4} className="bg-slate-950/30 px-8 py-3 border-b border-slate-800/50">
+                                      <div className="space-y-2">
+                                        <h4 className="text-[10px] uppercase font-bold text-slate-500 tracking-wider flex items-center gap-1">
+                                          <HelpCircle className="h-3.5 w-3.5 text-slate-500" />
+                                          Granular Page Pricing Breakdown
+                                        </h4>
+                                        {pageCalculations.length === 0 ? (
+                                          <p className="text-xs text-slate-500 italic py-1">No pages targeted for extraction in this manual.</p>
+                                        ) : (
+                                          <div className="grid grid-cols-3 gap-2.5 max-h-[180px] overflow-y-auto pr-2 py-1">
+                                            {pageCalculations.map((pc) => (
+                                              <div key={pc.page} className="bg-slate-900/60 border border-slate-800/40 rounded-lg p-2 flex items-center justify-between text-xs">
+                                                <div>
+                                                  <p className="font-semibold text-slate-300">Page {pc.page}</p>
+                                                  <p className="text-[9px] text-slate-500 uppercase font-medium">{pc.types}</p>
+                                                </div>
+                                                <div className="text-right">
+                                                  <p className="font-bold text-sky-400">${pc.cost.toFixed(4)}</p>
+                                                  <p className="text-[9px] text-slate-500">{pc.requests} req</p>
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
               )}
