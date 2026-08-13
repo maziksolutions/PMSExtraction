@@ -470,7 +470,7 @@ const Ingestion: React.FC = () => {
           <div>
             <h2 className="text-lg font-semibold text-white">Upload PDF Manuals</h2>
             <p className="mt-1 text-sm text-slate-400">
-              Upload one or more PDF or modern Office files directly. Supported: .pdf, .docx, .xlsx (max 250 MB each)
+              Upload one or more PDF or modern Office files directly. Supported: .pdf, .docx, .xlsx
             </p>
           </div>
 

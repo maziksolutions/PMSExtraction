@@ -92,7 +92,7 @@ def validate_uploaded_file_bytes(
     filename: str,
     content: bytes,
     allowed_extensions: set[str],
-    max_size_bytes: int,
+    max_size_bytes: int | None = None,
 ) -> str:
     safe_name = filename or "uploaded-file"
     ext = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
@@ -103,8 +103,9 @@ def validate_uploaded_file_bytes(
         )
     if not content:
         _raise(f"File '{safe_name}' is empty.")
-    if len(content) > max_size_bytes:
-        _raise(f"File '{safe_name}' exceeds the allowed size limit.", status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+    if max_size_bytes is not None and max_size_bytes > 0:
+        if len(content) > max_size_bytes:
+            _raise(f"File '{safe_name}' exceeds the allowed size limit.", status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
 
     if ext == "pdf":
         _validate_pdf_document(content, filename=safe_name)

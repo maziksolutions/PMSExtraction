@@ -1130,7 +1130,7 @@ async def upload_manuals(
 
     )
 
-    MAX_SIZE = 250 * 1024 * 1024  # 250 MB per file
+    MAX_SIZE = 0  # 0 indicates unlimited size per file
 
 
 
