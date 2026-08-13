@@ -2704,7 +2704,19 @@ async def get_vessel_manual_statistics(
             "claude_cost": round(claude_cost, 2),
             "openai_cost": round(openai_cost, 2),
         },
-        "manuals": manuals_breakdown
+        "manuals": manuals_breakdown,
+        "api_status": {
+            "anthropic_configured": bool(settings.ANTHROPIC_API_KEY),
+            "openai_configured": bool(settings.OPENAI_API_KEY),
+            "anthropic_model": "claude-3-5-sonnet-20240620",
+            "openai_model": "gpt-4o",
+            "anthropic_endpoint": "https://api.anthropic.com/v1/messages",
+            "openai_endpoint": "https://api.openai.com/v1/chat/completions",
+            "claude_input_rate": 3.00,
+            "claude_output_rate": 15.00,
+            "openai_input_rate": 5.00,
+            "openai_output_rate": 15.00,
+        }
     }
 
 

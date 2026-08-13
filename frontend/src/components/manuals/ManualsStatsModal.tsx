@@ -38,6 +38,18 @@ interface StatsResponse {
     openai_cost: number
   }
   manuals: ManualStats[]
+  api_status?: {
+    anthropic_configured: boolean
+    openai_configured: boolean
+    anthropic_model: string
+    openai_model: string
+    anthropic_endpoint: string
+    openai_endpoint: string
+    claude_input_rate: number
+    claude_output_rate: number
+    openai_input_rate: number
+    openai_output_rate: number
+  }
 }
 
 interface ManualsStatsModalProps {
@@ -46,7 +58,7 @@ interface ManualsStatsModalProps {
 }
 
 export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'datewise' | 'breakdown' | 'calculator'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'datewise' | 'breakdown' | 'calculator' | 'claude'>('overview')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedVesselId, setSelectedVesselId] = useState(vesselId)
 
@@ -295,6 +307,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                   ['datewise', 'Date-wise Activity', Calendar],
                   ['breakdown', 'Manual Breakdown', Table],
                   ['calculator', 'AI Rate Calculator', Calculator],
+                  ['claude', 'Claude AI & APIs', BrainCircuit],
                 ] as const
               ).map(([key, label, Icon]) => (
                 <button
@@ -741,6 +754,175 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                               </React.Fragment>
                             )
                           })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 5: CLAUDE AI & APIS */}
+              {activeTab === 'claude' && (
+                <div className="space-y-6 animate-fade-in">
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* Anthropic API configuration card */}
+                    <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-5 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="rounded-lg bg-orange-950/40 border border-orange-850 p-2 flex items-center justify-center">
+                            <BrainCircuit className="h-5 w-5 text-orange-400" />
+                          </div>
+                          <div>
+                            <h3 className="text-sm font-bold text-white">Anthropic Claude API</h3>
+                            <p className="text-[10px] text-slate-500 font-medium">Primary LLM Provider</p>
+                          </div>
+                        </div>
+                        {data?.api_status?.anthropic_configured ? (
+                          <span className="inline-flex items-center gap-1 rounded bg-green-950/40 border border-green-800/50 px-2 py-0.5 text-[9px] text-green-400 font-bold uppercase tracking-wider">
+                            Configured
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded bg-red-950/40 border border-red-800/50 px-2 py-0.5 text-[9px] text-red-400 font-bold uppercase tracking-wider">
+                            Missing Key
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="space-y-2.5 pt-2 text-xs">
+                        <div className="flex justify-between border-b border-slate-800/40 pb-2">
+                          <span className="text-slate-400">Target Model</span>
+                          <span className="font-semibold text-slate-200">{data?.api_status?.anthropic_model ?? 'claude-3-5-sonnet-20240620'}</span>
+                        </div>
+                        <div className="flex justify-between border-b border-slate-800/40 pb-2">
+                          <span className="text-slate-400">API Endpoint</span>
+                          <span className="font-semibold text-slate-200 truncate max-w-[200px]" title={data?.api_status?.anthropic_endpoint}>{data?.api_status?.anthropic_endpoint}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Connection Status</span>
+                          <span className="font-semibold text-green-400 flex items-center gap-1">
+                            <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" /> Online
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* OpenAI API configuration card */}
+                    <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-5 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="rounded-lg bg-emerald-950/40 border border-emerald-850 p-2 flex items-center justify-center">
+                            <Sparkles className="h-5 w-5 text-emerald-400" />
+                          </div>
+                          <div>
+                            <h3 className="text-sm font-bold text-white">OpenAI API</h3>
+                            <p className="text-[10px] text-slate-500 font-medium">Secondary Fallback / OCR</p>
+                          </div>
+                        </div>
+                        {data?.api_status?.openai_configured ? (
+                          <span className="inline-flex items-center gap-1 rounded bg-green-950/40 border border-green-800/50 px-2 py-0.5 text-[9px] text-green-400 font-bold uppercase tracking-wider">
+                            Configured
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded bg-amber-950/45 border border-amber-800/50 px-2 py-0.5 text-[9px] text-amber-400 font-bold uppercase tracking-wider">
+                            Not Set
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="space-y-2.5 pt-2 text-xs">
+                        <div className="flex justify-between border-b border-slate-800/40 pb-2">
+                          <span className="text-slate-400">Target Model</span>
+                          <span className="font-semibold text-slate-200">{data?.api_status?.openai_model ?? 'gpt-4o'}</span>
+                        </div>
+                        <div className="flex justify-between border-b border-slate-800/40 pb-2">
+                          <span className="text-slate-400">API Endpoint</span>
+                          <span className="font-semibold text-slate-200 truncate max-w-[200px]" title={data?.api_status?.openai_endpoint}>{data?.api_status?.openai_endpoint}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Connection Status</span>
+                          <span className="font-semibold text-green-400 flex items-center gap-1">
+                            <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" /> Online
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* API Usage & Cost Statistics */}
+                  <div className="bg-slate-950/20 border border-slate-800 rounded-xl p-5 space-y-4">
+                    <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <DollarSign className="h-4 w-4 text-sky-400" />
+                      LLM Usage & API Cost Estimates
+                    </h3>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      Below is the estimated volume of API requests, tokens processed, and standard billed costs mapped by model. Standard costs use active API token pricing.
+                    </p>
+
+                    <div className="grid grid-cols-3 gap-4 pt-2">
+                      <div className="bg-slate-900/40 border border-slate-800/60 rounded-lg p-4 text-center">
+                        <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Claude API Requests</p>
+                        <p className="text-xl font-extrabold text-white mt-1">
+                          {summary.total_requests_estimate} <span className="text-xs font-normal text-slate-400">calls</span>
+                        </p>
+                      </div>
+
+                      <div className="bg-slate-900/40 border border-slate-800/60 rounded-lg p-4 text-center">
+                        <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Claude Input Tokens</p>
+                        <p className="text-xl font-extrabold text-white mt-1">
+                          {((summary.total_targeted_pages * 1600) / 1000).toFixed(1)}k <span className="text-xs font-normal text-slate-400">tokens</span>
+                        </p>
+                      </div>
+
+                      <div className="bg-slate-900/40 border border-slate-800/60 rounded-lg p-4 text-center">
+                        <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Claude Output Tokens</p>
+                        <p className="text-xl font-extrabold text-white mt-1">
+                          {((summary.total_requests_estimate * 300) / 1000).toFixed(1)}k <span className="text-xs font-normal text-slate-400">tokens</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="divide-y divide-slate-800/40 pt-2 text-xs">
+                      <div className="flex justify-between py-3">
+                        <span className="text-slate-400">Claude AI Estimated Billed Cost (75% share)</span>
+                        <span className="font-bold text-sky-400">${summary.claude_cost.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between py-3">
+                        <span className="text-slate-400">OpenAI Fallback Estimated Billed Cost (25% share)</span>
+                        <span className="font-bold text-sky-400">${summary.openai_cost.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between py-3 font-semibold text-slate-200">
+                        <span className="text-slate-300">Total Billed API Costs</span>
+                        <span className="font-bold text-sky-400">${summary.total_cost_estimate.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Standard Rates Table */}
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Standard API Rate Cards</h3>
+                    <div className="overflow-hidden border border-slate-800 rounded-xl bg-slate-950/20">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-500 font-semibold uppercase tracking-wider bg-slate-900/10">
+                            <th className="py-2.5 px-4">LLM Provider</th>
+                            <th className="py-2.5 px-4">Model Name</th>
+                            <th className="py-2.5 px-4 text-right">Input / Million Tokens</th>
+                            <th className="py-2.5 px-4 text-right">Output / Million Tokens</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/40 text-slate-300">
+                          <tr>
+                            <td className="py-3.5 px-4 font-semibold text-orange-400">Anthropic</td>
+                            <td className="py-3.5 px-4">claude-3-5-sonnet-20240620</td>
+                            <td className="py-3.5 px-4 text-right">${data?.api_status?.claude_input_rate.toFixed(2)}</td>
+                            <td className="py-3.5 px-4 text-right">${data?.api_status?.claude_output_rate.toFixed(2)}</td>
+                          </tr>
+                          <tr>
+                            <td className="py-3.5 px-4 font-semibold text-emerald-400">OpenAI</td>
+                            <td className="py-3.5 px-4">gpt-4o</td>
+                            <td className="py-3.5 px-4 text-right">${data?.api_status?.openai_input_rate.toFixed(2)}</td>
+                            <td className="py-3.5 px-4 text-right">${data?.api_status?.openai_output_rate.toFixed(2)}</td>
+                          </tr>
                         </tbody>
                       </table>
                     </div>
