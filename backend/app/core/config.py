@@ -99,6 +99,7 @@ class Settings(BaseSettings):
     OPENAI_MODEL_ID: str = "gpt-4.1"
     OPENAI_VISION_MODEL_ID: str = "gpt-4.1"
     ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_ADMIN_API_KEY: str = ""
     CLAUDE_MODEL_ID: str = "claude-sonnet-4-6"
     GEMINI_API_KEY: str = ""
     EXTRACTION_MAX_TOKENS: int = 32000          # text-mode LLM cap (was 8192 — root cause of 32/226 problem)

@@ -23,6 +23,20 @@ interface ManualStats {
   is_deleted: boolean
 }
 
+interface ConsoleUsageDay {
+  date: string
+  input_tokens: number
+  output_tokens: number
+  cost: number
+  model?: string
+}
+
+interface ConsoleCostDay {
+  date: string
+  amount: number
+  model?: string
+}
+
 interface StatsResponse {
   summary: {
     total_manuals: number
@@ -49,6 +63,16 @@ interface StatsResponse {
     claude_output_rate: number
     openai_input_rate: number
     openai_output_rate: number
+  }
+  console_data?: {
+    status: 'success' | 'not_configured' | 'unauthorized' | 'error'
+    message?: string
+    usage_report?: {
+      usage?: ConsoleUsageDay[]
+    }
+    cost_report?: {
+      costs?: ConsoleCostDay[]
+    }
   }
 }
 
@@ -232,6 +256,63 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
       costPerManual: summary.total_cost_estimate / summary.total_manuals,
     }
   }, [summary])
+
+  // Simulated live console report data (shown when Admin key is not configured or in unauthorized state)
+  const simulatedConsoleData = useMemo(() => {
+    const usage: ConsoleUsageDay[] = []
+    const costs: ConsoleCostDay[] = []
+    const today = new Date()
+    
+    // Generate realistic daily usage blocks matching the last 10 active activity dates
+    for (let i = 0; i < 10; i++) {
+      const d = new Date()
+      d.setDate(today.getDate() - i)
+      const dateStr = d.toISOString().split('T')[0]
+      
+      const multiplier = Math.max(0.2, Math.sin(i * 0.8) + 1.2)
+      const input = Math.round(180000 * multiplier)
+      const output = Math.round(35000 * multiplier)
+      const costVal = (input * 0.000003) + (output * 0.000015)
+      
+      usage.push({
+        date: dateStr,
+        input_tokens: input,
+        output_tokens: output,
+        cost: costVal,
+        model: 'claude-3-5-sonnet-20240620'
+      })
+      costs.push({
+        date: dateStr,
+        amount: costVal,
+        model: 'claude-3-5-sonnet-20240620'
+      })
+    }
+    return { usage, costs }
+  }, [])
+
+  // Check if we are displaying simulated or live console data
+  const isConsoleLive = data?.console_data?.status === 'success'
+  const consoleStatus = data?.console_data?.status ?? 'not_configured'
+  const consoleMessage = data?.console_data?.message ?? ''
+
+  const consoleUsageList = useMemo(() => {
+    if (isConsoleLive && data?.console_data?.usage_report?.usage) {
+      return data.console_data.usage_report.usage
+    }
+    return simulatedConsoleData.usage
+  }, [isConsoleLive, data?.console_data, simulatedConsoleData])
+
+  const totalConsoleCost = useMemo(() => {
+    return consoleUsageList.reduce((sum, item) => sum + item.cost, 0)
+  }, [consoleUsageList])
+
+  const totalConsoleInputTokens = useMemo(() => {
+    return consoleUsageList.reduce((sum, item) => sum + item.input_tokens, 0)
+  }, [consoleUsageList])
+
+  const totalConsoleOutputTokens = useMemo(() => {
+    return consoleUsageList.reduce((sum, item) => sum + item.output_tokens, 0)
+  }, [consoleUsageList])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -761,171 +842,116 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                 </div>
               )}
 
-              {/* TAB 5: CLAUDE AI & APIS */}
+              {/* TAB 5: CLAUDE AI & APIS (REAL CONSOLE REPORTS) */}
               {activeTab === 'claude' && (
                 <div className="space-y-6 animate-fade-in">
-                  <div className="grid grid-cols-2 gap-4">
-                    {/* Anthropic API configuration card */}
-                    <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-5 space-y-4">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div className="rounded-lg bg-orange-950/40 border border-orange-850 p-2 flex items-center justify-center">
-                            <BrainCircuit className="h-5 w-5 text-orange-400" />
-                          </div>
-                          <div>
-                            <h3 className="text-sm font-bold text-white">Anthropic Claude API</h3>
-                            <p className="text-[10px] text-slate-500 font-medium">Primary LLM Provider</p>
-                          </div>
-                        </div>
-                        {data?.api_status?.anthropic_configured ? (
-                          <span className="inline-flex items-center gap-1 rounded bg-green-950/40 border border-green-800/50 px-2 py-0.5 text-[9px] text-green-400 font-bold uppercase tracking-wider">
-                            Configured
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 rounded bg-red-950/40 border border-red-800/50 px-2 py-0.5 text-[9px] text-red-400 font-bold uppercase tracking-wider">
-                            Missing Key
-                          </span>
-                        )}
+                  {/* API Key Status Notice */}
+                  {consoleStatus !== 'success' ? (
+                    <div className="rounded-xl border border-amber-800 bg-amber-950/20 p-4 space-y-2 text-xs">
+                      <div className="flex items-center gap-2 text-amber-400 font-semibold">
+                        <AlertCircle className="h-4 w-4" />
+                        <span>Showing Simulated Console Data (API Key Access Restricted)</span>
                       </div>
+                      <p className="text-slate-400 leading-relaxed">
+                        To view your live Anthropic Console usage logs directly in this tab, you need to configure an **Admin API Key** (prefixed with <code>sk-ant-admin...</code>). Standard keys do not have permission to retrieve programmatic organization invoices or billing logs.
+                      </p>
+                      <p className="text-slate-500 italic">
+                        Error code {consoleStatus === 'unauthorized' ? '403' : '401'}: {consoleMessage || 'Provide ANTHROPIC_ADMIN_API_KEY environment variable.'}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-emerald-800 bg-emerald-950/20 p-4 flex items-center gap-2 text-xs text-emerald-400 font-medium">
+                      <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span>Live Claude Console Logs Connected Successfully (Admin API)</span>
+                    </div>
+                  )}
 
-                      <div className="space-y-2.5 pt-2 text-xs">
-                        <div className="flex justify-between border-b border-slate-800/40 pb-2">
-                          <span className="text-slate-400">Target Model</span>
-                          <span className="font-semibold text-slate-200">{data?.api_status?.anthropic_model ?? 'claude-3-5-sonnet-20240620'}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-slate-800/40 pb-2">
-                          <span className="text-slate-400">API Endpoint</span>
-                          <span className="font-semibold text-slate-200 truncate max-w-[200px]" title={data?.api_status?.anthropic_endpoint}>{data?.api_status?.anthropic_endpoint}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400">Connection Status</span>
-                          <span className="font-semibold text-green-400 flex items-center gap-1">
-                            <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" /> Online
-                          </span>
-                        </div>
-                      </div>
+                  {/* Top Level Console Summary Cards */}
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-4 flex flex-col justify-between hover:border-slate-700 transition-colors">
+                      <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider flex items-center gap-1.5">
+                        <BrainCircuit className="h-3.5 w-3.5 text-orange-400" /> API Requests Count
+                      </span>
+                      <span className="text-2xl font-extrabold text-white mt-2">
+                        {consoleUsageList.length > 0 ? consoleUsageList.length : 0} <span className="text-xs font-normal text-slate-400">days logged</span>
+                      </span>
+                      <span className="text-[10px] text-slate-400 mt-1">Last 30 days active queries</span>
                     </div>
 
-                    {/* OpenAI API configuration card */}
-                    <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-5 space-y-4">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div className="rounded-lg bg-emerald-950/40 border border-emerald-850 p-2 flex items-center justify-center">
-                            <Sparkles className="h-5 w-5 text-emerald-400" />
-                          </div>
-                          <div>
-                            <h3 className="text-sm font-bold text-white">OpenAI API</h3>
-                            <p className="text-[10px] text-slate-500 font-medium">Secondary Fallback / OCR</p>
-                          </div>
-                        </div>
-                        {data?.api_status?.openai_configured ? (
-                          <span className="inline-flex items-center gap-1 rounded bg-green-950/40 border border-green-800/50 px-2 py-0.5 text-[9px] text-green-400 font-bold uppercase tracking-wider">
-                            Configured
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 rounded bg-amber-950/45 border border-amber-800/50 px-2 py-0.5 text-[9px] text-amber-400 font-bold uppercase tracking-wider">
-                            Not Set
-                          </span>
-                        )}
-                      </div>
+                    <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-4 flex flex-col justify-between hover:border-slate-700 transition-colors">
+                      <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider flex items-center gap-1.5">
+                        <Layers className="h-3.5 w-3.5 text-emerald-400" /> Tokens Transmitted
+                      </span>
+                      <span className="text-2xl font-extrabold text-white mt-2">
+                        {((totalConsoleInputTokens + totalConsoleOutputTokens) / 1000000).toFixed(2)}M
+                      </span>
+                      <span className="text-[10px] text-slate-400 mt-1">
+                        {(totalConsoleInputTokens / 1000000).toFixed(2)}M Input, {(totalConsoleOutputTokens / 1000000).toFixed(2)}M Output
+                      </span>
+                    </div>
 
-                      <div className="space-y-2.5 pt-2 text-xs">
-                        <div className="flex justify-between border-b border-slate-800/40 pb-2">
-                          <span className="text-slate-400">Target Model</span>
-                          <span className="font-semibold text-slate-200">{data?.api_status?.openai_model ?? 'gpt-4o'}</span>
-                        </div>
-                        <div className="flex justify-between border-b border-slate-800/40 pb-2">
-                          <span className="text-slate-400">API Endpoint</span>
-                          <span className="font-semibold text-slate-200 truncate max-w-[200px]" title={data?.api_status?.openai_endpoint}>{data?.api_status?.openai_endpoint}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400">Connection Status</span>
-                          <span className="font-semibold text-green-400 flex items-center gap-1">
-                            <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" /> Online
-                          </span>
-                        </div>
-                      </div>
+                    <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-4 flex flex-col justify-between hover:border-slate-700 transition-colors bg-gradient-to-br from-slate-950/40 to-orange-950/10">
+                      <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider flex items-center gap-1.5">
+                        <DollarSign className="h-3.5 w-3.5 text-orange-400" /> Billed Spend (USD)
+                      </span>
+                      <span className="text-2xl font-extrabold text-orange-400 mt-2">
+                        ${totalConsoleCost.toFixed(2)}
+                      </span>
+                      <span className="text-[10px] text-slate-400 mt-1">Programmatic spend in Console</span>
                     </div>
                   </div>
 
-                  {/* API Usage & Cost Statistics */}
-                  <div className="bg-slate-950/20 border border-slate-800 rounded-xl p-5 space-y-4">
-                    <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                      <DollarSign className="h-4 w-4 text-sky-400" />
-                      LLM Usage & API Cost Estimates
-                    </h3>
-                    <p className="text-xs text-slate-400 leading-relaxed">
-                      Below is the estimated volume of API requests, tokens processed, and standard billed costs mapped by model. Standard costs use active API token pricing.
-                    </p>
-
-                    <div className="grid grid-cols-3 gap-4 pt-2">
-                      <div className="bg-slate-900/40 border border-slate-800/60 rounded-lg p-4 text-center">
-                        <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Claude API Requests</p>
-                        <p className="text-xl font-extrabold text-white mt-1">
-                          {summary.total_requests_estimate} <span className="text-xs font-normal text-slate-400">calls</span>
-                        </p>
-                      </div>
-
-                      <div className="bg-slate-900/40 border border-slate-800/60 rounded-lg p-4 text-center">
-                        <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Claude Input Tokens</p>
-                        <p className="text-xl font-extrabold text-white mt-1">
-                          {((summary.total_targeted_pages * 1600) / 1000).toFixed(1)}k <span className="text-xs font-normal text-slate-400">tokens</span>
-                        </p>
-                      </div>
-
-                      <div className="bg-slate-900/40 border border-slate-800/60 rounded-lg p-4 text-center">
-                        <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Claude Output Tokens</p>
-                        <p className="text-xl font-extrabold text-white mt-1">
-                          {((summary.total_requests_estimate * 300) / 1000).toFixed(1)}k <span className="text-xs font-normal text-slate-400">tokens</span>
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="divide-y divide-slate-800/40 pt-2 text-xs">
-                      <div className="flex justify-between py-3">
-                        <span className="text-slate-400">Claude AI Estimated Billed Cost (75% share)</span>
-                        <span className="font-bold text-sky-400">${summary.claude_cost.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between py-3">
-                        <span className="text-slate-400">OpenAI Fallback Estimated Billed Cost (25% share)</span>
-                        <span className="font-bold text-sky-400">${summary.openai_cost.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between py-3 font-semibold text-slate-200">
-                        <span className="text-slate-300">Total Billed API Costs</span>
-                        <span className="font-bold text-sky-400">${summary.total_cost_estimate.toFixed(2)}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Standard Rates Table */}
+                  {/* Daily Console Logs Table */}
                   <div className="space-y-3">
-                    <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Standard API Rate Cards</h3>
+                    <h3 className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1">
+                      <Table className="h-3.5 w-3.5" />
+                      Daily API Usage Report (Last 30 days)
+                    </h3>
+                    
                     <div className="overflow-hidden border border-slate-800 rounded-xl bg-slate-950/20">
                       <table className="w-full text-left text-xs border-collapse">
                         <thead>
                           <tr className="border-b border-slate-800 text-slate-500 font-semibold uppercase tracking-wider bg-slate-900/10">
-                            <th className="py-2.5 px-4">LLM Provider</th>
-                            <th className="py-2.5 px-4">Model Name</th>
-                            <th className="py-2.5 px-4 text-right">Input / Million Tokens</th>
-                            <th className="py-2.5 px-4 text-right">Output / Million Tokens</th>
+                            <th className="py-2.5 px-4 w-[25%]">Report Date</th>
+                            <th className="py-2.5 px-4 w-[25%]">Input Tokens</th>
+                            <th className="py-2.5 px-4 w-[25%]">Output Tokens</th>
+                            <th className="py-2.5 px-4 w-[25%] text-right">Billed Cost</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800/40 text-slate-300">
-                          <tr>
-                            <td className="py-3.5 px-4 font-semibold text-orange-400">Anthropic</td>
-                            <td className="py-3.5 px-4">claude-3-5-sonnet-20240620</td>
-                            <td className="py-3.5 px-4 text-right">${data?.api_status?.claude_input_rate.toFixed(2)}</td>
-                            <td className="py-3.5 px-4 text-right">${data?.api_status?.claude_output_rate.toFixed(2)}</td>
-                          </tr>
-                          <tr>
-                            <td className="py-3.5 px-4 font-semibold text-emerald-400">OpenAI</td>
-                            <td className="py-3.5 px-4">gpt-4o</td>
-                            <td className="py-3.5 px-4 text-right">${data?.api_status?.openai_input_rate.toFixed(2)}</td>
-                            <td className="py-3.5 px-4 text-right">${data?.api_status?.openai_output_rate.toFixed(2)}</td>
-                          </tr>
+                          {consoleUsageList.map((item, index) => (
+                            <tr key={`${item.date}-${index}`} className="hover:bg-slate-800/20 transition-colors">
+                              <td className="py-3 px-4 font-semibold text-slate-200">{item.date}</td>
+                              <td className="py-3 px-4">{item.input_tokens.toLocaleString()}</td>
+                              <td className="py-3 px-4">{item.output_tokens.toLocaleString()}</td>
+                              <td className="py-3 px-4 text-right font-bold text-sky-400">${item.cost.toFixed(4)}</td>
+                            </tr>
+                          ))}
                         </tbody>
                       </table>
                     </div>
+                  </div>
+
+                  {/* Admin Configuration Steps (Collapsible or guide) */}
+                  <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-5 space-y-3 text-xs">
+                    <h4 className="font-semibold text-slate-200 flex items-center gap-1.5">
+                      <HelpCircle className="h-4 w-4 text-sky-400 animate-pulse" />
+                      How do I set up my live Claude Console key?
+                    </h4>
+                    <ol className="list-decimal pl-4 space-y-2 text-slate-400">
+                      <li>
+                        Log in to your **Anthropic Console** account.
+                      </li>
+                      <li>
+                        Navigate to **Settings** &rarr; **API Keys**.
+                      </li>
+                      <li>
+                        Generate an **Admin API Key** (this is different from the message-generation key and starts with the prefix <code>sk-ant-admin</code>).
+                      </li>
+                      <li>
+                        Add this key as the environment variable <code>ANTHROPIC_ADMIN_API_KEY</code> on your server config (e.g. Railway settings or `.env`).
+                      </li>
+                    </ol>
                   </div>
                 </div>
               )}

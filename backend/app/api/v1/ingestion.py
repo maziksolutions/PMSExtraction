@@ -2690,6 +2690,9 @@ async def get_vessel_manual_statistics(
     claude_cost = total_cost * 0.75
     openai_cost = total_cost * 0.25
 
+    from app.services.anthropic_admin import fetch_anthropic_console_data
+    console_data = await fetch_anthropic_console_data()
+
     return {
         "summary": {
             "total_manuals": total_manuals,
@@ -2716,7 +2719,8 @@ async def get_vessel_manual_statistics(
             "claude_output_rate": 15.00,
             "openai_input_rate": 5.00,
             "openai_output_rate": 15.00,
-        }
+        },
+        "console_data": console_data
     }
 
 
