@@ -216,18 +216,6 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
     return result
   }, [dateWiseActivity, activityStartDate, activityEndDate])
 
-  // Sync calculator request input field when calibration target date changes
-  useEffect(() => {
-    if (selectedDateForCalibrate === 'all') {
-      setDailyRequestsInput(summary.total_requests_estimate.toString())
-    } else {
-      const day = dateWiseActivity.find((d) => d.date === selectedDateForCalibrate)
-      if (day) {
-        setDailyRequestsInput(day.requestsEstimate.toString())
-      }
-    }
-  }, [selectedDateForCalibrate, dateWiseActivity, summary.total_requests_estimate])
-
   // Filter breakdown list
   const filteredManuals = useMemo(() => {
     return filteredByStatusManuals.filter((m) =>
@@ -313,6 +301,30 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
   const totalConsoleOutputTokens = useMemo(() => {
     return consoleUsageList.reduce((sum, item) => sum + item.output_tokens, 0)
   }, [consoleUsageList])
+
+  // Sync calculator request input and actual cost field when calibration target date changes
+  useEffect(() => {
+    if (selectedDateForCalibrate === 'all') {
+      setDailyRequestsInput(summary.total_requests_estimate.toString())
+      setDailyCostInput(totalConsoleCost.toFixed(2))
+    } else {
+      const day = dateWiseActivity.find((d) => d.date === selectedDateForCalibrate)
+      if (day) {
+        setDailyRequestsInput(day.requestsEstimate.toString())
+      }
+      
+      // Look up actual cost from console logs for this specific day
+      const consoleDay = consoleUsageList.find((c) => c.date === selectedDateForCalibrate)
+      if (consoleDay) {
+        setDailyCostInput(consoleDay.cost.toFixed(3))
+      } else {
+        // Fallback to standard estimate if not found in console logs
+        if (day) {
+          setDailyCostInput(day.costEstimate.toFixed(3))
+        }
+      }
+    }
+  }, [selectedDateForCalibrate, dateWiseActivity, summary.total_requests_estimate, consoleUsageList, totalConsoleCost])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -696,7 +708,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                         </label>
                         <input
                           type="number"
-                          step="0.01"
+                          step="0.001"
                           value={dailyCostInput}
                           onChange={(e) => setDailyCostInput(e.target.value)}
                           placeholder="e.g. 15.00"
@@ -915,7 +927,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                             <th className="py-2.5 px-4 w-[25%]">Report Date</th>
                             <th className="py-2.5 px-4 w-[25%]">Input Tokens</th>
                             <th className="py-2.5 px-4 w-[25%]">Output Tokens</th>
-                            <th className="py-2.5 px-4 w-[25%] text-right">Billed Cost</th>
+                            <th className="py-2.5 px-4 w-[25%] text-right font-bold text-orange-400">Console Cost</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800/40 text-slate-300">
