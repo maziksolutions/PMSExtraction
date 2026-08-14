@@ -2692,7 +2692,6 @@ async def get_vessel_manual_statistics(
 
     from app.services.anthropic_admin import fetch_and_store_daily_costs
     from app.models.claude_cost import ClaudeDailyCost
-    from sqlalchemy import select
 
     sync_result = await fetch_and_store_daily_costs(db)
 
