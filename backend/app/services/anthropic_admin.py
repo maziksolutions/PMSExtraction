@@ -70,49 +70,55 @@ async def fetch_and_store_daily_costs(db: AsyncSession) -> Dict[str, Any]:
     Fetches the latest daily usage logs from Anthropic Console and upserts them
     into the database table `claude_daily_costs`.
     """
-    # 1. Fetch from Anthropic Console API
-    result = await fetch_anthropic_console_data()
-    
-    if result["status"] == "success":
-        usage_list = result.get("usage_report", {}).get("usage", [])
+    try:
+        # 1. Fetch from Anthropic Console API
+        result = await fetch_anthropic_console_data()
         
-        # 2. Iterate through usage records and store in database
-        for item in usage_list:
-            date_str = item.get("date")
-            if not date_str:
-                continue
+        if result["status"] == "success":
+            usage_list = result.get("usage_report", {}).get("usage", [])
             
-            try:
-                dt = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-            except ValueError:
-                # Date format mismatch
-                continue
+            # 2. Iterate through usage records and store in database
+            for item in usage_list:
+                date_str = item.get("date")
+                if not date_str:
+                    continue
                 
-            input_tokens = item.get("input_tokens", 0)
-            output_tokens = item.get("output_tokens", 0)
-            
-            # Use cost if provided, otherwise estimate it based on standard rates
-            cost = item.get("cost", 0.0)
-            if cost == 0.0:
-                # Claude 3.5 Sonnet: $3.00/MTok input, $15.00/MTok output
-                cost = (input_tokens * 3.0 / 1000000.0) + (output_tokens * 15.0 / 1000000.0)
+                try:
+                    dt = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+                except ValueError:
+                    # Date format mismatch
+                    continue
+                    
+                input_tokens = item.get("input_tokens", 0)
+                output_tokens = item.get("output_tokens", 0)
+                
+                # Use cost if provided, otherwise estimate it based on standard rates
+                cost = item.get("cost", 0.0)
+                if cost == 0.0:
+                    # Claude 3.5 Sonnet: $3.00/MTok input, $15.00/MTok output
+                    cost = (input_tokens * 3.0 / 1000000.0) + (output_tokens * 15.0 / 1000000.0)
 
-            # Check if this date already exists in DB
-            stmt = select(ClaudeDailyCost).where(ClaudeDailyCost.date == dt)
-            existing = (await db.execute(stmt)).scalar_one_or_none()
+                # Check if this date already exists in DB
+                stmt = select(ClaudeDailyCost).where(ClaudeDailyCost.date == dt)
+                existing = (await db.execute(stmt)).scalar_one_or_none()
+                
+                if existing:
+                    existing.input_tokens = input_tokens
+                    existing.output_tokens = output_tokens
+                    existing.cost = cost
+                else:
+                    db.add(ClaudeDailyCost(
+                        date=dt,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cost=cost
+                    ))
             
-            if existing:
-                existing.input_tokens = input_tokens
-                existing.output_tokens = output_tokens
-                existing.cost = cost
-            else:
-                db.add(ClaudeDailyCost(
-                    date=dt,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cost=cost
-                ))
+            await db.flush()
         
-        await db.commit()
-    
-    return result
+        return result
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Database flush or sync error: {str(e)}"
+        }
