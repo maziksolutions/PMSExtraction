@@ -424,7 +424,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
               {activeTab === 'overview' && (
                 <div className="space-y-6 animate-fade-in">
                   {/* Key Metrics Grid */}
-                  <div className="grid grid-cols-4 gap-4">
+                  <div className="grid grid-cols-5 gap-4">
                     <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-4 flex flex-col justify-between hover:border-slate-700 transition-colors">
                       <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider flex items-center gap-1.5">
                         <FileText className="h-3.5 w-3.5 text-sky-400" /> manuals
@@ -470,6 +470,18 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                       </span>
                       <span className="text-[10px] text-slate-400 mt-1">
                         Avg: ${(summary.total_cost_estimate / (summary.total_manuals || 1)).toFixed(2)} / manual
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-4 flex flex-col justify-between hover:border-slate-700 transition-colors bg-gradient-to-br from-slate-950/40 to-orange-950/10">
+                      <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider flex items-center gap-1.5">
+                        <DollarSign className="h-3.5 w-3.5 text-orange-400" /> Console Cost
+                      </span>
+                      <span className="text-2xl font-bold text-orange-400 mt-2">
+                        ${totalConsoleCost.toFixed(2)}
+                      </span>
+                      <span className="text-[10px] text-slate-400 mt-1">
+                        {isConsoleLive ? 'Billed Spend (Live)' : 'Billed Spend (Demo)'}
                       </span>
                     </div>
                   </div>
