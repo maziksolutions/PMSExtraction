@@ -2690,8 +2690,24 @@ async def get_vessel_manual_statistics(
     claude_cost = total_cost * 0.75
     openai_cost = total_cost * 0.25
 
-    from app.services.anthropic_admin import fetch_anthropic_console_data
-    console_data = await fetch_anthropic_console_data()
+    from app.services.anthropic_admin import fetch_and_store_daily_costs
+    from app.models.claude_cost import ClaudeDailyCost
+    from sqlalchemy import select
+
+    sync_result = await fetch_and_store_daily_costs(db)
+
+    # Query all historical saved console daily cost reports
+    db_costs_res = await db.execute(select(ClaudeDailyCost).order_by(ClaudeDailyCost.date.desc()))
+    db_costs = db_costs_res.scalars().all()
+
+    saved_usage = [
+        {
+            "date": c.date.isoformat(),
+            "input_tokens": c.input_tokens,
+            "output_tokens": c.output_tokens,
+            "cost": c.cost
+        } for c in db_costs
+    ]
 
     return {
         "summary": {
@@ -2720,7 +2736,13 @@ async def get_vessel_manual_statistics(
             "openai_input_rate": 5.00,
             "openai_output_rate": 15.00,
         },
-        "console_data": console_data
+        "console_data": {
+            "status": sync_result["status"],
+            "message": sync_result.get("message", ""),
+            "usage_report": {
+                "usage": saved_usage
+            }
+        }
     }
 
 
