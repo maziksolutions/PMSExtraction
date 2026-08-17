@@ -1710,7 +1710,8 @@ async def _consolidate_jobs_for_manual(
                 int(target.confidence_score or 0),
                 int(candidate.confidence_score or 0),
             ) or None
-            target.job_name = build_canonical_job_name(
+            target.job_name = await build_canonical_job_name(
+                db,
                 component_name=component_names.get(getattr(target, "component_id", None)),
                 job_names=[target.job_name, candidate.job_name],
                 job_descriptions=[target.job_description, candidate.job_description],
@@ -2056,7 +2057,8 @@ async def _link_records_to_components(
             if job.source_reference != source_ref:
                 job.source_reference = source_ref
                 changed = True
-            canonical_name = build_canonical_job_name(
+            canonical_name = await build_canonical_job_name(
+                db,
                 component_name=getattr(match, "component_name", None),
                 job_names=[job.job_name],
                 job_descriptions=[job.job_description],

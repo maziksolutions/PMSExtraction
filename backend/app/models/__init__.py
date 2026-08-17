@@ -39,6 +39,7 @@ from app.models.learning import RuleUpdateLog, FewShotStore, FineTuneRequest
 # Sprint 12
 from app.models.audit import AuditLog
 from app.models.claude_cost import ClaudeDailyCost
+from app.models.job_title_library import JobTitleLibrary
 
 __all__ = [
     "TenantBase",
@@ -66,4 +67,5 @@ __all__ = [
     "FineTuneRequest",
     "AuditLog",
     "ClaudeDailyCost",
+    "JobTitleLibrary",
 ]

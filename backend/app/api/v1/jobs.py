@@ -167,7 +167,8 @@ async def _apply_job_name_and_references(db: AsyncSession, job: Job) -> None:
         page_reference=job.page_reference,
         source_reference=job.source_reference,
     )
-    job.job_name = build_canonical_job_name(
+    job.job_name = await build_canonical_job_name(
+        db,
         component_name=component_name,
         job_names=[job.job_name],
         job_descriptions=[job.job_description],
@@ -1324,7 +1325,8 @@ async def merge_jobs(
         db.add(job)
         merged_ids.append(str(job.id))
 
-    target.job_name = build_canonical_job_name(
+    target.job_name = await build_canonical_job_name(
+        db,
         component_name=await _component_name_for_job(db, target.component_id),
         job_names=merged_names,
         job_descriptions=merged_descriptions,

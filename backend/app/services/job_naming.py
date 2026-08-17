@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Iterable, Sequence
+from sqlalchemy.ext.asyncio import AsyncSession
 
 SOURCE_HEADER = "Source References:"
 _BODY_ACTION_RE = re.compile(r"^\s*(.+?)\s+-\s+(.+?)\s*$")
@@ -410,50 +411,66 @@ def _extract_body_and_actions(text: str | None) -> tuple[list[str], list[str]]:
     return _unique_nonempty([body]), _unique_nonempty(actions)
 
 
-def build_canonical_job_name(
+def identify_job_action(job_name: str | None, job_desc: str | None) -> str | None:
+    text = f"{(job_name or '')} {(job_desc or '')}".lower()
+    
+    # Map keywords to approved actions
+    if any(k in text for k in ["replace", "renew", "fitting", "exchange"]):
+        return "Replacement/Renew"
+    if any(k in text for k in ["clean", "wash", "flush", "soot blow"]):
+        return "Cleaning"
+    if any(k in text for k in ["test", "calibrate", "calibration"]):
+        return "Testing"
+    if any(k in text for k in ["overhaul", "dismantle"]):
+        return "Overhaul"
+    if any(k in text for k in ["analyse", "analysis", "laboratory", "sample"]):
+        return "Analysis"
+    if any(k in text for k in ["inspect", "inspection", "check", "verify", "measure", "observe"]):
+        return "Inspection"
+    if any(k in text for k in ["maintain", "maintenance", "service", "lubricate", "grease", "adjust", "retight"]):
+        return "Maintenance"
+    
+    return None
+
+
+async def build_canonical_job_name(
+    db: AsyncSession,
     *,
     component_name: str | None,
     job_names: Sequence[str | None] = (),
     job_descriptions: Sequence[str | None] = (),
-) -> str:
-    component_label = (component_name or "").strip()
-    if _normalise_compare_text(component_label) in _GENERIC_COMPONENT_LABELS:
-        component_label = ""
-    name_bodies: list[str] = []
-    name_actions: list[str] = []
-    for source_text in job_names:
-        stripped_name = _strip_component_prefix(source_text, component_label)
-        candidate_name = stripped_name or (None if component_name else _UNMAPPED_PREFIX_RE.sub("", source_text or "").strip())
-        body_parts, action_parts = _extract_body_and_actions(candidate_name)
-        name_bodies.extend(body_parts)
-        name_actions.extend(action_parts)
+) -> str | None:
+    if not component_name:
+        return None
 
-    desc_bodies: list[str] = []
-    desc_actions: list[str] = []
-    for source_text in job_descriptions:
-        body_parts, action_parts = _extract_body_and_actions(source_text)
-        desc_bodies.extend(body_parts)
-        desc_actions.extend(action_parts)
+    # Step 1: Identify job action from name & description
+    input_name = job_names[0] if job_names else ""
+    input_desc = job_descriptions[0] if job_descriptions else ""
+    
+    action = identify_job_action(input_name, input_desc)
+    if not action:
+        # Rule 4: If the AI cannot generate an appropriate title, the field should remain empty.
+        return None
 
-    filtered_name_bodies = [
-        body
-        for body in _unique_nonempty(name_bodies)
-        if _normalise_compare_text(body) and not _is_component_fragment(body, component_label)
-    ]
-    filtered_desc_bodies = [
-        body
-        for body in _unique_nonempty(desc_bodies)
-        if _normalise_compare_text(body) and not _is_component_fragment(body, component_label)
-    ]
+    # Step 2: Check whether the component name exists in the Job Title library.
+    from app.models.job_title_library import JobTitleLibrary
+    from sqlalchemy import select
 
-    bodies = filtered_name_bodies or filtered_desc_bodies
-    actions = _unique_nonempty(name_actions) or _unique_nonempty(desc_actions)
-    body_text = _join_body_parts(_unique_nonempty(bodies))
-    action_text = " / ".join(_unique_nonempty(actions)) or "Maintenance"
-    if component_label and body_text:
-        return f"{component_label} {body_text} - {action_text}"[:500]
-    if component_label:
-        return f"{component_label} - {action_text}"[:500]
-    if body_text:
-        return f"{body_text} - {action_text}"[:500]
-    return f"General maintenance - {action_text}"[:500]
+    stmt = select(JobTitleLibrary).where(
+        JobTitleLibrary.component_name.ilike(component_name.strip()),
+        JobTitleLibrary.is_deleted == False
+    )
+    result = await db.execute(stmt)
+    library_jobs = result.scalars().all()
+
+    if library_jobs:
+        # Component exists in library. Select job title based on job action identified.
+        for lib_job in library_jobs:
+            lib_action = identify_job_action(lib_job.job_name, None)
+            if lib_action == action:
+                # Direct match found in library
+                return lib_job.job_name
+
+    # Step 3: If no matching title exists (either component not in library, or no job with that action),
+    # create a new one using the format: Component Name - Job Action
+    return f"{component_name.strip()} - {action}"
