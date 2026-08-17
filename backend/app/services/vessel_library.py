@@ -158,7 +158,7 @@ async def load_library_components_for_vessel(
         existing_unmapped = unmapped_by_key.get(key)
         if existing_unmapped:
             existing_unmapped.is_unmapped = False
-            existing_unmapped.qc_status = QCStatus.accepted
+            existing_unmapped.qc_status = QCStatus.pending
             if not existing_unmapped.confidence_score:
                 existing_unmapped.confidence_score = 100
             db.add(existing_unmapped)
@@ -174,7 +174,7 @@ async def load_library_components_for_vessel(
                 "is_critical, criticality, qc_status, is_unmapped, confidence_score, is_deleted, "
                 "created_at, updated_at) "
                 "VALUES (:id, :tid, :vid, :g1, :g2, :mm, :cn, "
-                "false, :crit, 'accepted', false, 100, false, NOW(), NOW())"
+                "false, :crit, 'pending', false, 100, false, NOW(), NOW())"
             ),
             {
                 "id": str(uuid.uuid4()),
