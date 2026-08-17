@@ -1679,3 +1679,201 @@ async def snip_save_jobs(
 
     return {"saved": len(saved_jobs)}
 
+
+@router.get("/jobs/import-template", summary="Download blank Excel template for job import")
+async def download_jobs_template() -> StreamingResponse:
+    """Return a pre-formatted .xlsx template for the Jobs page import."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Jobs"
+
+    headers = [
+        "Component Name", "Job Name", "Job Description", 
+        "Frequency", "Frequency Type", "Critical", 
+        "Source Reference", "PDF Reference"
+    ]
+    sample_rows = [
+        ["Cylinder Head", "Cylinder Head Overhaul", "Complete cylinder head maintenance and replacement of seals", 
+         "1000", "Hourly", "Yes", "MAN B&W Section 4", "ME-Manual-p12"],
+        ["Cylinder Head", "Inlet Valve Inspection", "Check valve seats and clean deposits", 
+         "500", "Hourly", "Yes", "MAN B&W Section 4", "ME-Manual-p14"],
+        ["Ballast Pump", "Motor Inspection", "Routine check of electric motor bearings and insulation", 
+         "3", "Monthly", "No", "", ""],
+        ["Purifier", "Bowl Cleaning", "Clean purifier bowl and inspect disks", 
+         "1", "Weekly", "No", "Westfalia Purifier Manual", "WP-Manual-p20"],
+    ]
+
+    header_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+
+    for col_idx, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    for row_idx, row in enumerate(sample_rows, start=2):
+        for col_idx, val in enumerate(row, start=1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 4, 16)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=jobs_import_template.xlsx"},
+    )
+
+
+@router.post("/{vessel_id}/jobs/import-excel", summary="Parse Excel/CSV and bulk-create jobs")
+async def import_jobs(
+    vessel_id: uuid.UUID,
+    file: UploadFile = File(...),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: Annotated[AsyncSession, Depends(get_db)] = None,
+) -> dict[str, Any]:
+    """Parse Excel/CSV file and bulk-create jobs linked to components."""
+    await _get_vessel_or_404(vessel_id, db)
+    content = await file.read()
+    filename = (file.filename or "").lower()
+    validate_uploaded_file_bytes(
+        filename=file.filename or "jobs_import.xlsx",
+        content=content,
+        allowed_extensions={"csv", "xlsx"},
+        max_size_bytes=20 * 1024 * 1024,
+    )
+
+    rows: list[dict] = []
+
+    try:
+        if filename.endswith(".csv"):
+            import csv, io as _io
+            reader = csv.DictReader(_io.StringIO(content.decode("utf-8", errors="replace")))
+            rows = [dict(r) for r in reader]
+        else:
+            import openpyxl, io as _io
+            wb = openpyxl.load_workbook(_io.BytesIO(content), read_only=True, data_only=True)
+            ws = wb.active
+            headers = [str(c.value or "").strip().lower() for c in next(ws.iter_rows(min_row=1, max_row=1))]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                rows.append({headers[i]: (str(v).strip() if v is not None else "") for i, v in enumerate(row)})
+            wb.close()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    ALIASES = {
+        "component name": "component_name",
+        "componentname": "component_name",
+        "component": "component_name",
+        "job name": "job_name",
+        "jobname": "job_name",
+        "job": "job_name",
+        "job description": "job_description",
+        "description": "job_description",
+        "jobdescription": "job_description",
+        "frequency": "frequency",
+        "frequency type": "frequency_type",
+        "frequencytype": "frequency_type",
+        "critical": "is_critical",
+        "source reference": "source_reference",
+        "sourcereference": "source_reference",
+        "pdf reference": "pdf_reference",
+        "pdfreference": "pdf_reference",
+    }
+
+    def _normalise(row: dict) -> dict:
+        return {ALIASES.get(k.lower().strip(), k.lower().strip()): v for k, v in row.items()}
+
+    created = 0
+    skipped = 0
+    
+    # Pre-fetch all components for mapping lookup
+    comp_res = await db.execute(
+        select(Component).where(
+            Component.vessel_id == vessel_id,
+            Component.is_deleted == False
+        )
+    )
+    existing_comps = comp_res.scalars().all()
+    comp_map = {c.component_name.lower().strip(): c for c in existing_comps}
+
+    for raw_row in rows:
+        r = _normalise(raw_row)
+        comp_name = (r.get("component_name") or "").strip()
+        job_name = (r.get("job_name") or "").strip()
+        
+        if not job_name or not comp_name:
+            skipped += 1
+            continue
+
+        # Look up component
+        comp_key = comp_name.lower()
+        component = comp_map.get(comp_key)
+        
+        if not component:
+            # Create a stub unmapped component
+            component = Component(
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                group1="Uncategorised",
+                group2="Uncategorised",
+                main_machinery="Unknown",
+                component_name=comp_name,
+                is_unmapped=True,
+                qc_status=QCStatus.pending,
+                confidence_score=100,
+            )
+            db.add(component)
+            await db.flush()
+            # Register in local cache
+            comp_map[comp_key] = component
+
+        critical_raw = str(r.get("is_critical") or "").lower()
+        is_critical = critical_raw in {"yes", "true", "1", "y"}
+
+        raw_freq_type = r.get("frequency_type") or ""
+        freq_type: Optional[FrequencyType] = None
+        if raw_freq_type:
+            try:
+                freq_type = FrequencyType(raw_freq_type.lower().strip())
+            except ValueError:
+                freq_type = None
+
+        raw_freq = r.get("frequency") or ""
+        freq_val: Optional[int] = None
+        if raw_freq:
+            try:
+                freq_val = int(float(raw_freq))
+            except ValueError:
+                freq_val = None
+
+        new_job = Job(
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            component_id=component.id,
+            job_name=job_name,
+            job_description=r.get("job_description") or None,
+            frequency=freq_val,
+            frequency_type=freq_type,
+            is_critical=is_critical,
+            source_reference=r.get("source_reference") or None,
+            pdf_reference=r.get("pdf_reference") or None,
+            qc_status=QCStatus.pending,
+            is_unmapped=False,
+            confidence_score=100,
+        )
+        db.add(new_job)
+        created += 1
+
+    await db.commit()
+    return {"imported": created, "skipped": skipped}
+

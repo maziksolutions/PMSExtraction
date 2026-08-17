@@ -377,9 +377,9 @@ const ComponentReview: React.FC = () => {
     enabled: !!vesselId,
   })
 
-  const existingComponentNames = useMemo(() => {
+  const existingComponentNames = useMemo<string[]>(() => {
     const items = allComponentsQuery.data?.items ?? []
-    const names = items.map((c: any) => c.component_name).filter(Boolean)
+    const names = (items.map((c: any) => c.component_name).filter(Boolean)) as string[]
     return Array.from(new Set(names)).sort()
   }, [allComponentsQuery.data?.items])
 
@@ -580,6 +580,21 @@ const ComponentReview: React.FC = () => {
           initialGroup1={addContext.group1}
           initialGroup2={addContext.group2}
         />
+      )}
+
+      {importResult && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-2xl border border-slate-700 bg-slate-900 p-6 text-center shadow-2xl">
+            <h3 className="text-base font-semibold text-white">Import Status</h3>
+            <p className="mt-2 text-sm text-slate-300">{importResult}</p>
+            <button
+              onClick={() => setImportResult(null)}
+              className="mt-4 rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500"
+            >
+              Close
+            </button>
+          </div>
+        </div>
       )}
 
       {showCopyModal && vesselId && selectedIds.size > 0 && (

@@ -1,7 +1,7 @@
 import React, { useMemo, useState, useCallback } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, CheckCircle, Copy, Download, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Scissors, Trash2, Upload, XCircle, ArrowUp, ArrowDown } from 'lucide-react'
+import { AlertCircle, CheckCircle, Copy, Download, FileDown, ExternalLink, FileSearch, GitMerge, Pencil, Plus, Save, Scissors, Trash2, Upload, XCircle, ArrowUp, ArrowDown } from 'lucide-react'
 import apiClient from '@/api/client'
 import { SearchableSelect } from '@/components/SearchableSelect'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
@@ -545,6 +545,27 @@ const JobsReview: React.FC = () => {
   const [showBatchPanel, setShowBatchPanel] = useState(false)
   const [batchFields, setBatchFields] = useState<BatchJobFields>({})
   const [showSnipModal, setShowSnipModal] = useState(false)
+  const fileInputRef = React.useRef<HTMLInputElement>(null)
+
+  const handleExcelImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const formData = new FormData()
+    formData.append('file', file)
+    setActionError(null)
+    setActionMessage('Uploading and parsing jobs baseline...')
+    try {
+      const res = await apiClient.post(`/vessels/${vesselId}/jobs/import-excel`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setActionMessage(`Imported ${res.data.imported} jobs (${res.data.skipped} skipped).`)
+      queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
+    } catch (err: any) {
+      setActionError(`Import failed: ${err?.response?.data?.detail ?? err?.message}`)
+      setActionMessage(null)
+    }
+    e.target.value = ''
+  }
 
   const openManualInNewTab = (
     manualId: string | null | undefined,
@@ -1070,6 +1091,24 @@ const JobsReview: React.FC = () => {
                 </button>
               </div>
             )}
+            {/* Import Excel */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Import Excel
+            </button>
+            <input ref={fileInputRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={handleExcelImport} />
+            <a
+              href={`${apiClient.defaults.baseURL}/vessels/jobs/import-template`}
+              download="jobs_import_template.xlsx"
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+            >
+              <FileDown className="h-3.5 w-3.5" />
+              Template
+            </a>
+
             <button
               onClick={handleQcExport}
               title="Download Jobs QC Review sheet (with Reviewer QC / Notes columns for offline review)"

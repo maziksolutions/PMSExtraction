@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil, Scissors, Download, Trash2, ArrowUp, ArrowDown } from 'lucide-react'
+import { CheckCircle, Save, XCircle, FileSearch, ExternalLink, Plus, Pencil, Scissors, Download, Upload, FileDown, Trash2, ArrowUp, ArrowDown } from 'lucide-react'
 import apiClient from '@/api/client'
 import { SearchableSelect } from '@/components/SearchableSelect'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
@@ -383,6 +383,27 @@ const SparesReview: React.FC = () => {
   const [showBatchPanel, setShowBatchPanel] = useState(false)
   const [batchFields, setBatchFields] = useState<BatchSpareFields>({})
   const [showSnipModal, setShowSnipModal] = useState(false)
+  const fileInputRef = React.useRef<HTMLInputElement>(null)
+
+  const handleExcelImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const formData = new FormData()
+    formData.append('file', file)
+    setActionError(null)
+    setActionMessage('Uploading and parsing spares baseline...')
+    try {
+      const res = await apiClient.post(`/vessels/${vesselId}/spares/import-excel`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      setActionMessage(`Imported ${res.data.imported} spares (${res.data.skipped} skipped).`)
+      queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
+    } catch (err: any) {
+      setActionError(`Import failed: ${err?.response?.data?.detail ?? err?.message}`)
+      setActionMessage(null)
+    }
+    e.target.value = ''
+  }
 
   const openManualInNewTab = (
     manualId: string | null | undefined,
@@ -637,6 +658,24 @@ const SparesReview: React.FC = () => {
                 </button>
               </>
             )}
+            {/* Import Excel */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Import Excel
+            </button>
+            <input ref={fileInputRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={handleExcelImport} />
+            <a
+              href={`${apiClient.defaults.baseURL}/vessels/spares/import-template`}
+              download="spares_import_template.xlsx"
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-white"
+            >
+              <FileDown className="h-3.5 w-3.5" />
+              Template
+            </a>
+
             <button
               onClick={handleQcExport}
               title="Download Spares QC Review sheet (with Reviewer QC / Notes columns for offline review)"

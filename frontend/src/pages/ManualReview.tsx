@@ -81,7 +81,7 @@ interface PreCheckResult {
 interface ScreeningStatus {
   total: number
   done: number
-  status: 'idle' | 'running' | 'completed' | 'failed'
+  status: 'idle' | 'running' | 'paused' | 'completed' | 'failed'
   current_manual_name?: string | null
   detailed_status?: string | null
 }
@@ -89,7 +89,7 @@ interface ScreeningStatus {
 interface ExtractionStatus {
   total: number
   done: number
-  status: 'idle' | 'running' | 'completed' | 'failed'
+  status: 'idle' | 'running' | 'paused' | 'completed' | 'failed'
   current_manual_name?: string | null
   current_manual_pages_total?: number
   current_manual_pages_done?: number

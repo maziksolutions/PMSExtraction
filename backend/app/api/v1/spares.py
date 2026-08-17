@@ -1580,3 +1580,210 @@ async def import_qc_review(
         "jobs": updated["jobs"],
         "spares": updated["spares"],
     }
+
+
+@router.get("/spares/import-template", summary="Download blank Excel template for spare import")
+async def download_spares_template() -> StreamingResponse:
+    """Return a pre-formatted .xlsx template for the Spares page import."""
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from fastapi.responses import StreamingResponse
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Spares"
+
+    headers = [
+        "Component Name", "Part Name", "Part Number", 
+        "Drawing Number", "Position Number", "Quantity Required", 
+        "Material", "Weight (kg)", "PDF Reference"
+    ]
+    sample_rows = [
+        ["Cylinder Head", "Inlet Valve Seal", "90201-12", "Drw-ME-02", "12a", "6", "Synthetic Rubber", "0.05", "ME-Manual-p15"],
+        ["Cylinder Head", "Exhaust Valve Spindle", "90202-05", "Drw-ME-02", "3", "3", "Nimonic Alloy", "12.5", "ME-Manual-p15"],
+        ["Ballast Pump", "Impeller Key", "BP-Key-01", "", "4", "1", "Stainless Steel", "0.2", "BP-Manual-p8"],
+        ["Purifier", "O-Ring Kit", "WP-ORK-99", "Drw-WP-Bowl", "18", "2", "NBR", "0.01", "WP-Manual-p22"],
+    ]
+
+    header_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF")
+
+    for col_idx, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    for row_idx, row in enumerate(sample_rows, start=2):
+        for col_idx, val in enumerate(row, start=1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 4, 16)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=spares_import_template.xlsx"},
+    )
+
+
+@router.post("/{vessel_id}/spares/import-excel", summary="Parse Excel/CSV and bulk-create spares")
+async def import_spares(
+    vessel_id: uuid.UUID,
+    file: UploadFile = File(...),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: Annotated[AsyncSession, Depends(get_db)] = None,
+) -> dict[str, Any]:
+    """Parse Excel/CSV file and bulk-create spares linked to components."""
+    from app.services.upload_security import validate_uploaded_file_bytes
+    from app.models.component import Component
+    from app.models.spare import Spare
+    
+    await _get_vessel_or_404(vessel_id, db)
+    content = await file.read()
+    filename = (file.filename or "").lower()
+    validate_uploaded_file_bytes(
+        filename=file.filename or "spares_import.xlsx",
+        content=content,
+        allowed_extensions={"csv", "xlsx"},
+        max_size_bytes=20 * 1024 * 1024,
+    )
+
+    rows: list[dict] = []
+
+    try:
+        if filename.endswith(".csv"):
+            import csv, io as _io
+            reader = csv.DictReader(_io.StringIO(content.decode("utf-8", errors="replace")))
+            rows = [dict(r) for r in reader]
+        else:
+            import openpyxl, io as _io
+            wb = openpyxl.load_workbook(_io.BytesIO(content), read_only=True, data_only=True)
+            ws = wb.active
+            headers = [str(c.value or "").strip().lower() for c in next(ws.iter_rows(min_row=1, max_row=1))]
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                rows.append({headers[i]: (str(v).strip() if v is not None else "") for i, v in enumerate(row)})
+            wb.close()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    ALIASES = {
+        "component name": "component_name",
+        "componentname": "component_name",
+        "component": "component_name",
+        "part name": "part_name",
+        "partname": "part_name",
+        "part": "part_name",
+        "item name": "part_name",
+        "spare name": "part_name",
+        "part number": "part_number",
+        "partno": "part_number",
+        "partnumber": "part_number",
+        "drawing number": "drawing_number",
+        "drawingno": "drawing_number",
+        "drawingnumber": "drawing_number",
+        "position number": "position_number",
+        "positionno": "position_number",
+        "positionnumber": "position_number",
+        "pos no": "position_number",
+        "quantity required": "quantity_required",
+        "quantity": "quantity_required",
+        "qty": "quantity_required",
+        "material": "material",
+        "weight": "weight",
+        "weight (kg)": "weight",
+        "pdf reference": "pdf_reference",
+        "pdfreference": "pdf_reference",
+    }
+
+    def _normalise(row: dict) -> dict:
+        return {ALIASES.get(k.lower().strip(), k.lower().strip()): v for k, v in row.items()}
+
+    created = 0
+    skipped = 0
+    
+    # Pre-fetch all components for mapping lookup
+    comp_res = await db.execute(
+        select(Component).where(
+            Component.vessel_id == vessel_id,
+            Component.is_deleted == False
+        )
+    )
+    existing_comps = comp_res.scalars().all()
+    comp_map = {c.component_name.lower().strip(): c for c in existing_comps}
+
+    for raw_row in rows:
+        r = _normalise(raw_row)
+        comp_name = (r.get("component_name") or "").strip()
+        part_name = (r.get("part_name") or "").strip()
+        
+        if not part_name or not comp_name:
+            skipped += 1
+            continue
+
+        # Look up component
+        comp_key = comp_name.lower()
+        component = comp_map.get(comp_key)
+        
+        if not component:
+            # Create a stub unmapped component
+            component = Component(
+                tenant_id=current_user.tenant_id,
+                vessel_id=vessel_id,
+                group1="Uncategorised",
+                group2="Uncategorised",
+                main_machinery="Unknown",
+                component_name=comp_name,
+                is_unmapped=True,
+                qc_status=QCStatus.pending,
+                confidence_score=100,
+            )
+            db.add(component)
+            await db.flush()
+            # Register in local cache
+            comp_map[comp_key] = component
+
+        qty_raw = r.get("quantity_required") or ""
+        qty_val: Optional[int] = None
+        if qty_raw:
+            try:
+                qty_val = int(float(qty_raw))
+            except ValueError:
+                qty_val = None
+
+        weight_raw = r.get("weight") or ""
+        weight_val: Optional[float] = None
+        if weight_raw:
+            try:
+                weight_val = float(weight_raw)
+            except ValueError:
+                weight_val = None
+
+        new_spare = Spare(
+            tenant_id=current_user.tenant_id,
+            vessel_id=vessel_id,
+            component_id=component.id,
+            part_name=part_name,
+            part_number=r.get("part_number") or None,
+            drawing_number=r.get("drawing_number") or None,
+            position_number=r.get("position_number") or None,
+            quantity_required=qty_val,
+            material=r.get("material") or None,
+            weight=weight_val,
+            pdf_reference=r.get("pdf_reference") or None,
+            qc_status=QCStatus.pending,
+            is_unmapped=False,
+            confidence_score=100,
+        )
+        db.add(new_spare)
+        created += 1
+
+    await db.commit()
+    return {"imported": created, "skipped": skipped}
