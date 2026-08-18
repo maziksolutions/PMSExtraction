@@ -157,19 +157,6 @@ async def _load_vessel_scoped_user(request: Request) -> User | None:
 
 @app.middleware("http")
 async def request_size_middleware(request: Request, call_next: Any) -> Response:
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if int(content_length) > settings.MAX_REQUEST_SIZE_BYTES:
-                return JSONResponse(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    content={"detail": "Request payload exceeds the allowed size limit."},
-                )
-        except ValueError:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"detail": "Invalid Content-Length header."},
-            )
     return await call_next(request)
 
 
