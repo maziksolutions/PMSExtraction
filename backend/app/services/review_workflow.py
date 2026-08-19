@@ -704,6 +704,10 @@ async def _reconcile_global_library_records(
             updated += 1
 
     for stale in unmatched_existing:
+        # DO NOT soft-delete standard library records that were seeded!
+        if stale.get("data", {}).get("ship_component_job_link_id") is not None:
+            continue
+            
         await db.execute(
             text(
                 f"UPDATE {table} "

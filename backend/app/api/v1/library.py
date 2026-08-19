@@ -791,6 +791,15 @@ async def ensure_tenant_library_seeded(db: AsyncSession, tenant_id: Any) -> None
     link_id_count = res.scalar()
     
     if link_id_count >= 15000:
+        # Un-delete standard library records for this tenant in case they were soft-deleted before
+        await db.execute(text("""
+            UPDATE global_job_library 
+            SET is_deleted = false 
+            WHERE tenant_id = :tid 
+              AND (canonical_data->>'ship_component_job_link_id') IS NOT NULL 
+              AND is_deleted = true;
+        """), {"tid": str(tenant_id)})
+        await db.commit()
         return
         
     print(f"[ON-DEMAND SEED] Seeding 16,940 records for tenant {tenant_id}...", flush=True)
