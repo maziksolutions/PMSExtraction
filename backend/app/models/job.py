@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import Boolean, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.models.base import TenantBase
 from app.models.component import QCStatus
@@ -114,3 +114,40 @@ class Job(TenantBase):
 
     def __repr__(self) -> str:
         return f"<Job id={self.id} name={self.job_name} qc={self.qc_status}>"
+
+    @validates("job_description")
+    def validate_job_description(self, key: str, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return value
+            
+        import re
+        body = value
+        footer = ""
+        if "Source References:" in value:
+            parts = value.split("Source References:", 1)
+            body = parts[0]
+            footer = "\n\nSource References:" + parts[1]
+            
+        lines = body.splitlines()
+        new_lines = []
+        for line in lines:
+            line_str = line.strip()
+            if not line_str:
+                new_lines.append("")
+                continue
+                
+            if line_str.startswith("/*-"):
+                line_str = line_str[3:].strip()
+                
+            # Matches space followed by list markers (e.g. " a. ", " 1) ", " a) ", " 1. ")
+            item_pattern = re.compile(r'\s+([a-zA-Z0-9]{1,2}[\.\)])\s+')
+            formatted_line = item_pattern.sub(r'\n\1 ', line_str)
+            
+            for sub_line in formatted_line.splitlines():
+                sub_line_str = sub_line.strip()
+                if sub_line_str:
+                    if sub_line_str.startswith("/*-"):
+                        sub_line_str = sub_line_str[3:].strip()
+                    new_lines.append(f"/*- {sub_line_str}")
+                    
+        return "\n".join(new_lines) + footer
