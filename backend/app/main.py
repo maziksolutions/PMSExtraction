@@ -247,28 +247,25 @@ async def _seed_job_title_library_if_empty() -> None:
         return
         
     async with AsyncSessionLocal() as db:
-        res = await db.execute(text("""
-            SELECT COUNT(*) FROM global_job_library 
-            WHERE (canonical_data->>'ship_component_job_link_id') IS NOT NULL;
-        """))
-        link_id_count = res.scalar()
-        if link_id_count >= 15000:
-            return
-            
-        print(f"[STARTUP SEED] Job title library not fully seeded (count={link_id_count}). Seeding from asm_jobs.csv...", flush=True)
-        # Clean up any partial library seeds (leaving user-created/accepted entries safe)
-        await db.execute(text("""
-            DELETE FROM global_job_library 
-            WHERE (canonical_data->>'ship_component_job_link_id') IS NOT NULL;
-        """))
-        await db.commit()
-        res = await db.execute(text("SELECT tenant_id FROM vessel_projects LIMIT 1;"))
-        row = res.fetchone()
-        if not row:
-            res = await db.execute(text("SELECT tenant_id FROM users LIMIT 1;"))
-            row = res.fetchone()
-        tenant_id = row[0] if row else uuid.UUID("00000000-0000-0000-0000-000000000001")
+        # 1. Resolve all unique active tenant IDs in the database
+        tenant_ids = set()
         
+        # Always seed the default tenant ID
+        tenant_ids.add(uuid.UUID("00000000-0000-0000-0000-000000000001"))
+        
+        res = await db.execute(text("SELECT tenant_id FROM vessel_projects;"))
+        for row in res.fetchall():
+            if row[0]:
+                tenant_ids.add(row[0])
+                
+        res = await db.execute(text("SELECT tenant_id FROM users;"))
+        for row in res.fetchall():
+            if row[0]:
+                tenant_ids.add(row[0])
+                
+        print(f"[STARTUP SEED] Resolved active tenant IDs to seed: {list(tenant_ids)}", flush=True)
+
+        # 2. Load the CSV records once
         records = []
         with open(csv_path, 'r', encoding='utf-8', errors='ignore') as f:
             reader = csv.reader(f)
@@ -311,48 +308,69 @@ async def _seed_job_title_library_if_empty() -> None:
                     "responsibility": resp
                 })
         
-        # Batch insert using raw connection/text
-        now = datetime.utcnow()
-        batch_size = 5000
-        for i in range(0, len(records), batch_size):
-            chunk = records[i : i + batch_size]
+        # 3. Seed each tenant individually if not already fully seeded
+        for tenant_id in tenant_ids:
+            res = await db.execute(text("""
+                SELECT COUNT(*) FROM global_job_library 
+                WHERE tenant_id = :tid 
+                  AND (canonical_data->>'ship_component_job_link_id') IS NOT NULL;
+            """), {"tid": str(tenant_id)})
+            link_id_count = res.scalar()
             
-            stmt = text("""
-                INSERT INTO global_job_library (
-                    id, tenant_id, canonical_data, source_vessels, occurrence_count,
-                    first_seen_at, last_confirmed_at, created_at, updated_at, is_deleted
-                ) VALUES (
-                    :id, :tenant_id, :canonical_data, :source_vessels, :occurrence_count,
-                    :now, :now, :now, :now, false
-                )
-            """)
-            
-            params_list = []
-            for r in chunk:
-                canonical_dict = {
-                    "job_name": r["job_name"],
-                    "job_code": r["job_code"],
-                    "job_description": r["job_name"],
-                    "frequency": r["frequency"],
-                    "frequency_type": r["frequency_type"],
-                    "component_name": r["component_name"],
-                    "ship_component_job_link_id": r["ship_component_job_link_id"],
-                    "vessel_name": r["vessel_name"],
-                    "responsibility": r["responsibility"]
-                }
-                params_list.append({
-                    "id": str(uuid.uuid4()),
-                    "tenant_id": str(tenant_id),
-                    "canonical_data": json.dumps(canonical_dict),
-                    "source_vessels": json.dumps([{"name": r["vessel_name"]}]),
-                    "occurrence_count": 1,
-                    "now": now
-                })
-            
-            await db.execute(stmt, params_list)
+            if link_id_count >= 15000:
+                print(f"[STARTUP SEED] Tenant {tenant_id} already seeded (count={link_id_count}). Skipping.", flush=True)
+                continue
+                
+            print(f"[STARTUP SEED] Seeding 16,940 records for tenant {tenant_id}...", flush=True)
+            # Delete any partial library seeds for this tenant (user accepted jobs remain safe)
+            await db.execute(text("""
+                DELETE FROM global_job_library 
+                WHERE tenant_id = :tid 
+                  AND (canonical_data->>'ship_component_job_link_id') IS NOT NULL;
+            """), {"tid": str(tenant_id)})
             await db.commit()
             
-        print(f"[STARTUP SEED] Successfully seeded {len(records)} records into global_job_library!", flush=True)
+            # Perform batch insert
+            now = datetime.utcnow()
+            batch_size = 5000
+            for i in range(0, len(records), batch_size):
+                chunk = records[i : i + batch_size]
+                
+                stmt = text("""
+                    INSERT INTO global_job_library (
+                        id, tenant_id, canonical_data, source_vessels, occurrence_count,
+                        first_seen_at, last_confirmed_at, created_at, updated_at, is_deleted
+                    ) VALUES (
+                        :id, :tenant_id, :canonical_data, :source_vessels, :occurrence_count,
+                        :now, :now, :now, :now, false
+                    )
+                """)
+                
+                params_list = []
+                for r in chunk:
+                    canonical_dict = {
+                        "job_name": r["job_name"],
+                        "job_code": r["job_code"],
+                        "job_description": r["job_name"],
+                        "frequency": r["frequency"],
+                        "frequency_type": r["frequency_type"],
+                        "component_name": r["component_name"],
+                        "ship_component_job_link_id": r["ship_component_job_link_id"],
+                        "vessel_name": r["vessel_name"],
+                        "responsibility": r["responsibility"]
+                    }
+                    params_list.append({
+                        "id": str(uuid.uuid4()),
+                        "tenant_id": str(tenant_id),
+                        "canonical_data": json.dumps(canonical_dict),
+                        "source_vessels": json.dumps([{"name": r["vessel_name"]}]),
+                        "occurrence_count": 1,
+                        "now": now
+                    })
+                
+                await db.execute(stmt, params_list)
+                await db.commit()
+            print(f"[STARTUP SEED] Successfully seeded tenant {tenant_id}!", flush=True)
 
 
 async def _run_startup_backfill_and_backup() -> None:
