@@ -1711,13 +1711,15 @@ async def _consolidate_jobs_for_manual(
                 int(target.confidence_score or 0),
                 int(candidate.confidence_score or 0),
             ) or None
-            target.job_name = await build_canonical_job_name(
+            resolved_name = await build_canonical_job_name(
                 db,
                 component_name=component_names.get(getattr(target, "component_id", None)),
                 job_names=[target.job_name, candidate.job_name],
                 job_descriptions=[target.job_description, candidate.job_description],
                 tenant_id=tenant_id,
             )
+            if resolved_name:
+                target.job_name = resolved_name
             pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
             target.pdf_reference = pdf_reference
             target.page_reference = primary_page
@@ -2066,7 +2068,7 @@ async def _link_records_to_components(
                 job_descriptions=[job.job_description],
                 tenant_id=job.tenant_id,
             )
-            if job.job_name != canonical_name:
+            if canonical_name and job.job_name != canonical_name:
                 job.job_name = canonical_name
                 changed = True
             description_with_refs = append_source_references_to_description(job.job_description, [source_ref])

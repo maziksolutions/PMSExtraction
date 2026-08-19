@@ -167,13 +167,15 @@ async def _apply_job_name_and_references(db: AsyncSession, job: Job) -> None:
         page_reference=job.page_reference,
         source_reference=job.source_reference,
     )
-    job.job_name = await build_canonical_job_name(
+    resolved_name = await build_canonical_job_name(
         db,
         component_name=component_name,
         job_names=[job.job_name],
         job_descriptions=[job.job_description],
         tenant_id=job.tenant_id,
     )
+    if resolved_name:
+        job.job_name = resolved_name
     pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
     job.pdf_reference = pdf_reference
     job.page_reference = primary_page
