@@ -247,12 +247,21 @@ async def _seed_job_title_library_if_empty() -> None:
         return
         
     async with AsyncSessionLocal() as db:
-        res = await db.execute(text("SELECT COUNT(*) FROM global_job_library;"))
-        count = res.scalar()
-        if count > 0:
+        res = await db.execute(text("""
+            SELECT COUNT(*) FROM global_job_library 
+            WHERE (canonical_data->>'ship_component_job_link_id') IS NOT NULL;
+        """))
+        link_id_count = res.scalar()
+        if link_id_count >= 15000:
             return
             
-        print("[STARTUP SEED] global_job_library is empty. Seeding from asm_jobs.csv...", flush=True)
+        print(f"[STARTUP SEED] Job title library not fully seeded (count={link_id_count}). Seeding from asm_jobs.csv...", flush=True)
+        # Clean up any partial library seeds (leaving user-created/accepted entries safe)
+        await db.execute(text("""
+            DELETE FROM global_job_library 
+            WHERE (canonical_data->>'ship_component_job_link_id') IS NOT NULL;
+        """))
+        await db.commit()
         res = await db.execute(text("SELECT tenant_id FROM vessel_projects LIMIT 1;"))
         row = res.fetchone()
         if not row:
