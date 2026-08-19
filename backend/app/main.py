@@ -457,7 +457,7 @@ async def _run_startup_backfill_and_backup() -> None:
         lib_comp_names = [r[0] for r in lib_comp_res.fetchall() if r[0]]
         lib_comp_names.sort(key=len, reverse=True)
         
-        res = await db.execute(select(Job).where(Job.is_deleted == False))
+        res = await db.execute(select(Job))
         jobs_to_rename = res.scalars().all()
         
         renamed_count = 0
