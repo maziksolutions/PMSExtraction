@@ -796,6 +796,7 @@ async def list_global_library(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid entity_type '{entity_type}'. Must be one of: component, job, spare.",
         )
+    print(f"[DEBUG GLOBAL LIBRARY] user={current_user.email} tenant_id={current_user.tenant_id} entity_type={entity_type}", flush=True)
 
     where_clauses = ["tenant_id = :tid", "is_deleted = false"]
     params: dict[str, Any] = {"tid": str(current_user.tenant_id)}
