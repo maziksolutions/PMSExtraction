@@ -380,6 +380,7 @@ async def _run_startup_backfill_and_backup() -> None:
     from sqlalchemy import select
     
     async with AsyncSessionLocal() as db:
+        # Step 1: Backup and backfill job descriptions
         await db.execute(text("""
             CREATE TABLE IF NOT EXISTS job_description_backup (
                 job_id UUID PRIMARY KEY,
@@ -420,6 +421,56 @@ async def _run_startup_backfill_and_backup() -> None:
             print(f"[STARTUP MIGRATION] Successfully backfilled and formatted {updated_count} existing job descriptions!", flush=True)
         else:
             print("[STARTUP MIGRATION] No job descriptions needed backfilling.", flush=True)
+
+        # Step 2: Backup and backfill/re-name job titles based on global library
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS job_name_backup (
+                job_id UUID PRIMARY KEY,
+                original_job_name TEXT,
+                backed_up_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """))
+        await db.commit()
+        
+        res = await db.execute(text("SELECT COUNT(*) FROM job_name_backup;"))
+        name_backup_count = res.scalar()
+        
+        if name_backup_count == 0:
+            print("[STARTUP MIGRATION] Backing up original job names...", flush=True)
+            await db.execute(text("""
+                INSERT INTO job_name_backup (job_id, original_job_name)
+                SELECT id, job_name FROM jobs
+                WHERE job_name IS NOT NULL;
+            """))
+            await db.commit()
+            print("[STARTUP MIGRATION] Job names backup complete.", flush=True)
+            
+        # Re-resolve job names using build_canonical_job_name
+        from app.services.job_naming import build_canonical_job_name
+        
+        res = await db.execute(select(Job).where(Job.is_deleted == False))
+        jobs_to_rename = res.scalars().all()
+        
+        renamed_count = 0
+        for job in jobs_to_rename:
+            orig_name = job.job_name
+            new_name = await build_canonical_job_name(
+                db,
+                component_name=job.component_name,
+                job_names=[job.job_name],
+                job_descriptions=[job.job_description],
+                tenant_id=job.tenant_id
+            )
+            if new_name != orig_name:
+                job.job_name = new_name
+                db.add(job)
+                renamed_count += 1
+                
+        if renamed_count > 0:
+            await db.commit()
+            print(f"[STARTUP MIGRATION] Successfully backfilled and updated {renamed_count} job titles based on library!", flush=True)
+        else:
+            print("[STARTUP MIGRATION] No job titles needed renaming.", flush=True)
 
 
 @app.on_event("startup")
