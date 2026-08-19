@@ -291,7 +291,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "{\n"
             '  "job_name": "concise specific name (e.g. \'Replace UV lamp\', \'Check V-belt tension\')",\n'
             '  "job_code": "section/item number from manual (e.g. \'8.3.2\', \'Item 4\') or null",\n'
-            '  "job_description": "full procedure text from the manual or null",\n'
+            '  "job_description": "full procedure text. Every line must start with /*- and any list items (e.g. a., b., 1., 2., a), b), 1), 2)) must be placed on a new line starting with /*-",\n'
             '  "safety_precaution": "WARNING/CAUTION/NOTICE text relevant to this job or null",\n'
             '  "frequency": integer representing the interval value (1 for daily, 2 for biweekly, 12 for yearly, etc.) or null,\n'
             '  "frequency_type": "daily|weekly|monthly|yearly|hourly — ONLY these 5 values or null",\n'
@@ -300,6 +300,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             '  "confidence_score": integer 70-98\n'
             "}\n\n"
             "RULES:\n"
+            "- job_description formatting: Every non-empty line of the description body must start with /*-. If the description contains list items (like a. line, b. line, a) line, 1) line, etc.), each item must be placed on a new line and start with /*-.\n"
             "- source_page_number from [PAGE N] markers — do not guess\n"
             "- Extract EVERY distinct job item — do not merge different tasks into one\n"
             "- For maintenance schedule tables: each row/item = one job record\n"
