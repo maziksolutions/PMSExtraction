@@ -121,14 +121,11 @@ class Job(TenantBase):
             return value
             
         import re
-        body = value
-        footer = ""
-        if "Source References:" in value:
-            parts = value.split("Source References:", 1)
-            body = parts[0]
-            footer = "\n\nSource References:" + parts[1]
-            
-        lines = body.splitlines()
+        # Matches space followed by list markers (e.g. " a. ", " 1) ", " a) ", " 1. ")
+        item_pattern = re.compile(r'\s+([a-zA-Z0-9]{1,2}[\.\)])\s+')
+        formatted = item_pattern.sub(r'\n\1 ', value)
+        
+        lines = formatted.splitlines()
         new_lines = []
         for line in lines:
             line_str = line.strip()
@@ -139,15 +136,7 @@ class Job(TenantBase):
             if line_str.startswith("/*-"):
                 line_str = line_str[3:].strip()
                 
-            # Matches space followed by list markers (e.g. " a. ", " 1) ", " a) ", " 1. ")
-            item_pattern = re.compile(r'\s+([a-zA-Z0-9]{1,2}[\.\)])\s+')
-            formatted_line = item_pattern.sub(r'\n\1 ', line_str)
-            
-            for sub_line in formatted_line.splitlines():
-                sub_line_str = sub_line.strip()
-                if sub_line_str:
-                    if sub_line_str.startswith("/*-"):
-                        sub_line_str = sub_line_str[3:].strip()
-                    new_lines.append(f"/*- {sub_line_str}")
-                    
-        return "\n".join(new_lines) + footer
+            if line_str:
+                new_lines.append(f"/*- {line_str}")
+                
+        return "\n".join(new_lines)
