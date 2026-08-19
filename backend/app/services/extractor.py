@@ -1715,6 +1715,7 @@ async def _consolidate_jobs_for_manual(
                 component_name=component_names.get(getattr(target, "component_id", None)),
                 job_names=[target.job_name, candidate.job_name],
                 job_descriptions=[target.job_description, candidate.job_description],
+                tenant_id=tenant_id,
             )
             pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
             target.pdf_reference = pdf_reference
@@ -2062,6 +2063,7 @@ async def _link_records_to_components(
                 component_name=getattr(match, "component_name", None),
                 job_names=[job.job_name],
                 job_descriptions=[job.job_description],
+                tenant_id=job.tenant_id,
             )
             if job.job_name != canonical_name:
                 job.job_name = canonical_name

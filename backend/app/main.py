@@ -237,23 +237,22 @@ async def _seed_job_title_library_if_empty() -> None:
     import os
     import csv
     import uuid
+    import json
     from datetime import datetime
     from app.core.database import AsyncSessionLocal
-    from app.models.job_title_library import JobTitleLibrary
-    from sqlalchemy import select, func
+    from sqlalchemy import text
     
     csv_path = os.path.join(os.path.dirname(__file__), "assets", "asm_jobs.csv")
     if not os.path.exists(csv_path):
         return
         
     async with AsyncSessionLocal() as db:
-        res = await db.execute(select(func.count(JobTitleLibrary.id)))
+        res = await db.execute(text("SELECT COUNT(*) FROM global_job_library;"))
         count = res.scalar()
         if count > 0:
             return
             
-        print("[STARTUP SEED] job_title_library is empty. Seeding from asm_jobs.csv...", flush=True)
-        from sqlalchemy import text
+        print("[STARTUP SEED] global_job_library is empty. Seeding from asm_jobs.csv...", flush=True)
         res = await db.execute(text("SELECT tenant_id FROM vessel_projects LIMIT 1;"))
         row = res.fetchone()
         if not row:
@@ -303,36 +302,48 @@ async def _seed_job_title_library_if_empty() -> None:
                     "responsibility": resp
                 })
         
-        batch_size = 10000
+        # Batch insert using raw connection/text
         now = datetime.utcnow()
+        batch_size = 5000
         for i in range(0, len(records), batch_size):
             chunk = records[i : i + batch_size]
-            db_entries = []
-            for r in chunk:
-                db_entries.append(
-                    JobTitleLibrary(
-                        id=uuid.uuid4(),
-                        tenant_id=tenant_id,
-                        created_at=now,
-                        updated_at=now,
-                        is_deleted=False,
-                        ship_component_job_link_id=r["ship_component_job_link_id"],
-                        vessel_name=r["vessel_name"],
-                        component_name=r["component_name"],
-                        component_code=r["component_code"],
-                        job_code=r["job_code"],
-                        job_name=r["job_name"],
-                        frequency_type=r["frequency_type"],
-                        frequency=r["frequency"],
-                        alternate_frequency_type=r["alternate_frequency_type"],
-                        alternate_frequency=r["alternate_frequency"],
-                        responsibility=r["responsibility"]
-                    )
+            
+            stmt = text("""
+                INSERT INTO global_job_library (
+                    id, tenant_id, canonical_data, source_vessels, occurrence_count,
+                    first_seen_at, last_confirmed_at, created_at, updated_at, is_deleted
+                ) VALUES (
+                    :id, :tenant_id, :canonical_data, :source_vessels, :occurrence_count,
+                    :now, :now, :now, :now, false
                 )
-            db.add_all(db_entries)
+            """)
+            
+            params_list = []
+            for r in chunk:
+                canonical_dict = {
+                    "job_name": r["job_name"],
+                    "job_code": r["job_code"],
+                    "job_description": r["job_name"],
+                    "frequency": r["frequency"],
+                    "frequency_type": r["frequency_type"],
+                    "component_name": r["component_name"],
+                    "ship_component_job_link_id": r["ship_component_job_link_id"],
+                    "vessel_name": r["vessel_name"],
+                    "responsibility": r["responsibility"]
+                }
+                params_list.append({
+                    "id": str(uuid.uuid4()),
+                    "tenant_id": str(tenant_id),
+                    "canonical_data": json.dumps(canonical_dict),
+                    "source_vessels": json.dumps([{"name": r["vessel_name"]}]),
+                    "occurrence_count": 1,
+                    "now": now
+                })
+            
+            await db.execute(stmt, params_list)
             await db.commit()
             
-        print(f"[STARTUP SEED] Successfully seeded {len(records)} records into job_title_library!", flush=True)
+        print(f"[STARTUP SEED] Successfully seeded {len(records)} records into global_job_library!", flush=True)
 
 
 @app.on_event("startup")

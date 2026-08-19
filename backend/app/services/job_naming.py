@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable, Sequence
+from typing import Iterable, Sequence, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 SOURCE_HEADER = "Source References:"
@@ -439,6 +439,7 @@ async def build_canonical_job_name(
     component_name: str | None,
     job_names: Sequence[str | None] = (),
     job_descriptions: Sequence[str | None] = (),
+    tenant_id: Any = None,
 ) -> str | None:
     if not component_name:
         return None
@@ -452,24 +453,34 @@ async def build_canonical_job_name(
         # Rule 4: If the AI cannot generate an appropriate title, the field should remain empty.
         return None
 
-    # Step 2: Check whether the component name exists in the Job Title library.
-    from app.models.job_title_library import JobTitleLibrary
-    from sqlalchemy import select
+    # Resolve tenant_id if not provided
+    from sqlalchemy import text
+    if not tenant_id:
+        res = await db.execute(text("SELECT tenant_id FROM vessel_projects LIMIT 1;"))
+        row = res.fetchone()
+        tenant_id = row[0] if row else "00000000-0000-0000-0000-000000000001"
 
-    stmt = select(JobTitleLibrary).where(
-        JobTitleLibrary.component_name.ilike(component_name.strip()),
-        JobTitleLibrary.is_deleted == False
-    )
-    result = await db.execute(stmt)
-    library_jobs = result.scalars().all()
+    # Step 2: Check whether the component name exists in the Job Title library.
+    stmt = text("""
+        SELECT canonical_data->>'job_name' AS job_name
+        FROM global_job_library
+        WHERE tenant_id = :tenant_id
+          AND is_deleted = false
+          AND LOWER(canonical_data->>'component_name') = LOWER(:component_name)
+    """)
+    result = await db.execute(stmt, {
+        "tenant_id": str(tenant_id),
+        "component_name": component_name.strip()
+    })
+    library_jobs = [row[0] for row in result.fetchall() if row[0]]
 
     if library_jobs:
         # Component exists in library. Select job title based on job action identified.
-        for lib_job in library_jobs:
-            lib_action = identify_job_action(lib_job.job_name, None)
+        for lib_job_name in library_jobs:
+            lib_action = identify_job_action(lib_job_name, None)
             if lib_action == action:
                 # Direct match found in library
-                return lib_job.job_name
+                return lib_job_name
 
     # Step 3: If no matching title exists (either component not in library, or no job with that action),
     # create a new one using the format: Component Name - Job Action

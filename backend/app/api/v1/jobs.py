@@ -172,6 +172,7 @@ async def _apply_job_name_and_references(db: AsyncSession, job: Job) -> None:
         component_name=component_name,
         job_names=[job.job_name],
         job_descriptions=[job.job_description],
+        tenant_id=job.tenant_id,
     )
     pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
     job.pdf_reference = pdf_reference
@@ -1330,6 +1331,7 @@ async def merge_jobs(
         component_name=await _component_name_for_job(db, target.component_id),
         job_names=merged_names,
         job_descriptions=merged_descriptions,
+        tenant_id=target.tenant_id,
     )
     pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
     target.pdf_reference = pdf_reference
