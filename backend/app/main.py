@@ -454,14 +454,24 @@ async def _run_startup_backfill_and_backup() -> None:
         renamed_count = 0
         for job in jobs_to_rename:
             orig_name = job.job_name
+            comp_name = None
+            if job.component_id:
+                comp_res = await db.execute(
+                    text("SELECT component_name FROM components WHERE id = :cid;"),
+                    {"cid": str(job.component_id)}
+                )
+                comp_row = comp_res.fetchone()
+                if comp_row:
+                    comp_name = comp_row[0]
+                    
             new_name = await build_canonical_job_name(
                 db,
-                component_name=job.component_name,
+                component_name=comp_name,
                 job_names=[job.job_name],
                 job_descriptions=[job.job_description],
                 tenant_id=job.tenant_id
             )
-            if new_name != orig_name:
+            if new_name and new_name != orig_name:
                 job.job_name = new_name
                 db.add(job)
                 renamed_count += 1
