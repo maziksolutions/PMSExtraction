@@ -441,17 +441,62 @@ async def build_canonical_job_name(
     job_descriptions: Sequence[str | None] = (),
     tenant_id: Any = None,
 ) -> str | None:
-    if not component_name:
-        return None
-
-    # Step 1: Identify job action from name & description
     input_name = job_names[0] if job_names else ""
     input_desc = job_descriptions[0] if job_descriptions else ""
     
-    action = identify_job_action(input_name, input_desc)
-    if not action:
-        # Rule 4: If the AI cannot generate an appropriate title, the field should remain empty.
-        return None
+    action = identify_job_action(input_name, input_desc) or "Maintenance"
+
+    # Tiered component name resolution if not provided
+    if not component_name:
+        # 1. Hyphen split in name
+        if input_name and " - " in input_name:
+            parts = input_name.split(" - ", 1)
+            component_name = parts[0].strip()
+            
+        # 2. Scan name/description for library component keywords
+        if not component_name:
+            from sqlalchemy import text
+            lib_comp_res = await db.execute(text("""
+                SELECT DISTINCT canonical_data->>'component_name' 
+                FROM global_job_library 
+                WHERE (canonical_data->>'component_name') IS NOT NULL;
+            """))
+            lib_comp_names = [r[0] for r in lib_comp_res.fetchall() if r[0]]
+            lib_comp_names.sort(key=len, reverse=True)
+            
+            if input_name:
+                job_name_lower = input_name.lower()
+                for name in lib_comp_names:
+                    if name.lower() in job_name_lower:
+                        component_name = name
+                        break
+            if not component_name and input_desc:
+                job_desc_lower = input_desc.lower()
+                for name in lib_comp_names:
+                    if name.lower() in job_desc_lower:
+                        component_name = name
+                        break
+
+        # 3. Action-split fallback (extract text preceding action keyword)
+        if not component_name and input_name:
+            import re
+            pattern = r"\b(maintenance|inspection|analysis|overhaul|testing|replacement|renew|cleaning|check|inspect)\b"
+            match = re.search(pattern, input_name.lower())
+            if match:
+                part = input_name[:match.start()].strip(" -:/,.;")
+                if part:
+                    component_name = part
+
+        # 4. Word-count fallback
+        if not component_name and input_name:
+            words = input_name.split()
+            if len(words) > 3:
+                component_name = " ".join(words[:3])
+            else:
+                component_name = input_name
+
+    if not component_name:
+        component_name = "General"
 
     # Resolve tenant_id if not provided
     from sqlalchemy import text
@@ -482,6 +527,5 @@ async def build_canonical_job_name(
                 # Direct match found in library
                 return lib_job_name
 
-    # Step 3: If no matching title exists (either component not in library, or no job with that action),
-    # create a new one using the format: Component Name - Job Action
+    # Step 3: Fallback format
     return f"{component_name.strip()} - {action}"
