@@ -792,7 +792,7 @@ async def export_jobs(
         ws.cell(row=row_idx, column=7, value=job.frequency or "")
         ws.cell(row=row_idx, column=8, value=job.frequency_type.value if job.frequency_type else "")
         ws.cell(row=row_idx, column=9, value=job.performing_rank or "")
-        ws.cell(row=row_idx, column=10, value=(job.job_description or "")[:300])
+        ws.cell(row=row_idx, column=10, value=job.job_description or "")
         ws.cell(row=row_idx, column=11, value=job.qc_status.value if hasattr(job.qc_status, "value") else str(job.qc_status))
         ws.cell(row=row_idx, column=12, value="")
         ws.cell(row=row_idx, column=13, value="")
@@ -1506,7 +1506,7 @@ async def export_jobs_qc(
             str(job.id), job.pdf_reference or "", job.page_reference or "", comp_name,
             job.job_name or "", job.job_code or "", job.frequency or "",
             job.frequency_type.value if job.frequency_type else "",
-            job.performing_rank or "", (job.job_description or "")[:300],
+            job.performing_rank or "", job.job_description or "",
             qc_val, "", "",
         ]
         fill = ALT_FILL if r % 2 == 0 else PatternFill(fill_type=None)
