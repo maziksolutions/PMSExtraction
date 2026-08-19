@@ -464,6 +464,10 @@ async def _run_startup_backfill_and_backup() -> None:
                 if comp_row:
                     comp_name = comp_row[0]
                     
+            if not comp_name and job.job_name and " - " in job.job_name:
+                parts = job.job_name.split(" - ", 1)
+                comp_name = parts[0].strip()
+                
             new_name = await build_canonical_job_name(
                 db,
                 component_name=comp_name,
