@@ -775,6 +775,124 @@ _GLOBAL_TABLE_MAP = {
 }
 
 
+async def ensure_tenant_library_seeded(db: AsyncSession, tenant_id: Any) -> None:
+    import os
+    import csv
+    import json
+    import uuid
+    from datetime import datetime
+    from sqlalchemy import text
+    
+    res = await db.execute(text("""
+        SELECT COUNT(*) FROM global_job_library 
+        WHERE tenant_id = :tid 
+          AND (canonical_data->>'ship_component_job_link_id') IS NOT NULL;
+    """), {"tid": str(tenant_id)})
+    link_id_count = res.scalar()
+    
+    if link_id_count >= 15000:
+        return
+        
+    print(f"[ON-DEMAND SEED] Seeding 16,940 records for tenant {tenant_id}...", flush=True)
+    
+    csv_path = os.path.join(os.path.dirname(__file__), "..", "..", "assets", "asm_jobs.csv")
+    if not os.path.exists(csv_path):
+        csv_path = os.path.join("app", "assets", "asm_jobs.csv")
+        if not os.path.exists(csv_path):
+            print(f"[ON-DEMAND SEED ERROR] CSV file not found at {csv_path}", flush=True)
+            return
+            
+    records = []
+    with open(csv_path, 'r', encoding='utf-8', errors='ignore') as f:
+        reader = csv.reader(f)
+        header = next(reader)
+        for row in reader:
+            if not row or len(row) < 11:
+                continue
+            if not row[0] or not row[0].strip().isdigit():
+                continue
+            
+            link_id = int(row[0].strip())
+            vessel = row[1].strip() if row[1] else ""
+            comp_name = row[2].strip() if row[2] else ""
+            comp_code = row[3].strip() if row[3] else ""
+            job_code = row[4].strip() if row[4] else ""
+            job_name = row[5].strip() if row[5] else ""
+            freq_type = row[6].strip() if row[6] else None
+            
+            freq_val = row[7].strip() if row[7] else ""
+            freq = int(freq_val) if freq_val.isdigit() else None
+            
+            alt_freq_type = row[8].strip() if row[8] else None
+            
+            alt_freq_val = row[9].strip() if row[9] else ""
+            alt_freq = int(alt_freq_val) if alt_freq_val.isdigit() else None
+            
+            resp = row[10].strip() if row[10] else None
+            
+            records.append({
+                "ship_component_job_link_id": link_id,
+                "vessel_name": vessel,
+                "component_name": comp_name,
+                "component_code": comp_code,
+                "job_code": job_code,
+                "job_name": job_name,
+                "frequency_type": freq_type,
+                "frequency": freq,
+                "alternate_frequency_type": alt_freq_type,
+                "alternate_frequency": alt_freq,
+                "responsibility": resp
+            })
+            
+    await db.execute(text("""
+        DELETE FROM global_job_library 
+        WHERE tenant_id = :tid 
+          AND (canonical_data->>'ship_component_job_link_id') IS NOT NULL;
+    """), {"tid": str(tenant_id)})
+    await db.commit()
+    
+    now = datetime.utcnow()
+    batch_size = 5000
+    for i in range(0, len(records), batch_size):
+        chunk = records[i : i + batch_size]
+        
+        stmt = text("""
+            INSERT INTO global_job_library (
+                id, tenant_id, canonical_data, source_vessels, occurrence_count,
+                first_seen_at, last_confirmed_at, created_at, updated_at, is_deleted
+            ) VALUES (
+                :id, :tenant_id, :canonical_data, :source_vessels, :occurrence_count,
+                :now, :now, :now, :now, false
+            )
+        """)
+        
+        params_list = []
+        for r in chunk:
+            canonical_dict = {
+                "job_name": r["job_name"],
+                "job_code": r["job_code"],
+                "job_description": r["job_name"],
+                "frequency": r["frequency"],
+                "frequency_type": r["frequency_type"],
+                "component_name": r["component_name"],
+                "ship_component_job_link_id": r["ship_component_job_link_id"],
+                "vessel_name": r["vessel_name"],
+                "responsibility": r["responsibility"]
+            }
+            params_list.append({
+                "id": str(uuid.uuid4()),
+                "tenant_id": str(tenant_id),
+                "canonical_data": json.dumps(canonical_dict),
+                "source_vessels": json.dumps([{"name": r["vessel_name"]}]),
+                "occurrence_count": 1,
+                "now": now
+            })
+        
+        await db.execute(stmt, params_list)
+        await db.commit()
+    print(f"[ON-DEMAND SEED] Successfully seeded tenant {tenant_id} with {len(records)} records!", flush=True)
+
+
 @router.get(
     "/library/global/{entity_type}",
     summary="F-04: List global library entries (component/job/spare)",
@@ -790,6 +908,11 @@ async def list_global_library(
     page_size: int = Query(50, ge=1, le=200),
 ) -> dict[str, Any]:
     """Return paginated records from the relevant global library table."""
+    if entity_type == "job":
+        try:
+            await ensure_tenant_library_seeded(db, current_user.tenant_id)
+        except Exception as e:
+            logger.warning("ensure_tenant_library_seeded failed: %s", e)
     table = _GLOBAL_TABLE_MAP.get(entity_type)
     if not table:
         raise HTTPException(
