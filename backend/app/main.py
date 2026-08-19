@@ -346,6 +346,55 @@ async def _seed_job_title_library_if_empty() -> None:
         print(f"[STARTUP SEED] Successfully seeded {len(records)} records into global_job_library!", flush=True)
 
 
+async def _run_startup_backfill_and_backup() -> None:
+    from app.core.database import AsyncSessionLocal
+    from sqlalchemy import text
+    from app.models.job import Job
+    from sqlalchemy import select
+    
+    async with AsyncSessionLocal() as db:
+        await db.execute(text("""
+            CREATE TABLE IF NOT EXISTS job_description_backup (
+                job_id UUID PRIMARY KEY,
+                original_description TEXT,
+                backed_up_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """))
+        await db.commit()
+        
+        res = await db.execute(text("SELECT COUNT(*) FROM job_description_backup;"))
+        backup_count = res.scalar()
+        
+        if backup_count == 0:
+            print("[STARTUP MIGRATION] Backing up original job descriptions...", flush=True)
+            await db.execute(text("""
+                INSERT INTO job_description_backup (job_id, original_description)
+                SELECT id, job_description FROM jobs
+                WHERE job_description IS NOT NULL;
+            """))
+            await db.commit()
+            print("[STARTUP MIGRATION] Backup complete.", flush=True)
+            
+        res = await db.execute(select(Job).where(Job.job_description.is_not(None)))
+        jobs = res.scalars().all()
+        
+        updated_count = 0
+        for job in jobs:
+            if not job.job_description:
+                continue
+            orig = job.job_description
+            job.job_description = orig
+            if job.job_description != orig:
+                db.add(job)
+                updated_count += 1
+                
+        if updated_count > 0:
+            await db.commit()
+            print(f"[STARTUP MIGRATION] Successfully backfilled and formatted {updated_count} existing job descriptions!", flush=True)
+        else:
+            print("[STARTUP MIGRATION] No job descriptions needed backfilling.", flush=True)
+
+
 @app.on_event("startup")
 async def _log_ai_config() -> None:
     print(
@@ -362,6 +411,10 @@ async def _log_ai_config() -> None:
         await _seed_job_title_library_if_empty()
     except Exception as e:
         print(f"[STARTUP SEED ERROR] Failed to seed job title library: {e}", flush=True)
+    try:
+        await _run_startup_backfill_and_backup()
+    except Exception as e:
+        print(f"[STARTUP MIGRATION ERROR] Failed to run backfill: {e}", flush=True)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)
