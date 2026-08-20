@@ -173,10 +173,12 @@ def strip_source_reference_footer(text: str | None) -> str | None:
     cleaned = (text or "").strip()
     if not cleaned:
         return None
-    marker = f"\n\n{SOURCE_HEADER}"
-    idx = cleaned.find(marker)
-    if idx >= 0:
-        cleaned = cleaned[:idx].rstrip()
+    import re
+    # Match one or more newlines, followed by optional '/*-' comments/spaces, and the SOURCE_HEADER
+    pattern = re.compile(r'\n+(?:/\*-?\s*)?' + re.escape(SOURCE_HEADER), re.I)
+    match = pattern.search(cleaned)
+    if match:
+        cleaned = cleaned[:match.start()].rstrip()
     return cleaned or None
 
 

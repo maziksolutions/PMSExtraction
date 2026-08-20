@@ -404,6 +404,46 @@ async def _run_startup_restore() -> None:
         print(f"[STARTUP RESTORE ERROR] Failed to restore: {e}", flush=True)
 
 
+async def _run_startup_desc_cleanup() -> None:
+    from app.core.database import AsyncSessionLocal
+    from app.models.job import Job
+    from app.services.job_naming import (
+        strip_source_reference_footer,
+        split_reference_entries,
+        append_source_references_to_description
+    )
+    from sqlalchemy import select
+    try:
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(select(Job))
+            jobs = res.scalars().all()
+            print(f"[STARTUP CLEANUP] Checking {len(jobs)} jobs for repeated descriptions...", flush=True)
+            
+            updated_count = 0
+            for job in jobs:
+                if not job.job_description:
+                    continue
+                orig_desc = job.job_description
+                reference_entries = split_reference_entries(
+                    pdf_reference=job.pdf_reference,
+                    page_reference=job.page_reference,
+                    source_reference=job.source_reference
+                )
+                stripped_desc = strip_source_reference_footer(orig_desc)
+                new_desc = append_source_references_to_description(stripped_desc, reference_entries)
+                if new_desc != orig_desc:
+                    job.job_description = new_desc
+                    db.add(job)
+                    updated_count += 1
+            if updated_count > 0:
+                await db.commit()
+                print(f"[STARTUP CLEANUP] Successfully cleaned and deduplicated {updated_count} descriptions!", flush=True)
+            else:
+                print("[STARTUP CLEANUP] No descriptions needed deduplication.", flush=True)
+    except Exception as e:
+        print(f"[STARTUP CLEANUP ERROR] Failed to clean up: {e}", flush=True)
+
+
 async def _run_startup_backfill_and_backup() -> None:
     from app.core.database import AsyncSessionLocal
     from sqlalchemy import text
@@ -571,6 +611,10 @@ async def _log_ai_config() -> None:
         await _run_startup_restore()
     except Exception as e:
         print(f"[STARTUP RESTORE ERROR] Failed to run restore: {e}", flush=True)
+    try:
+        await _run_startup_desc_cleanup()
+    except Exception as e:
+        print(f"[STARTUP CLEANUP ERROR] Failed to run description cleanup: {e}", flush=True)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)
