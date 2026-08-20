@@ -422,96 +422,98 @@ async def _run_startup_backfill_and_backup() -> None:
         else:
             print("[STARTUP MIGRATION] No job descriptions needed backfilling.", flush=True)
 
-        # Step 2: Backup and backfill/re-name job titles based on global library
-        await db.execute(text("""
-            CREATE TABLE IF NOT EXISTS job_name_backup (
-                job_id UUID PRIMARY KEY,
-                original_job_name TEXT,
-                backed_up_at TIMESTAMPTZ DEFAULT NOW()
-            );
-        """))
-        await db.commit()
-        
-        res = await db.execute(text("SELECT COUNT(*) FROM job_name_backup;"))
-        name_backup_count = res.scalar()
-        
-        if name_backup_count == 0:
-            print("[STARTUP MIGRATION] Backing up original job names...", flush=True)
+        # Step 2: Backup and backfill/re-name job titles based on global library (DISABLED)
+        # To re-enable, change the condition below to True.
+        if False:
             await db.execute(text("""
-                INSERT INTO job_name_backup (job_id, original_job_name)
-                SELECT id, job_name FROM jobs
-                WHERE job_name IS NOT NULL;
+                CREATE TABLE IF NOT EXISTS job_name_backup (
+                    job_id UUID PRIMARY KEY,
+                    original_job_name TEXT,
+                    backed_up_at TIMESTAMPTZ DEFAULT NOW()
+                );
             """))
             await db.commit()
-            print("[STARTUP MIGRATION] Job names backup complete.", flush=True)
             
-        # Re-resolve job names using build_canonical_job_name
-        from app.services.job_naming import build_canonical_job_name
-        
-        # Load unique component names from global library once to use as scanning fallback
-        lib_comp_res = await db.execute(text("""
-            SELECT DISTINCT canonical_data->>'component_name' 
-            FROM global_job_library 
-            WHERE (canonical_data->>'component_name') IS NOT NULL;
-        """))
-        lib_comp_names = [r[0] for r in lib_comp_res.fetchall() if r[0]]
-        lib_comp_names.sort(key=len, reverse=True)
-        
-        res = await db.execute(select(Job))
-        jobs_to_rename = res.scalars().all()
-        
-        renamed_count = 0
-        for job in jobs_to_rename:
-            orig_name = job.job_name
-            comp_name = None
+            res = await db.execute(text("SELECT COUNT(*) FROM job_name_backup;"))
+            name_backup_count = res.scalar()
             
-            # Method 1: Component ID
-            if job.component_id:
-                comp_res = await db.execute(
-                    text("SELECT component_name FROM components WHERE id = :cid;"),
-                    {"cid": str(job.component_id)}
-                )
-                comp_row = comp_res.fetchone()
-                if comp_row:
-                    comp_name = comp_row[0]
+            if name_backup_count == 0:
+                print("[STARTUP MIGRATION] Backing up original job names...", flush=True)
+                await db.execute(text("""
+                    INSERT INTO job_name_backup (job_id, original_job_name)
+                    SELECT id, job_name FROM jobs
+                    WHERE job_name IS NOT NULL;
+                """))
+                await db.commit()
+                print("[STARTUP MIGRATION] Job names backup complete.", flush=True)
+                
+            # Re-resolve job names using build_canonical_job_name
+            from app.services.job_naming import build_canonical_job_name
+            
+            # Load unique component names from global library once to use as scanning fallback
+            lib_comp_res = await db.execute(text("""
+                SELECT DISTINCT canonical_data->>'component_name' 
+                FROM global_job_library 
+                WHERE (canonical_data->>'component_name') IS NOT NULL;
+            """))
+            lib_comp_names = [r[0] for r in lib_comp_res.fetchall() if r[0]]
+            lib_comp_names.sort(key=len, reverse=True)
+            
+            res = await db.execute(select(Job))
+            jobs_to_rename = res.scalars().all()
+            
+            renamed_count = 0
+            for job in jobs_to_rename:
+                orig_name = job.job_name
+                comp_name = None
+                
+                # Method 1: Component ID
+                if job.component_id:
+                    comp_res = await db.execute(
+                        text("SELECT component_name FROM components WHERE id = :cid;"),
+                        {"cid": str(job.component_id)}
+                    )
+                    comp_row = comp_res.fetchone()
+                    if comp_row:
+                        comp_name = comp_row[0]
+                        
+                # Method 2: Hyphen split in name
+                if not comp_name and job.job_name and " - " in job.job_name:
+                    parts = job.job_name.split(" - ", 1)
+                    comp_name = parts[0].strip()
                     
-            # Method 2: Hyphen split in name
-            if not comp_name and job.job_name and " - " in job.job_name:
-                parts = job.job_name.split(" - ", 1)
-                comp_name = parts[0].strip()
-                
-            # Method 3: Scan name/description for library component keywords
-            if not comp_name and job.job_name:
-                job_name_lower = job.job_name.lower()
-                for name in lib_comp_names:
-                    if name.lower() in job_name_lower:
-                        comp_name = name
-                        break
-                        
-            if not comp_name and job.job_description:
-                job_desc_lower = job.job_description.lower()
-                for name in lib_comp_names:
-                    if name.lower() in job_desc_lower:
-                        comp_name = name
-                        break
-                        
-            new_name = await build_canonical_job_name(
-                db,
-                component_name=comp_name,
-                job_names=[job.job_name],
-                job_descriptions=[job.job_description],
-                tenant_id=job.tenant_id
-            )
-            if new_name and new_name != orig_name:
-                job.job_name = new_name
-                db.add(job)
-                renamed_count += 1
-                
-        if renamed_count > 0:
-            await db.commit()
-            print(f"[STARTUP MIGRATION] Successfully backfilled and updated {renamed_count} job titles based on library!", flush=True)
-        else:
-            print("[STARTUP MIGRATION] No job titles needed renaming.", flush=True)
+                # Method 3: Scan name/description for library component keywords
+                if not comp_name and job.job_name:
+                    job_name_lower = job.job_name.lower()
+                    for name in lib_comp_names:
+                        if name.lower() in job_name_lower:
+                            comp_name = name
+                            break
+                            
+                if not comp_name and job.job_description:
+                    job_desc_lower = job.job_description.lower()
+                    for name in lib_comp_names:
+                        if name.lower() in job_desc_lower:
+                            comp_name = name
+                            break
+                            
+                new_name = await build_canonical_job_name(
+                    db,
+                    component_name=comp_name,
+                    job_names=[job.job_name],
+                    job_descriptions=[job.job_description],
+                    tenant_id=job.tenant_id
+                )
+                if new_name and new_name != orig_name:
+                    job.job_name = new_name
+                    db.add(job)
+                    renamed_count += 1
+                    
+            if renamed_count > 0:
+                await db.commit()
+                print(f"[STARTUP MIGRATION] Successfully backfilled and updated {renamed_count} job titles based on library!", flush=True)
+            else:
+                print("[STARTUP MIGRATION] No job titles needed renaming.", flush=True)
 
 
 @app.on_event("startup")
