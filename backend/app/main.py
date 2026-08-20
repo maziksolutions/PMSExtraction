@@ -373,6 +373,37 @@ async def _seed_job_title_library_if_empty() -> None:
             print(f"[STARTUP SEED] Successfully seeded tenant {tenant_id}!", flush=True)
 
 
+async def _run_startup_restore() -> None:
+    from app.core.database import AsyncSessionLocal
+    from sqlalchemy import text
+    try:
+        async with AsyncSessionLocal() as db:
+            # Check if the backup table exists
+            res = await db.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'job_name_backup'
+                );
+            """))
+            exists = res.scalar()
+            if exists:
+                res = await db.execute(text("SELECT COUNT(*) FROM job_name_backup;"))
+                count = res.scalar()
+                print(f"[STARTUP RESTORE] Found {count} backed up job titles in 'job_name_backup'. Restoring...", flush=True)
+                await db.execute(text("""
+                    UPDATE jobs
+                    SET job_name = b.original_job_name
+                    FROM job_name_backup b
+                    WHERE jobs.id = b.job_id;
+                """))
+                await db.commit()
+                print("[STARTUP RESTORE] Successfully restored all original job titles!", flush=True)
+            else:
+                print("[STARTUP RESTORE] Backup table 'job_name_backup' does not exist! Cannot restore.", flush=True)
+    except Exception as e:
+        print(f"[STARTUP RESTORE ERROR] Failed to restore: {e}", flush=True)
+
+
 async def _run_startup_backfill_and_backup() -> None:
     from app.core.database import AsyncSessionLocal
     from sqlalchemy import text
@@ -536,6 +567,10 @@ async def _log_ai_config() -> None:
         await _run_startup_backfill_and_backup()
     except Exception as e:
         print(f"[STARTUP MIGRATION ERROR] Failed to run backfill: {e}", flush=True)
+    try:
+        await _run_startup_restore()
+    except Exception as e:
+        print(f"[STARTUP RESTORE ERROR] Failed to run restore: {e}", flush=True)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)
