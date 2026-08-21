@@ -921,141 +921,30 @@ async def _extract_spare_parts_from_image_split(
     context_note: str | None = None,
     on_strip_start: Any | None = None,
 ) -> list[dict]:
-    """Split a dense parts-list page into column-group strips and extract from each.
+    """Force full-page spare parts extraction from page image, bypassing column splits."""
+    if on_strip_start:
+        on_strip_start(0, 1)
 
-    Uses detected vertical whitespace bands to find natural column splits.
-    Falls back to fixed 4 equal strips when detection is ambiguous.
-    Japanese spare parts tables typically pack 2-4 column groups side-by-side.
-    """
-    try:
-        from PIL import Image as PILImage
-    except ImportError:
-        return await _extract_entities_from_page_image(
-            image_bytes=image_bytes,
-            filename=filename,
-            page_no=page_no,
-            extraction_type="spare",
-            context_note=context_note,
-        )
-
-    img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
-    width, height = img.size
-
-    # Try column-aware detection with 80px gap threshold to avoid splitting columns of a single table
-    bands = _detect_column_bands(img, min_gap_px=80)
-    if not bands:
-        logger.info(
-            "extract_spare_split: %s page=%d no column bands detected, processing as a single full-page table",
-            filename, page_no,
-        )
-        if on_strip_start:
-            on_strip_start(0, 1)
-        full_note = (
-            "This page contains a spare parts table. "
-            "Scan the entire table from left-to-right. "
-            "Translate any Japanese/non-English descriptions to English. "
-            "Return a JSON array with EVERY row — never return prose."
-        )
-        if context_note:
-            full_note += f" {context_note}"
-        return await _extract_entities_from_page_image(
-            image_bytes=image_bytes,
-            filename=filename,
-            page_no=page_no,
-            extraction_type="spare",
-            context_note=full_note,
-        )
-
-    overlap_px = max(8, int(width * 0.01))
-    strip_regions = [
-        (max(0, x1 - overlap_px), min(width, x2 + overlap_px))
-        for x1, x2 in bands
-    ]
-    strip_labels = [f"column group {i + 1} of {len(bands)}" for i in range(len(bands))]
-    logger.info(
-        "extract_spare_split: %s page=%d column-aware bands=%d",
-        filename, page_no, len(bands),
+    full_note = (
+        "This page contains a spare parts table. "
+        "Scan the entire table from left-to-right. "
+        "Translate any Japanese/non-English descriptions to English. "
+        "Return a JSON array with EVERY row — never return prose."
     )
+    if context_note:
+        full_note += f" {context_note}"
 
-    all_records: list[dict] = []
-    for strip_idx, ((x1, x2), label) in enumerate(zip(strip_regions, strip_labels)):
-        if on_strip_start:
-            on_strip_start(strip_idx, len(strip_regions))
-        buf = io.BytesIO()
-        img.crop((x1, 0, x2, height)).save(buf, format="PNG")
-        strip_bytes = buf.getvalue()
-
-        note = (
-            f"You are looking at ONE COLUMN GROUP (the {label}) of a multi-column parts-list page. "
-            "This strip contains ONE set of REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS columns. "
-            "STEP 1: Count the data rows visible in this strip (rows with part numbers, NOT header rows). "
-            "STEP 2: Extract EXACTLY that many records — one JSON object per row. DO NOT stop early. "
-            "CRITICAL: ALWAYS return a JSON array — never return prose or explanations. "
-            "If all descriptions are in Japanese, translate them to English (best-effort is fine). "
-            "Return [] only if this strip contains zero data rows."
-        )
-        if context_note:
-            note += f" {context_note}"
-
-        records = await _extract_entities_from_page_image(
-            image_bytes=strip_bytes,
-            filename=filename,
-            page_no=page_no,
-            extraction_type="spare",
-            context_note=note,
-        )
-        logger.info(
-            "extract_spare_split: %s page=%d strip=%s records=%d",
-            filename, page_no, label, len(records),
-        )
-        all_records.extend(records)
-
-    # Deduplicate using the full key: part_number + drawing_number + drawing_position + part_name + page
-    seen: set[str] = set()
-    deduped: list[dict] = []
-    for r in all_records:
-        key = "|".join([
-            (r.get("part_number") or "").strip().lower(),
-            (r.get("drawing_number") or "").strip().lower(),
-            (r.get("drawing_position") or "").strip().lower(),
-            (r.get("part_name") or "").strip().lower(),
-            str(r.get("source_page_number") or ""),
-        ])
-        if key.strip("|") and key in seen:
-            continue
-        if key.strip("|"):
-            seen.add(key)
-        deduped.append(r)
-
-    # Full-page fallback: if all strips returned nothing, try the original full-page image.
-    # Narrow strips can confuse the model on very dense Japanese tables; the full page
-    # gives it the complete table structure and context.
-    if not deduped:
-        logger.warning(
-            "extract_spare_split: %s page=%d all %d strips returned 0 records — trying full page",
-            filename, page_no, len(strip_regions),
-        )
-        full_note = (
-            "This page contains a dense multi-column spare parts table. "
-            "Scan ALL column groups left-to-right across the FULL page width. "
-            "Translate ALL Japanese/non-English descriptions to English. "
-            "Return a JSON array with EVERY row — never return prose."
-        )
-        if context_note:
-            full_note += f" {context_note}"
-        deduped = await _extract_entities_from_page_image(
-            image_bytes=image_bytes,
-            filename=filename,
-            page_no=page_no,
-            extraction_type="spare",
-            context_note=full_note,
-        )
-        logger.info(
-            "extract_spare_split: %s page=%d full-page fallback records=%d",
-            filename, page_no, len(deduped),
-        )
-
-    return deduped
+    logger.info(
+        "extract_spare_split: forcing full-page extraction for %s page=%d",
+        filename, page_no,
+    )
+    return await _extract_entities_from_page_image(
+        image_bytes=image_bytes,
+        filename=filename,
+        page_no=page_no,
+        extraction_type="spare",
+        context_note=full_note,
+    )
 
 
 async def _extract_entities_from_page_image_with_openai(
