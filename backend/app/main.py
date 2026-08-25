@@ -449,7 +449,7 @@ async def _check_vessel4_status() -> None:
     from sqlalchemy import text
     try:
         async with AsyncSessionLocal() as db:
-            # Run recovery check for M-29 Air Compressor manuals
+            # 1. Run recovery check for M-29 Air Compressor manuals
             m29_res = await db.execute(text("""
                 SELECT id, original_filename FROM manuals 
                 WHERE original_filename LIKE '%M-29%' AND is_deleted = false;
@@ -477,6 +477,17 @@ async def _check_vessel4_status() -> None:
                     await db.execute(text("UPDATE manuals SET status = 'classified', error_message = null WHERE id = :mid;"), {"mid": mid})
                     await db.commit()
                     print(f"[M29 RECOVERY] Restore complete!", flush=True)
+                    
+            # 2. Count manuals updated today (August 25, 2026) in production database
+            prod_m_res = await db.execute(text("""
+                SELECT original_filename, status, updated_at 
+                FROM manuals 
+                WHERE DATE(updated_at) = '2026-08-25' AND is_deleted = false;
+            """))
+            prod_m_rows = prod_m_res.fetchall()
+            print(f"[PROD MANUALS TODAY] Total manuals updated/extracted today (2026-08-25): {len(prod_m_rows)}", flush=True)
+            for pm in prod_m_rows:
+                print(f"  - Manual: {pm[0]} | Status: {pm[1]} | Updated At: {pm[2]}", flush=True)
     except Exception as e:
         print(f"[M29 RECOVERY ERROR] Failed: {e}", flush=True)
 
