@@ -2151,43 +2151,25 @@ async def _link_records_to_components(
     )
     spares = spares_result.scalars().all()
 
-    # Determine mapping path for spares
-    spare_mapping = {}
-    if len(fallback_components) == 1:
-        single_comp_id = str(fallback_components[0].id)
-        spare_mapping = {str(spare.id): single_comp_id for spare in spares}
-    elif len(fallback_components) > 1 and spares:
-        spare_mapping = await _ai_link_records_to_components(
-            records=spares,
-            components=fallback_components,
-            relation="spare",
-            filename=manual.original_filename
-        )
-
-    # Apply spares mapping
+    # Apply spares mapping (reverted to original text-overlap logic to preserve accuracy)
     spares_linked = 0
     for spare in spares:
-        comp_id = spare_mapping.get(str(spare.id))
-        match = comp_dict.get(comp_id) if comp_id else None
-        
-        # Fallback to Jaccard mapping
-        if not match:
-            match = pick_component(
-                " ".join(
-                    filter(
-                        None,
-                        [
-                            spare.part_name,
-                            spare.part_number,
-                            spare.spare_model,
-                            spare.specification,
-                            spare.drawing_number,
-                        ],
-                    )
-                ),
-                spare.page_reference,
-                "spare",
-            )
+        match = pick_component(
+            " ".join(
+                filter(
+                    None,
+                    [
+                        spare.part_name,
+                        spare.part_number,
+                        spare.spare_model,
+                        spare.specification,
+                        spare.drawing_number,
+                    ],
+                )
+            ),
+            spare.page_reference,
+            "spare",
+        )
             
         if match:
             changed = False
