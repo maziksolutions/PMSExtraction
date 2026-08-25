@@ -449,44 +449,36 @@ async def _check_vessel4_status() -> None:
     from sqlalchemy import text
     try:
         async with AsyncSessionLocal() as db:
-            v_res = await db.execute(text("SELECT id, name FROM vessel_projects WHERE id = '8a057307-7fb5-45c8-b9ea-658294c077ac';"))
-            vessel = v_res.fetchone()
-            if not vessel:
-                print("[VESSEL 4 CHECK] Vessel 8a057307-7fb5-45c8-b9ea-658294c077ac not found in this DB.", flush=True)
-                return
-            print(f"[VESSEL 4 CHECK] Found Vessel: {vessel[1]} (ID: {vessel[0]})", flush=True)
-            
-            m_res = await db.execute(text("""
-                SELECT id, original_filename, status, pages_with_components, pages_with_jobs, category, error_message
-                FROM manuals
-                WHERE vessel_id = '8a057307-7fb5-45c8-b9ea-658294c077ac' AND is_deleted = false;
+            # Run recovery check for M-29 Air Compressor manuals
+            m29_res = await db.execute(text("""
+                SELECT id, original_filename FROM manuals 
+                WHERE original_filename LIKE '%M-29%' AND is_deleted = false;
             """))
-            manuals = m_res.fetchall()
-            print(f"[VESSEL 4 CHECK] Manuals count: {len(manuals)}", flush=True)
-            for m in manuals:
-                print(f"  * Manual: {m[1]} | ID: {m[0]} | Status: {m[2]} | Pages Comp: {m[3]} | Pages Job: {m[4]} | Cat: {m[5]} | Error: {m[6]}", flush=True)
+            m29_rows = m29_res.fetchall()
+            for row in m29_rows:
+                mid = row[0]
+                filename = row[1]
+                print(f"[M29 RECOVERY] Found manual: {filename} (ID: {mid})", flush=True)
                 
-            c_res = await db.execute(text("""
-                SELECT id, component_name, page_reference, source_manual_id, is_deleted, qc_status
-                FROM components
-                WHERE vessel_id = '8a057307-7fb5-45c8-b9ea-658294c077ac';
-            """))
-            comps = c_res.fetchall()
-            print(f"[VESSEL 4 CHECK] Components count (including deleted): {len(comps)}", flush=True)
-            for c in comps[:10]:
-                print(f"  * Component: {c[1]} | ID: {c[0]} | Page: {c[2]} | Manual: {c[3]} | Deleted: {c[4]} | QC: {c[5]}", flush=True)
+                c_del = await db.execute(text("SELECT COUNT(*) FROM components WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})
+                j_del = await db.execute(text("SELECT COUNT(*) FROM jobs WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})
+                s_del = await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})
                 
-            j_res = await db.execute(text("""
-                SELECT id, job_name, component_id, page_reference, source_manual_id, is_deleted, qc_status
-                FROM jobs
-                WHERE vessel_id = '8a057307-7fb5-45c8-b9ea-658294c077ac';
-            """))
-            jobs = j_res.fetchall()
-            print(f"[VESSEL 4 CHECK] Jobs count (including deleted): {len(jobs)}", flush=True)
-            for j in jobs[:10]:
-                print(f"  * Job: {j[1]} | ID: {j[0]} | CompID: {j[2]} | Page: {j[3]} | Manual: {j[4]} | Deleted: {j[5]} | QC: {j[6]}", flush=True)
+                c_count = c_del.scalar()
+                j_count = j_del.scalar()
+                s_count = s_del.scalar()
+                print(f"[M29 RECOVERY] Deleted records in DB: {c_count} components, {j_count} jobs, {s_count} spares", flush=True)
+                
+                if c_count > 0 or j_count > 0 or s_count > 0:
+                    print(f"[M29 RECOVERY] Restoring previously extracted data for {filename}...", flush=True)
+                    await db.execute(text("UPDATE components SET is_deleted = false WHERE source_manual_id = :mid;"), {"mid": mid})
+                    await db.execute(text("UPDATE jobs SET is_deleted = false WHERE source_manual_id = :mid;"), {"mid": mid})
+                    await db.execute(text("UPDATE spares SET is_deleted = false WHERE source_manual_id = :mid;"), {"mid": mid})
+                    await db.execute(text("UPDATE manuals SET status = 'classified', error_message = null WHERE id = :mid;"), {"mid": mid})
+                    await db.commit()
+                    print(f"[M29 RECOVERY] Restore complete!", flush=True)
     except Exception as e:
-        print(f"[VESSEL 4 CHECK ERROR] Failed: {e}", flush=True)
+        print(f"[M29 RECOVERY ERROR] Failed: {e}", flush=True)
 
 
 async def _run_startup_backfill_and_backup() -> None:
