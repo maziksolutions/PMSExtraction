@@ -444,6 +444,51 @@ async def _run_startup_desc_cleanup() -> None:
         print(f"[STARTUP CLEANUP ERROR] Failed to clean up: {e}", flush=True)
 
 
+async def _check_vessel4_status() -> None:
+    from app.core.database import AsyncSessionLocal
+    from sqlalchemy import text
+    try:
+        async with AsyncSessionLocal() as db:
+            v_res = await db.execute(text("SELECT id, name FROM vessel_projects WHERE id = '8a057307-7fb5-45c8-b9ea-658294c077ac';"))
+            vessel = v_res.fetchone()
+            if not vessel:
+                print("[VESSEL 4 CHECK] Vessel 8a057307-7fb5-45c8-b9ea-658294c077ac not found in this DB.", flush=True)
+                return
+            print(f"[VESSEL 4 CHECK] Found Vessel: {vessel[1]} (ID: {vessel[0]})", flush=True)
+            
+            m_res = await db.execute(text("""
+                SELECT id, original_filename, status, pages_with_components, pages_with_jobs, category, error_message
+                FROM manuals
+                WHERE vessel_id = '8a057307-7fb5-45c8-b9ea-658294c077ac' AND is_deleted = false;
+            """))
+            manuals = m_res.fetchall()
+            print(f"[VESSEL 4 CHECK] Manuals count: {len(manuals)}", flush=True)
+            for m in manuals:
+                print(f"  * Manual: {m[1]} | ID: {m[0]} | Status: {m[2]} | Pages Comp: {m[3]} | Pages Job: {m[4]} | Cat: {m[5]} | Error: {m[6]}", flush=True)
+                
+            c_res = await db.execute(text("""
+                SELECT id, component_name, page_reference, source_manual_id, is_deleted, qc_status
+                FROM components
+                WHERE vessel_id = '8a057307-7fb5-45c8-b9ea-658294c077ac';
+            """))
+            comps = c_res.fetchall()
+            print(f"[VESSEL 4 CHECK] Components count (including deleted): {len(comps)}", flush=True)
+            for c in comps[:10]:
+                print(f"  * Component: {c[1]} | ID: {c[0]} | Page: {c[2]} | Manual: {c[3]} | Deleted: {c[4]} | QC: {c[5]}", flush=True)
+                
+            j_res = await db.execute(text("""
+                SELECT id, job_name, component_id, page_reference, source_manual_id, is_deleted, qc_status
+                FROM jobs
+                WHERE vessel_id = '8a057307-7fb5-45c8-b9ea-658294c077ac';
+            """))
+            jobs = j_res.fetchall()
+            print(f"[VESSEL 4 CHECK] Jobs count (including deleted): {len(jobs)}", flush=True)
+            for j in jobs[:10]:
+                print(f"  * Job: {j[1]} | ID: {j[0]} | CompID: {j[2]} | Page: {j[3]} | Manual: {j[4]} | Deleted: {j[5]} | QC: {j[6]}", flush=True)
+    except Exception as e:
+        print(f"[VESSEL 4 CHECK ERROR] Failed: {e}", flush=True)
+
+
 async def _run_startup_backfill_and_backup() -> None:
     from app.core.database import AsyncSessionLocal
     from sqlalchemy import text
@@ -619,6 +664,10 @@ async def _log_ai_config() -> None:
         await _run_startup_desc_cleanup()
     except Exception as e:
         print(f"[STARTUP CLEANUP ERROR] Failed to run description cleanup: {e}", flush=True)
+    try:
+        await _check_vessel4_status()
+    except Exception as e:
+        print(f"[STARTUP CHECK ERROR] Failed to run vessel 4 check: {e}", flush=True)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)
