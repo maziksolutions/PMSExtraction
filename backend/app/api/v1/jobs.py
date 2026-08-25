@@ -182,10 +182,10 @@ async def _apply_job_name_and_references(db: AsyncSession, job: Job) -> None:
         if job.job_name != resolved_name:
             from sqlalchemy import text
             await db.execute(text("""
-                INSERT INTO job_name_backup (job_id, original_name)
-                VALUES (:job_id, :original_name)
+                INSERT INTO job_name_backup (job_id, original_job_name)
+                VALUES (:job_id, :original_job_name)
                 ON CONFLICT (job_id) DO NOTHING;
-            """), {"job_id": job.id, "original_name": job.job_name})
+            """), {"job_id": job.id, "original_job_name": job.job_name})
         job.job_name = resolved_name
     pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
     job.pdf_reference = pdf_reference

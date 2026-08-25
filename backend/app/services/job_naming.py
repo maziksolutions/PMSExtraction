@@ -508,7 +508,7 @@ async def build_canonical_job_name(
         try:
             from sqlalchemy import text
             backup_res = await db.execute(text("""
-                SELECT original_name FROM job_name_backup WHERE job_id = :job_id LIMIT 1;
+                SELECT original_job_name FROM job_name_backup WHERE job_id = :job_id LIMIT 1;
             """))
             row = backup_res.fetchone()
             if row and row[0]:
