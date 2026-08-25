@@ -2231,870 +2231,894 @@ async def auto_extract_from_manual(
     manual_id = uuid.UUID(manual_id_str)
 
     async with AsyncSessionLocal() as db:
-        # ------------------------------------------------------------------
-        # Load the manual (vessel_id and tenant_id come from the record itself)
-        # ------------------------------------------------------------------
-        from sqlalchemy.orm import undefer
-
-        result = await db.execute(
-            select(Manual)
-            .options(undefer(Manual.extracted_text))
-            .where(
-                Manual.id == manual_id,
-                Manual.is_deleted == False,
-            )
-        )
-        manual: Optional[Manual] = result.scalar_one_or_none()
-        if manual is None:
-            logger.warning("auto_extract_from_manual: manual %s not found", manual_id_str)
-            return
-
-        vessel_id = manual.vessel_id
-        tenant_id = manual.tenant_id
-        vessel_id_str = str(vessel_id)
-
-        # Load vessel for shipyard fallback
-        from app.models.vessel import VesselProject
-        vessel_result = await db.execute(
-            select(VesselProject).where(
-                VesselProject.id == vessel_id,
-                VesselProject.is_deleted == False,
-            )
-        )
-        vessel_obj = vessel_result.scalar_one_or_none()
-        vessel_shipyard = getattr(vessel_obj, "shipyard", None) or None
-
-        category: Optional[str] = manual.category
-        norm_cat = (category or "").strip().lower()
-        # Skip only if truly unknown AND no page signals from classifier
-        pages_with_any = (
-            getattr(manual, "pages_with_components", None)
-            or getattr(manual, "pages_with_jobs", None)
-            or getattr(manual, "pages_with_spares", None)
-        )
-        if norm_cat in ("", "unknown/unclassifiable", "unknown") and not pages_with_any:
-            logger.info(
-                "auto_extract_from_manual: skipping manual %s — category=%r, no page signals",
-                manual_id_str,
-                category,
-            )
-            return
-        # If unknown but has page signals, treat as Instruction Manual for extraction
-        if norm_cat in ("", "unknown/unclassifiable", "unknown"):
-            category = "Instruction Manual"
-            logger.info(
-                "auto_extract_from_manual: treating unknown manual %s as Instruction Manual (has page signals)",
-                manual_id_str,
-            )
-
-        entity_pages = {
-            entity_type: _selected_manual_pages(manual, entity_type)
-            for entity_type in ("component", "job", "spare")
-        }
-        if entity_types is not None:
-            entity_pages = {
-                k: v for k, v in entity_pages.items() if k in entity_types
-            }
-        selected_extraction_types = [
-            entity_type for entity_type, pages in entity_pages.items() if pages
-        ]
-        remaining_extraction_types: list[str] | None = None
-
         try:
-            from app.services.manual_match_reuse import (
-                find_best_manual_match_for_source,
-                reuse_records_from_matched_manual,
-            )
+            # ------------------------------------------------------------------
+            # Load the manual (vessel_id and tenant_id come from the record itself)
+            # ------------------------------------------------------------------
+            from sqlalchemy.orm import undefer
 
-            best_match = await find_best_manual_match_for_source(
-                db,
-                tenant_id=tenant_id,
-                source_manual_id=manual.id,
-            )
-            if best_match and str(best_match.get("match_confidence") or "").lower() in {"exact", "high", "medium"}:
-                matched_manual_result = await db.execute(
-                    select(Manual).where(
-                        Manual.id == uuid.UUID(str(best_match["matched_manual_id"])),
-                        Manual.is_deleted == False,
-                    )
+            result = await db.execute(
+                select(Manual)
+                .options(undefer(Manual.extracted_text))
+                .where(
+                    Manual.id == manual_id,
+                    Manual.is_deleted == False,
                 )
-                matched_manual = matched_manual_result.scalar_one_or_none()
-                if matched_manual is not None:
-                    payload = await reuse_records_from_matched_manual(
-                        db,
-                        tenant_id=tenant_id,
-                        vessel_id=vessel_id,
-                        source_manual=manual,
-                        matched_manual=matched_manual,
-                        match_confidence=str(best_match.get("match_confidence") or ""),
-                        match_score=best_match.get("match_score"),
-                        auto_merge_components=True,
-                    )
-                    copied_by_type = {
-                        "component": int(payload.get("copied_components", 0) or 0),
-                        "job": int(payload.get("copied_jobs", 0) or 0),
-                        "spare": int(payload.get("copied_spares", 0) or 0),
-                    }
-                    remaining_extraction_types = [
-                        entity_type
-                        for entity_type in selected_extraction_types
-                        if copied_by_type.get(entity_type, 0) <= 0
-                    ]
-                    if remaining_extraction_types:
-                        logger.warning(
-                            "auto_extract_from_manual: partial manual-match reuse for %s; copied components=%d jobs=%d spares=%d, extracting remaining=%s",
-                            manual_id_str,
-                            copied_by_type["component"],
-                            copied_by_type["job"],
-                            copied_by_type["spare"],
-                            ",".join(remaining_extraction_types),
-                        )
-                    else:
-                        await db.execute(
-                            update(Manual)
-                            .where(Manual.id == manual_id)
-                            .values(status=ManualStatus.classified)
-                        )
-                        await db.commit()
-                        logger.warning(
-                            "auto_extract_from_manual: reused matched manual for %s exact=%s components=%d jobs=%d spares=%d",
-                            manual_id_str,
-                            payload.get("exact_match"),
-                            payload.get("copied_components", 0),
-                            payload.get("copied_jobs", 0),
-                            payload.get("copied_spares", 0),
-                        )
-                        return
-        except Exception as manual_match_err:
-            logger.warning("auto_extract_from_manual: matched-manual reuse failed: %s", manual_match_err)
-
-        # ------------------------------------------------------------------
-        # Mark as scanning
-        # ------------------------------------------------------------------
-        await db.execute(
-            update(Manual)
-            .where(Manual.id == manual_id)
-            .values(status=ManualStatus.scanning)
-        )
-        await db.commit()
-
-        # ------------------------------------------------------------------
-        # Get text with [PAGE N] markers.
-        # Use stored DB text if it already has markers; otherwise re-extract
-        # from blob storage (handles both old records and blob-stored files).
-        # ------------------------------------------------------------------
-        filename = manual.original_filename
-        file_path = manual.blob_storage_key
-        full_text = ""
-        file_bytes: Optional[bytes] = None
-        ext = (manual.file_extension or "").lower()
-
-        stored_text = getattr(manual, "extracted_text", None) or ""
-        if isinstance(stored_text, str):
-            stored_text = stored_text.replace("\r\n", "\n")
-        is_pdf = (ext == "pdf")
-        if is_pdf:
-            # Skip full text parsing for all PDF manuals as we extract/OCR target pages on-demand
-            full_text = stored_text or ""
-            logger.info("auto_extract_from_manual: skipping full-text scanning phase for PDF manual %s", filename)
-        elif stored_text and "[PAGE " in stored_text:
-            # Already has page markers — use as-is
-            full_text = stored_text
-            logger.info("auto_extract_from_manual: using stored extracted_text for %s", filename)
-        else:
-            # Need to (re-)extract: try blob storage first, then local disk
-            # Try blob storage (MinIO / Azure)
-            is_local_path = file_path and (
-                file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
             )
-            if file_path and not is_local_path:
-                try:
-                    from app.services.blob_storage import BlobStorageService
-                    blob_svc = BlobStorageService()
-                    file_bytes = await blob_svc.download_bytes(file_path)
-                    logger.info(
-                        "auto_extract_from_manual: downloaded %d bytes from blob for %s",
-                        len(file_bytes), filename,
+            manual: Optional[Manual] = result.scalar_one_or_none()
+            if manual is None:
+                logger.warning("auto_extract_from_manual: manual %s not found", manual_id_str)
+                return
+
+            vessel_id = manual.vessel_id
+            tenant_id = manual.tenant_id
+            vessel_id_str = str(vessel_id)
+
+            # Load vessel for shipyard fallback
+            from app.models.vessel import VesselProject
+            vessel_result = await db.execute(
+                select(VesselProject).where(
+                    VesselProject.id == vessel_id,
+                    VesselProject.is_deleted == False,
+                )
+            )
+            vessel_obj = vessel_result.scalar_one_or_none()
+            vessel_shipyard = getattr(vessel_obj, "shipyard", None) or None
+
+            category: Optional[str] = manual.category
+            norm_cat = (category or "").strip().lower()
+            # Skip only if truly unknown AND no page signals from classifier
+            pages_with_any = (
+                getattr(manual, "pages_with_components", None)
+                or getattr(manual, "pages_with_jobs", None)
+                or getattr(manual, "pages_with_spares", None)
+            )
+            if norm_cat in ("", "unknown/unclassifiable", "unknown") and not pages_with_any:
+                logger.info(
+                    "auto_extract_from_manual: skipping manual %s — category=%r, no page signals",
+                    manual_id_str,
+                    category,
+                )
+                return
+            # If unknown but has page signals, treat as Instruction Manual for extraction
+            if norm_cat in ("", "unknown/unclassifiable", "unknown"):
+                category = "Instruction Manual"
+                logger.info(
+                    "auto_extract_from_manual: treating unknown manual %s as Instruction Manual (has page signals)",
+                    manual_id_str,
+                )
+
+            entity_pages = {
+                entity_type: _selected_manual_pages(manual, entity_type)
+                for entity_type in ("component", "job", "spare")
+            }
+            if entity_types is not None:
+                entity_pages = {
+                    k: v for k, v in entity_pages.items() if k in entity_types
+                }
+            selected_extraction_types = [
+                entity_type for entity_type, pages in entity_pages.items() if pages
+            ]
+            remaining_extraction_types: list[str] | None = None
+
+            try:
+                from app.services.manual_match_reuse import (
+                    find_best_manual_match_for_source,
+                    reuse_records_from_matched_manual,
+                )
+
+                best_match = await find_best_manual_match_for_source(
+                    db,
+                    tenant_id=tenant_id,
+                    source_manual_id=manual.id,
+                )
+                if best_match and str(best_match.get("match_confidence") or "").lower() in {"exact", "high", "medium"}:
+                    matched_manual_result = await db.execute(
+                        select(Manual).where(
+                            Manual.id == uuid.UUID(str(best_match["matched_manual_id"])),
+                            Manual.is_deleted == False,
+                        )
                     )
-                except Exception as blob_err:
-                    logger.warning(
-                        "auto_extract_from_manual: blob download failed for %s: %s", filename, blob_err
-                    )
-
-            # Fallback to local disk
-            if file_bytes is None and file_path and os.path.exists(file_path):
-                with open(file_path, "rb") as fh:
-                    file_bytes = fh.read()
-
-            if file_bytes is not None:
-                if ext == "pdf":
-                    try:
-                        import asyncio as _asyncio
-                        import pdfplumber
-                        import io as _io
-
-                        def _read_pdf_bytes(data: bytes) -> str:
-                            parts: list[str] = []
-                            with pdfplumber.open(_io.BytesIO(data)) as pdf:
-                                for page_num, page in enumerate(pdf.pages, start=1):
-                                    page_parts: list[str] = []
-                                    text = page.extract_text()
-                                    if text and text.strip():
-                                        page_parts.append(text)
-                                    if page_parts:
-                                        parts.append(f"[PAGE {page_num}]\n" + "\n".join(page_parts))
-                                    else:
-                                        parts.append(f"[PAGE {page_num}]\n")
-                            return "\n\n".join(parts)
-
-                        full_text = await _asyncio.to_thread(_read_pdf_bytes, file_bytes)
-                        # Persist the freshly-extracted text so future calls are instant
-                        if full_text:
+                    matched_manual = matched_manual_result.scalar_one_or_none()
+                    if matched_manual is not None:
+                        payload = await reuse_records_from_matched_manual(
+                            db,
+                            tenant_id=tenant_id,
+                            vessel_id=vessel_id,
+                            source_manual=manual,
+                            matched_manual=matched_manual,
+                            match_confidence=str(best_match.get("match_confidence") or ""),
+                            match_score=best_match.get("match_score"),
+                            auto_merge_components=True,
+                        )
+                        copied_by_type = {
+                            "component": int(payload.get("copied_components", 0) or 0),
+                            "job": int(payload.get("copied_jobs", 0) or 0),
+                            "spare": int(payload.get("copied_spares", 0) or 0),
+                        }
+                        remaining_extraction_types = [
+                            entity_type
+                            for entity_type in selected_extraction_types
+                            if copied_by_type.get(entity_type, 0) <= 0
+                        ]
+                        if remaining_extraction_types:
+                            logger.warning(
+                                "auto_extract_from_manual: partial manual-match reuse for %s; copied components=%d jobs=%d spares=%d, extracting remaining=%s",
+                                manual_id_str,
+                                copied_by_type["component"],
+                                copied_by_type["job"],
+                                copied_by_type["spare"],
+                                ",".join(remaining_extraction_types),
+                            )
+                        else:
                             await db.execute(
                                 update(Manual)
                                 .where(Manual.id == manual_id)
-                                .values(extracted_text=full_text)
+                                .values(status=ManualStatus.classified)
                             )
                             await db.commit()
-                    except Exception as pdf_err:
-                        logger.warning("pdfplumber failed for %s: %s", filename, pdf_err)
-                elif ext == "docx":
-                    try:
-                        import asyncio as _asyncio
-                        import docx
-                        import io as _io
+                            logger.warning(
+                                "auto_extract_from_manual: reused matched manual for %s exact=%s components=%d jobs=%d spares=%d",
+                                manual_id_str,
+                                payload.get("exact_match"),
+                                payload.get("copied_components", 0),
+                                payload.get("copied_jobs", 0),
+                                payload.get("copied_spares", 0),
+                            )
+                            return
+            except Exception as manual_match_err:
+                logger.warning("auto_extract_from_manual: matched-manual reuse failed: %s", manual_match_err)
 
-                        def _read_docx_bytes(data: bytes) -> str:
-                            doc = docx.Document(_io.BytesIO(data))
-                            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-
-                        full_text = await _asyncio.to_thread(_read_docx_bytes, file_bytes)
-                    except Exception as docx_err:
-                        logger.warning("docx extraction failed for %s: %s", filename, docx_err)
-            elif stored_text:
-                # Last resort: use stored text even without page markers
-                full_text = stored_text
-                logger.warning(
-                    "auto_extract_from_manual: using stored text without [PAGE] markers for %s", filename
-                )
-
-        if ext != "pdf" and not full_text.strip():
-            logger.warning("auto_extract_from_manual: no text extracted from %s, skipping", filename)
-            return
-
-        # ------------------------------------------------------------------
-        # Determine which entity types to extract strictly from screened page refs.
-        # This keeps extraction cost aligned to what reviewers selected.
-        # ------------------------------------------------------------------
-        extraction_types = [entity_type for entity_type, pages in entity_pages.items() if pages]
-        if remaining_extraction_types is not None:
-            extraction_types = [
-                entity_type for entity_type in extraction_types if entity_type in remaining_extraction_types
-            ]
-
-        if not extraction_types:
-            logger.warning(
-                "auto_extract_from_manual: skipping manual %s because no screened extraction pages are set",
-                filename,
-            )
+            # ------------------------------------------------------------------
+            # Mark as scanning
+            # ------------------------------------------------------------------
             await db.execute(
                 update(Manual)
                 .where(Manual.id == manual_id)
-                .values(status=ManualStatus.classified)
+                .values(status=ManualStatus.scanning)
             )
             await db.commit()
-            return
 
-        # Add preceding pages for context to the OCR/enrichment page list
-        selected_pages_all = sorted({page for pages in entity_pages.values() for page in pages})
-        ocr_pages = set(selected_pages_all)
-        for p in selected_pages_all:
-            if p > 1:
-                ocr_pages.add(p - 1)
-        selected_pages_all = sorted(list(ocr_pages))
-        if ext == "pdf" and selected_pages_all:
-            if file_bytes is None:
+            # ------------------------------------------------------------------
+            # Get text with [PAGE N] markers.
+            # Use stored DB text if it already has markers; otherwise re-extract
+            # from blob storage (handles both old records and blob-stored files).
+            # ------------------------------------------------------------------
+            filename = manual.original_filename
+            file_path = manual.blob_storage_key
+            full_text = ""
+            file_bytes: Optional[bytes] = None
+            ext = (manual.file_extension or "").lower()
+
+            stored_text = getattr(manual, "extracted_text", None) or ""
+            if isinstance(stored_text, str):
+                stored_text = stored_text.replace("\r\n", "\n")
+            is_pdf = (ext == "pdf")
+            if is_pdf:
+                # Skip full text parsing for all PDF manuals as we extract/OCR target pages on-demand
+                full_text = stored_text or ""
+                logger.info("auto_extract_from_manual: skipping full-text scanning phase for PDF manual %s", filename)
+            elif stored_text and "[PAGE " in stored_text:
+                # Already has page markers — use as-is
+                full_text = stored_text
+                logger.info("auto_extract_from_manual: using stored extracted_text for %s", filename)
+            else:
+                # Need to (re-)extract: try blob storage first, then local disk
+                # Try blob storage (MinIO / Azure)
                 is_local_path = file_path and (
                     file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
                 )
                 if file_path and not is_local_path:
                     try:
                         from app.services.blob_storage import BlobStorageService
-
                         blob_svc = BlobStorageService()
                         file_bytes = await blob_svc.download_bytes(file_path)
+                        logger.info(
+                            "auto_extract_from_manual: downloaded %d bytes from blob for %s",
+                            len(file_bytes), filename,
+                        )
                     except Exception as blob_err:
                         logger.warning(
-                            "auto_extract_from_manual: blob download failed during OCR enrich for %s: %s",
-                            filename,
-                            blob_err,
+                            "auto_extract_from_manual: blob download failed for %s: %s", filename, blob_err
                         )
+
+                # Fallback to local disk
                 if file_bytes is None and file_path and os.path.exists(file_path):
                     with open(file_path, "rb") as fh:
                         file_bytes = fh.read()
 
-            if file_bytes is not None:
-                full_text = await _enrich_pdf_text_for_selected_pages(
-                    file_bytes=file_bytes,
-                    filename=filename,
-                    full_text=full_text,
-                    selected_pages=selected_pages_all,
-                    page_count=getattr(manual, "page_count", 0) or 0,
-                )
-
-        type_to_text: dict[str, str] = {}
-        for entity_type in extraction_types:
-            selected_pages = entity_pages[entity_type]
-            filtered_text = _filter_text_to_pages(full_text, selected_pages, include_context=True)
-            type_to_text[entity_type] = filtered_text
-            logger.warning(
-                "auto_extract_from_manual: %s using %s screened pages=%s chars=%d",
-                filename,
-                entity_type,
-                selected_pages,
-                len(filtered_text),
-            )
-
-        # ------------------------------------------------------------------
-        # Chunk the full text so every page is processed.
-        # Claude claude-sonnet-4-6 has a 200k token context window.
-        # 120,000 chars ≈ 30,000 tokens — leaves ample room for system
-        # prompt and a large JSON response.
-        # ------------------------------------------------------------------
-        CHUNK_SIZE = max(4_000, int(getattr(settings, "EXTRACTION_CHUNK_CHARS", 14_000) or 14_000))
-        OVERLAP = max(0, int(getattr(settings, "EXTRACTION_CHUNK_OVERLAP_CHARS", 500) or 500))
-
-        def _chunk_text(text: str) -> list[str]:
-            page_blocks = [
-                f"[PAGE {page_no}]\n{page_body}".strip()
-                for page_no, page_body in _split_marked_pages(text)
-            ]
-            if page_blocks:
-                chunks: list[str] = []
-                current_blocks: list[str] = []
-                current_size = 0
-                for block in page_blocks:
-                    block_size = len(block) + 2
-                    if current_blocks and current_size + block_size > CHUNK_SIZE:
-                        chunks.append("\n\n".join(current_blocks))
-                        overlap_blocks: list[str] = []
-                        overlap_size = 0
-                        for previous_block in reversed(current_blocks):
-                            previous_size = len(previous_block) + 2
-                            if overlap_blocks and overlap_size + previous_size > OVERLAP:
-                                break
-                            overlap_blocks.insert(0, previous_block)
-                            overlap_size += previous_size
-                        current_blocks = overlap_blocks.copy()
-                        current_size = sum(len(item) + 2 for item in current_blocks)
-                    current_blocks.append(block)
-                    current_size += block_size
-                if current_blocks:
-                    chunks.append("\n\n".join(current_blocks))
-                return chunks
-            if len(text) <= CHUNK_SIZE:
-                return [text]
-            chunks: list[str] = []
-            start = 0
-            while start < len(text):
-                end = min(start + CHUNK_SIZE, len(text))
-                chunks.append(text[start:end])
-                if end >= len(text):
-                    break
-                start = max(end - OVERLAP, start + 1)
-            return chunks
-
-        text_chunks = _chunk_text(full_text)
-        logger.info(
-            "auto_extract_from_manual: %s → %d chars, %d chunk(s)",
-            filename, len(full_text), len(text_chunks),
-        )
-
-        # Calculate total sub-steps for page-level progress tracking
-        total_sub_steps = 0
-        type_chunks_count: dict[str, int] = {}
-        for etype in extraction_types:
-            is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
-            source_text = type_to_text.get(etype)
-            if source_text is None:
-                source_text = full_text
-
-            if not is_pdf_spare and source_text.strip():
-                chunks = _chunk_text(source_text)
-                type_chunks_count[etype] = len(chunks)
-                total_sub_steps += len(chunks)
-            else:
-                type_chunks_count[etype] = 0
-
-            if ext == "pdf" and file_bytes is not None and etype in {"component", "spare"}:
-                selected_pages = entity_pages.get(etype) or []
-                if etype == "spare":
-                    total_sub_steps += len(selected_pages) * 4
-                else:
-                    total_sub_steps += len(selected_pages)
-
-        # Set initial progress state for this manual
-        set_extraction_state(
-            vessel_id_str,
-            current_manual_name=filename,
-            current_manual_pages_total=total_sub_steps,
-            current_manual_pages_done=0,
-            detailed_status="Initializing extraction loop..."
-        )
-        done_sub_steps = 0
-
-        # ------------------------------------------------------------------
-        # Run extractions across all chunks
-        # ------------------------------------------------------------------
-        components_to_add: list[Component] = []
-        jobs_to_add: list[Job] = []
-        spares_to_add: list[Spare] = []
-        extracted_component_context: list[dict[str, Any]] = []
-        existing_manual_component_context: list[dict[str, Any]] = []
-
-        if any(entity_type in {"job", "spare"} for entity_type in extraction_types):
-            existing_component_result = await db.execute(
-                select(Component).where(
-                    Component.vessel_id == vessel_id,
-                    Component.tenant_id == tenant_id,
-                    Component.source_manual_id == manual.id,
-                    Component.is_deleted == False,
-                )
-            )
-            existing_manual_component_context = [
-                {
-                    "component_name": component.component_name,
-                    "main_machinery": component.main_machinery,
-                    "maker": component.maker,
-                    "model": component.model,
-                    "source_page_number": component.page_reference,
-                }
-                for component in existing_component_result.scalars().all()
-            ]
-
-        learning_context_by_type: dict[str, str | None] = {}
-        for entity_type in extraction_types:
-            learning_context_by_type[entity_type] = await build_learning_context(
-                db,
-                tenant_id=tenant_id,
-                entity_type=entity_type,
-                source_manual_category=manual.category,
-            )
-
-        for etype in extraction_types:
-            all_records: list[dict] = []
-            is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
-            source_text = type_to_text.get(etype)
-            if source_text is None:
-                source_text = full_text
-
-            if not is_pdf_spare and source_text.strip():
-                text_chunks = _chunk_text(source_text)
-                logger.info(
-                    "auto_extract_from_manual: %s -> %s chars=%d chunks=%d",
-                    filename,
-                    etype,
-                    len(source_text),
-                    len(text_chunks),
-                )
-                for chunk_idx, chunk in enumerate(text_chunks):
-                    import re as _re
-                    found_pages = _re.findall(r'\[PAGE (\d+)\]', chunk)
-                    if page_numbers is not None and found_pages:
-                        chunk_pages = [int(p) for p in found_pages]
-                        if not any(p in page_numbers for p in chunk_pages):
-                            continue
-                    done_sub_steps += 1
-                    if found_pages:
-                        page_desc = f"pages {', '.join(found_pages)}"
-                    else:
-                        page_desc = f"chunk {chunk_idx + 1}/{len(text_chunks)}"
-                    set_extraction_state(
-                        vessel_id_str,
-                        current_manual_pages_done=done_sub_steps,
-                        detailed_status=f"Extracting {etype}s from text ({page_desc})..."
-                    )
-                    chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
-                    context_note = learning_context_by_type.get(etype)
-                    if etype in {"job", "spare"}:
-                        context_components = extracted_component_context or existing_manual_component_context
-                        if context_components:
-                            context_note = _merge_context_notes(
-                                _build_component_context_text(context_components, manual),
-                                learning_context_by_type.get(etype),
-                            )
-                    
-                    # Fetch preceding page titles context
-                    chunk_context = context_note
-                    if found_pages:
+                if file_bytes is not None:
+                    if ext == "pdf":
                         try:
-                            first_pno = min(int(p) for p in found_pages)
-                            titles_history = _build_preceding_titles_history(full_text, first_pno, max_lookback=10)
-                            if titles_history:
-                                history_note = f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
-                                chunk_context = _merge_context_notes(chunk_context, history_note)
-                        except Exception:
-                            pass
+                            import asyncio as _asyncio
+                            import pdfplumber
+                            import io as _io
 
-                    records = await extract_entities(chunk, etype, chunk_label, context_note=chunk_context)
-                    all_records.extend(records)
-            else:
-                if is_pdf_spare:
-                    logger.info("auto_extract_from_manual: skipping text extraction for spares (will use PDF vision extraction)")
-                elif not source_text.strip():
-                    logger.info("auto_extract_from_manual: source text for %s is empty, skipping text extraction", etype)
+                            def _read_pdf_bytes(data: bytes) -> str:
+                                parts: list[str] = []
+                                with pdfplumber.open(_io.BytesIO(data)) as pdf:
+                                    for page_num, page in enumerate(pdf.pages, start=1):
+                                        page_parts: list[str] = []
+                                        text = page.extract_text()
+                                        if text and text.strip():
+                                            page_parts.append(text)
+                                        if page_parts:
+                                            parts.append(f"[PAGE {page_num}]\n" + "\n".join(page_parts))
+                                        else:
+                                            parts.append(f"[PAGE {page_num}]\n")
+                                return "\n\n".join(parts)
 
-            if ext == "pdf" and file_bytes is not None and etype in {"component", "spare"}:
-                selected_pages = entity_pages.get(etype) or []
-                if page_numbers is not None:
-                    selected_pages = [p for p in selected_pages if p in page_numbers]
-                rendered_pages = await _render_selected_pdf_page_images(
-                    file_bytes=file_bytes,
-                    selected_pages=selected_pages,
-                    resolution=200,
+                            full_text = await _asyncio.to_thread(_read_pdf_bytes, file_bytes)
+                            # Persist the freshly-extracted text so future calls are instant
+                            if full_text:
+                                await db.execute(
+                                    update(Manual)
+                                    .where(Manual.id == manual_id)
+                                    .values(extracted_text=full_text)
+                                )
+                                await db.commit()
+                        except Exception as pdf_err:
+                            logger.warning("pdfplumber failed for %s: %s", filename, pdf_err)
+                    elif ext == "docx":
+                        try:
+                            import asyncio as _asyncio
+                            import docx
+                            import io as _io
+
+                            def _read_docx_bytes(data: bytes) -> str:
+                                doc = docx.Document(_io.BytesIO(data))
+                                return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+                            full_text = await _asyncio.to_thread(_read_docx_bytes, file_bytes)
+                        except Exception as docx_err:
+                            logger.warning("docx extraction failed for %s: %s", filename, docx_err)
+                elif stored_text:
+                    # Last resort: use stored text even without page markers
+                    full_text = stored_text
+                    logger.warning(
+                        "auto_extract_from_manual: using stored text without [PAGE] markers for %s", filename
+                    )
+
+            if ext != "pdf" and not full_text.strip():
+                logger.warning("auto_extract_from_manual: no text extracted from %s, skipping", filename)
+                return
+
+            # ------------------------------------------------------------------
+            # Determine which entity types to extract strictly from screened page refs.
+            # This keeps extraction cost aligned to what reviewers selected.
+            # ------------------------------------------------------------------
+            extraction_types = [entity_type for entity_type, pages in entity_pages.items() if pages]
+            if remaining_extraction_types is not None:
+                extraction_types = [
+                    entity_type for entity_type in extraction_types if entity_type in remaining_extraction_types
+                ]
+
+            if not extraction_types:
+                logger.warning(
+                    "auto_extract_from_manual: skipping manual %s because no screened extraction pages are set",
+                    filename,
                 )
-                if rendered_pages:
-                    context_note = learning_context_by_type.get(etype)
-                    if etype in {"job", "spare"}:
-                        context_components = extracted_component_context or existing_manual_component_context
-                        if context_components:
-                            context_note = _merge_context_notes(
-                                _build_component_context_text(context_components, manual),
-                                learning_context_by_type.get(etype),
+                await db.execute(
+                    update(Manual)
+                    .where(Manual.id == manual_id)
+                    .values(status=ManualStatus.classified)
+                )
+                await db.commit()
+                return
+
+            # Add preceding pages for context to the OCR/enrichment page list
+            selected_pages_all = sorted({page for pages in entity_pages.values() for page in pages})
+            ocr_pages = set(selected_pages_all)
+            for p in selected_pages_all:
+                if p > 1:
+                    ocr_pages.add(p - 1)
+            selected_pages_all = sorted(list(ocr_pages))
+            if ext == "pdf" and selected_pages_all:
+                if file_bytes is None:
+                    is_local_path = file_path and (
+                        file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
+                    )
+                    if file_path and not is_local_path:
+                        try:
+                            from app.services.blob_storage import BlobStorageService
+
+                            blob_svc = BlobStorageService()
+                            file_bytes = await blob_svc.download_bytes(file_path)
+                        except Exception as blob_err:
+                            logger.warning(
+                                "auto_extract_from_manual: blob download failed during OCR enrich for %s: %s",
+                                filename,
+                                blob_err,
                             )
-                    for page_no in selected_pages:
-                        image_bytes = rendered_pages.get(page_no)
-                        if not image_bytes:
-                            continue
+                    if file_bytes is None and file_path and os.path.exists(file_path):
+                        with open(file_path, "rb") as fh:
+                            file_bytes = fh.read()
 
-                        # Fetch preceding page text context if available to help identify assembly/header
-                        page_context = ""
-                        prev_page = page_no - 1
-                        if prev_page > 0 and full_text:
-                            prev_page_text = _filter_text_to_pages(full_text, [prev_page], include_context=False)
-                            if prev_page_text.strip():
-                                page_context = f"\nPreceding Page {prev_page} Text (For Header/Assembly/Title Context):\n{prev_page_text}\n"
+                if file_bytes is not None:
+                    full_text = await _enrich_pdf_text_for_selected_pages(
+                        file_bytes=file_bytes,
+                        filename=filename,
+                        full_text=full_text,
+                        selected_pages=selected_pages_all,
+                        page_count=getattr(manual, "page_count", 0) or 0,
+                    )
 
-                        # Add preceding page headers/titles history for deep lookbacks (up to 10 pages earlier)
-                        if full_text:
-                            titles_history = _build_preceding_titles_history(full_text, page_no, max_lookback=10)
-                            if titles_history:
-                                page_context += f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
+            type_to_text: dict[str, str] = {}
+            for entity_type in extraction_types:
+                selected_pages = entity_pages[entity_type]
+                filtered_text = _filter_text_to_pages(full_text, selected_pages, include_context=True)
+                type_to_text[entity_type] = filtered_text
+                logger.warning(
+                    "auto_extract_from_manual: %s using %s screened pages=%s chars=%d",
+                    filename,
+                    entity_type,
+                    selected_pages,
+                    len(filtered_text),
+                )
 
-                        current_context_note = context_note
-                        if page_context:
-                            current_context_note = _merge_context_notes(current_context_note, page_context)
+            # ------------------------------------------------------------------
+            # Chunk the full text so every page is processed.
+            # Claude claude-sonnet-4-6 has a 200k token context window.
+            # 120,000 chars ≈ 30,000 tokens — leaves ample room for system
+            # prompt and a large JSON response.
+            # ------------------------------------------------------------------
+            CHUNK_SIZE = max(4_000, int(getattr(settings, "EXTRACTION_CHUNK_CHARS", 14_000) or 14_000))
+            OVERLAP = max(0, int(getattr(settings, "EXTRACTION_CHUNK_OVERLAP_CHARS", 500) or 500))
 
-                        if etype == "spare":
-                            def on_strip_start(strip_idx, total_strips):
-                                nonlocal done_sub_steps
-                                if strip_idx > 0:
+            def _chunk_text(text: str) -> list[str]:
+                page_blocks = [
+                    f"[PAGE {page_no}]\n{page_body}".strip()
+                    for page_no, page_body in _split_marked_pages(text)
+                ]
+                if page_blocks:
+                    chunks: list[str] = []
+                    current_blocks: list[str] = []
+                    current_size = 0
+                    for block in page_blocks:
+                        block_size = len(block) + 2
+                        if current_blocks and current_size + block_size > CHUNK_SIZE:
+                            chunks.append("\n\n".join(current_blocks))
+                            overlap_blocks: list[str] = []
+                            overlap_size = 0
+                            for previous_block in reversed(current_blocks):
+                                previous_size = len(previous_block) + 2
+                                if overlap_blocks and overlap_size + previous_size > OVERLAP:
+                                    break
+                                overlap_blocks.insert(0, previous_block)
+                                overlap_size += previous_size
+                            current_blocks = overlap_blocks.copy()
+                            current_size = sum(len(item) + 2 for item in current_blocks)
+                        current_blocks.append(block)
+                        current_size += block_size
+                    if current_blocks:
+                        chunks.append("\n\n".join(current_blocks))
+                    return chunks
+                if len(text) <= CHUNK_SIZE:
+                    return [text]
+                chunks: list[str] = []
+                start = 0
+                while start < len(text):
+                    end = min(start + CHUNK_SIZE, len(text))
+                    chunks.append(text[start:end])
+                    if end >= len(text):
+                        break
+                    start = max(end - OVERLAP, start + 1)
+                return chunks
+
+            text_chunks = _chunk_text(full_text)
+            logger.info(
+                "auto_extract_from_manual: %s → %d chars, %d chunk(s)",
+                filename, len(full_text), len(text_chunks),
+            )
+
+            # Calculate total sub-steps for page-level progress tracking
+            total_sub_steps = 0
+            type_chunks_count: dict[str, int] = {}
+            for etype in extraction_types:
+                is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
+                source_text = type_to_text.get(etype)
+                if source_text is None:
+                    source_text = full_text
+
+                if not is_pdf_spare and source_text.strip():
+                    chunks = _chunk_text(source_text)
+                    type_chunks_count[etype] = len(chunks)
+                    total_sub_steps += len(chunks)
+                else:
+                    type_chunks_count[etype] = 0
+
+                if ext == "pdf" and file_bytes is not None and etype in {"component", "spare"}:
+                    selected_pages = entity_pages.get(etype) or []
+                    if etype == "spare":
+                        total_sub_steps += len(selected_pages) * 4
+                    else:
+                        total_sub_steps += len(selected_pages)
+
+            # Set initial progress state for this manual
+            set_extraction_state(
+                vessel_id_str,
+                current_manual_name=filename,
+                current_manual_pages_total=total_sub_steps,
+                current_manual_pages_done=0,
+                detailed_status="Initializing extraction loop..."
+            )
+            done_sub_steps = 0
+
+            # ------------------------------------------------------------------
+            # Run extractions across all chunks
+            # ------------------------------------------------------------------
+            components_to_add: list[Component] = []
+            jobs_to_add: list[Job] = []
+            spares_to_add: list[Spare] = []
+            extracted_component_context: list[dict[str, Any]] = []
+            existing_manual_component_context: list[dict[str, Any]] = []
+
+            if any(entity_type in {"job", "spare"} for entity_type in extraction_types):
+                existing_component_result = await db.execute(
+                    select(Component).where(
+                        Component.vessel_id == vessel_id,
+                        Component.tenant_id == tenant_id,
+                        Component.source_manual_id == manual.id,
+                        Component.is_deleted == False,
+                    )
+                )
+                existing_manual_component_context = [
+                    {
+                        "component_name": component.component_name,
+                        "main_machinery": component.main_machinery,
+                        "maker": component.maker,
+                        "model": component.model,
+                        "source_page_number": component.page_reference,
+                    }
+                    for component in existing_component_result.scalars().all()
+                ]
+
+            learning_context_by_type: dict[str, str | None] = {}
+            for entity_type in extraction_types:
+                learning_context_by_type[entity_type] = await build_learning_context(
+                    db,
+                    tenant_id=tenant_id,
+                    entity_type=entity_type,
+                    source_manual_category=manual.category,
+                )
+
+            for etype in extraction_types:
+                all_records: list[dict] = []
+                is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
+                source_text = type_to_text.get(etype)
+                if source_text is None:
+                    source_text = full_text
+
+                if not is_pdf_spare and source_text.strip():
+                    text_chunks = _chunk_text(source_text)
+                    logger.info(
+                        "auto_extract_from_manual: %s -> %s chars=%d chunks=%d",
+                        filename,
+                        etype,
+                        len(source_text),
+                        len(text_chunks),
+                    )
+                    for chunk_idx, chunk in enumerate(text_chunks):
+                        import re as _re
+                        found_pages = _re.findall(r'\[PAGE (\d+)\]', chunk)
+                        if page_numbers is not None and found_pages:
+                            chunk_pages = [int(p) for p in found_pages]
+                            if not any(p in page_numbers for p in chunk_pages):
+                                continue
+                        done_sub_steps += 1
+                        if found_pages:
+                            page_desc = f"pages {', '.join(found_pages)}"
+                        else:
+                            page_desc = f"chunk {chunk_idx + 1}/{len(text_chunks)}"
+                        set_extraction_state(
+                            vessel_id_str,
+                            current_manual_pages_done=done_sub_steps,
+                            detailed_status=f"Extracting {etype}s from text ({page_desc})..."
+                        )
+                        chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
+                        context_note = learning_context_by_type.get(etype)
+                        if etype in {"job", "spare"}:
+                            context_components = extracted_component_context or existing_manual_component_context
+                            if context_components:
+                                context_note = _merge_context_notes(
+                                    _build_component_context_text(context_components, manual),
+                                    learning_context_by_type.get(etype),
+                                )
+                    
+                        # Fetch preceding page titles context
+                        chunk_context = context_note
+                        if found_pages:
+                            try:
+                                first_pno = min(int(p) for p in found_pages)
+                                titles_history = _build_preceding_titles_history(full_text, first_pno, max_lookback=10)
+                                if titles_history:
+                                    history_note = f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
+                                    chunk_context = _merge_context_notes(chunk_context, history_note)
+                            except Exception:
+                                pass
+
+                        records = await extract_entities(chunk, etype, chunk_label, context_note=chunk_context)
+                        all_records.extend(records)
+                else:
+                    if is_pdf_spare:
+                        logger.info("auto_extract_from_manual: skipping text extraction for spares (will use PDF vision extraction)")
+                    elif not source_text.strip():
+                        logger.info("auto_extract_from_manual: source text for %s is empty, skipping text extraction", etype)
+
+                if ext == "pdf" and file_bytes is not None and etype in {"component", "spare"}:
+                    selected_pages = entity_pages.get(etype) or []
+                    if page_numbers is not None:
+                        selected_pages = [p for p in selected_pages if p in page_numbers]
+                    rendered_pages = await _render_selected_pdf_page_images(
+                        file_bytes=file_bytes,
+                        selected_pages=selected_pages,
+                        resolution=200,
+                    )
+                    if rendered_pages:
+                        context_note = learning_context_by_type.get(etype)
+                        if etype in {"job", "spare"}:
+                            context_components = extracted_component_context or existing_manual_component_context
+                            if context_components:
+                                context_note = _merge_context_notes(
+                                    _build_component_context_text(context_components, manual),
+                                    learning_context_by_type.get(etype),
+                                )
+                        for page_no in selected_pages:
+                            image_bytes = rendered_pages.get(page_no)
+                            if not image_bytes:
+                                continue
+
+                            # Fetch preceding page text context if available to help identify assembly/header
+                            page_context = ""
+                            prev_page = page_no - 1
+                            if prev_page > 0 and full_text:
+                                prev_page_text = _filter_text_to_pages(full_text, [prev_page], include_context=False)
+                                if prev_page_text.strip():
+                                    page_context = f"\nPreceding Page {prev_page} Text (For Header/Assembly/Title Context):\n{prev_page_text}\n"
+
+                            # Add preceding page headers/titles history for deep lookbacks (up to 10 pages earlier)
+                            if full_text:
+                                titles_history = _build_preceding_titles_history(full_text, page_no, max_lookback=10)
+                                if titles_history:
+                                    page_context += f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
+
+                            current_context_note = context_note
+                            if page_context:
+                                current_context_note = _merge_context_notes(current_context_note, page_context)
+
+                            try:
+                                if etype == "spare":
+                                    def on_strip_start(strip_idx, total_strips):
+                                        nonlocal done_sub_steps
+                                        if strip_idx > 0:
+                                            done_sub_steps += 1
+                                        set_extraction_state(
+                                            vessel_id_str,
+                                            current_manual_pages_done=done_sub_steps,
+                                            detailed_status=f"Extracting spares from image page {page_no} (strip {strip_idx + 1}/{total_strips})..."
+                                        )
+
                                     done_sub_steps += 1
-                                set_extraction_state(
-                                    vessel_id_str,
-                                    current_manual_pages_done=done_sub_steps,
-                                    detailed_status=f"Extracting spares from image page {page_no} (strip {strip_idx + 1}/{total_strips})..."
+                                    set_extraction_state(
+                                        vessel_id_str,
+                                        current_manual_pages_done=done_sub_steps,
+                                        detailed_status=f"Extracting spares from image page {page_no} (starting)..."
+                                    )
+                                    vision_records = await _extract_spare_parts_from_image_split(
+                                        image_bytes=image_bytes,
+                                        filename=filename,
+                                        page_no=page_no,
+                                        context_note=current_context_note,
+                                        on_strip_start=on_strip_start,
+                                    )
+                                else:
+                                    done_sub_steps += 1
+                                    set_extraction_state(
+                                        vessel_id_str,
+                                        current_manual_pages_done=done_sub_steps,
+                                        detailed_status=f"Extracting components from image page {page_no} of {manual.page_count or 'N/A'}..."
+                                    )
+                                    vision_records = await _extract_entities_from_page_image(
+                                        image_bytes=image_bytes,
+                                        filename=filename,
+                                        page_no=page_no,
+                                        extraction_type=etype,
+                                        context_note=current_context_note,
+                                    )
+                                all_records.extend(vision_records)
+                            except Exception as page_exc:
+                                logger.error(
+                                    "auto_extract_from_manual: failed page %d for %s/%s: %s",
+                                    page_no, filename, etype, page_exc
                                 )
 
-                            done_sub_steps += 1
-                            set_extraction_state(
-                                vessel_id_str,
-                                current_manual_pages_done=done_sub_steps,
-                                detailed_status=f"Extracting spares from image page {page_no} (starting)..."
-                            )
-                            vision_records = await _extract_spare_parts_from_image_split(
-                                image_bytes=image_bytes,
-                                filename=filename,
-                                page_no=page_no,
-                                context_note=current_context_note,
-                                on_strip_start=on_strip_start,
-                            )
-                        else:
-                            done_sub_steps += 1
-                            set_extraction_state(
-                                vessel_id_str,
-                                current_manual_pages_done=done_sub_steps,
-                                detailed_status=f"Extracting components from image page {page_no} of {manual.page_count or 'N/A'}..."
-                            )
-                            vision_records = await _extract_entities_from_page_image(
-                                image_bytes=image_bytes,
-                                filename=filename,
-                                page_no=page_no,
-                                extraction_type=etype,
-                                context_note=current_context_note,
-                            )
-                        all_records.extend(vision_records)
+                records = _dedupe_records(all_records, etype)
 
-            records = _dedupe_records(all_records, etype)
+                for record in records:
+                    confidence = int(record.get("confidence_score", 70))
+                    source_page = record.get("source_page_number")
 
-            for record in records:
-                confidence = int(record.get("confidence_score", 70))
-                source_page = record.get("source_page_number")
+                    if etype == "component":
+                        _maker = record.get("maker") or None
+                        _model = record.get("model") or None
+                        # For components without maker info, use shipyard as maker
+                        if not _maker and vessel_shipyard:
+                            _maker = vessel_shipyard
+                        if not _model and _maker:
+                            _model = "N/A"
+                        comp = Component(
+                            tenant_id=tenant_id,
+                            vessel_id=vessel_id,
+                            source_manual_id=manual.id,
+                            confidence_score=confidence,
+                            qc_status=QCStatus.pending,
+                            is_unmapped=True,
+                            group1=record.get("group1") or "Uncategorised",
+                            group2=record.get("group2") or "Uncategorised",
+                            main_machinery=record.get("main_machinery") or "Unknown",
+                            component_name=record.get("component_name") or "Unknown Component",
+                            maker=_maker,
+                            model=_model,
+                            serial_number=record.get("serial_number") or None,
+                            specification=record.get("specification") or None,
+                            location=record.get("location") or None,
+                            machinery_particulars=record.get("machinery_particulars") or None,
+                            is_critical=bool(record.get("is_critical", False)),
+                            job_pages=record.get("job_pages") or getattr(manual, "pages_with_jobs", None) or None,
+                            spare_pages=record.get("spare_pages") or getattr(manual, "pages_with_spares", None) or None,
+                            page_reference=int(source_page) if source_page is not None else None,
+                            pdf_reference=filename,
+                        )
+                        components_to_add.append(comp)
+                        extracted_component_context.append(
+                            {
+                                "component_name": comp.component_name,
+                                "main_machinery": comp.main_machinery,
+                                "maker": comp.maker,
+                                "model": comp.model,
+                                "source_page_number": comp.page_reference,
+                            }
+                        )
 
-                if etype == "component":
-                    _maker = record.get("maker") or None
-                    _model = record.get("model") or None
-                    # For components without maker info, use shipyard as maker
-                    if not _maker and vessel_shipyard:
-                        _maker = vessel_shipyard
-                    if not _model and _maker:
-                        _model = "N/A"
-                    comp = Component(
-                        tenant_id=tenant_id,
-                        vessel_id=vessel_id,
-                        source_manual_id=manual.id,
-                        confidence_score=confidence,
-                        qc_status=QCStatus.pending,
-                        is_unmapped=True,
-                        group1=record.get("group1") or "Uncategorised",
-                        group2=record.get("group2") or "Uncategorised",
-                        main_machinery=record.get("main_machinery") or "Unknown",
-                        component_name=record.get("component_name") or "Unknown Component",
-                        maker=_maker,
-                        model=_model,
-                        serial_number=record.get("serial_number") or None,
-                        specification=record.get("specification") or None,
-                        location=record.get("location") or None,
-                        machinery_particulars=record.get("machinery_particulars") or None,
-                        is_critical=bool(record.get("is_critical", False)),
-                        job_pages=record.get("job_pages") or getattr(manual, "pages_with_jobs", None) or None,
-                        spare_pages=record.get("spare_pages") or getattr(manual, "pages_with_spares", None) or None,
-                        page_reference=int(source_page) if source_page is not None else None,
-                        pdf_reference=filename,
-                    )
-                    components_to_add.append(comp)
-                    extracted_component_context.append(
-                        {
-                            "component_name": comp.component_name,
-                            "main_machinery": comp.main_machinery,
-                            "maker": comp.maker,
-                            "model": comp.model,
-                            "source_page_number": comp.page_reference,
-                        }
-                    )
+                    elif etype == "job":
+                        raw_freq_type = record.get("frequency_type")
+                        freq_type: Optional[FrequencyType] = None
+                        if raw_freq_type:
+                            try:
+                                freq_type = FrequencyType(raw_freq_type.lower())
+                            except ValueError:
+                                freq_type = None
 
-                elif etype == "job":
-                    raw_freq_type = record.get("frequency_type")
-                    freq_type: Optional[FrequencyType] = None
-                    if raw_freq_type:
-                        try:
-                            freq_type = FrequencyType(raw_freq_type.lower())
-                        except ValueError:
-                            freq_type = None
+                        raw_freq = record.get("frequency")
+                        freq_val: Optional[int] = None
+                        if raw_freq is not None:
+                            try:
+                                freq_val = int(raw_freq)
+                            except (TypeError, ValueError):
+                                freq_val = None
 
-                    raw_freq = record.get("frequency")
-                    freq_val: Optional[int] = None
-                    if raw_freq is not None:
-                        try:
-                            freq_val = int(raw_freq)
-                        except (TypeError, ValueError):
-                            freq_val = None
+                        job = Job(
+                            tenant_id=tenant_id,
+                            vessel_id=vessel_id,
+                            source_manual_id=manual.id,
+                            confidence_score=confidence,
+                            qc_status=QCStatus.pending,
+                            job_name=record.get("job_name") or "Unknown Job",
+                            job_code=record.get("job_code") or None,
+                            job_description=record.get("job_description") or None,
+                            safety_precaution=record.get("safety_precaution") or None,
+                            frequency=freq_val,
+                            frequency_type=freq_type,
+                            is_critical=bool(record.get("is_critical", False)),
+                            page_reference=int(source_page) if source_page is not None else None,
+                            pdf_reference=filename,
+                            source_reference=(
+                                f"{filename} (p.{int(source_page)})"
+                                if source_page is not None
+                                else filename
+                            ),
+                        )
+                        job.job_description = append_source_references_to_description(
+                            job.job_description,
+                            split_reference_entries(
+                                pdf_reference=job.pdf_reference,
+                                page_reference=job.page_reference,
+                                source_reference=job.source_reference,
+                            ),
+                        )
+                        jobs_to_add.append(job)
 
-                    job = Job(
-                        tenant_id=tenant_id,
-                        vessel_id=vessel_id,
-                        source_manual_id=manual.id,
-                        confidence_score=confidence,
-                        qc_status=QCStatus.pending,
-                        job_name=record.get("job_name") or "Unknown Job",
-                        job_code=record.get("job_code") or None,
-                        job_description=record.get("job_description") or None,
-                        safety_precaution=record.get("safety_precaution") or None,
-                        frequency=freq_val,
-                        frequency_type=freq_type,
-                        is_critical=bool(record.get("is_critical", False)),
-                        page_reference=int(source_page) if source_page is not None else None,
-                        pdf_reference=filename,
-                        source_reference=(
+                    elif etype == "spare":
+                        fallback_part_number = (
                             f"{filename} (p.{int(source_page)})"
                             if source_page is not None
                             else filename
-                        ),
-                    )
-                    job.job_description = append_source_references_to_description(
-                        job.job_description,
-                        split_reference_entries(
-                            pdf_reference=job.pdf_reference,
-                            page_reference=job.page_reference,
-                            source_reference=job.source_reference,
-                        ),
-                    )
-                    jobs_to_add.append(job)
+                        )
+                        _assembly = record.get("spare_assembly") or record.get("spare_model") or None
+                        if not _assembly:
+                            # Fallback to component name if available
+                            candidates = extracted_component_context or existing_manual_component_context
+                            if candidates:
+                                _assembly = candidates[0].get("component_name")
+                            else:
+                                # Otherwise format the manual name as fallback
+                                base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+                                _assembly = base_name.replace("-", " ").replace("_", " ").title()
 
-                elif etype == "spare":
-                    fallback_part_number = (
-                        f"{filename} (p.{int(source_page)})"
-                        if source_page is not None
-                        else filename
-                    )
-                    _assembly = record.get("spare_assembly") or record.get("spare_model") or None
-                    if not _assembly:
-                        # Fallback to component name if available
-                        candidates = extracted_component_context or existing_manual_component_context
-                        if candidates:
-                            _assembly = candidates[0].get("component_name")
-                        else:
-                            # Otherwise format the manual name as fallback
-                            base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
-                            _assembly = base_name.replace("-", " ").replace("_", " ").title()
+                        spare = Spare(
+                            tenant_id=tenant_id,
+                            vessel_id=vessel_id,
+                            source_manual_id=manual.id,
+                            confidence_score=confidence,
+                            qc_status=QCStatus.pending,
+                            part_name=record.get("part_name") or "Unknown Part",
+                            part_number=record.get("part_number") or fallback_part_number,
+                            drawing_number=record.get("drawing_number") or None,
+                            drawing_position=record.get("drawing_position") or None,
+                            specification=record.get("specification") or None,
+                            spare_assembly=_assembly,
+                            assembly_description=record.get("assembly_description") or _assembly or None,
+                            spare_maker=record.get("spare_maker") or None,
+                            spare_model=record.get("spare_model") or _assembly or None,
+                            page_reference=int(source_page) if source_page is not None else None,
+                        )
+                        spares_to_add.append(spare)
 
-                    spare = Spare(
-                        tenant_id=tenant_id,
+            # ------------------------------------------------------------------
+            # Overwrite prior extracted records for every entity type that was
+            # selected for re-extraction, regardless of whether new records were
+            # found. This ensures re-extraction is always a clean replace, not an
+            # accumulation on top of old data.
+            #
+            # Rules:
+            #   Components — delete ALL (any QC status); user reviews fresh results
+            #   Jobs       — delete ALL from this manual
+            #   Spares     — delete auto-extracted only; preserve manually snipped
+            #                records (extraction_method='manual') so user corrections
+            #                are not wiped by a background re-extraction
+            #
+            # Also cascade to records from OTHER manual UUIDs that share the same
+            # original_filename on this vessel — handles the case where the same
+            # PDF was uploaded more than once, creating multiple manual UUIDs.
+            # ------------------------------------------------------------------
+            # Collect all manual IDs for the same filename on this vessel (includes current)
+            same_filename_result = await db.execute(
+                select(Manual.id).where(
+                    Manual.vessel_id == vessel_id,
+                    Manual.original_filename == manual.original_filename,
+                    Manual.is_deleted == False,
+                    Manual.id != manual.id,
+                )
+            )
+            sibling_manual_ids = [row[0] for row in same_filename_result.all()]
+            all_manual_ids = [manual.id, *sibling_manual_ids]
+
+            if "component" in extraction_types:
+                comp_delete_query = update(Component).where(
+                    Component.source_manual_id.in_(all_manual_ids),
+                    Component.is_deleted == False,
+                )
+                if page_numbers is not None:
+                    comp_delete_query = comp_delete_query.where(Component.page_reference.in_(page_numbers))
+                await db.execute(comp_delete_query)
+            if "job" in extraction_types:
+                job_delete_query = update(Job).where(
+                    Job.source_manual_id.in_(all_manual_ids),
+                    Job.is_deleted == False
+                )
+                if page_numbers is not None:
+                    job_delete_query = job_delete_query.where(Job.page_reference.in_(page_numbers))
+                await db.execute(job_delete_query)
+            if "spare" in extraction_types:
+                from app.models.spare import ExtractionMethod as _EM
+                spare_delete_query = update(Spare).where(
+                    Spare.source_manual_id.in_(all_manual_ids),
+                    Spare.is_deleted == False,
+                    Spare.extraction_method != _EM.manual,
+                )
+                if page_numbers is not None:
+                    spare_delete_query = spare_delete_query.where(Spare.page_reference.in_(page_numbers))
+                await db.execute(spare_delete_query)
+
+            # ------------------------------------------------------------------
+            # Persist all records
+            # ------------------------------------------------------------------
+            for obj in [*components_to_add, *jobs_to_add, *spares_to_add]:
+                db.add(obj)
+
+            # ------------------------------------------------------------------
+            # Restore manual status to classified
+            # ------------------------------------------------------------------
+            await db.execute(
+                update(Manual)
+                .where(Manual.id == manual_id)
+                .values(status=ManualStatus.classified)
+            )
+
+            await db.commit()
+
+            logger.warning(
+                "auto_extract_from_manual: manual=%s → %d components, %d jobs, %d spares",
+                manual_id_str,
+                len(components_to_add),
+                len(jobs_to_add),
+                len(spares_to_add),
+            )
+
+            try:
+                if components_to_add:
+                    from app.services.component_matcher import auto_merge_extracted_components
+
+                    merged, unmatched = await auto_merge_extracted_components(
+                        db=db,
                         vessel_id=vessel_id,
-                        source_manual_id=manual.id,
-                        confidence_score=confidence,
-                        qc_status=QCStatus.pending,
-                        part_name=record.get("part_name") or "Unknown Part",
-                        part_number=record.get("part_number") or fallback_part_number,
-                        drawing_number=record.get("drawing_number") or None,
-                        drawing_position=record.get("drawing_position") or None,
-                        specification=record.get("specification") or None,
-                        spare_assembly=_assembly,
-                        assembly_description=record.get("assembly_description") or _assembly or None,
-                        spare_maker=record.get("spare_maker") or None,
-                        spare_model=record.get("spare_model") or _assembly or None,
-                        page_reference=int(source_page) if source_page is not None else None,
+                        tenant_id=tenant_id,
                     )
-                    spares_to_add.append(spare)
+                    await db.commit()
+                    logger.warning(
+                        "auto_extract_from_manual: component match vessel=%s merged=%d unmatched=%d",
+                        vessel_id_str,
+                        merged,
+                        unmatched,
+                    )
 
-        # ------------------------------------------------------------------
-        # Overwrite prior extracted records for every entity type that was
-        # selected for re-extraction, regardless of whether new records were
-        # found. This ensures re-extraction is always a clean replace, not an
-        # accumulation on top of old data.
-        #
-        # Rules:
-        #   Components — delete ALL (any QC status); user reviews fresh results
-        #   Jobs       — delete ALL from this manual
-        #   Spares     — delete auto-extracted only; preserve manually snipped
-        #                records (extraction_method='manual') so user corrections
-        #                are not wiped by a background re-extraction
-        #
-        # Also cascade to records from OTHER manual UUIDs that share the same
-        # original_filename on this vessel — handles the case where the same
-        # PDF was uploaded more than once, creating multiple manual UUIDs.
-        # ------------------------------------------------------------------
-        # Collect all manual IDs for the same filename on this vessel (includes current)
-        same_filename_result = await db.execute(
-            select(Manual.id).where(
-                Manual.vessel_id == vessel_id,
-                Manual.original_filename == manual.original_filename,
-                Manual.is_deleted == False,
-                Manual.id != manual.id,
-            )
-        )
-        sibling_manual_ids = [row[0] for row in same_filename_result.all()]
-        all_manual_ids = [manual.id, *sibling_manual_ids]
-
-        if "component" in extraction_types:
-            comp_delete_query = update(Component).where(
-                Component.source_manual_id.in_(all_manual_ids),
-                Component.is_deleted == False,
-            )
-            if page_numbers is not None:
-                comp_delete_query = comp_delete_query.where(Component.page_reference.in_(page_numbers))
-            await db.execute(comp_delete_query)
-        if "job" in extraction_types:
-            job_delete_query = update(Job).where(
-                Job.source_manual_id.in_(all_manual_ids),
-                Job.is_deleted == False
-            )
-            if page_numbers is not None:
-                job_delete_query = job_delete_query.where(Job.page_reference.in_(page_numbers))
-            await db.execute(job_delete_query)
-        if "spare" in extraction_types:
-            from app.models.spare import ExtractionMethod as _EM
-            spare_delete_query = update(Spare).where(
-                Spare.source_manual_id.in_(all_manual_ids),
-                Spare.is_deleted == False,
-                Spare.extraction_method != _EM.manual,
-            )
-            if page_numbers is not None:
-                spare_delete_query = spare_delete_query.where(Spare.page_reference.in_(page_numbers))
-            await db.execute(spare_delete_query)
-
-        # ------------------------------------------------------------------
-        # Persist all records
-        # ------------------------------------------------------------------
-        for obj in [*components_to_add, *jobs_to_add, *spares_to_add]:
-            db.add(obj)
-
-        # ------------------------------------------------------------------
-        # Restore manual status to classified
-        # ------------------------------------------------------------------
-        await db.execute(
-            update(Manual)
-            .where(Manual.id == manual_id)
-            .values(status=ManualStatus.classified)
-        )
-
-        await db.commit()
-
-        logger.warning(
-            "auto_extract_from_manual: manual=%s → %d components, %d jobs, %d spares",
-            manual_id_str,
-            len(components_to_add),
-            len(jobs_to_add),
-            len(spares_to_add),
-        )
-
-        try:
-            if components_to_add:
-                from app.services.component_matcher import auto_merge_extracted_components
-
-                merged, unmatched = await auto_merge_extracted_components(
+                component_ref_updates = await _overwrite_component_manual_refs(
                     db=db,
+                    manual=manual,
                     vessel_id=vessel_id,
                     tenant_id=tenant_id,
                 )
+                jobs_linked, spares_linked = await _link_records_to_components(
+                    db=db,
+                    manual=manual,
+                    vessel_id=vessel_id,
+                    tenant_id=tenant_id,
+                )
+                merged_jobs = await _consolidate_jobs_for_manual(
+                    db=db,
+                    manual=manual,
+                    vessel_id=vessel_id,
+                    tenant_id=tenant_id,
+                )
+                merged_spares = await _consolidate_spares_for_manual(
+                    db=db,
+                    manual=manual,
+                    vessel_id=vessel_id,
+                    tenant_id=tenant_id,
+                )
+                manual_job_ranks_updated = await backfill_manual_job_ranks(
+                    db=db,
+                    tenant_id=tenant_id,
+                    vessel_id=vessel_id,
+                    manual_id=manual.id,
+                )
                 await db.commit()
                 logger.warning(
-                    "auto_extract_from_manual: component match vessel=%s merged=%d unmatched=%d",
+                    "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d merged_jobs=%d merged_spares=%d manual_job_ranks=%s",
                     vessel_id_str,
-                    merged,
-                    unmatched,
+                    component_ref_updates,
+                    jobs_linked,
+                    spares_linked,
+                    merged_jobs,
+                    merged_spares,
+                    manual_job_ranks_updated,
                 )
-
-            component_ref_updates = await _overwrite_component_manual_refs(
-                db=db,
-                manual=manual,
-                vessel_id=vessel_id,
-                tenant_id=tenant_id,
-            )
-            jobs_linked, spares_linked = await _link_records_to_components(
-                db=db,
-                manual=manual,
-                vessel_id=vessel_id,
-                tenant_id=tenant_id,
-            )
-            merged_jobs = await _consolidate_jobs_for_manual(
-                db=db,
-                manual=manual,
-                vessel_id=vessel_id,
-                tenant_id=tenant_id,
-            )
-            merged_spares = await _consolidate_spares_for_manual(
-                db=db,
-                manual=manual,
-                vessel_id=vessel_id,
-                tenant_id=tenant_id,
-            )
-            manual_job_ranks_updated = await backfill_manual_job_ranks(
-                db=db,
-                tenant_id=tenant_id,
-                vessel_id=vessel_id,
-                manual_id=manual.id,
-            )
-            await db.commit()
-            logger.warning(
-                "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d merged_jobs=%d merged_spares=%d manual_job_ranks=%s",
-                vessel_id_str,
-                component_ref_updates,
-                jobs_linked,
-                spares_linked,
-                merged_jobs,
-                merged_spares,
-                manual_job_ranks_updated,
-            )
-        except Exception as link_exc:
-            logger.warning("auto_extract_from_manual: manual sync failed: %s", link_exc)
+            except Exception as link_exc:
+                logger.warning("auto_extract_from_manual: manual sync failed: %s", link_exc)
+        except Exception as task_exc:
+            logger.error("auto_extract_from_manual failed: %s", task_exc, exc_info=True)
+            from app.models.ingestion import ManualStatus, Manual
+            from sqlalchemy import update
+            try:
+                await db.execute(
+                    update(Manual)
+                    .where(Manual.id == manual_id)
+                    .values(
+                        status=ManualStatus.failed,
+                        error_message=str(task_exc)[:500]
+                    )
+                )
+                await db.commit()
+            except Exception as db_exc:
+                logger.error("Failed to mark manual as failed in DB: %s", db_exc)
+            raise task_exc
