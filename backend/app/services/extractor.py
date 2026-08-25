@@ -1866,6 +1866,155 @@ async def _overwrite_component_manual_refs(
     return updated
 
 
+async def _call_llm_json(system_prompt: str, user_message: str) -> dict:
+    # 1. Claude
+    if settings.ANTHROPIC_API_KEY:
+        try:
+            import httpx
+            headers = {
+                "x-api-key": settings.ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+            payload = {
+                "model": "claude-3-5-sonnet-20240620",
+                "max_tokens": 4000,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_message}],
+            }
+            async with httpx.AsyncClient(timeout=120) as client:
+                res = await client.post("https://api.anthropic.com/v1/messages", json=payload, headers=headers)
+                res.raise_for_status()
+                raw = res.json()["content"][0]["text"]
+                clean = _strip_code_fences(raw).strip()
+                return json.loads(clean)
+        except Exception as e:
+            logger.warning("LLM mapping: Claude failed: %s", e)
+
+    # 2. OpenAI
+    if settings.OPENAI_API_KEY:
+        try:
+            import httpx
+            headers = {
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "content-type": "application/json",
+            }
+            payload = {
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                "response_format": {"type": "json_object"}
+            }
+            async with httpx.AsyncClient(timeout=120) as client:
+                res = await client.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers)
+                res.raise_for_status()
+                raw = res.json()["choices"][0]["message"]["content"]
+                clean = _strip_code_fences(raw).strip()
+                return json.loads(clean)
+        except Exception as e:
+            logger.warning("LLM mapping: OpenAI failed: %s", e)
+
+    # 3. Gemini
+    if settings.GEMINI_API_KEY:
+        try:
+            import httpx
+            prompt = f"{system_prompt}\n\n{user_message}"
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"gemini-2.0-flash-lite:generateContent?key={settings.GEMINI_API_KEY}"
+            )
+            payload = {"contents": [{"parts": [{"text": prompt}]}]}
+            async with httpx.AsyncClient(timeout=120) as client:
+                res = await client.post(url, json=payload)
+                res.raise_for_status()
+                raw = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+                clean = _strip_code_fences(raw).strip()
+                return json.loads(clean)
+        except Exception as e:
+            logger.warning("LLM mapping: Gemini failed: %s", e)
+
+    return {}
+
+
+async def _ai_link_records_to_components(
+    records: list[Any],
+    components: list[Any],
+    relation: str,
+    filename: str
+) -> dict[str, str | None]:
+    """Uses LLM to match jobs or spares to the correct component from a list.
+    
+    Returns a dict mapping record ID string to component ID string (or None).
+    """
+    if not records or not components:
+        return {}
+        
+    comp_list = []
+    for c in components:
+        comp_list.append({
+            "id": str(c.id),
+            "component_name": c.component_name,
+            "maker": c.maker,
+            "model": c.model,
+            "main_machinery": c.main_machinery,
+            "page_reference": c.page_reference or c.source_page_number
+        })
+        
+    mapping = {}
+    batch_size = 30
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i+batch_size]
+        record_list = []
+        for r in batch:
+            if relation == "job":
+                record_list.append({
+                    "id": str(r.id),
+                    "job_name": r.job_name,
+                    "job_code": r.job_code,
+                    "job_description": r.job_description[:400] if r.job_description else "",
+                    "page_reference": r.page_reference or r.source_page_number
+                })
+            else:  # spare
+                record_list.append({
+                    "id": str(r.id),
+                    "part_name": r.part_name,
+                    "part_number": r.part_number,
+                    "spare_model": r.spare_model,
+                    "specification": r.specification,
+                    "drawing_number": r.drawing_number,
+                    "page_reference": r.page_reference or r.source_page_number
+                })
+                
+        system_prompt = (
+            "You are an expert maritime PMS data matching specialist.\n"
+            "Your task is to match each record (job or spare part) to the correct machinery component from the components list.\n\n"
+            "Match based on:\n"
+            "1. Maker & Model matching: Look closely at the maker and model name of the component, and check if the record references it.\n"
+            "2. Semantic connection: Look at the name of the component (e.g. 'Discharge Pump', 'Aeration Blower') and check if the record is associated with it.\n"
+            "3. Page proximity: Records are usually described on page numbers close to the component's page number.\n\n"
+            "Return ONLY a JSON object mapping each record's id (as key) to the correct component's id (as value), or null if the record cannot be mapped to any listed component. Example:\n"
+            "{\n"
+            "  \"record_id_1\": \"component_id_A\",\n"
+            "  \"record_id_2\": null\n"
+            "}\n"
+            "Return ONLY this JSON object. No explanation, no prose."
+        )
+        user_message = (
+            f"Document: {filename}\n\n"
+            f"Components:\n{json.dumps(comp_list, indent=2)}\n\n"
+            f"Records to match:\n{json.dumps(record_list, indent=2)}"
+        )
+        
+        batch_mapping = await _call_llm_json(system_prompt, user_message)
+        if batch_mapping and isinstance(batch_mapping, dict):
+            for k, v in batch_mapping.items():
+                mapping[k] = v
+                
+    return mapping
+
+
 async def _link_records_to_components(
     *,
     db: Any,
@@ -1915,6 +2064,7 @@ async def _link_records_to_components(
         best_score, best_component = ranked[0]
         return best_component if best_score >= 0.28 else None
 
+    # Fetch jobs
     jobs_result = await db.execute(
         select(Job).where(
             Job.vessel_id == vessel_id,
@@ -1924,13 +2074,35 @@ async def _link_records_to_components(
         )
     )
     jobs = jobs_result.scalars().all()
-    jobs_linked = 0
-    for job in jobs:
-        match = pick_component(
-            " ".join(filter(None, [job.job_name, job.job_code, job.job_description])),
-            job.page_reference,
-            "job",
+
+    # Determine mapping path for jobs
+    job_mapping = {}
+    if len(fallback_components) == 1:
+        single_comp_id = str(fallback_components[0].id)
+        job_mapping = {str(job.id): single_comp_id for job in jobs}
+    elif len(fallback_components) > 1 and jobs:
+        job_mapping = await _ai_link_records_to_components(
+            records=jobs,
+            components=fallback_components,
+            relation="job",
+            filename=manual.original_filename
         )
+
+    # Apply jobs mapping
+    jobs_linked = 0
+    comp_dict = {str(c.id): c for c in fallback_components}
+    for job in jobs:
+        comp_id = job_mapping.get(str(job.id))
+        match = comp_dict.get(comp_id) if comp_id else None
+        
+        # Fallback to Jaccard mapping
+        if not match:
+            match = pick_component(
+                " ".join(filter(None, [job.job_name, job.job_code, job.job_description])),
+                job.page_reference,
+                "job",
+            )
+            
         if match:
             changed = False
             if job.component_id != match.id:
@@ -1968,6 +2140,7 @@ async def _link_records_to_components(
                 db.add(job)
                 jobs_linked += 1
 
+    # Fetch spares
     spares_result = await db.execute(
         select(Spare).where(
             Spare.vessel_id == vessel_id,
@@ -1977,24 +2150,45 @@ async def _link_records_to_components(
         )
     )
     spares = spares_result.scalars().all()
+
+    # Determine mapping path for spares
+    spare_mapping = {}
+    if len(fallback_components) == 1:
+        single_comp_id = str(fallback_components[0].id)
+        spare_mapping = {str(spare.id): single_comp_id for spare in spares}
+    elif len(fallback_components) > 1 and spares:
+        spare_mapping = await _ai_link_records_to_components(
+            records=spares,
+            components=fallback_components,
+            relation="spare",
+            filename=manual.original_filename
+        )
+
+    # Apply spares mapping
     spares_linked = 0
     for spare in spares:
-        match = pick_component(
-            " ".join(
-                filter(
-                    None,
-                    [
-                        spare.part_name,
-                        spare.part_number,
-                        spare.spare_model,
-                        spare.specification,
-                        spare.drawing_number,
-                    ],
-                )
-            ),
-            spare.page_reference,
-            "spare",
-        )
+        comp_id = spare_mapping.get(str(spare.id))
+        match = comp_dict.get(comp_id) if comp_id else None
+        
+        # Fallback to Jaccard mapping
+        if not match:
+            match = pick_component(
+                " ".join(
+                    filter(
+                        None,
+                        [
+                            spare.part_name,
+                            spare.part_number,
+                            spare.spare_model,
+                            spare.specification,
+                            spare.drawing_number,
+                        ],
+                    )
+                ),
+                spare.page_reference,
+                "spare",
+            )
+            
         if match:
             changed = False
             if spare.component_id != match.id:
