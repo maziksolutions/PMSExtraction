@@ -1880,8 +1880,9 @@ async def _call_llm_json(system_prompt: str, user_message: str) -> dict:
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             }
+            model_id = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
             payload = {
-                "model": "claude-3-5-sonnet-20240620",
+                "model": model_id,
                 "max_tokens": 4000,
                 "system": system_prompt,
                 "messages": [{"role": "user", "content": user_message}],
