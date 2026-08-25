@@ -65,19 +65,22 @@ def _mock_classification(filename: str) -> dict[str, Any]:
     }
 
 
-async def _classify_with_openai(manual_text: str, filename: str) -> dict[str, Any]:
-    """Call GPT-4o for classification. Falls back to mock if no API key."""
+async def _classify_with_llm(manual_text: str, filename: str) -> dict[str, Any]:
+    """Call Claude or GPT-4o for classification. Falls back to mock if no API key is set or if both fail."""
     from app.core.config import settings
+    import json
 
-    if not settings.OPENAI_API_KEY:
-        return _mock_classification(filename)
+    # 1. Try Claude first (as ANTHROPIC_API_KEY is configured in staging)
+    if settings.ANTHROPIC_API_KEY:
+        try:
+            import anthropic
+            from app.services.extractor import _strip_code_fences
 
-    try:
-        import openai
-
-        client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-        categories_str = "\n".join(f"- {c}" for c in DOCUMENT_CATEGORIES)
-        prompt = f"""Classify the following maritime manual document.
+            client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+            model_id = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
+            categories_str = "\n".join(f"- {c}" for c in DOCUMENT_CATEGORIES)
+            
+            prompt = f"""Classify the following maritime manual document.
 
 Filename: {filename}
 
@@ -97,16 +100,56 @@ Respond with JSON only:
   "pages_with_spares": "<page range or null>"
 }}"""
 
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        import json
+            response = await client.messages.create(
+                model=model_id,
+                max_tokens=1000,
+                system="You are a helpful classification assistant. Return ONLY a JSON object.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw_text = response.content[0].text
+            clean = _strip_code_fences(raw_text).strip()
+            return json.loads(clean)
+        except Exception as e:
+            print(f"[CLASSIFICATION CLAUDE ERROR] Failed: {e}", flush=True)
 
-        return json.loads(response.choices[0].message.content or "{}")
-    except Exception:
-        return _mock_classification(filename)
+    # 2. Try OpenAI
+    if settings.OPENAI_API_KEY:
+        try:
+            import openai
+
+            client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            categories_str = "\n".join(f"- {c}" for c in DOCUMENT_CATEGORIES)
+            prompt = f"""Classify the following maritime manual document.
+
+Filename: {filename}
+
+Document excerpt (first 2000 chars):
+{manual_text[:2000]}
+
+Choose one category from:
+{categories_str}
+
+Respond with JSON only:
+{{
+  "category": "<category>",
+  "classification_confidence": <0-100>,
+  "useful_for_extraction": "<Yes|Reference|No>",
+  "pages_with_components": "<page range or null>",
+  "pages_with_jobs": "<page range or null>",
+  "pages_with_spares": "<page range or null>"
+}}"""
+
+            response = await client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            return json.loads(response.choices[0].message.content or "{}")
+        except Exception as e:
+            print(f"[CLASSIFICATION OPENAI ERROR] Failed: {e}", flush=True)
+
+    # 3. Fallback to mock
+    return _mock_classification(filename)
 
 
 @celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
@@ -144,7 +187,7 @@ def classify_manual(self, manual_id: str) -> dict[str, Any]:
                 except Exception:
                     pass
 
-                classification = await _classify_with_openai(
+                classification = await _classify_with_llm(
                     manual_text, manual.original_filename
                 )
 

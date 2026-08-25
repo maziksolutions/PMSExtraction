@@ -502,7 +502,21 @@ async def build_canonical_job_name(
     job_id: Any = None,
     component_id: Any = None,
 ) -> str | None:
-    input_name = job_names[0] if job_names else ""
+    # 1. Try to fetch the original raw name from job_name_backup if job_id is provided
+    original_name = None
+    if job_id:
+        try:
+            from sqlalchemy import text
+            backup_res = await db.execute(text("""
+                SELECT original_name FROM job_name_backup WHERE job_id = :job_id LIMIT 1;
+            """))
+            row = backup_res.fetchone()
+            if row and row[0]:
+                original_name = row[0]
+        except Exception:
+            pass
+
+    input_name = original_name or (job_names[0] if job_names else "")
     input_desc = job_descriptions[0] if job_descriptions else ""
     
     # Enhanced action identification using procedure (description) and frequency
@@ -569,25 +583,83 @@ async def build_canonical_job_name(
 
     # Step 2: Check whether the component name exists in the Job Title library.
     stmt = text("""
-        SELECT canonical_data->>'job_name' AS job_name
+        SELECT 
+            canonical_data->>'job_name' AS job_name,
+            (canonical_data->>'frequency')::integer AS frequency,
+            canonical_data->>'frequency_type' AS frequency_type
         FROM global_job_library
         WHERE tenant_id = :tenant_id
           AND is_deleted = false
-          AND LOWER(canonical_data->>'component_name') = LOWER(:component_name)
+          AND (
+            LOWER(canonical_data->>'component_name') = LOWER(:component_name)
+            OR LOWER(canonical_data->>'component_name') LIKE '%' || LOWER(:component_name) || '%'
+            OR LOWER(:component_name) LIKE '%' || LOWER(canonical_data->>'component_name') || '%'
+            OR (
+                LOWER(:component_name) IN ('auxiliary boiler flame eye', 'boiler flame eye', 'flame eye', 'main burner', 'burner')
+                AND LOWER(canonical_data->>'component_name') IN ('auxiliary boiler flame eye', 'boiler flame eye', 'flame eye', 'main burner', 'burner', 'auxiliary boiler main burner')
+            )
+          )
     """)
     result = await db.execute(stmt, {
         "tenant_id": str(tenant_id),
         "component_name": component_name.strip()
     })
-    library_jobs = [row[0] for row in result.fetchall() if row[0]]
+    library_jobs = result.fetchall()
 
     if library_jobs:
-        # Component exists in library. Select job title based on job action identified.
-        for lib_job_name in library_jobs:
+        # Component exists in library. Select best job title based on action, frequency, and similarity.
+        best_lib_name = None
+        best_score = -1
+        
+        for lib_job_name, lib_freq, lib_freq_type in library_jobs:
+            if not lib_job_name:
+                continue
             lib_action = identify_job_action_enhanced(lib_job_name, None, None, None)
-            if lib_action == action:
-                # Direct match found in library
-                return lib_job_name
+            
+            # 1. Action Match
+            action_match = (lib_action == action)
+            
+            # 2. String similarity of titles
+            from difflib import SequenceMatcher
+            similarity = SequenceMatcher(None, input_name.lower(), lib_job_name.lower()).ratio()
+            
+            # 3. Procedure keyword match
+            desc_lower = input_desc.lower() if input_desc else ""
+            lib_name_words = [w.strip("(),.-:\"'") for w in lib_job_name.lower().split() if len(w) > 3]
+            comp_words = set(component_name.lower().split())
+            filtered_words = [
+                w for w in lib_name_words 
+                if w not in comp_words 
+                and w not in ["check", "test", "inspect", "clean", "aux", "boiler"]
+            ]
+            
+            word_match_ratio = 0.0
+            if filtered_words and desc_lower:
+                matches = sum(1 for w in filtered_words if w in desc_lower)
+                word_match_ratio = matches / len(filtered_words)
+                
+            # If action matches OR we have a strong procedure keyword overlap OR high title similarity
+            if action_match or word_match_ratio >= 0.5 or similarity >= 0.6:
+                score = 0
+                if action_match:
+                    score += 5
+                if word_match_ratio >= 0.5:
+                    score += 4 * word_match_ratio
+                if similarity >= 0.6:
+                    score += 3 * similarity
+                    
+                # Frequency matching
+                if frequency_type and lib_freq_type and frequency_type.lower() == lib_freq_type.lower():
+                    score += 2
+                    if frequency is not None and lib_freq is not None and frequency == lib_freq:
+                        score += 3
+                
+                if score > best_score:
+                    best_score = score
+                    best_lib_name = lib_job_name
+                    
+        if best_lib_name:
+            return best_lib_name
 
     # Step 3: Fallback format
     default_name = f"{component_name.strip()} - {action}"

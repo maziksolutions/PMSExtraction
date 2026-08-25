@@ -2139,6 +2139,12 @@ async def _link_records_to_components(
                 component_id=match.id,
             )
             if canonical_name and job.job_name != canonical_name:
+                from sqlalchemy import text
+                await db.execute(text("""
+                    INSERT INTO job_name_backup (job_id, original_name)
+                    VALUES (:job_id, :original_name)
+                    ON CONFLICT (job_id) DO NOTHING;
+                """), {"job_id": job.id, "original_name": job.job_name})
                 job.job_name = canonical_name
                 changed = True
             description_with_refs = append_source_references_to_description(job.job_description, [source_ref])
