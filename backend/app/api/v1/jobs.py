@@ -173,6 +173,10 @@ async def _apply_job_name_and_references(db: AsyncSession, job: Job) -> None:
         job_names=[job.job_name],
         job_descriptions=[job.job_description],
         tenant_id=job.tenant_id,
+        frequency=job.frequency,
+        frequency_type=job.frequency_type,
+        job_id=job.id,
+        component_id=job.component_id,
     )
     if resolved_name:
         job.job_name = resolved_name
@@ -1334,6 +1338,10 @@ async def merge_jobs(
         job_names=merged_names,
         job_descriptions=merged_descriptions,
         tenant_id=target.tenant_id,
+        frequency=target.frequency,
+        frequency_type=target.frequency_type,
+        job_id=target.id,
+        component_id=target.component_id,
     )
     pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
     target.pdf_reference = pdf_reference

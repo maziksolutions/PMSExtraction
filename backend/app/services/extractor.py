@@ -1606,6 +1606,10 @@ async def _consolidate_jobs_for_manual(
                 job_names=[target.job_name, candidate.job_name],
                 job_descriptions=[target.job_description, candidate.job_description],
                 tenant_id=tenant_id,
+                frequency=target.frequency,
+                frequency_type=target.frequency_type,
+                job_id=target.id,
+                component_id=getattr(target, "component_id", None),
             )
             if resolved_name:
                 target.job_name = resolved_name
@@ -2128,6 +2132,10 @@ async def _link_records_to_components(
                 job_names=[job.job_name],
                 job_descriptions=[job.job_description],
                 tenant_id=job.tenant_id,
+                frequency=job.frequency,
+                frequency_type=job.frequency_type,
+                job_id=job.id,
+                component_id=match.id,
             )
             if canonical_name and job.job_name != canonical_name:
                 job.job_name = canonical_name

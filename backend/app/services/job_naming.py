@@ -435,6 +435,61 @@ def identify_job_action(job_name: str | None, job_desc: str | None) -> str | Non
     return None
 
 
+def identify_job_action_enhanced(
+    job_name: str | None,
+    job_desc: str | None,
+    frequency: int | None = None,
+    frequency_type: str | None = None,
+) -> str:
+    name = (job_name or "").lower()
+    desc = (job_desc or "").lower()
+    combined = f"{name} {desc}"
+
+    # 1. Check for Analysis (sampling, laboratory, lab analysis, testing oil properties)
+    if any(k in combined for k in ["analyse", "analysis", "laboratory", "sample", "lab test"]):
+        return "Analysis"
+
+    # 2. Check for Overhaul (dismantle, overhaul, complete overhaul, recondition)
+    if any(k in combined for k in ["overhaul", "dismantle", "recondition"]):
+        return "Overhaul"
+
+    # 3. Check for Replacement/Renew (replace, renew, exchange, swap, install new)
+    if any(k in combined for k in ["replace", "renew", "exchange", "fitting", "swap"]):
+        return "Replacement/Renew"
+
+    # 4. Check for Testing (test, calibrate, calibration, function test, rendering test, performance check)
+    if any(k in combined for k in ["test", "calibrate", "calibration", "performance check", "rendering test"]):
+        return "Testing"
+
+    # 5. Check for Cleaning (clean, wash, flush, soot blow, soot-blow, sootblow, blow through)
+    if any(k in combined for k in ["clean", "wash", "flush", "soot blow", "sootblow", "soot-blow", "blow through", "cleaning"]):
+        return "Cleaning"
+
+    # 6. Frequency-based inference:
+    if frequency_type == "daily" or frequency_type == "weekly":
+        return "Inspection"
+
+    if frequency_type == "hourly" and frequency and frequency <= 250:
+        return "Inspection"
+
+    # 7. Check for Inspection (inspect, inspection, check, verify, measure, observe, gauge)
+    if any(k in combined for k in ["inspect", "inspection", "check", "verify", "measure", "observe", "gauge"]):
+        return "Inspection"
+
+    # 8. Check for Maintenance (maintain, maintenance, service, lubricate, grease, adjust, retight, tighten)
+    if any(k in combined for k in ["maintain", "maintenance", "service", "lubricate", "grease", "adjust", "retight", "tighten"]):
+        return "Maintenance"
+
+    # 9. Long running frequency triggers Overhaul
+    if frequency_type == "yearly" and frequency and frequency >= 4:
+        return "Overhaul"
+    if frequency_type == "hourly" and frequency and frequency >= 8000:
+        return "Overhaul"
+
+    # Default fallback
+    return "Maintenance"
+
+
 async def build_canonical_job_name(
     db: AsyncSession,
     *,
@@ -442,11 +497,16 @@ async def build_canonical_job_name(
     job_names: Sequence[str | None] = (),
     job_descriptions: Sequence[str | None] = (),
     tenant_id: Any = None,
+    frequency: int | None = None,
+    frequency_type: str | None = None,
+    job_id: Any = None,
+    component_id: Any = None,
 ) -> str | None:
     input_name = job_names[0] if job_names else ""
     input_desc = job_descriptions[0] if job_descriptions else ""
     
-    action = identify_job_action(input_name, input_desc) or "Maintenance"
+    # Enhanced action identification using procedure (description) and frequency
+    action = identify_job_action_enhanced(input_name, input_desc, frequency, frequency_type)
 
     # Tiered component name resolution if not provided
     if not component_name:
@@ -524,10 +584,47 @@ async def build_canonical_job_name(
     if library_jobs:
         # Component exists in library. Select job title based on job action identified.
         for lib_job_name in library_jobs:
-            lib_action = identify_job_action(lib_job_name, None)
+            lib_action = identify_job_action_enhanced(lib_job_name, None, None, None)
             if lib_action == action:
                 # Direct match found in library
                 return lib_job_name
 
     # Step 3: Fallback format
-    return f"{component_name.strip()} - {action}"
+    default_name = f"{component_name.strip()} - {action}"
+
+    # Extract the Job Body
+    bodies, _ = _extract_body_and_actions(input_name)
+    job_body = bodies[0] if bodies else None
+
+    # Filter out component name from job body if it's redundant
+    if job_body and component_name.lower() in job_body.lower():
+        import re
+        pattern = re.compile(r"^\s*" + re.escape(component_name) + r"\s*[:\-]?\s*", re.I)
+        job_body = pattern.sub("", job_body).strip(" -:/,.;")
+
+    if not job_body:
+        job_body = input_name
+
+    # Check database for duplicates if component_id is provided
+    has_duplicate = False
+    if component_id and job_id:
+        dup_stmt = text("""
+            SELECT EXISTS (
+                SELECT 1 FROM jobs
+                WHERE component_id = :component_id
+                  AND id != :job_id
+                  AND job_name = :default_name
+                  AND is_deleted = false
+            );
+        """)
+        dup_res = await db.execute(dup_stmt, {
+            "component_id": str(component_id),
+            "job_id": str(job_id),
+            "default_name": default_name
+        })
+        has_duplicate = dup_res.scalar()
+
+    if has_duplicate and job_body and job_body.lower() != component_name.lower():
+        return f"{component_name.strip()} - {job_body} - {action}"
+
+    return default_name

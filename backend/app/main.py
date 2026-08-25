@@ -573,7 +573,11 @@ async def _run_startup_backfill_and_backup() -> None:
                     component_name=comp_name,
                     job_names=[job.job_name],
                     job_descriptions=[job.job_description],
-                    tenant_id=job.tenant_id
+                    tenant_id=job.tenant_id,
+                    frequency=job.frequency,
+                    frequency_type=job.frequency_type,
+                    job_id=job.id,
+                    component_id=job.component_id,
                 )
                 if new_name and new_name != orig_name:
                     job.job_name = new_name
