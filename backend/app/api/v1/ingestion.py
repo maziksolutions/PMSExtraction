@@ -272,7 +272,43 @@ async def sharepoint_auth(
     return SharePointAuthResponse(auth_url=auth_url, vessel_id=vessel_id)
 
 
-
+@router.get("/debug-restore-m29", tags=["Debug"])
+async def debug_restore_m29(db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import text
+    try:
+        # Find the manuals matching M-29
+        res = await db.execute(text("""
+            SELECT id, original_filename FROM manuals 
+            WHERE original_filename LIKE '%M-29%' AND is_deleted = false;
+        """))
+        rows = res.fetchall()
+        results = []
+        for row in rows:
+            mid = row[0]
+            filename = row[1]
+            
+            # Count deleted records
+            c_del = (await db.execute(text("SELECT COUNT(*) FROM components WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
+            j_del = (await db.execute(text("SELECT COUNT(*) FROM jobs WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
+            s_del = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
+            
+            # Restore
+            await db.execute(text("UPDATE components SET is_deleted = false WHERE source_manual_id = :mid;"), {"mid": mid})
+            await db.execute(text("UPDATE jobs SET is_deleted = false WHERE source_manual_id = :mid;"), {"mid": mid})
+            await db.execute(text("UPDATE spares SET is_deleted = false WHERE source_manual_id = :mid;"), {"mid": mid})
+            await db.execute(text("UPDATE manuals SET status = 'classified', error_message = null WHERE id = :mid;"), {"mid": mid})
+            await db.commit()
+            
+            results.append({
+                "manual_id": str(mid),
+                "filename": filename,
+                "components_restored": c_del,
+                "jobs_restored": j_del,
+                "spares_restored": s_del
+            })
+        return {"status": "success", "results": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @router.get(
