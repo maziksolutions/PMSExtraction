@@ -478,18 +478,51 @@ async def _check_vessel4_status() -> None:
                     await db.commit()
                     print(f"[M29 RECOVERY] Restore complete!", flush=True)
                     
-            # 2. Count manuals updated today (August 25, 2026) in production database
+            # 2. Count manuals updated recently (August 25-26, 2026) in production database
             prod_m_res = await db.execute(text("""
                 SELECT original_filename, status, updated_at 
                 FROM manuals 
-                WHERE DATE(updated_at) = '2026-08-25' AND is_deleted = false;
+                WHERE DATE(updated_at) >= '2026-08-25' AND is_deleted = false;
             """))
             prod_m_rows = prod_m_res.fetchall()
-            print(f"[PROD MANUALS TODAY] Total manuals updated/extracted today (2026-08-25): {len(prod_m_rows)}", flush=True)
+            print(f"[PROD MANUALS RECENT] Total manuals updated/extracted recently (>=2026-08-25): {len(prod_m_rows)}", flush=True)
             for pm in prod_m_rows:
                 print(f"  - Manual: {pm[0]} | Status: {pm[1]} | Updated At: {pm[2]}", flush=True)
+                
+            # 3. Diagnostic check for M-29 Air compressor(2-2).pdf
+            diag_res = await db.execute(text("""
+                SELECT id, original_filename, status, pages_with_spares, pages_with_components, pages_with_jobs, error_message
+                FROM manuals 
+                WHERE original_filename LIKE '%M-29%2-2%' AND is_deleted = false;
+            """))
+            diag_rows = diag_res.fetchall()
+            print(f"[M29 DIAG] Matching manuals count: {len(diag_rows)}", flush=True)
+            for row in diag_rows:
+                mid = row[0]
+                filename = row[1]
+                status = row[2]
+                pages_spares = row[3]
+                pages_comps = row[4]
+                pages_jobs = row[5]
+                err = row[6]
+                
+                # Active counts
+                c_act = (await db.execute(text("SELECT COUNT(*) FROM components WHERE source_manual_id = :mid AND is_deleted = false;"), {"mid": mid})).scalar()
+                j_act = (await db.execute(text("SELECT COUNT(*) FROM jobs WHERE source_manual_id = :mid AND is_deleted = false;"), {"mid": mid})).scalar()
+                s_act = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid AND is_deleted = false;"), {"mid": mid})).scalar()
+                
+                # Deleted counts
+                c_del = (await db.execute(text("SELECT COUNT(*) FROM components WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
+                j_del = (await db.execute(text("SELECT COUNT(*) FROM jobs WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
+                s_del = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
+                
+                print(f"[M29 DIAG] Manual: {filename} | ID: {mid}", flush=True)
+                print(f"  * Status: {status} | Error: {err}", flush=True)
+                print(f"  * Page Ranges -> Components: {pages_comps} | Jobs: {pages_jobs} | Spares: {pages_spares}", flush=True)
+                print(f"  * Active Counts -> Components: {c_act} | Jobs: {j_act} | Spares: {s_act}", flush=True)
+                print(f"  * Deleted Counts -> Components: {c_del} | Jobs: {j_del} | Spares: {s_del}", flush=True)
     except Exception as e:
-        print(f"[M29 RECOVERY ERROR] Failed: {e}", flush=True)
+        print(f"[M29 DIAG/RECOVERY ERROR] Failed: {e}", flush=True)
 
 
 async def _run_startup_backfill_and_backup() -> None:
