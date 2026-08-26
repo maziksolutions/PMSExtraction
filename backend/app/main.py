@@ -521,8 +521,49 @@ async def _check_vessel4_status() -> None:
                 print(f"  * Page Ranges -> Components: {pages_comps} | Jobs: {pages_jobs} | Spares: {pages_spares}", flush=True)
                 print(f"  * Active Counts -> Components: {c_act} | Jobs: {j_act} | Spares: {s_act}", flush=True)
                 print(f"  * Deleted Counts -> Components: {c_del} | Jobs: {j_del} | Spares: {s_del}", flush=True)
+                
+            # 4. Diagnostic check for E-32 Electroc clock & communal aerial system.pdf
+            e32_res = await db.execute(text("""
+                SELECT id, original_filename, status, pages_with_spares, pages_with_components, pages_with_jobs, error_message
+                FROM manuals 
+                WHERE original_filename LIKE '%E-32%' AND is_deleted = false;
+            """))
+            e32_rows = e32_res.fetchall()
+            print(f"[E32 DIAG] Matching manuals count: {len(e32_rows)}", flush=True)
+            for row in e32_rows:
+                mid = row[0]
+                filename = row[1]
+                status = row[2]
+                pages_spares = row[3]
+                pages_comps = row[4]
+                pages_jobs = row[5]
+                err = row[6]
+                print(f"[E32 DIAG] Manual: {filename} | ID: {mid} | Status: {status} | Error: {err}", flush=True)
+                print(f"  * Page Ranges -> Components: {pages_comps} | Jobs: {pages_jobs} | Spares: {pages_spares}", flush=True)
+                
+            # 5. Reset any manuals stuck in progress states on startup (due to container terminations)
+            stuck_res = await db.execute(text("""
+                SELECT id, original_filename, status 
+                FROM manuals 
+                WHERE status IN ('queued', 'downloading', 'converting', 'translating', 'scanning') 
+                  AND is_deleted = false;
+            """))
+            stuck_rows = stuck_res.fetchall()
+            if stuck_rows:
+                print(f"[STARTUP MANUAL CLEANUP] Found {len(stuck_rows)} stuck manuals. Resetting to failed.", flush=True)
+                for row in stuck_rows:
+                    mid = row[0]
+                    name = row[1]
+                    prev_status = row[2]
+                    print(f"  * Resetting stuck manual: {name} (ID: {mid}) from {prev_status} to failed", flush=True)
+                    await db.execute(text("""
+                        UPDATE manuals 
+                        SET status = 'failed', error_message = 'Extraction was interrupted by server deployment/restart. Please try re-extracting.'
+                        WHERE id = :mid;
+                    """), {"mid": mid})
+                await db.commit()
     except Exception as e:
-        print(f"[M29 DIAG/RECOVERY ERROR] Failed: {e}", flush=True)
+        print(f"[M29/E32 DIAG/RECOVERY ERROR] Failed: {e}", flush=True)
 
 
 async def _run_startup_backfill_and_backup() -> None:
