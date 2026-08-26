@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, RefreshCw, Search, CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronUp, Play, Filter, HelpCircle, FileText } from 'lucide-react'
+import { X, RefreshCw, Search, CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronUp, Play, Filter, HelpCircle, FileText, XCircle } from 'lucide-react'
 import apiClient from '@/api/client'
 
 // Frontend range parser
@@ -120,6 +120,13 @@ export function ManualPageStatusModal({
     },
   })
 
+  const isCurrentlyExtracting =
+    data?.status === 'queued' ||
+    data?.status === 'downloading' ||
+    data?.status === 'converting' ||
+    data?.status === 'translating' ||
+    data?.status === 'scanning'
+
   // Mutation to trigger page-specific retry
   const retryMutation = useMutation({
     mutationFn: async (vars: { pageNumber: number; entityTypes: string[] }) => {
@@ -168,6 +175,30 @@ export function ManualPageStatusModal({
     onError: (err: any) => {
       setNotification({
         message: `Failed to trigger full re-extraction: ${err?.response?.data?.detail ?? err.message}`,
+        type: 'error',
+      })
+      setTimeout(() => setNotification(null), 5000)
+    },
+  })
+
+  // Mutation to stop/cancel active extraction
+  const stopMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiClient.post(`/vessels/${vesselId}/extract-stop`)
+      return res.data
+    },
+    onSuccess: () => {
+      setNotification({
+        message: 'Successfully stopped the extraction task.',
+        type: 'success',
+      })
+      queryClient.invalidateQueries({ queryKey: ['manual-page-status', manualId] })
+      queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+      setTimeout(() => setNotification(null), 5000)
+    },
+    onError: (err: any) => {
+      setNotification({
+        message: `Failed to stop extraction: ${err?.response?.data?.detail ?? err.message}`,
         type: 'error',
       })
       setTimeout(() => setNotification(null), 5000)
@@ -354,6 +385,21 @@ export function ManualPageStatusModal({
                   )}
                   <span>Re-extract Manual</span>
                 </button>
+                {isCurrentlyExtracting && (
+                  <button
+                    onClick={() => stopMutation.mutate()}
+                    disabled={stopMutation.isPending}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:bg-rose-800/50 text-xs text-white font-medium px-3 py-1.5 transition-colors shadow-md ml-2"
+                    title="Stop/cancel active extraction task for this vessel"
+                  >
+                    {stopMutation.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <XCircle className="h-3.5 w-3.5" />
+                    )}
+                    <span>Stop Extraction</span>
+                  </button>
+                )}
               </div>
             </div>
 
