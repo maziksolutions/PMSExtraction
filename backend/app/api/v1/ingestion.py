@@ -276,16 +276,69 @@ async def sharepoint_auth(
 async def debug_restore_m29(db: AsyncSession = Depends(get_db)):
     from sqlalchemy import text
     try:
-        # Find the manuals matching M-29
+        results = []
+        
+        # 1. Check if the historical manual b480204a exists (even if deleted)
+        old_res = await db.execute(text("""
+            SELECT id, original_filename, is_deleted 
+            FROM manuals 
+            WHERE id = 'b480204a-2bdf-454d-9a82-a1941f92167f';
+        """))
+        old_row = old_res.fetchone()
+        
+        # 2. Find active M-29 manuals
         res = await db.execute(text("""
             SELECT id, original_filename FROM manuals 
-            WHERE original_filename LIKE '%M-29%' AND is_deleted = false;
+            WHERE original_filename LIKE '%M-29%' AND is_deleted = false 
+              AND id != 'b480204a-2bdf-454d-9a82-a1941f92167f';
         """))
-        rows = res.fetchall()
-        results = []
-        for row in rows:
-            mid = row[0]
-            filename = row[1]
+        active_manuals = res.fetchall()
+        
+        # 3. If the old manual with the spares exists, re-link them to the active manuals
+        relinked_count = 0
+        if old_row:
+            old_mid = old_row[0]
+            old_name = old_row[1]
+            
+            # Find the active M-29 manual (preferably (1-2) or (2-2))
+            for active_manual in active_manuals:
+                active_mid = active_manual[0]
+                active_name = active_manual[1]
+                
+                # Check how many spares are currently active for the new manual
+                s_act = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid AND is_deleted = false;"), {"mid": active_mid})).scalar()
+                
+                # If the new manual has 0 spares, let's move the 1068 spares to it
+                if s_act == 0:
+                    # Count spares to move
+                    s_to_move = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :old_mid;"), {"old_mid": old_mid})).scalar()
+                    if s_to_move > 0:
+                        await db.execute(text("""
+                            UPDATE spares 
+                            SET source_manual_id = :new_mid, is_deleted = false 
+                            WHERE source_manual_id = :old_mid;
+                        """), {"new_mid": active_mid, "old_mid": old_mid})
+                        await db.execute(text("""
+                            UPDATE manuals 
+                            SET status = 'classified', error_message = null 
+                            WHERE id = :new_mid;
+                        """), {"new_mid": active_mid})
+                        await db.commit()
+                        
+                        relinked_count += s_to_move
+                        results.append({
+                            "action": "relinked_spares",
+                            "from_manual_id": str(old_mid),
+                            "from_filename": old_name,
+                            "to_manual_id": str(active_mid),
+                            "to_filename": active_name,
+                            "spares_moved": s_to_move
+                        })
+        
+        # 4. Standard restore for other manuals
+        for manual in active_manuals:
+            mid = manual[0]
+            filename = manual[1]
             
             # Count deleted records
             c_del = (await db.execute(text("SELECT COUNT(*) FROM components WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
@@ -300,13 +353,15 @@ async def debug_restore_m29(db: AsyncSession = Depends(get_db)):
             await db.commit()
             
             results.append({
+                "action": "standard_restore",
                 "manual_id": str(mid),
                 "filename": filename,
                 "components_restored": c_del,
                 "jobs_restored": j_del,
                 "spares_restored": s_del
             })
-        return {"status": "success", "results": results}
+            
+        return {"status": "success", "results": results, "relinked_total_spares": relinked_count}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
