@@ -3105,20 +3105,22 @@ async def auto_extract_from_manual(
                 )
             except Exception as link_exc:
                 logger.warning("auto_extract_from_manual: manual sync failed: %s", link_exc)
-        except Exception as task_exc:
-            logger.error("auto_extract_from_manual failed: %s", task_exc, exc_info=True)
+        except BaseException as task_exc:
+            import asyncio
+            logger.error("auto_extract_from_manual failed or cancelled: %s", task_exc, exc_info=True)
             from app.models.ingestion import ManualStatus, Manual
             from sqlalchemy import update
             try:
+                err_msg = "Extraction stopped by user." if isinstance(task_exc, asyncio.CancelledError) else str(task_exc)[:500]
                 await db.execute(
                     update(Manual)
                     .where(Manual.id == manual_id)
                     .values(
                         status=ManualStatus.failed,
-                        error_message=str(task_exc)[:500]
+                        error_message=err_msg
                     )
                 )
                 await db.commit()
             except Exception as db_exc:
-                logger.error("Failed to mark manual as failed in DB: %s", db_exc)
+                logger.error("Failed to mark manual as failed/cancelled in DB: %s", db_exc)
             raise task_exc
