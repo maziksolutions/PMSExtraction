@@ -30,44 +30,46 @@ optional_bearer = HTTPBearer(auto_error=False)
 async def debug_restore_m29(db: AsyncSession = Depends(get_db)):
     from sqlalchemy import text
     try:
-        # 1. Move the 1,068 spares back from M-29 (2-2) to M-45 (1-7)
-        old_mid = 'b480204a-2bdf-454d-9a82-a1941f92167f' # M-45 (1-7)
-        new_mid = '69a72a31-6288-49ea-a20b-cba8ded483a2' # M-29 (2-2)
-        
-        # Check how many spares are currently linked to M-29 (2-2)
-        s_on_m29 = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid;"), {"mid": new_mid})).scalar()
-        
-        reverted_count = 0
-        if s_on_m29 > 0:
-            # Move them back to M-45 (1-7)
-            await db.execute(text("""
-                UPDATE spares 
-                SET source_manual_id = :old_mid, is_deleted = false 
-                WHERE source_manual_id = :new_mid;
-            """), {"old_mid": old_mid, "new_mid": new_mid})
+        res = await db.execute(text("""
+            SELECT id, original_filename, status, error_message, updated_at 
+            FROM manuals 
+            WHERE original_filename LIKE '%M-29%' AND is_deleted = false;
+        """))
+        rows = res.fetchall()
+        results = []
+        for row in rows:
+            mid = row[0]
+            filename = row[1]
+            status = row[2]
+            err = row[3]
+            updated = row[4]
             
-            # Set M-45 back to classified
-            await db.execute(text("""
-                UPDATE manuals 
-                SET status = 'classified', error_message = null 
-                WHERE id = :old_mid;
-            """), {"old_mid": old_mid})
+            c_act = (await db.execute(text("SELECT COUNT(*) FROM components WHERE source_manual_id = :mid AND is_deleted = false;"), {"mid": mid})).scalar()
+            j_act = (await db.execute(text("SELECT COUNT(*) FROM jobs WHERE source_manual_id = :mid AND is_deleted = false;"), {"mid": mid})).scalar()
+            s_act = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid AND is_deleted = false;"), {"mid": mid})).scalar()
             
-            # Set M-29 (2-2) back to failed since its extraction got interrupted
-            await db.execute(text("""
-                UPDATE manuals 
-                SET status = 'failed', error_message = 'Extraction was interrupted by server deployment/restart. Please try re-extracting.'
-                WHERE id = :new_mid;
-            """), {"new_mid": new_mid})
+            c_del = (await db.execute(text("SELECT COUNT(*) FROM components WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
+            j_del = (await db.execute(text("SELECT COUNT(*) FROM jobs WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
+            s_del = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
             
-            await db.commit()
-            reverted_count = s_on_m29
-            
-        return {
-            "status": "success", 
-            "message": "Reverted spares back to M-45 E-R PUMPS successfully", 
-            "spares_moved_back": reverted_count
-        }
+            results.append({
+                "manual_id": str(mid),
+                "filename": filename,
+                "status": status,
+                "error": err,
+                "updated_at": updated.isoformat() if updated else None,
+                "active_counts": {
+                    "components": c_act,
+                    "jobs": j_act,
+                    "spares": s_act
+                },
+                "deleted_counts": {
+                    "components": c_del,
+                    "jobs": j_del,
+                    "spares": s_del
+                }
+            })
+        return {"status": "success", "m29_diagnostics": results}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
