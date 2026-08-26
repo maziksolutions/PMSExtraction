@@ -30,92 +30,44 @@ optional_bearer = HTTPBearer(auto_error=False)
 async def debug_restore_m29(db: AsyncSession = Depends(get_db)):
     from sqlalchemy import text
     try:
-        results = []
+        # 1. Move the 1,068 spares back from M-29 (2-2) to M-45 (1-7)
+        old_mid = 'b480204a-2bdf-454d-9a82-a1941f92167f' # M-45 (1-7)
+        new_mid = '69a72a31-6288-49ea-a20b-cba8ded483a2' # M-29 (2-2)
         
-        # 1. Check if the historical manual b480204a exists (even if deleted)
-        old_res = await db.execute(text("""
-            SELECT id, original_filename, is_deleted 
-            FROM manuals 
-            WHERE id = 'b480204a-2bdf-454d-9a82-a1941f92167f';
-        """))
-        old_row = old_res.fetchone()
+        # Check how many spares are currently linked to M-29 (2-2)
+        s_on_m29 = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid;"), {"mid": new_mid})).scalar()
         
-        # 2. Find active M-29 manuals
-        res = await db.execute(text("""
-            SELECT id, original_filename FROM manuals 
-            WHERE original_filename LIKE '%M-29%' AND is_deleted = false 
-              AND id != 'b480204a-2bdf-454d-9a82-a1941f92167f';
-        """))
-        active_manuals = res.fetchall()
-        
-        # 3. If the old manual with the spares exists, re-link them to the active manuals
-        relinked_count = 0
-        if old_row:
-            old_mid = old_row[0]
-            old_name = old_row[1]
+        reverted_count = 0
+        if s_on_m29 > 0:
+            # Move them back to M-45 (1-7)
+            await db.execute(text("""
+                UPDATE spares 
+                SET source_manual_id = :old_mid, is_deleted = false 
+                WHERE source_manual_id = :new_mid;
+            """), {"old_mid": old_mid, "new_mid": new_mid})
             
-            # Find the active M-29 manual (preferably (1-2) or (2-2))
-            for active_manual in active_manuals:
-                active_mid = active_manual[0]
-                active_name = active_manual[1]
-                
-                # Check how many spares are currently active for the new manual
-                s_act = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid AND is_deleted = false;"), {"mid": active_mid})).scalar()
-                
-                # If the new manual has 0 spares, let's move the 1068 spares to it
-                if s_act == 0:
-                    # Count spares to move
-                    s_to_move = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :old_mid;"), {"old_mid": old_mid})).scalar()
-                    if s_to_move > 0:
-                        await db.execute(text("""
-                            UPDATE spares 
-                            SET source_manual_id = :new_mid, is_deleted = false 
-                            WHERE source_manual_id = :old_mid;
-                        """), {"new_mid": active_mid, "old_mid": old_mid})
-                        await db.execute(text("""
-                            UPDATE manuals 
-                            SET status = 'classified', error_message = null 
-                            WHERE id = :new_mid;
-                        """), {"new_mid": active_mid})
-                        await db.commit()
-                        
-                        relinked_count += s_to_move
-                        results.append({
-                            "action": "relinked_spares",
-                            "from_manual_id": str(old_mid),
-                            "from_filename": old_name,
-                            "to_manual_id": str(active_mid),
-                            "to_filename": active_name,
-                            "spares_moved": s_to_move
-                        })
-        
-        # 4. Standard restore for other manuals
-        for manual in active_manuals:
-            mid = manual[0]
-            filename = manual[1]
+            # Set M-45 back to classified
+            await db.execute(text("""
+                UPDATE manuals 
+                SET status = 'classified', error_message = null 
+                WHERE id = :old_mid;
+            """), {"old_mid": old_mid})
             
-            # Count deleted records
-            c_del = (await db.execute(text("SELECT COUNT(*) FROM components WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
-            j_del = (await db.execute(text("SELECT COUNT(*) FROM jobs WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
-            s_del = (await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid AND is_deleted = true;"), {"mid": mid})).scalar()
+            # Set M-29 (2-2) back to failed since its extraction got interrupted
+            await db.execute(text("""
+                UPDATE manuals 
+                SET status = 'failed', error_message = 'Extraction was interrupted by server deployment/restart. Please try re-extracting.'
+                WHERE id = :new_mid;
+            """), {"new_mid": new_mid})
             
-            # Restore
-            await db.execute(text("UPDATE components SET is_deleted = false WHERE source_manual_id = :mid;"), {"mid": mid})
-            await db.execute(text("UPDATE jobs SET is_deleted = false WHERE source_manual_id = :mid;"), {"mid": mid})
-            await db.execute(text("UPDATE spares SET is_deleted = false WHERE source_manual_id = :mid;"), {"mid": mid})
-            await db.execute(text("UPDATE manuals SET status = 'classified', error_message = null WHERE id = :mid;"), {"mid": mid})
             await db.commit()
+            reverted_count = s_on_m29
             
-            results.append({
-                "action": "standard_restore",
-                "manual_id": str(mid),
-                "filename": filename,
-                "components_restored": c_del,
-                "jobs_restored": j_del,
-                "spares_restored": s_del
-            })
-            
-        return {"status": "success", "results": results, "relinked_total_spares": relinked_count}
+        return {
+            "status": "success", 
+            "message": "Reverted spares back to M-45 E-R PUMPS successfully", 
+            "spares_moved_back": reverted_count
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
