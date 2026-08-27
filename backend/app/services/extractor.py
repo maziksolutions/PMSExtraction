@@ -2785,6 +2785,8 @@ async def auto_extract_from_manual(
             type_to_text: dict[str, str] = {}
             for entity_type in extraction_types:
                 selected_pages = entity_pages[entity_type]
+                if page_numbers is not None:
+                    selected_pages = [p for p in selected_pages if p in page_numbers]
                 filtered_text = _filter_text_to_pages(full_text, selected_pages, include_context=True)
                 type_to_text[entity_type] = filtered_text
                 logger.warning(

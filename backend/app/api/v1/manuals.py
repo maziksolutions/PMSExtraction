@@ -981,3 +981,118 @@ async def missing_manual_report(
         "gaps": gaps,
         "gap_count": len(gaps),
     }
+
+
+@router.get(
+    "/{vessel_id}/manuals/no-extracted-records",
+    summary="Get specified manual pages that yielded zero extracted items",
+)
+async def get_no_extracted_records_report(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+
+    # 1. Fetch all manuals for this vessel
+    manuals_res = await db.execute(
+        select(Manual).where(
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manuals = manuals_res.scalars().all()
+    manual_ids = [m.id for m in manuals]
+
+    if not manual_ids:
+        return {"manuals": [], "total_no_extracted_pages": 0}
+
+    # 2. Fetch all active extracted records
+    from app.models.component import Component
+    from app.models.job import Job
+    from app.models.spare import Spare
+
+    comp_res = await db.execute(
+        select(Component.source_manual_id, Component.page_reference).where(
+            Component.source_manual_id.in_(manual_ids),
+            Component.is_deleted == False,
+        )
+    )
+    components = comp_res.all()
+
+    job_res = await db.execute(
+        select(Job.source_manual_id, Job.page_reference).where(
+            Job.source_manual_id.in_(manual_ids),
+            Job.is_deleted == False,
+        )
+    )
+    jobs = job_res.all()
+
+    spare_res = await db.execute(
+        select(Spare.source_manual_id, Spare.page_reference).where(
+            Spare.source_manual_id.in_(manual_ids),
+            Spare.is_deleted == False,
+        )
+    )
+    spares = spare_res.all()
+
+    # 3. Group extracted pages by manual ID
+    extracted_components = {}
+    extracted_jobs = {}
+    extracted_spares = {}
+
+    for mid, page in components:
+        if page is not None:
+            extracted_components.setdefault(mid, set()).add(page)
+
+    for mid, page in jobs:
+        if page is not None:
+            extracted_jobs.setdefault(mid, set()).add(page)
+
+    for mid, page in spares:
+        if page is not None:
+            extracted_spares.setdefault(mid, set()).add(page)
+
+    # 4. Process each manual to compare targeted vs extracted pages
+    from app.services.extractor import _parse_page_tokens
+
+    report = []
+    total_no_extracted_pages = 0
+
+    for manual in manuals:
+        comp_ref_str = manual.pages_with_components_physical or manual.pages_with_components
+        job_ref_str = manual.pages_with_jobs_physical or manual.pages_with_jobs
+        spare_ref_str = manual.pages_with_spares_physical or manual.pages_with_spares
+
+        comp_pages = set(_parse_page_tokens(comp_ref_str))
+        job_pages = set(_parse_page_tokens(job_ref_str))
+        spare_pages = set(_parse_page_tokens(spare_ref_str))
+
+        ext_comp = extracted_components.get(manual.id, set())
+        ext_job = extracted_jobs.get(manual.id, set())
+        ext_spare = extracted_spares.get(manual.id, set())
+
+        missing_comp = sorted(list(comp_pages - ext_comp))
+        missing_job = sorted(list(job_pages - ext_job))
+        missing_spare = sorted(list(spare_pages - ext_spare))
+
+        if missing_comp or missing_job or missing_spare:
+            missing_count = len(missing_comp) + len(missing_job) + len(missing_spare)
+            total_no_extracted_pages += missing_count
+            report.append({
+                "manual_id": str(manual.id),
+                "original_filename": manual.original_filename,
+                "missing_components_pages": missing_comp,
+                "missing_jobs_pages": missing_job,
+                "missing_spares_pages": missing_spare,
+                "missing_components_count": len(missing_comp),
+                "missing_jobs_count": len(missing_job),
+                "missing_spares_count": len(missing_spare),
+                "total_missing_pages_count": missing_count,
+            })
+
+    return {
+        "manuals": report,
+        "total_no_extracted_pages": total_no_extracted_pages,
+    }

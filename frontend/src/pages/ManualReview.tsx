@@ -29,6 +29,7 @@ import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
 import { ManualPageStatusModal } from '@/components/manuals/ManualPageStatusModal'
 import { ManualsStatsModal } from '@/components/manuals/ManualsStatsModal'
+import { NoExtractedRecordsModal } from '@/components/manuals/NoExtractedRecordsModal'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -490,8 +491,15 @@ const ManualReview: React.FC = () => {
   const [loadingManualId, setLoadingManualId] = useState<string | null>(null)
   const [selectedManualForStatus, setSelectedManualForStatus] = useState<Manual | null>(null)
   const [showStatsModal, setShowStatsModal] = useState(false)
+  const [showNoExtractedModal, setShowNoExtractedModal] = useState(false)
 
   // ── Data queries ──────────────────────────────────────────────────────────
+
+  const { data: noExtractedData } = useQuery({
+    queryKey: ['no-extracted-records', vesselId],
+    queryFn: () => apiClient.get(`/vessels/${vesselId}/manuals/no-extracted-records`).then((r) => r.data),
+    enabled: !!vesselId,
+  })
 
   const { data: batchList = [] } = useQuery<number[]>({
     queryKey: ['manual-batches', vesselId],
@@ -584,11 +592,19 @@ const ManualReview: React.FC = () => {
     },
   })
 
+  const prevExtractionStatusRef = useRef(extractionData?.status)
+
   useEffect(() => {
     if (extractionData?.status === 'completed' || extractionData?.status === 'failed') {
       setExtractionPolling(false)
       queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
     }
+
+    if (prevExtractionStatusRef.current === 'running' && extractionData?.status === 'completed') {
+      queryClient.invalidateQueries({ queryKey: ['no-extracted-records', vesselId] })
+      setShowNoExtractedModal(true)
+    }
+    prevExtractionStatusRef.current = extractionData?.status
   }, [extractionData?.status, vesselId, queryClient])
 
   const extractAllMutation = useMutation({
@@ -727,6 +743,7 @@ const ManualReview: React.FC = () => {
       apiClient.patch(`/vessels/${vesselId}/manuals/${manualId}`, data).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
+      queryClient.invalidateQueries({ queryKey: ['no-extracted-records', vesselId] })
       setEdits({})
     },
   })
@@ -1320,6 +1337,16 @@ const ManualReview: React.FC = () => {
             Clear filters
           </button>
         )}
+        <button
+          onClick={() => setShowNoExtractedModal(true)}
+          className="flex items-center gap-1.5 rounded border border-slate-700 bg-slate-800/80 px-2.5 py-1.5 text-xs font-semibold text-slate-300 hover:text-white transition-colors"
+        >
+          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
+          No Extracted Records
+          <span className="bg-slate-700 text-slate-200 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-600">
+            {noExtractedData?.total_no_extracted_pages || 0}
+          </span>
+        </button>
       </div>
 
       {/* Manuals table */}
@@ -1627,6 +1654,13 @@ const ManualReview: React.FC = () => {
         <ManualsStatsModal
           vesselId={vesselId ?? ''}
           onClose={() => setShowStatsModal(false)}
+        />
+      )}
+      {showNoExtractedModal && (
+        <NoExtractedRecordsModal
+          isOpen={showNoExtractedModal}
+          onClose={() => setShowNoExtractedModal(false)}
+          data={noExtractedData || null}
         />
       )}
     </div>
