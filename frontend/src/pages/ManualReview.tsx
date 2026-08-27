@@ -24,6 +24,7 @@ import {
   ArrowDown,
   Activity,
   BarChart3,
+  ExternalLink,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
@@ -56,6 +57,7 @@ interface Manual {
   is_duplicate: boolean
   duplicate_of_id: string | null
   blob_storage_key?: string | null
+  sharepoint_path?: string | null
 }
 
 interface Gap {
@@ -1469,6 +1471,18 @@ const ManualReview: React.FC = () => {
                           <Copy className="h-3 w-3" />
                           Duplicate
                         </span>
+                      )}
+                      {m.sharepoint_path && m.sharepoint_path.startsWith('http') && (
+                        <a
+                          href={m.sharepoint_path}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 mt-1 rounded-full bg-slate-850 px-2 py-0.5 text-[10px] font-medium text-slate-350 hover:bg-slate-800 hover:text-white transition-colors"
+                          title="Open original file in SharePoint"
+                        >
+                          <ExternalLink className="h-3 w-3 text-sky-400" />
+                          SharePoint Original
+                        </a>
                       )}
                     </td>
                     <td className="px-3 py-3 text-slate-400 whitespace-nowrap">{formatBytes(m.file_size_bytes)}</td>
