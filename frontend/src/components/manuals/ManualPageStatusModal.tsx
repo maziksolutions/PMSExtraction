@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, RefreshCw, Search, CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronUp, Play, Filter, HelpCircle, FileText, XCircle } from 'lucide-react'
 import apiClient from '@/api/client'
@@ -119,6 +119,10 @@ export function ManualPageStatusModal({
       return false
     },
   })
+
+  useEffect(() => {
+    refetch()
+  }, [manualId, refetch])
 
   const isCurrentlyExtracting =
     data?.status === 'queued' ||
