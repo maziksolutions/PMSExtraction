@@ -557,6 +557,7 @@ const JobsReview: React.FC = () => {
     try {
       const res = await apiClient.post(`/vessels/${vesselId}/jobs/import-excel`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120_000,
       })
       setActionMessage(`Imported ${res.data.imported} jobs (${res.data.skipped} skipped).`)
       queryClient.invalidateQueries({ queryKey: ['jobs', vesselId] })
@@ -596,7 +597,7 @@ const JobsReview: React.FC = () => {
       params.sort_order = sortOrder
       params.page = String(page)
       params.page_size = String(pageSize)
-      return apiClient.get(`/vessels/${vesselId}/jobs`, { params }).then((r) => r.data)
+      return apiClient.get(`/vessels/${vesselId}/jobs`, { params, timeout: 120_000 }).then((r) => r.data)
     },
     enabled: !!vesselId,
   })
@@ -961,7 +962,7 @@ const JobsReview: React.FC = () => {
 
   const handleQcExport = async () => {
     try {
-      const res = await apiClient.get(`/vessels/${vesselId}/jobs/qc-export`, { responseType: 'blob' })
+      const res = await apiClient.get(`/vessels/${vesselId}/jobs/qc-export`, { responseType: 'blob', timeout: 120_000 })
       const disposition = res.headers['content-disposition'] ?? ''
       const match = disposition.match(/filename="?([^"]+)"?/)
       const filename = match ? match[1] : 'Jobs_QC.xlsx'

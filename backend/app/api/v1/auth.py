@@ -74,6 +74,37 @@ async def debug_restore_m29(db: AsyncSession = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 
+@router.get("/debug-check-p42", summary="Temporary diagnostics for P-42 manual failure")
+async def debug_check_p42(db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import text
+    try:
+        res = await db.execute(text("""
+            SELECT id, original_filename, status, error_message, is_deleted, created_at, updated_at, vessel_id 
+            FROM manuals 
+            WHERE original_filename ILIKE '%P-42%' 
+               OR original_filename ILIKE '%P42%' 
+               OR original_filename ILIKE '%VALVE%' 
+               OR original_filename ILIKE '%REMOTE%' 
+               OR original_filename ILIKE '%CONTROL%';
+        """))
+        rows = res.fetchall()
+        results = []
+        for row in rows:
+            results.append({
+                "id": str(row[0]),
+                "filename": row[1],
+                "status": row[2],
+                "error": row[3],
+                "is_deleted": row[4],
+                "created_at": row[5].isoformat() if row[5] else None,
+                "updated_at": row[6].isoformat() if row[6] else None,
+                "vessel_id": str(row[7])
+            })
+        return {"status": "success", "results": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 
 
 @router.post(

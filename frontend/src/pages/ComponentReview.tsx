@@ -352,7 +352,7 @@ const ComponentReview: React.FC = () => {
       if (searchTable) params.search = searchTable
       params.sort_by = sortBy
       params.sort_order = sortOrder
-      return apiClient.get(`/vessels/${vesselId}/components`, { params }).then((r) => r.data)
+      return apiClient.get(`/vessels/${vesselId}/components`, { params, timeout: 120_000 }).then((r) => r.data)
     },
     enabled: !!vesselId,
   })
@@ -487,6 +487,7 @@ const ComponentReview: React.FC = () => {
     try {
       const res = await apiClient.post(`/vessels/${vesselId}/components/import-excel`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120_000,
       })
       setImportResult(`Imported ${res.data.imported} components (${res.data.skipped} skipped).`)
       queryClient.invalidateQueries({ queryKey: ['components', vesselId] })
@@ -836,7 +837,7 @@ const ComponentReview: React.FC = () => {
                       <button
                         onClick={async () => {
                           try {
-                            const resp = await apiClient.get(`/vessels/${vesselId}/components/qc-export`, { responseType: 'blob' })
+                            const resp = await apiClient.get(`/vessels/${vesselId}/components/qc-export`, { responseType: 'blob', timeout: 120_000 })
                             const disposition = resp.headers['content-disposition'] ?? ''
                             const match = disposition.match(/filename="?([^"]+)"?/)
                             const filename = match ? match[1] : 'Components_QC.xlsx'

@@ -1184,6 +1184,25 @@ async def _extract_entities_from_page_image(
     )
 
 
+def _render_single_pdf_page_image(
+    file_bytes: bytes,
+    page_no: int,
+    resolution: int = 200,
+) -> Optional[bytes]:
+    try:
+        import pdfplumber
+        import io
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            if 1 <= page_no <= len(pdf.pages):
+                page_image = pdf.pages[page_no - 1].to_image(resolution=resolution).original
+                image_buffer = io.BytesIO()
+                page_image.save(image_buffer, format="PNG")
+                return image_buffer.getvalue()
+    except Exception as exc:
+        logger.warning("extractor single page render failed: page=%d error=%s", page_no, exc)
+    return None
+
+
 async def _render_selected_pdf_page_images(
     *,
     file_bytes: bytes,
@@ -2749,88 +2768,92 @@ async def auto_extract_from_manual(
                     selected_pages = entity_pages.get(etype) or []
                     if page_numbers is not None:
                         selected_pages = [p for p in selected_pages if p in page_numbers]
-                    rendered_pages = await _render_selected_pdf_page_images(
-                        file_bytes=file_bytes,
-                        selected_pages=selected_pages,
-                        resolution=200,
-                    )
-                    if rendered_pages:
-                        context_note = learning_context_by_type.get(etype)
-                        if etype in {"job", "spare"}:
-                            context_components = extracted_component_context or existing_manual_component_context
-                            if context_components:
-                                context_note = _merge_context_notes(
-                                    _build_component_context_text(context_components, manual),
-                                    learning_context_by_type.get(etype),
+                    
+                    context_note = learning_context_by_type.get(etype)
+                    if etype in {"job", "spare"}:
+                        context_components = extracted_component_context or existing_manual_component_context
+                        if context_components:
+                            context_note = _merge_context_notes(
+                                _build_component_context_text(context_components, manual),
+                                learning_context_by_type.get(etype),
+                            )
+                    for page_no in selected_pages:
+                        # Render single page image on-demand to keep memory footprint low
+                        import asyncio
+                        image_bytes = await asyncio.to_thread(_render_single_pdf_page_image, file_bytes, page_no, 200)
+                        if not image_bytes:
+                            continue
+
+                        # Fetch preceding page text context if available to help identify assembly/header
+                        page_context = ""
+                        prev_page = page_no - 1
+                        if prev_page > 0 and full_text:
+                            prev_page_text = _filter_text_to_pages(full_text, [prev_page], include_context=False)
+                            if prev_page_text.strip():
+                                page_context = f"\nPreceding Page {prev_page} Text (For Header/Assembly/Title Context):\n{prev_page_text}\n"
+
+                        # Add preceding page headers/titles history for deep lookbacks (up to 10 pages earlier)
+                        if full_text:
+                            titles_history = _build_preceding_titles_history(full_text, page_no, max_lookback=10)
+                            if titles_history:
+                                page_context += f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
+
+                        current_context_note = context_note
+                        if page_context:
+                            current_context_note = _merge_context_notes(current_context_note, page_context)
+
+                        try:
+                            if etype == "spare":
+                                def on_strip_start(strip_idx, total_strips):
+                                    nonlocal done_sub_steps
+                                    if strip_idx > 0:
+                                        done_sub_steps += 1
+                                    set_extraction_state(
+                                        vessel_id_str,
+                                        current_manual_pages_done=done_sub_steps,
+                                        detailed_status=f"Extracting spares from image page {page_no} (strip {strip_idx + 1}/{total_strips})..."
+                                    )
+
+                                done_sub_steps += 1
+                                set_extraction_state(
+                                    vessel_id_str,
+                                    current_manual_pages_done=done_sub_steps,
+                                    detailed_status=f"Extracting spares from image page {page_no} (starting)..."
                                 )
-                        for page_no in selected_pages:
-                            image_bytes = rendered_pages.get(page_no)
-                            if not image_bytes:
-                                continue
+                                vision_records = await _extract_spare_parts_from_image_split(
+                                    image_bytes=image_bytes,
+                                    filename=filename,
+                                    page_no=page_no,
+                                    context_note=current_context_note,
+                                    on_strip_start=on_strip_start,
+                                )
+                            else:
+                                done_sub_steps += 1
+                                set_extraction_state(
+                                    vessel_id_str,
+                                    current_manual_pages_done=done_sub_steps,
+                                    detailed_status=f"Extracting components from image page {page_no} of {manual.page_count or 'N/A'}..."
+                                )
+                                vision_records = await _extract_entities_from_page_image(
+                                    image_bytes=image_bytes,
+                                    filename=filename,
+                                    page_no=page_no,
+                                    extraction_type=etype,
+                                    context_note=current_context_note,
+                                )
+                            all_records.extend(vision_records)
 
-                            # Fetch preceding page text context if available to help identify assembly/header
-                            page_context = ""
-                            prev_page = page_no - 1
-                            if prev_page > 0 and full_text:
-                                prev_page_text = _filter_text_to_pages(full_text, [prev_page], include_context=False)
-                                if prev_page_text.strip():
-                                    page_context = f"\nPreceding Page {prev_page} Text (For Header/Assembly/Title Context):\n{prev_page_text}\n"
-
-                            # Add preceding page headers/titles history for deep lookbacks (up to 10 pages earlier)
-                            if full_text:
-                                titles_history = _build_preceding_titles_history(full_text, page_no, max_lookback=10)
-                                if titles_history:
-                                    page_context += f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
-
-                            current_context_note = context_note
-                            if page_context:
-                                current_context_note = _merge_context_notes(current_context_note, page_context)
-
+                            # Keep database connection active during long LLM calls
                             try:
-                                if etype == "spare":
-                                    def on_strip_start(strip_idx, total_strips):
-                                        nonlocal done_sub_steps
-                                        if strip_idx > 0:
-                                            done_sub_steps += 1
-                                        set_extraction_state(
-                                            vessel_id_str,
-                                            current_manual_pages_done=done_sub_steps,
-                                            detailed_status=f"Extracting spares from image page {page_no} (strip {strip_idx + 1}/{total_strips})..."
-                                        )
-
-                                    done_sub_steps += 1
-                                    set_extraction_state(
-                                        vessel_id_str,
-                                        current_manual_pages_done=done_sub_steps,
-                                        detailed_status=f"Extracting spares from image page {page_no} (starting)..."
-                                    )
-                                    vision_records = await _extract_spare_parts_from_image_split(
-                                        image_bytes=image_bytes,
-                                        filename=filename,
-                                        page_no=page_no,
-                                        context_note=current_context_note,
-                                        on_strip_start=on_strip_start,
-                                    )
-                                else:
-                                    done_sub_steps += 1
-                                    set_extraction_state(
-                                        vessel_id_str,
-                                        current_manual_pages_done=done_sub_steps,
-                                        detailed_status=f"Extracting components from image page {page_no} of {manual.page_count or 'N/A'}..."
-                                    )
-                                    vision_records = await _extract_entities_from_page_image(
-                                        image_bytes=image_bytes,
-                                        filename=filename,
-                                        page_no=page_no,
-                                        extraction_type=etype,
-                                        context_note=current_context_note,
-                                    )
-                                all_records.extend(vision_records)
-                            except Exception as page_exc:
-                                logger.error(
-                                    "auto_extract_from_manual: failed page %d for %s/%s: %s",
-                                    page_no, filename, etype, page_exc
-                                )
+                                from sqlalchemy import text
+                                await db.execute(text("SELECT 1"))
+                            except Exception:
+                                pass
+                        except Exception as page_exc:
+                            logger.error(
+                                "auto_extract_from_manual: failed page %d for %s/%s: %s",
+                                page_no, filename, etype, page_exc
+                            )
 
                 records = _dedupe_records(all_records, etype)
 

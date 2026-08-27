@@ -395,6 +395,7 @@ const SparesReview: React.FC = () => {
     try {
       const res = await apiClient.post(`/vessels/${vesselId}/spares/import-excel`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120_000,
       })
       setActionMessage(`Imported ${res.data.imported} spares (${res.data.skipped} skipped).`)
       queryClient.invalidateQueries({ queryKey: ['spares', vesselId] })
@@ -420,7 +421,7 @@ const SparesReview: React.FC = () => {
   const sourceFilesQuery = useQuery({
     queryKey: ['spare-source-files', vesselId],
     queryFn: () =>
-      apiClient.get(`/vessels/${vesselId}/spares/source-files`).then((r) => r.data.items as string[]),
+      apiClient.get(`/vessels/${vesselId}/spares/source-files`, { timeout: 120_000 }).then((r) => r.data.items as string[]),
     enabled: !!vesselId,
   })
 
@@ -437,7 +438,7 @@ const SparesReview: React.FC = () => {
       params.sort_order = sortOrder
       params.page = String(page)
       params.page_size = String(pageSize)
-      return apiClient.get(`/vessels/${vesselId}/spares`, { params }).then((r) => r.data)
+      return apiClient.get(`/vessels/${vesselId}/spares`, { params, timeout: 120_000 }).then((r) => r.data)
     },
     enabled: !!vesselId,
   })
@@ -598,7 +599,7 @@ const SparesReview: React.FC = () => {
 
   const handleQcExport = async () => {
     try {
-      const res = await apiClient.get(`/vessels/${vesselId}/spares/qc-export`, { responseType: 'blob' })
+      const res = await apiClient.get(`/vessels/${vesselId}/spares/qc-export`, { responseType: 'blob', timeout: 120_000 })
       const disposition = res.headers['content-disposition'] ?? ''
       const match = disposition.match(/filename="?([^"]+)"?/)
       const filename = match ? match[1] : 'Spares_QC.xlsx'
