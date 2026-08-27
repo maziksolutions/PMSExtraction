@@ -1061,9 +1061,21 @@ async def get_no_extracted_records_report(
     total_no_extracted_pages = 0
 
     for manual in manuals:
-        comp_ref_str = manual.pages_with_components_physical or manual.pages_with_components
-        job_ref_str = manual.pages_with_jobs_physical or manual.pages_with_jobs
-        spare_ref_str = manual.pages_with_spares_physical or manual.pages_with_spares
+        # Determine if user has edited/customized any page reference fields for this manual
+        has_custom_refs = (
+            manual.pages_with_components_physical is not None
+            or manual.pages_with_jobs_physical is not None
+            or manual.pages_with_spares_physical is not None
+        )
+
+        if has_custom_refs:
+            comp_ref_str = manual.pages_with_components_physical
+            job_ref_str = manual.pages_with_jobs_physical
+            spare_ref_str = manual.pages_with_spares_physical
+        else:
+            comp_ref_str = manual.pages_with_components
+            job_ref_str = manual.pages_with_jobs
+            spare_ref_str = manual.pages_with_spares
 
         comp_pages = set(_parse_page_tokens(comp_ref_str))
         job_pages = set(_parse_page_tokens(job_ref_str))
