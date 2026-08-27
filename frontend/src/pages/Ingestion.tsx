@@ -15,6 +15,7 @@ import {
   Upload,
   X,
   CheckCircle2,
+  History,
   ScanSearch,
   Search,
   ArrowUpDown,
@@ -163,6 +164,7 @@ const Ingestion: React.FC = () => {
       if (activeSession) {
         setActiveSessionId(activeSession.id)
         setStep(3)
+        setTab('sharepoint')
       }
       setIsSessionRestored(true)
     }
@@ -583,36 +585,78 @@ const Ingestion: React.FC = () => {
 
           {/* Step 1: Connect SharePoint */}
           {step === 1 && (
-            <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-              <h2 className="mb-4 text-lg font-semibold text-white">
-                Connect to SharePoint
-              </h2>
-              <p className="mb-4 text-sm text-slate-400">
-                Enter the SharePoint folder or sharing link URL containing the vessel's manuals. 
-                Supports both standard folders and folder sharing links.
-              </p>
-              <div className="flex gap-3">
-                <input
-                  type="url"
-                  value={folderUrl}
-                  onChange={(e) => setFolderUrl(e.target.value)}
-                  placeholder="https://yourtenant.sharepoint.com/:f:/g/... or /sites/..."
-                  className="flex-1 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm text-white placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
-                />
-                <button
-                  onClick={() => listFilesMutation.mutate({ url: folderUrl })}
-                  disabled={!folderUrl || listFilesMutation.isPending}
-                  className="flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
-                >
-                  <FolderOpen className="h-4 w-4" />
-                  {listFilesMutation.isPending ? 'Connecting...' : 'Connect'}
-                </button>
-              </div>
-              {listFilesMutation.isError && (
-                <p className="mt-3 text-sm text-red-400">
-                  <AlertCircle className="inline h-4 w-4 mr-1" />
-                  {(listFilesMutation.error as Error)?.message || 'Failed to list folder contents. Check the URL and try again.'}
+            <div className="space-y-6">
+              <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
+                <h2 className="mb-4 text-lg font-semibold text-white">
+                  Connect to SharePoint
+                </h2>
+                <p className="mb-4 text-sm text-slate-400">
+                  Enter the SharePoint folder or sharing link URL containing the vessel's manuals. 
+                  Supports both standard folders and folder sharing links.
                 </p>
+                <div className="flex gap-3">
+                  <input
+                    type="url"
+                    value={folderUrl}
+                    onChange={(e) => setFolderUrl(e.target.value)}
+                    placeholder="https://yourtenant.sharepoint.com/:f:/g/... or /sites/..."
+                    className="flex-1 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm text-white placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
+                  />
+                  <button
+                    onClick={() => listFilesMutation.mutate({ url: folderUrl })}
+                    disabled={!folderUrl || listFilesMutation.isPending}
+                    className="flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+                  >
+                    <FolderOpen className="h-4 w-4" />
+                    {listFilesMutation.isPending ? 'Connecting...' : 'Connect'}
+                  </button>
+                </div>
+                {listFilesMutation.isError && (
+                  <p className="mt-3 text-sm text-red-400">
+                    <AlertCircle className="inline h-4 w-4 mr-1" />
+                    {(listFilesMutation.error as Error)?.message || 'Failed to list folder contents. Check the URL and try again.'}
+                  </p>
+                )}
+              </div>
+
+              {sessionsData?.items && sessionsData.items.length > 0 && (
+                <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
+                  <h3 className="mb-4 text-sm font-semibold text-slate-350">
+                    Previous Ingestion Sessions
+                  </h3>
+                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                    {sessionsData.items.map((s: any) => (
+                      <button
+                        key={s.id}
+                        onClick={() => {
+                          setActiveSessionId(s.id)
+                          setStep(3)
+                          setSessionPolling(true)
+                        }}
+                        className="flex w-full items-center justify-between rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-300 transition-all duration-150 hover:border-slate-700 hover:bg-slate-900/80"
+                      >
+                        <div className="flex items-center gap-3">
+                          <History className="h-4 w-4 text-slate-550" />
+                          <span className="font-medium text-slate-200">
+                            {s.created_at ? `${s.created_at.slice(0, 10)} at ${s.created_at.slice(11, 16)}` : 'Unknown Date'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <span className="text-xs text-slate-400">
+                            {s.downloaded_files}/{s.total_files} files
+                          </span>
+                          <span
+                            className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                              statusColors[s.status] ?? 'bg-slate-700 text-slate-300'
+                            }`}
+                          >
+                            {s.status}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           )}
