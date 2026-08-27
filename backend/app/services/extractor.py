@@ -2527,6 +2527,8 @@ async def auto_extract_from_manual(
 
             # Add preceding pages for context to the OCR/enrichment page list
             selected_pages_all = sorted({page for pages in entity_pages.values() for page in pages})
+            if page_numbers is not None:
+                selected_pages_all = [p for p in selected_pages_all if p in page_numbers]
             ocr_pages = set(selected_pages_all)
             for p in selected_pages_all:
                 if p > 1:
