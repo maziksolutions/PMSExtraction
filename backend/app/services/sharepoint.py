@@ -347,6 +347,31 @@ class SharePointService:
                 data = resp.json()
                 folder_name = data.get("name", "")
 
+            # Check if this item is a file instead of a folder
+            item_data = data.get("remoteItem") or data
+            if "folder" not in item_data:
+                name = item_data.get("name", "unknown")
+                item_id = item_data.get("id", "")
+                download_url = item_data.get("@microsoft.graph.downloadUrl", "")
+                return {
+                    "files": [{
+                        "name": name,
+                        "id": item_id,
+                        "path": download_url or item_id,
+                        "size": item_data.get("size", 0),
+                        "mimeType": item_data.get("file", {}).get("mimeType", "application/octet-stream"),
+                        "webUrl": item_data.get("webUrl", ""),
+                        "download_url": download_url,
+                        "modified": item_data.get("lastModifiedDateTime", ""),
+                    }],
+                    "folders": [],
+                    "drive_id": drive_id,
+                    "folder_id": folder_id,
+                    "parent_id": data.get("parentReference", {}).get("id"),
+                    "folder_name": name,
+                    "total": 1
+                }
+
             parent_id = data.get("parentReference", {}).get("id")
 
             children_url = f"{self.graph_base}/drives/{drive_id}/items/{folder_id}/children"
