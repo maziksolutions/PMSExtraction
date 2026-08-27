@@ -2228,6 +2228,207 @@ async def _link_records_to_components(
 # ---------------------------------------------------------------------------
 
 
+async def _process_and_save_page_records(
+    db,
+    page_records: list[dict],
+    etype: str,
+    manual,
+    all_manual_ids: list[uuid.UUID],
+    filename: str,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    vessel_shipyard: Optional[str],
+    page_no: Optional[int],
+    extracted_component_context: list[dict],
+    existing_manual_component_context: list[dict],
+) -> None:
+    if not page_records:
+        return
+
+    from app.models.component import Component, QCStatus
+    from app.models.job import FrequencyType, Job
+    from app.models.spare import Spare, ExtractionMethod as _EM
+    from sqlalchemy import update
+
+    # Deduplicate new records for this page/chunk context
+    records = _dedupe_records(page_records, etype)
+    if not records:
+        return
+
+    # Determine page references to clear
+    pages_to_clear = set()
+    if page_no is not None:
+        pages_to_clear.add(page_no)
+    else:
+        for record in records:
+            source_page = record.get("source_page_number")
+            if source_page is not None:
+                try:
+                    pages_to_clear.add(int(source_page))
+                except (TypeError, ValueError):
+                    pass
+
+    # Clean replace existing auto-extracted items specifically on these pages
+    if pages_to_clear:
+        if etype == "component":
+            comp_delete_query = update(Component).where(
+                Component.source_manual_id.in_(all_manual_ids),
+                Component.is_deleted == False,
+                Component.page_reference.in_(pages_to_clear),
+            )
+            await db.execute(comp_delete_query)
+        elif etype == "job":
+            job_delete_query = update(Job).where(
+                Job.source_manual_id.in_(all_manual_ids),
+                Job.is_deleted == False,
+                Job.page_reference.in_(pages_to_clear),
+            )
+            await db.execute(job_delete_query)
+        elif etype == "spare":
+            spare_delete_query = update(Spare).where(
+                Spare.source_manual_id.in_(all_manual_ids),
+                Spare.is_deleted == False,
+                Spare.extraction_method != _EM.manual,
+                Spare.page_reference.in_(pages_to_clear),
+            )
+            await db.execute(spare_delete_query)
+
+    # Build DB objects
+    to_add = []
+    for record in records:
+        confidence = int(record.get("confidence_score", 70))
+        source_page = record.get("source_page_number")
+        if source_page is None and page_no is not None:
+            source_page = page_no
+
+        if etype == "component":
+            _maker = record.get("maker") or None
+            _model = record.get("model") or None
+            if not _maker and vessel_shipyard:
+                _maker = vessel_shipyard
+            if not _model and _maker:
+                _model = "N/A"
+            comp = Component(
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                source_manual_id=manual.id,
+                confidence_score=confidence,
+                qc_status=QCStatus.pending,
+                is_unmapped=True,
+                group1=record.get("group1") or "Uncategorised",
+                group2=record.get("group2") or "Uncategorised",
+                main_machinery=record.get("main_machinery") or "Unknown",
+                component_name=record.get("component_name") or "Unknown Component",
+                maker=_maker,
+                model=_model,
+                serial_number=record.get("serial_number") or None,
+                specification=record.get("specification") or None,
+                location=record.get("location") or None,
+                machinery_particulars=record.get("machinery_particulars") or None,
+                is_critical=bool(record.get("is_critical", False)),
+                job_pages=record.get("job_pages") or getattr(manual, "pages_with_jobs", None) or None,
+                spare_pages=record.get("spare_pages") or getattr(manual, "pages_with_spares", None) or None,
+                page_reference=int(source_page) if source_page is not None else None,
+                pdf_reference=filename,
+            )
+            to_add.append(comp)
+            extracted_component_context.append(
+                {
+                    "component_name": comp.component_name,
+                    "main_machinery": comp.main_machinery,
+                    "maker": comp.maker,
+                    "model": comp.model,
+                    "source_page_number": comp.page_reference,
+                }
+            )
+
+        elif etype == "job":
+            raw_freq_type = record.get("frequency_type")
+            freq_type: Optional[FrequencyType] = None
+            if raw_freq_type:
+                try:
+                    freq_type = FrequencyType(raw_freq_type.lower())
+                except ValueError:
+                    freq_type = None
+
+            raw_freq = record.get("frequency")
+            freq_val: Optional[int] = None
+            if raw_freq is not None:
+                try:
+                    freq_val = int(raw_freq)
+                except (TypeError, ValueError):
+                    freq_val = None
+
+            job = Job(
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                source_manual_id=manual.id,
+                confidence_score=confidence,
+                qc_status=QCStatus.pending,
+                job_name=record.get("job_name") or "Unknown Job",
+                job_code=record.get("job_code") or None,
+                job_description=record.get("job_description") or None,
+                safety_precaution=record.get("safety_precaution") or None,
+                frequency=freq_val,
+                frequency_type=freq_type,
+                is_critical=bool(record.get("is_critical", False)),
+                page_reference=int(source_page) if source_page is not None else None,
+                pdf_reference=filename,
+                source_reference=(
+                    f"{filename} (p.{int(source_page)})"
+                    if source_page is not None
+                    else filename
+                ),
+            )
+            job.job_description = append_source_references_to_description(
+                job.job_description,
+                split_reference_entries(
+                    pdf_reference=job.pdf_reference,
+                    page_reference=job.page_reference,
+                    source_reference=job.source_reference,
+                ),
+            )
+            to_add.append(job)
+
+        elif etype == "spare":
+            fallback_part_number = (
+                f"{filename} (p.{int(source_page)})"
+                if source_page is not None
+                else filename
+            )
+            _assembly = record.get("spare_assembly") or record.get("spare_model") or None
+            if not _assembly:
+                candidates = extracted_component_context or existing_manual_component_context
+                if candidates:
+                    _assembly = candidates[0].get("component_name")
+                else:
+                    base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+                    _assembly = base_name.replace("-", " ").replace("_", " ").title()
+
+            spare = Spare(
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                source_manual_id=manual.id,
+                confidence_score=confidence,
+                qc_status=QCStatus.pending,
+                part_name=record.get("part_name") or "Unknown Part",
+                part_number=record.get("part_number") or fallback_part_number,
+                drawing_number=record.get("drawing_number") or None,
+                drawing_position=record.get("drawing_position") or None,
+                specification=record.get("specification") or None,
+                spare_assembly=_assembly,
+                assembly_description=record.get("assembly_description") or _assembly or None,
+                spare_maker=record.get("spare_maker") or None,
+                spare_model=record.get("spare_model") or _assembly or None,
+                page_reference=int(source_page) if source_page is not None else None,
+            )
+            to_add.append(spare)
+
+    for obj in to_add:
+        db.add(obj)
+    await db.commit()
+
+
 async def auto_extract_from_manual(
     manual_id_str: str,
     entity_types: Optional[list[str]] = None,
@@ -2404,6 +2605,13 @@ async def auto_extract_from_manual(
             # from blob storage (handles both old records and blob-stored files).
             # ------------------------------------------------------------------
             filename = manual.original_filename
+            set_extraction_state(
+                vessel_id_str,
+                current_manual_name=filename,
+                current_manual_pages_total=100,
+                current_manual_pages_done=0,
+                detailed_status="Initializing manual extraction..."
+            )
             file_path = manual.blob_storage_key
             full_text = ""
             file_bytes: Optional[bytes] = None
@@ -2423,6 +2631,11 @@ async def auto_extract_from_manual(
                 logger.info("auto_extract_from_manual: using stored extracted_text for %s", filename)
             else:
                 # Need to (re-)extract: try blob storage first, then local disk
+                set_extraction_state(
+                    vessel_id_str,
+                    current_manual_name=filename,
+                    detailed_status="Downloading manual from storage..."
+                )
                 # Try blob storage (MinIO / Azure)
                 is_local_path = file_path and (
                     file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
@@ -2535,6 +2748,11 @@ async def auto_extract_from_manual(
                     ocr_pages.add(p - 1)
             selected_pages_all = sorted(list(ocr_pages))
             if ext == "pdf" and selected_pages_all:
+                set_extraction_state(
+                    vessel_id_str,
+                    current_manual_name=filename,
+                    detailed_status="Pre-processing tables and page layouts..."
+                )
                 if file_bytes is None:
                     is_local_path = file_path and (
                         file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
@@ -2703,6 +2921,19 @@ async def auto_extract_from_manual(
                     source_manual_category=manual.category,
                 )
 
+            # Get sibling/duplicate manual IDs for clean replacement
+            same_filename_result = await db.execute(
+                select(Manual.id).where(
+                    Manual.vessel_id == vessel_id,
+                    Manual.original_filename == manual.original_filename,
+                    Manual.is_deleted == False,
+                    Manual.id != manual.id,
+                )
+            )
+            sibling_manual_ids = [row[0] for row in same_filename_result.all()]
+            all_manual_ids = [manual.id, *sibling_manual_ids]
+            components_extracted_any = False
+
             for etype in extraction_types:
                 all_records: list[dict] = []
                 is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
@@ -2759,6 +2990,23 @@ async def auto_extract_from_manual(
                                 pass
 
                         records = await extract_entities(chunk, etype, chunk_label, context_note=chunk_context)
+                        if records:
+                            if etype == "component":
+                                components_extracted_any = True
+                            await _process_and_save_page_records(
+                                db=db,
+                                page_records=records,
+                                etype=etype,
+                                manual=manual,
+                                all_manual_ids=all_manual_ids,
+                                filename=filename,
+                                vessel_id=vessel_id,
+                                tenant_id=tenant_id,
+                                vessel_shipyard=vessel_shipyard,
+                                page_no=None,
+                                extracted_component_context=extracted_component_context,
+                                existing_manual_component_context=existing_manual_component_context,
+                            )
                         all_records.extend(records)
                 else:
                     if is_pdf_spare:
@@ -2843,6 +3091,23 @@ async def auto_extract_from_manual(
                                     extraction_type=etype,
                                     context_note=current_context_note,
                                 )
+                            if vision_records:
+                                if etype == "component":
+                                    components_extracted_any = True
+                                await _process_and_save_page_records(
+                                    db=db,
+                                    page_records=vision_records,
+                                    etype=etype,
+                                    manual=manual,
+                                    all_manual_ids=all_manual_ids,
+                                    filename=filename,
+                                    vessel_id=vessel_id,
+                                    tenant_id=tenant_id,
+                                    vessel_shipyard=vessel_shipyard,
+                                    page_no=page_no,
+                                    extracted_component_context=extracted_component_context,
+                                    existing_manual_component_context=existing_manual_component_context,
+                                )
                             all_records.extend(vision_records)
 
                             # Keep database connection active during long LLM calls
@@ -2852,226 +3117,24 @@ async def auto_extract_from_manual(
                             except Exception:
                                 pass
                         except Exception as page_exc:
+                            # Mapping and saving are now handled page-by-page.
                             logger.error(
                                 "auto_extract_from_manual: failed page %d for %s/%s: %s",
                                 page_no, filename, etype, page_exc
                             )
 
-                records = _dedupe_records(all_records, etype)
-
-                for record in records:
-                    confidence = int(record.get("confidence_score", 70))
-                    source_page = record.get("source_page_number")
-
-                    if etype == "component":
-                        _maker = record.get("maker") or None
-                        _model = record.get("model") or None
-                        # For components without maker info, use shipyard as maker
-                        if not _maker and vessel_shipyard:
-                            _maker = vessel_shipyard
-                        if not _model and _maker:
-                            _model = "N/A"
-                        comp = Component(
-                            tenant_id=tenant_id,
-                            vessel_id=vessel_id,
-                            source_manual_id=manual.id,
-                            confidence_score=confidence,
-                            qc_status=QCStatus.pending,
-                            is_unmapped=True,
-                            group1=record.get("group1") or "Uncategorised",
-                            group2=record.get("group2") or "Uncategorised",
-                            main_machinery=record.get("main_machinery") or "Unknown",
-                            component_name=record.get("component_name") or "Unknown Component",
-                            maker=_maker,
-                            model=_model,
-                            serial_number=record.get("serial_number") or None,
-                            specification=record.get("specification") or None,
-                            location=record.get("location") or None,
-                            machinery_particulars=record.get("machinery_particulars") or None,
-                            is_critical=bool(record.get("is_critical", False)),
-                            job_pages=record.get("job_pages") or getattr(manual, "pages_with_jobs", None) or None,
-                            spare_pages=record.get("spare_pages") or getattr(manual, "pages_with_spares", None) or None,
-                            page_reference=int(source_page) if source_page is not None else None,
-                            pdf_reference=filename,
-                        )
-                        components_to_add.append(comp)
-                        extracted_component_context.append(
-                            {
-                                "component_name": comp.component_name,
-                                "main_machinery": comp.main_machinery,
-                                "maker": comp.maker,
-                                "model": comp.model,
-                                "source_page_number": comp.page_reference,
-                            }
-                        )
-
-                    elif etype == "job":
-                        raw_freq_type = record.get("frequency_type")
-                        freq_type: Optional[FrequencyType] = None
-                        if raw_freq_type:
-                            try:
-                                freq_type = FrequencyType(raw_freq_type.lower())
-                            except ValueError:
-                                freq_type = None
-
-                        raw_freq = record.get("frequency")
-                        freq_val: Optional[int] = None
-                        if raw_freq is not None:
-                            try:
-                                freq_val = int(raw_freq)
-                            except (TypeError, ValueError):
-                                freq_val = None
-
-                        job = Job(
-                            tenant_id=tenant_id,
-                            vessel_id=vessel_id,
-                            source_manual_id=manual.id,
-                            confidence_score=confidence,
-                            qc_status=QCStatus.pending,
-                            job_name=record.get("job_name") or "Unknown Job",
-                            job_code=record.get("job_code") or None,
-                            job_description=record.get("job_description") or None,
-                            safety_precaution=record.get("safety_precaution") or None,
-                            frequency=freq_val,
-                            frequency_type=freq_type,
-                            is_critical=bool(record.get("is_critical", False)),
-                            page_reference=int(source_page) if source_page is not None else None,
-                            pdf_reference=filename,
-                            source_reference=(
-                                f"{filename} (p.{int(source_page)})"
-                                if source_page is not None
-                                else filename
-                            ),
-                        )
-                        job.job_description = append_source_references_to_description(
-                            job.job_description,
-                            split_reference_entries(
-                                pdf_reference=job.pdf_reference,
-                                page_reference=job.page_reference,
-                                source_reference=job.source_reference,
-                            ),
-                        )
-                        jobs_to_add.append(job)
-
-                    elif etype == "spare":
-                        fallback_part_number = (
-                            f"{filename} (p.{int(source_page)})"
-                            if source_page is not None
-                            else filename
-                        )
-                        _assembly = record.get("spare_assembly") or record.get("spare_model") or None
-                        if not _assembly:
-                            # Fallback to component name if available
-                            candidates = extracted_component_context or existing_manual_component_context
-                            if candidates:
-                                _assembly = candidates[0].get("component_name")
-                            else:
-                                # Otherwise format the manual name as fallback
-                                base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
-                                _assembly = base_name.replace("-", " ").replace("_", " ").title()
-
-                        spare = Spare(
-                            tenant_id=tenant_id,
-                            vessel_id=vessel_id,
-                            source_manual_id=manual.id,
-                            confidence_score=confidence,
-                            qc_status=QCStatus.pending,
-                            part_name=record.get("part_name") or "Unknown Part",
-                            part_number=record.get("part_number") or fallback_part_number,
-                            drawing_number=record.get("drawing_number") or None,
-                            drawing_position=record.get("drawing_position") or None,
-                            specification=record.get("specification") or None,
-                            spare_assembly=_assembly,
-                            assembly_description=record.get("assembly_description") or _assembly or None,
-                            spare_maker=record.get("spare_maker") or None,
-                            spare_model=record.get("spare_model") or _assembly or None,
-                            page_reference=int(source_page) if source_page is not None else None,
-                        )
-                        spares_to_add.append(spare)
-
-            # ------------------------------------------------------------------
-            # Overwrite prior extracted records for every entity type that was
-            # selected for re-extraction, regardless of whether new records were
-            # found. This ensures re-extraction is always a clean replace, not an
-            # accumulation on top of old data.
-            #
-            # Rules:
-            #   Components — delete ALL (any QC status); user reviews fresh results
-            #   Jobs       — delete ALL from this manual
-            #   Spares     — delete auto-extracted only; preserve manually snipped
-            #                records (extraction_method='manual') so user corrections
-            #                are not wiped by a background re-extraction
-            #
-            # Also cascade to records from OTHER manual UUIDs that share the same
-            # original_filename on this vessel — handles the case where the same
-            # PDF was uploaded more than once, creating multiple manual UUIDs.
-            # ------------------------------------------------------------------
-            # Collect all manual IDs for the same filename on this vessel (includes current)
-            same_filename_result = await db.execute(
-                select(Manual.id).where(
-                    Manual.vessel_id == vessel_id,
-                    Manual.original_filename == manual.original_filename,
-                    Manual.is_deleted == False,
-                    Manual.id != manual.id,
-                )
-            )
-            sibling_manual_ids = [row[0] for row in same_filename_result.all()]
-            all_manual_ids = [manual.id, *sibling_manual_ids]
-
-            if "component" in extraction_types:
-                comp_delete_query = update(Component).where(
-                    Component.source_manual_id.in_(all_manual_ids),
-                    Component.is_deleted == False,
-                )
-                if page_numbers is not None:
-                    comp_delete_query = comp_delete_query.where(Component.page_reference.in_(page_numbers))
-                await db.execute(comp_delete_query)
-            if "job" in extraction_types:
-                job_delete_query = update(Job).where(
-                    Job.source_manual_id.in_(all_manual_ids),
-                    Job.is_deleted == False
-                )
-                if page_numbers is not None:
-                    job_delete_query = job_delete_query.where(Job.page_reference.in_(page_numbers))
-                await db.execute(job_delete_query)
-            if "spare" in extraction_types:
-                from app.models.spare import ExtractionMethod as _EM
-                spare_delete_query = update(Spare).where(
-                    Spare.source_manual_id.in_(all_manual_ids),
-                    Spare.is_deleted == False,
-                    Spare.extraction_method != _EM.manual,
-                )
-                if page_numbers is not None:
-                    spare_delete_query = spare_delete_query.where(Spare.page_reference.in_(page_numbers))
-                await db.execute(spare_delete_query)
-
-            # ------------------------------------------------------------------
-            # Persist all records
-            # ------------------------------------------------------------------
-            for obj in [*components_to_add, *jobs_to_add, *spares_to_add]:
-                db.add(obj)
-
-            # ------------------------------------------------------------------
             # Restore manual status to classified
-            # ------------------------------------------------------------------
             await db.execute(
                 update(Manual)
                 .where(Manual.id == manual_id)
                 .values(status=ManualStatus.classified)
             )
-
             await db.commit()
 
-            logger.warning(
-                "auto_extract_from_manual: manual=%s → %d components, %d jobs, %d spares",
-                manual_id_str,
-                len(components_to_add),
-                len(jobs_to_add),
-                len(spares_to_add),
-            )
+            logger.warning("auto_extract_from_manual: completed extraction iterations for %s", filename)
 
             try:
-                if components_to_add:
+                if components_extracted_any:
                     from app.services.component_matcher import auto_merge_extracted_components
 
                     merged, unmatched = await auto_merge_extracted_components(
