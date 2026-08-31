@@ -101,7 +101,8 @@ export function ManualPageStatusModal({
         params.append('spares_pages_unsaved', unsavedSparesPages)
       }
       const res = await apiClient.get(
-        `/vessels/${vesselId}/manuals/${manualId}/page-status?${params.toString()}`
+        `/vessels/${vesselId}/manuals/${manualId}/page-status?${params.toString()}`,
+        { timeout: 120_000 }
       )
       return res.data
     },

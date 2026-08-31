@@ -3195,6 +3195,17 @@ async def auto_extract_from_manual(
                 )
             except Exception as link_exc:
                 logger.warning("auto_extract_from_manual: manual sync failed: %s", link_exc)
+
+            # Clear running state and set status to completed
+            try:
+                set_extraction_state(
+                    vessel_id_str,
+                    status="completed",
+                    detailed_status="Extraction completed successfully."
+                )
+            except Exception as state_exc:
+                logger.error("Failed to update extraction state to completed: %s", state_exc)
+
         except BaseException as task_exc:
             import asyncio
             logger.error("auto_extract_from_manual failed or cancelled: %s", task_exc, exc_info=True)
@@ -3213,4 +3224,15 @@ async def auto_extract_from_manual(
                 await db.commit()
             except Exception as db_exc:
                 logger.error("Failed to mark manual as failed/cancelled in DB: %s", db_exc)
+
+            # Reset extraction state to idle/failed
+            try:
+                set_extraction_state(
+                    vessel_id_str,
+                    status="failed" if not isinstance(task_exc, asyncio.CancelledError) else "idle",
+                    detailed_status="Extraction stopped by user." if isinstance(task_exc, asyncio.CancelledError) else f"Extraction failed: {task_exc}"
+                )
+            except Exception as state_exc:
+                logger.error("Failed to update extraction state on task error: %s", state_exc)
+
             raise task_exc
