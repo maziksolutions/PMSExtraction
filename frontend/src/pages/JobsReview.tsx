@@ -6,6 +6,7 @@ import apiClient from '@/api/client'
 import { SearchableSelect } from '@/components/SearchableSelect'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 import SnipExtractJobsModal from '@/components/jobs/SnipExtractJobsModal'
+import { FilterableDropdown } from '@/components/common/FilterableDropdown'
 
 interface ComponentOption {
   id: string
@@ -273,6 +274,17 @@ function JobEditor({
     return filtered.length > 0 ? filtered : components
   }, [components, form.pdf_reference])
 
+  const componentFormOptions = useMemo(() => {
+    const opts = [{ value: '', label: 'Unmapped' }]
+    filteredComponents.forEach((c) => {
+      opts.push({
+        value: c.id,
+        label: `${c.component_name} (${c.group1 || ''} / ${c.main_machinery || ''})`
+      })
+    })
+    return opts
+  }, [filteredComponents])
+
   React.useEffect(() => {
     const channel = new BroadcastChannel('job-editor-channel')
     channel.onmessage = (event) => {
@@ -355,14 +367,14 @@ function JobEditor({
         </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">Component</label>
-          <select value={form.component_id} onChange={(e) => set('component_id', e.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white focus:border-sky-500 focus:outline-none">
-            <option value="">Unmapped</option>
-            {filteredComponents.map((component) => (
-              <option key={component.id} value={component.id}>
-                {component.component_name} ({component.group1} / {component.main_machinery})
-              </option>
-            ))}
-          </select>
+          <FilterableDropdown
+            value={form.component_id}
+            onChange={(val) => set('component_id', val)}
+            options={componentFormOptions}
+            placeholder="Unmapped"
+            className="px-3 py-2 text-sm text-white bg-slate-800 border-slate-700"
+            menuWidthClassName="w-full sm:w-[400px]"
+          />
         </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">Job Code</label>
@@ -938,6 +950,17 @@ const JobsReview: React.FC = () => {
     [componentOptionsQuery.data?.items]
   )
 
+  const batchComponentOptions = useMemo(() => {
+    const opts = [
+      { value: '', label: 'Component - no change' },
+      { value: '__unmapped__', label: 'Unmapped' }
+    ]
+    componentOptions.forEach((c) => {
+      opts.push({ value: c.id, label: c.component_name })
+    })
+    return opts
+  }, [componentOptions])
+
   const getFilteredComponentsForJob = useCallback((job: Job | null | undefined) => {
     if (!job) return componentOptions
     const filtered = componentOptions.filter((c) => {
@@ -1185,13 +1208,14 @@ const JobsReview: React.FC = () => {
             </div>
             <p className="text-xs text-slate-400">Fill only the fields you want to update. Empty fields are ignored.</p>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-              <select value={batchFields.component_id ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, component_id: e.target.value }))} className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none">
-                <option value="">Component - no change</option>
-                <option value="__unmapped__">Unmapped</option>
-                {componentOptions.map((component) => (
-                  <option key={component.id} value={component.id}>{component.component_name}</option>
-                ))}
-              </select>
+              <FilterableDropdown
+                value={batchFields.component_id ?? ''}
+                onChange={(val) => setBatchFields((prev) => ({ ...prev, component_id: val }))}
+                options={batchComponentOptions}
+                placeholder="Component - no change"
+                className="py-1.5 text-slate-200"
+                menuWidthClassName="w-[300px]"
+              />
               <input value={batchFields.frequency ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, frequency: e.target.value }))} placeholder="Frequency" className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none" />
               <select value={batchFields.frequency_type ?? ''} onChange={(e) => setBatchFields((prev) => ({ ...prev, frequency_type: e.target.value }))} className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-violet-500 focus:outline-none">
                 <option value="">Frequency Type - no change</option>
@@ -1394,16 +1418,20 @@ const JobsReview: React.FC = () => {
                         />
                       </td>
                       <td className="px-4 py-3">
-                        <select
+                        <FilterableDropdown
                           value={edits[job.id]?.component_id ?? (job.component_id ?? '')}
-                          onChange={(e) => setEdit(job.id, 'component_id', e.target.value)}
-                          className="w-[240px] rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                        >
-                          <option value="">Unmapped</option>
-                          {getFilteredComponentsForJob(job).map((component) => (
-                            <option key={component.id} value={component.id}>{component.component_name}</option>
-                          ))}
-                        </select>
+                          onChange={(val) => setEdit(job.id, 'component_id', val)}
+                          options={[
+                            { value: '', label: 'Unmapped' },
+                            ...getFilteredComponentsForJob(job).map((component) => ({
+                              value: component.id,
+                              label: component.component_name
+                            }))
+                          ]}
+                          placeholder="Unmapped"
+                          className="w-[240px] px-2 py-1 text-slate-200 bg-slate-800 border-slate-700"
+                          menuWidthClassName="w-[300px]"
+                        />
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-400">
                         <input

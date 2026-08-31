@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react'
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -31,6 +31,7 @@ import { useAuthStore } from '@/store/authStore'
 import { ManualPageStatusModal } from '@/components/manuals/ManualPageStatusModal'
 import { ManualsStatsModal } from '@/components/manuals/ManualsStatsModal'
 import { NoExtractedRecordsModal } from '@/components/manuals/NoExtractedRecordsModal'
+import { ExtractionConfirmationModal } from '@/components/manuals/ExtractionConfirmationModal'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -494,6 +495,16 @@ const ManualReview: React.FC = () => {
   const [selectedManualForStatus, setSelectedManualForStatus] = useState<Manual | null>(null)
   const [showStatsModal, setShowStatsModal] = useState(false)
   const [showNoExtractedModal, setShowNoExtractedModal] = useState(false)
+  const [showConfirmModal, setShowConfirmModal] = useState(false)
+  const [confirmModalSelectedIds, setConfirmModalSelectedIds] = useState<Set<string> | string[]>(new Set())
+  const [confirmModalExtractionType, setConfirmModalExtractionType] = useState<'general' | 'jobs' | 'spares'>('general')
+  const [confirmModalIsExtractAll, setConfirmModalIsExtractAll] = useState(false)
+
+  const { data: allManualsConfirmList } = useQuery({
+    queryKey: ['all-manuals-confirm-list', vesselId],
+    queryFn: () => apiClient.get(`/vessels/${vesselId}/manuals`, { params: { page: 1, page_size: 1000 } }).then((r) => r.data),
+    enabled: showConfirmModal && !!vesselId,
+  })
 
   // ── Data queries ──────────────────────────────────────────────────────────
 
@@ -533,6 +544,10 @@ const ManualReview: React.FC = () => {
     },
     enabled: !!vesselId,
   })
+
+  const manualsForConfirmModal = useMemo(() => {
+    return allManualsConfirmList?.items || data?.items || []
+  }, [allManualsConfirmList, data])
 
   const { data: missingReport } = useQuery({
     queryKey: ['missing-report', vesselId],
@@ -633,8 +648,7 @@ const ManualReview: React.FC = () => {
   })
 
   const extractSelectedMutation = useMutation({
-    mutationFn: async () => {
-      const manualIds = Array.from(selectedIds)
+    mutationFn: async (manualIds: string[]) => {
       await saveManualEdits(manualIds)
       return apiClient
         .post(`/vessels/${vesselId}/manuals/extract-selected`, { manual_ids: manualIds })
@@ -649,8 +663,7 @@ const ManualReview: React.FC = () => {
   })
 
   const extractSelectedSparesOnlyMutation = useMutation({
-    mutationFn: async () => {
-      const manualIds = Array.from(selectedIds)
+    mutationFn: async (manualIds: string[]) => {
       await saveManualEdits(manualIds)
       return apiClient
         .post(`/vessels/${vesselId}/manuals/extract-selected`, {
@@ -668,8 +681,7 @@ const ManualReview: React.FC = () => {
   })
 
   const extractSelectedJobsOnlyMutation = useMutation({
-    mutationFn: async () => {
-      const manualIds = Array.from(selectedIds)
+    mutationFn: async (manualIds: string[]) => {
       await saveManualEdits(manualIds)
       return apiClient
         .post(`/vessels/${vesselId}/manuals/extract-selected`, {
@@ -685,6 +697,48 @@ const ManualReview: React.FC = () => {
       }
     },
   })
+
+  const handleExtractAllClick = useCallback(() => {
+    setConfirmModalIsExtractAll(true)
+    setConfirmModalSelectedIds(new Set())
+    setConfirmModalExtractionType('general')
+    setShowConfirmModal(true)
+  }, [])
+
+  const handleExtractSelectedClick = useCallback(() => {
+    setConfirmModalIsExtractAll(false)
+    setConfirmModalSelectedIds(selectedIds)
+    setConfirmModalExtractionType('general')
+    setShowConfirmModal(true)
+  }, [selectedIds])
+
+  const handleExtractJobsClick = useCallback(() => {
+    setConfirmModalIsExtractAll(false)
+    setConfirmModalSelectedIds(selectedIds)
+    setConfirmModalExtractionType('jobs')
+    setShowConfirmModal(true)
+  }, [selectedIds])
+
+  const handleExtractSparesClick = useCallback(() => {
+    setConfirmModalIsExtractAll(false)
+    setConfirmModalSelectedIds(selectedIds)
+    setConfirmModalExtractionType('spares')
+    setShowConfirmModal(true)
+  }, [selectedIds])
+
+  const handleConfirmExtraction = useCallback(
+    async (finalIds: string[], type: 'general' | 'jobs' | 'spares') => {
+      setShowConfirmModal(false)
+      if (type === 'general') {
+        extractSelectedMutation.mutate(finalIds)
+      } else if (type === 'jobs') {
+        extractSelectedJobsOnlyMutation.mutate(finalIds)
+      } else if (type === 'spares') {
+        extractSelectedSparesOnlyMutation.mutate(finalIds)
+      }
+    },
+    [extractSelectedMutation, extractSelectedJobsOnlyMutation, extractSelectedSparesOnlyMutation]
+  )
 
   const pauseScreeningMutation = useMutation({
     mutationFn: () =>
@@ -1010,7 +1064,7 @@ const ManualReview: React.FC = () => {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mr-1.5">Extraction:</span>
             <button
-              onClick={() => extractAllMutation.mutate()}
+              onClick={handleExtractAllClick}
               disabled={isExtracting}
               className="flex items-center gap-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-60 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
             >
@@ -1020,7 +1074,7 @@ const ManualReview: React.FC = () => {
             {selectedIds.size > 0 && (
               <>
                 <button
-                  onClick={() => extractSelectedMutation.mutate()}
+                  onClick={handleExtractSelectedClick}
                   disabled={isExtracting || extractSelectedMutation.isPending}
                   className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
                 >
@@ -1028,7 +1082,7 @@ const ManualReview: React.FC = () => {
                   <span>Extract Selected ({selectedIds.size})</span>
                 </button>
                 <button
-                  onClick={() => extractSelectedJobsOnlyMutation.mutate()}
+                  onClick={handleExtractJobsClick}
                   disabled={isExtracting || extractSelectedJobsOnlyMutation.isPending}
                   className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
                 >
@@ -1036,7 +1090,7 @@ const ManualReview: React.FC = () => {
                   <span>Extract Jobs Only ({selectedIds.size})</span>
                 </button>
                 <button
-                  onClick={() => extractSelectedSparesOnlyMutation.mutate()}
+                  onClick={handleExtractSparesClick}
                   disabled={isExtracting || extractSelectedSparesOnlyMutation.isPending}
                   className="flex items-center gap-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-60 text-xs font-semibold text-white px-3 py-1.5 transition-colors"
                 >
@@ -1675,6 +1729,22 @@ const ManualReview: React.FC = () => {
           isOpen={showNoExtractedModal}
           onClose={() => setShowNoExtractedModal(false)}
           data={noExtractedData || null}
+        />
+      )}
+      {showConfirmModal && (
+        <ExtractionConfirmationModal
+          isOpen={showConfirmModal}
+          onClose={() => setShowConfirmModal(false)}
+          manuals={manualsForConfirmModal}
+          initialSelectedIds={confirmModalSelectedIds}
+          initialExtractionType={confirmModalExtractionType}
+          onConfirm={handleConfirmExtraction}
+          isExtractAll={confirmModalIsExtractAll}
+          isPending={
+            extractSelectedMutation.isPending ||
+            extractSelectedJobsOnlyMutation.isPending ||
+            extractSelectedSparesOnlyMutation.isPending
+          }
         />
       )}
     </div>
