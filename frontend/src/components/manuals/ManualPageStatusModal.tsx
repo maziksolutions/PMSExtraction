@@ -102,7 +102,7 @@ export function ManualPageStatusModal({
       }
       const res = await apiClient.get(
         `/vessels/${vesselId}/manuals/${manualId}/page-status?${params.toString()}`,
-        { timeout: 120_000 }
+        { timeout: 240_000 }
       )
       return res.data
     },

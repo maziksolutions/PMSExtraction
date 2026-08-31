@@ -2991,7 +2991,18 @@ async def auto_extract_from_manual(
                             except Exception:
                                 pass
 
-                        records = await extract_entities(chunk, etype, chunk_label, context_note=chunk_context)
+                        try:
+                            records = await asyncio.wait_for(
+                                extract_entities(chunk, etype, chunk_label, context_note=chunk_context),
+                                timeout=240.0
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                "auto_extract_from_manual: text extraction chunk %s for %s/%s timed out after 4 minutes. Skipping.",
+                                chunk_label, filename, etype
+                            )
+                            records = []
+
                         if records:
                             if etype == "component":
                                 components_extracted_any = True
@@ -3008,7 +3019,7 @@ async def auto_extract_from_manual(
                                 page_no=None,
                                 extracted_component_context=extracted_component_context,
                                 existing_manual_component_context=existing_manual_component_context,
-                            )
+                             )
                         all_records.extend(records)
                 else:
                     if is_pdf_spare:
@@ -3072,13 +3083,23 @@ async def auto_extract_from_manual(
                                     current_manual_pages_done=done_sub_steps,
                                     detailed_status=f"Extracting spares from image page {page_no} (starting)..."
                                 )
-                                vision_records = await _extract_spare_parts_from_image_split(
-                                    image_bytes=image_bytes,
-                                    filename=filename,
-                                    page_no=page_no,
-                                    context_note=current_context_note,
-                                    on_strip_start=on_strip_start,
-                                )
+                                try:
+                                    vision_records = await asyncio.wait_for(
+                                        _extract_spare_parts_from_image_split(
+                                            image_bytes=image_bytes,
+                                            filename=filename,
+                                            page_no=page_no,
+                                            context_note=current_context_note,
+                                            on_strip_start=on_strip_start,
+                                        ),
+                                        timeout=240.0
+                                    )
+                                except asyncio.TimeoutError:
+                                    logger.error(
+                                        "auto_extract_from_manual: vision spares page %d for %s timed out after 4 minutes. Skipping.",
+                                        page_no, filename
+                                    )
+                                    vision_records = []
                             else:
                                 done_sub_steps += 1
                                 set_extraction_state(
@@ -3086,13 +3107,23 @@ async def auto_extract_from_manual(
                                     current_manual_pages_done=done_sub_steps,
                                     detailed_status=f"Extracting components from image page {page_no} of {manual.page_count or 'N/A'}..."
                                 )
-                                vision_records = await _extract_entities_from_page_image(
-                                    image_bytes=image_bytes,
-                                    filename=filename,
-                                    page_no=page_no,
-                                    extraction_type=etype,
-                                    context_note=current_context_note,
-                                )
+                                try:
+                                    vision_records = await asyncio.wait_for(
+                                        _extract_entities_from_page_image(
+                                            image_bytes=image_bytes,
+                                            filename=filename,
+                                            page_no=page_no,
+                                            extraction_type=etype,
+                                            context_note=current_context_note,
+                                        ),
+                                        timeout=240.0
+                                    )
+                                except asyncio.TimeoutError:
+                                    logger.error(
+                                        "auto_extract_from_manual: vision %s page %d for %s timed out after 4 minutes. Skipping.",
+                                        etype, page_no, filename
+                                    )
+                                    vision_records = []
                             if vision_records:
                                 if etype == "component":
                                     components_extracted_any = True
