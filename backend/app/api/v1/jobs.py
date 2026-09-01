@@ -1546,8 +1546,9 @@ async def export_jobs_qc(
     dv = DataValidation(type="list", formula1='"accepted,rejected,modified,pending"', showDropDown=False, allow_blank=True)
     ws.add_data_validation(dv)
 
-    for c, h in enumerate(HEADERS, 1):
-        cell = ws.cell(row=1, column=c, value=h)
+    ws.append(HEADERS)
+    for c in range(1, len(HEADERS) + 1):
+        cell = ws.cell(row=1, column=c)
         cell.fill = HEADER_FILL; cell.font = HEADER_FONT
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = BORDER
@@ -1555,6 +1556,9 @@ async def export_jobs_qc(
     ws.freeze_panes = "A2"
 
     rev_col = get_column_letter(12)
+    _QC_FILLS = {k: PatternFill(start_color=v, end_color=v, fill_type="solid") for k, v in QC_COLORS.items()}
+    num_jobs = len(jobs)
+
     for r, job in enumerate(jobs, 2):
         comp = component_lookup.get(job.component_id)
         comp_name = comp.component_name if comp else ""
@@ -1566,25 +1570,21 @@ async def export_jobs_qc(
             job.performing_rank or "", job.job_description or "",
             qc_val, "", "",
         ]
-        fill = ALT_FILL if r % 2 == 0 else PatternFill(fill_type=None)
-        for c, val in enumerate(row_data, 1):
-            cell = ws.cell(row=r, column=c, value=val)
-            cell.border = BORDER
-            cell.alignment = Alignment(vertical="center", wrap_text=(c == len(HEADERS)))
-            if c == 11:
-                color = QC_COLORS.get(qc_val, "DDEBF7")
-                cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
-            elif c in (12, 13):
-                cell.fill = EDIT_FILL
-            else:
-                cell.fill = fill
-        dv.add(ws[f"{rev_col}{r}"])
+        ws.append(row_data)
+        
+        qc_cell = ws.cell(row=r, column=11)
+        qc_cell.fill = _QC_FILLS.get(qc_val, _QC_FILLS["pending"])
+        ws.cell(row=r, column=12).fill = EDIT_FILL
+        ws.cell(row=r, column=13).fill = EDIT_FILL
 
-    for col in ws.columns:
-        vals = [str(cell.value or "") for cell in col]
-        width = min(max(len(v) for v in vals) + 4, 45)
-        ws.column_dimensions[col[0].column_letter].width = max(width, 10)
-    ws.column_dimensions[get_column_letter(13)].width = 30
+    if num_jobs > 0:
+        dv.add(f"{rev_col}2:{rev_col}{num_jobs + 1}")
+
+    for c in range(1, len(HEADERS) + 1):
+        ws.column_dimensions[get_column_letter(c)].width = 22
+    ws.column_dimensions[get_column_letter(1)].width = 38
+    ws.column_dimensions[get_column_letter(2)].width = 45
+    ws.column_dimensions[get_column_letter(13)].width = 35
 
     buf = io.BytesIO()
     wb.save(buf)

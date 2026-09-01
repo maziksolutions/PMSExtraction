@@ -1205,9 +1205,9 @@ def _qc_review_workbook(
 
     def _write_sheet(ws, headers, rows, reviewer_col_idx):
         ws.add_data_validation(qc_dv)
-        # Header row
-        for c, h in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=c, value=h)
+        ws.append(headers)
+        for c in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=c)
             cell.fill = HEADER_FILL
             cell.font = HEADER_FONT
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -1217,34 +1217,30 @@ def _qc_review_workbook(
 
         rev_col_letter = get_column_letter(reviewer_col_idx)
         note_col_letter = get_column_letter(reviewer_col_idx + 1)
+        qc_col_idx = reviewer_col_idx - 1
+
+        num_rows = len(rows)
+        _QC_FILLS = {k: PatternFill(start_color=v, end_color=v, fill_type="solid") for k, v in _QC_COLORS.items()}
 
         for r, row_data in enumerate(rows, 2):
-            qc_val = str(row_data[10] or "pending").lower()  # Current QC always at index 10
-            fill = ALT_FILL if r % 2 == 0 else PatternFill(fill_type=None)
-            for c, val in enumerate(row_data, 1):
-                cell = ws.cell(row=r, column=c, value=val)
-                cell.border = BORDER
-                cell.alignment = Alignment(vertical="center", wrap_text=(c == len(headers)))
-                # Current QC colour
-                if c == reviewer_col_idx - 1:
-                    color = _QC_COLORS.get(qc_val, "DDEBF7")
-                    cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
-                elif c == reviewer_col_idx:
-                    cell.fill = EDIT_FILL
-                elif c == reviewer_col_idx + 1:
-                    cell.fill = EDIT_FILL
-                else:
-                    cell.fill = fill
-            # Attach dropdown validation to reviewer QC cell
-            qc_dv.add(ws[f"{rev_col_letter}{r}"])
+            ws.append(row_data)
+            qc_val = str(row_data[10] or "pending").lower()
+            
+            qc_cell = ws.cell(row=r, column=qc_col_idx)
+            qc_cell.fill = _QC_FILLS.get(qc_val, _QC_FILLS["pending"])
+            
+            ws.cell(row=r, column=reviewer_col_idx).fill = EDIT_FILL
+            ws.cell(row=r, column=reviewer_col_idx + 1).fill = EDIT_FILL
 
-        # Auto-width (capped)
-        for col in ws.columns:
-            vals = [str(cell.value or "") for cell in col]
-            width = min(max(len(v) for v in vals) + 4, 45)
-            ws.column_dimensions[col[0].column_letter].width = max(width, 10)
-        # Notes column wider
-        ws.column_dimensions[note_col_letter].width = 30
+        if num_rows > 0:
+            qc_dv.add(f"{rev_col_letter}2:{rev_col_letter}{num_rows + 1}")
+
+        # Column widths
+        for c in range(1, len(headers) + 1):
+            ws.column_dimensions[get_column_letter(c)].width = 22
+        ws.column_dimensions[get_column_letter(1)].width = 38
+        ws.column_dimensions[get_column_letter(2)].width = 45
+        ws.column_dimensions[note_col_letter].width = 35
 
     # ── Components sheet ────────────────────────────────────────────────────
     if components is not None:
