@@ -1500,6 +1500,14 @@ async def export_components_qc(
     vessel_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    group1: Optional[str] = Query(None),
+    group2: Optional[str] = Query(None),
+    main_machinery: Optional[str] = Query(None),
+    qc_status: Optional[str] = Query(None),
+    pdf_reference: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    maker_filter: Optional[str] = Query(None),
+    model_filter: Optional[str] = Query(None),
 ) -> Response:
     import io
     from fastapi.responses import StreamingResponse
@@ -1507,6 +1515,7 @@ async def export_components_qc(
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.datavalidation import DataValidation
+    from sqlalchemy import or_
     from app.models.ingestion import Manual
     from app.models.vessel import VesselProject
 
@@ -1514,12 +1523,50 @@ async def export_components_qc(
     vessel = vessel_result.scalar_one_or_none()
     vessel_name = getattr(vessel, "vessel_name", None) or getattr(vessel, "name", None) or str(vessel_id)
 
+    base_where = [
+        Component.vessel_id == vessel_id,
+        Component.tenant_id == current_user.tenant_id,
+        Component.is_deleted == False,
+    ]
+    if group1:
+        base_where.append(Component.group1 == group1)
+    if group2:
+        base_where.append(Component.group2 == group2)
+    if main_machinery:
+        base_where.append(Component.main_machinery == main_machinery)
+    if qc_status:
+        try:
+            base_where.append(Component.qc_status == QCStatus(qc_status.lower()))
+        except ValueError:
+            pass
+    if search:
+        search_term = f"%{search}%"
+        base_where.append(
+            or_(
+                Component.component_name.ilike(search_term),
+                Component.maker.ilike(search_term),
+                Component.model.ilike(search_term),
+                Component.main_machinery.ilike(search_term),
+            )
+        )
+    if maker_filter:
+        base_where.append(Component.maker.ilike(f"%{maker_filter}%"))
+    if model_filter:
+        base_where.append(Component.model.ilike(f"%{model_filter}%"))
+    if pdf_reference:
+        from app.models.ingestion import Manual as _Manual
+        manual_id_result = await db.execute(
+            select(_Manual.id).where(
+                _Manual.vessel_id == vessel_id,
+                _Manual.original_filename == pdf_reference,
+                _Manual.is_deleted == False,
+            )
+        )
+        matched_ids = [row[0] for row in manual_id_result.all()]
+        base_where.append(Component.source_manual_id.in_(matched_ids) if matched_ids else (Component.id == None))
+
     comps_result = await db.execute(
-        select(Component).where(
-            Component.vessel_id == vessel_id,
-            Component.tenant_id == current_user.tenant_id,
-            Component.is_deleted == False,
-        ).order_by(Component.main_machinery, Component.component_name)
+        select(Component).where(*base_where).order_by(Component.main_machinery, Component.component_name)
     )
     components = list(comps_result.scalars().all())
 

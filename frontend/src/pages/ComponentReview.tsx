@@ -28,6 +28,7 @@ import {
 import apiClient from '@/api/client'
 import { SearchableSelect } from '@/components/SearchableSelect'
 import AddComponentModal from '@/components/components/AddComponentModal'
+import { ExportProgressModal } from '@/components/common/ExportProgressModal'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 import ResizableSplitView from '@/components/layout/ResizableSplitView'
 import ResizableRowSplitView from '@/components/layout/ResizableRowSplitView'
@@ -497,6 +498,61 @@ const ComponentReview: React.FC = () => {
     }
     e.target.value = ''
   }
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
+  const [exportSuccess, setExportSuccess] = useState(false)
+
+  const activeFiltersSummary = useMemo(() => {
+    const parts: string[] = []
+    if (filterSourceFile) parts.push(`Source Manual: ${filterSourceFile}`)
+    if (selectedGroup1) parts.push(`Group 1: ${selectedGroup1}`)
+    if (selectedGroup2) parts.push(`Group 2: ${selectedGroup2}`)
+    if (selectedMachinery) parts.push(`Machinery: ${selectedMachinery}`)
+    if (filterQC) parts.push(`QC Status: ${filterQC}`)
+    if (searchTable) parts.push(`Search: "${searchTable}"`)
+    return parts.length > 0 ? parts.join(' • ') : 'All Components (No Filter Active)'
+  }, [filterSourceFile, selectedGroup1, selectedGroup2, selectedMachinery, filterQC, searchTable])
+
+  const handleQcExport = async () => {
+    setIsExporting(true)
+    setExportError(null)
+    setExportSuccess(false)
+    try {
+      const params: Record<string, string> = {}
+      if (filterSourceFile) params.pdf_reference = filterSourceFile
+      if (selectedGroup1) params.group1 = selectedGroup1
+      if (selectedGroup2) params.group2 = selectedGroup2
+      if (selectedMachinery) params.main_machinery = selectedMachinery
+      if (filterQC) params.qc_status = filterQC
+      if (searchTable) params.search = searchTable
+
+      const res = await apiClient.get(`/vessels/${vesselId}/components/qc-export`, {
+        params,
+        responseType: 'blob',
+        timeout: 300_000,
+      })
+      const disposition = res.headers['content-disposition'] ?? ''
+      const match = disposition.match(/filename="?([^"]+)"?/)
+      const filename = match ? match[1] : 'Components_QC.xlsx'
+      const url = URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+
+      setExportSuccess(true)
+      setTimeout(() => {
+        setIsExporting(false)
+        setExportSuccess(false)
+      }, 1500)
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail ?? err?.message ?? 'QC export failed.'
+      setExportError(msg)
+    }
+  }
 
   const toggleG1 = useCallback((key: string) => {
     setExpandedG1(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n })
@@ -835,20 +891,8 @@ const ComponentReview: React.FC = () => {
 
                       {/* QC Export Components */}
                       <button
-                        onClick={async () => {
-                          try {
-                            const resp = await apiClient.get(`/vessels/${vesselId}/components/qc-export`, { responseType: 'blob', timeout: 120_000 })
-                            const disposition = resp.headers['content-disposition'] ?? ''
-                            const match = disposition.match(/filename="?([^"]+)"?/)
-                            const filename = match ? match[1] : 'Components_QC.xlsx'
-                            const a = document.createElement('a')
-                            a.href = URL.createObjectURL(resp.data)
-                            a.download = filename
-                            a.click()
-                            setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
-                          } catch (e: any) { alert('Export failed: ' + e?.message) }
-                        }}
-                        className="flex items-center gap-1 rounded-lg border border-violet-700 px-2 py-1 text-xs font-medium text-violet-300 hover:bg-slate-800"
+                        onClick={handleQcExport}
+                        className="flex items-center gap-1 rounded-lg bg-violet-400 hover:bg-violet-300 px-2 py-1 text-xs font-bold text-black border border-violet-300 shadow-sm transition-colors"
                         title="Download Components QC Review sheet"
                       >
                         <FileDown className="h-3.5 w-3.5" />
@@ -1290,7 +1334,20 @@ const ComponentReview: React.FC = () => {
         }
       />
 
-      {/* Standalone manual preview opens in a new tab */}
+      <ExportProgressModal
+        isOpen={isExporting}
+        title="Exporting Components QC Review Sheet"
+        entityName="Components"
+        activeFiltersSummary={activeFiltersSummary}
+        onClose={() => {
+          setIsExporting(false)
+          setExportError(null)
+          setExportSuccess(false)
+        }}
+        isError={!!exportError}
+        errorMessage={exportError}
+        isSuccess={exportSuccess}
+      />
     </>
   )
 }

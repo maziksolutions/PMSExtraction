@@ -1329,21 +1329,62 @@ async def export_spares_qc(
     vessel_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    component_id: Optional[uuid.UUID] = Query(None),
+    extraction_method: Optional[str] = Query(None),
+    qc_status: Optional[str] = Query(None),
+    is_critical: Optional[bool] = Query(None),
+    pdf_reference: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
 ) -> Response:
     from fastapi.responses import StreamingResponse
     import io
+    from sqlalchemy import or_
     from app.models.component import Component
     from app.models.ingestion import Manual
 
     vessel = await _get_vessel_or_404(vessel_id, db)
     vessel_name = getattr(vessel, "vessel_name", None) or getattr(vessel, "name", None) or str(vessel_id)
 
+    base_where = [
+        Spare.vessel_id == vessel_id,
+        Spare.tenant_id == current_user.tenant_id,
+        Spare.is_deleted == False,
+    ]
+    if component_id:
+        base_where.append(Spare.component_id == component_id)
+    if extraction_method:
+        try:
+            base_where.append(Spare.extraction_method == ExtractionMethod(extraction_method))
+        except ValueError:
+            pass
+    if qc_status:
+        try:
+            base_where.append(Spare.qc_status == QCStatus(qc_status))
+        except ValueError:
+            pass
+    if is_critical is not None:
+        base_where.append(Spare.is_critical == is_critical)
+    if pdf_reference:
+        manual_id_result = await db.execute(
+            select(Manual.id).where(
+                Manual.vessel_id == vessel_id,
+                Manual.original_filename == pdf_reference,
+                Manual.is_deleted == False,
+            )
+        )
+        matched_ids = [row[0] for row in manual_id_result.all()]
+        base_where.append(Spare.source_manual_id.in_(matched_ids) if matched_ids else (Spare.id == None))
+    if search:
+        base_where.append(
+            or_(
+                Spare.part_name.ilike(f"%{search}%"),
+                Spare.part_number.ilike(f"%{search}%"),
+                Spare.spare_maker.ilike(f"%{search}%"),
+            )
+        )
+
     spares_result = await db.execute(
-        select(Spare).where(
-            Spare.vessel_id == vessel_id,
-            Spare.tenant_id == current_user.tenant_id,
-            Spare.is_deleted == False,
-        ).order_by(Spare.source_manual_id, Spare.page_reference, Spare.drawing_position)
+        select(Spare).where(*base_where).order_by(Spare.source_manual_id, Spare.page_reference, Spare.drawing_position)
     )
     spares = list(spares_result.scalars().all())
 

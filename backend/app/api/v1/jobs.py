@@ -1458,25 +1458,65 @@ async def export_jobs_qc(
     vessel_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    component_id: Optional[uuid.UUID] = Query(None),
+    qc_status: Optional[str] = Query(None),
+    is_critical: Optional[bool] = Query(None),
+    is_unmapped: Optional[bool] = Query(None),
+    pdf_reference: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
 ) -> Response:
     from fastapi.responses import StreamingResponse
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.datavalidation import DataValidation
+    from sqlalchemy import or_
     from app.models.component import Component
     from app.models.vessel import VesselProject
+    from app.models.ingestion import Manual as _Manual
 
     vessel_result = await db.execute(select(VesselProject).where(VesselProject.id == vessel_id))
     vessel = vessel_result.scalar_one_or_none()
     vessel_name = getattr(vessel, "vessel_name", None) or getattr(vessel, "name", None) or str(vessel_id)
 
+    base_where = [
+        Job.vessel_id == vessel_id,
+        Job.tenant_id == current_user.tenant_id,
+        Job.is_deleted == False,
+    ]
+    if component_id:
+        base_where.append(Job.component_id == component_id)
+    if qc_status:
+        try:
+            base_where.append(Job.qc_status == QCStatus(qc_status))
+        except ValueError:
+            pass
+    if is_critical is not None:
+        base_where.append(Job.is_critical == is_critical)
+    if is_unmapped is not None:
+        base_where.append(Job.is_unmapped == is_unmapped)
+    if pdf_reference:
+        manual_id_result = await db.execute(
+            select(_Manual.id).where(
+                _Manual.vessel_id == vessel_id,
+                _Manual.original_filename == pdf_reference,
+                _Manual.is_deleted == False,
+            )
+        )
+        matched_ids = [row[0] for row in manual_id_result.all()]
+        base_where.append(Job.source_manual_id.in_(matched_ids) if matched_ids else (Job.id == None))
+    if search:
+        base_where.append(
+            or_(
+                Job.job_name.ilike(f"%{search}%"),
+                Job.job_code.ilike(f"%{search}%"),
+                Job.source_reference.ilike(f"%{search}%"),
+                Job.pdf_reference.ilike(f"%{search}%"),
+            )
+        )
+
     jobs_result = await db.execute(
-        select(Job).where(
-            Job.vessel_id == vessel_id,
-            Job.tenant_id == current_user.tenant_id,
-            Job.is_deleted == False,
-        ).order_by(Job.pdf_reference, Job.page_reference, Job.job_name)
+        select(Job).where(*base_where).order_by(Job.pdf_reference, Job.page_reference, Job.job_name)
     )
     jobs = list(jobs_result.scalars().all())
 

@@ -7,6 +7,7 @@ import { SearchableSelect } from '@/components/SearchableSelect'
 import ManualPagePreview from '@/components/manuals/ManualPagePreview'
 import SnipExtractJobsModal from '@/components/jobs/SnipExtractJobsModal'
 import { FilterableDropdown } from '@/components/common/FilterableDropdown'
+import { ExportProgressModal } from '@/components/common/ExportProgressModal'
 
 interface ComponentOption {
   id: string
@@ -983,18 +984,58 @@ const JobsReview: React.FC = () => {
     return Array.from(selectedIds)[0]
   }, [selectedIds, selectedJob])
 
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
+  const [exportSuccess, setExportSuccess] = useState(false)
+
+  const activeFiltersSummary = useMemo(() => {
+    const parts: string[] = []
+    if (filterSourceFile) parts.push(`Source Manual: ${filterSourceFile}`)
+    if (filterQC) parts.push(`QC Status: ${filterQC}`)
+    if (filterCritical) parts.push(`Critical: ${filterCritical}`)
+    if (filterUnmapped) parts.push(`Unmapped Only`)
+    if (search) parts.push(`Search: "${search}"`)
+    return parts.length > 0 ? parts.join(' • ') : 'All Jobs (No Filter Active)'
+  }, [filterSourceFile, filterQC, filterCritical, filterUnmapped, search])
+
   const handleQcExport = async () => {
+    setIsExporting(true)
+    setExportError(null)
+    setExportSuccess(false)
     try {
-      const res = await apiClient.get(`/vessels/${vesselId}/jobs/qc-export`, { responseType: 'blob', timeout: 120_000 })
+      const params: Record<string, string> = {}
+      if (filterSourceFile) params.pdf_reference = filterSourceFile
+      if (filterQC) params.qc_status = filterQC
+      if (filterCritical) params.is_critical = filterCritical
+      if (filterUnmapped) params.is_unmapped = 'true'
+      if (search) params.search = search
+
+      const res = await apiClient.get(`/vessels/${vesselId}/jobs/qc-export`, {
+        params,
+        responseType: 'blob',
+        timeout: 300_000,
+      })
       const disposition = res.headers['content-disposition'] ?? ''
       const match = disposition.match(/filename="?([^"]+)"?/)
       const filename = match ? match[1] : 'Jobs_QC.xlsx'
       const url = URL.createObjectURL(res.data)
       const a = document.createElement('a')
-      a.href = url; a.download = filename
-      document.body.appendChild(a); a.click(); a.remove()
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
       URL.revokeObjectURL(url)
-    } catch { /* silent */ }
+
+      setExportSuccess(true)
+      setTimeout(() => {
+        setIsExporting(false)
+        setExportSuccess(false)
+      }, 1500)
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail ?? err?.message ?? 'QC export failed.'
+      setExportError(msg)
+    }
   }
 
   return (
@@ -1136,7 +1177,7 @@ const JobsReview: React.FC = () => {
             <button
               onClick={handleQcExport}
               title="Download Jobs QC Review sheet (with Reviewer QC / Notes columns for offline review)"
-              className="flex items-center gap-1.5 rounded-lg border border-violet-700 px-3 py-1.5 text-xs font-medium text-violet-300 hover:bg-slate-800"
+              className="flex items-center gap-1.5 rounded-lg bg-violet-400 hover:bg-violet-300 px-3 py-1.5 text-xs font-bold text-black border border-violet-300 shadow-sm transition-colors"
             >
               <Download className="h-3.5 w-3.5" />
               QC Export
@@ -1629,6 +1670,21 @@ const JobsReview: React.FC = () => {
           }}
         />
       )}
+
+      <ExportProgressModal
+        isOpen={isExporting}
+        title="Exporting Jobs QC Review Sheet"
+        entityName="Jobs"
+        activeFiltersSummary={activeFiltersSummary}
+        onClose={() => {
+          setIsExporting(false)
+          setExportError(null)
+          setExportSuccess(false)
+        }}
+        isError={!!exportError}
+        errorMessage={exportError}
+        isSuccess={exportSuccess}
+      />
     </>
   )
 }
