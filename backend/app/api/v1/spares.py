@@ -533,9 +533,9 @@ async def export_spares(
     ws.title = "Spares"
 
     headers = [
-        "ID", "PDF File", "Page", "Component", "Part Name", "Part Number",
-        "Drawing #", "POS", "Specification", "Maker", "Spare Model",
-        "Current QC", "Reviewer QC", "Reviewer Notes",
+        "ID", "PDF File", "Page", "Component", "Assembly", "Assembly Description",
+        "Part Name", "Part Number", "Drawing #", "POS", "Specification",
+        "Maker", "Spare Model", "Critical", "Current QC", "Reviewer QC", "Reviewer Notes",
     ]
     header_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
     header_font = Font(bold=True, color="FFFFFF")
@@ -553,16 +553,19 @@ async def export_spares(
         ws.cell(row=row_idx, column=2, value=manual.original_filename if manual else "")
         ws.cell(row=row_idx, column=3, value=spare.page_reference or "")
         ws.cell(row=row_idx, column=4, value=component.component_name if component else "")
-        ws.cell(row=row_idx, column=5, value=spare.part_name or "")
-        ws.cell(row=row_idx, column=6, value=spare.part_number or "")
-        ws.cell(row=row_idx, column=7, value=spare.drawing_number or "")
-        ws.cell(row=row_idx, column=8, value=spare.drawing_position or "")
-        ws.cell(row=row_idx, column=9, value=spare.specification or "")
-        ws.cell(row=row_idx, column=10, value=spare.spare_maker or "")
-        ws.cell(row=row_idx, column=11, value=spare.spare_model or "")
-        ws.cell(row=row_idx, column=12, value=spare.qc_status.value if hasattr(spare.qc_status, "value") else str(spare.qc_status))
-        ws.cell(row=row_idx, column=13, value="")
-        ws.cell(row=row_idx, column=14, value="")
+        ws.cell(row=row_idx, column=5, value=spare.spare_assembly or "")
+        ws.cell(row=row_idx, column=6, value=spare.assembly_description or "")
+        ws.cell(row=row_idx, column=7, value=spare.part_name or "")
+        ws.cell(row=row_idx, column=8, value=spare.part_number or "")
+        ws.cell(row=row_idx, column=9, value=spare.drawing_number or "")
+        ws.cell(row=row_idx, column=10, value=spare.drawing_position or "")
+        ws.cell(row=row_idx, column=11, value=spare.specification or "")
+        ws.cell(row=row_idx, column=12, value=spare.spare_maker or "")
+        ws.cell(row=row_idx, column=13, value=spare.spare_model or "")
+        ws.cell(row=row_idx, column=14, value="Yes" if spare.is_critical else "No")
+        ws.cell(row=row_idx, column=15, value=spare.qc_status.value if hasattr(spare.qc_status, "value") else str(spare.qc_status))
+        ws.cell(row=row_idx, column=16, value="")
+        ws.cell(row=row_idx, column=17, value="")
 
     for col in ws.columns:
         max_len = max((len(str(cell.value or "")) for cell in col), default=10)
@@ -1140,9 +1143,9 @@ _JOB_HEADERS = [
     "Current QC", "Reviewer QC", "Reviewer Notes",
 ]
 _SPARE_HEADERS = [
-    "ID", "PDF File", "Page", "Component", "Part Name", "Part Number",
-    "Drawing #", "POS", "Specification", "Maker", "Spare Model",
-    "Current QC", "Reviewer QC", "Reviewer Notes",
+    "ID", "PDF File", "Page", "Component", "Assembly", "Assembly Description",
+    "Part Name", "Part Number", "Drawing #", "POS", "Specification",
+    "Maker", "Spare Model", "Critical", "Current QC", "Reviewer QC", "Reviewer Notes",
 ]
 
 _QC_COLORS = {
@@ -1224,7 +1227,7 @@ def _qc_review_workbook(
 
         for r, row_data in enumerate(rows, 2):
             ws.append(row_data)
-            qc_val = str(row_data[10] or "pending").lower()
+            qc_val = str(row_data[qc_col_idx - 1] or "pending").lower()
             
             qc_cell = ws.cell(row=r, column=qc_col_idx)
             qc_cell.fill = _QC_FILLS.get(qc_val, _QC_FILLS["pending"])
@@ -1302,6 +1305,8 @@ def _qc_review_workbook(
                 manual_name,
                 spare.page_reference or "",
                 comp_name,
+                spare.spare_assembly or "",
+                spare.assembly_description or "",
                 spare.part_name or "",
                 spare.part_number or "",
                 spare.drawing_number or "",
@@ -1309,11 +1314,12 @@ def _qc_review_workbook(
                 spare.specification or "",
                 spare.spare_maker or "",
                 spare.spare_model or "",
+                "Yes" if spare.is_critical else "No",
                 spare.qc_status.value if hasattr(spare.qc_status, "value") else str(spare.qc_status),
                 "",  # Reviewer QC
                 "",  # Reviewer Notes
             ])
-        _write_sheet(ws_spares, _SPARE_HEADERS, spare_rows, reviewer_col_idx=13)
+        _write_sheet(ws_spares, _SPARE_HEADERS, spare_rows, reviewer_col_idx=16)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1525,11 +1531,18 @@ async def import_qc_review(
         rows = []
         for i, row in enumerate(ws.iter_rows(values_only=True)):
             if i == 0:
+                headers = [str(c or "").strip() for c in row]
+                if "ID" in headers:
+                    id_col = headers.index("ID")
+                if "Reviewer QC" in headers:
+                    qc_col = headers.index("Reviewer QC")
+                if "Reviewer Notes" in headers:
+                    note_col = headers.index("Reviewer Notes")
                 continue  # skip header
-            if not row or not row[id_col]:
+            if not row or len(row) <= id_col or not row[id_col]:
                 continue
             raw_id = str(row[id_col]).strip()
-            raw_qc = str(row[qc_col] or "").strip().lower()
+            raw_qc = str(row[qc_col] or "").strip().lower() if len(row) > qc_col else ""
             raw_note = str(row[note_col] or "").strip() if len(row) > note_col else ""
             if not raw_id:
                 continue
