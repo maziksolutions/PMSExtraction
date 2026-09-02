@@ -2662,7 +2662,6 @@ async def auto_extract_from_manual(
                 if file_bytes is not None:
                     if ext == "pdf":
                         try:
-                            import asyncio as _asyncio
                             import pdfplumber
                             import io as _io
 
@@ -2680,7 +2679,7 @@ async def auto_extract_from_manual(
                                             parts.append(f"[PAGE {page_num}]\n")
                                 return "\n\n".join(parts)
 
-                            full_text = await _asyncio.to_thread(_read_pdf_bytes, file_bytes)
+                            full_text = await asyncio.to_thread(_read_pdf_bytes, file_bytes)
                             # Persist the freshly-extracted text so future calls are instant
                             if full_text:
                                 await db.execute(
@@ -2693,7 +2692,6 @@ async def auto_extract_from_manual(
                             logger.warning("pdfplumber failed for %s: %s", filename, pdf_err)
                     elif ext == "docx":
                         try:
-                            import asyncio as _asyncio
                             import docx
                             import io as _io
 
@@ -2701,7 +2699,7 @@ async def auto_extract_from_manual(
                                 doc = docx.Document(_io.BytesIO(data))
                                 return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
-                            full_text = await _asyncio.to_thread(_read_docx_bytes, file_bytes)
+                            full_text = await asyncio.to_thread(_read_docx_bytes, file_bytes)
                         except Exception as docx_err:
                             logger.warning("docx extraction failed for %s: %s", filename, docx_err)
                 elif stored_text:
@@ -3042,7 +3040,6 @@ async def auto_extract_from_manual(
                             )
                     for page_no in selected_pages:
                         # Render single page image on-demand to keep memory footprint low
-                        import asyncio
                         image_bytes = await asyncio.to_thread(_render_single_pdf_page_image, file_bytes, page_no, 200)
                         if not image_bytes:
                             continue
@@ -3238,7 +3235,6 @@ async def auto_extract_from_manual(
                 logger.error("Failed to update extraction state to completed: %s", state_exc)
 
         except BaseException as task_exc:
-            import asyncio
             logger.error("auto_extract_from_manual failed or cancelled: %s", task_exc, exc_info=True)
             from app.models.ingestion import ManualStatus, Manual
             from sqlalchemy import update
