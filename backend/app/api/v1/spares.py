@@ -1386,7 +1386,7 @@ async def export_spares_qc(
         )
 
     spares_result = await db.execute(
-        select(Spare).where(*base_where).order_by(Spare.source_manual_id, Spare.page_reference, Spare.drawing_position)
+        select(Spare).where(*base_where).order_by(Spare.source_manual_id, Spare.page_reference.asc().nulls_last(), Spare.id.asc())
     )
     spares = list(spares_result.scalars().all())
 
@@ -1459,7 +1459,7 @@ async def export_qc_review(
             Spare.vessel_id == vessel_id,
             Spare.tenant_id == current_user.tenant_id,
             Spare.is_deleted == False,
-        ).order_by(Spare.source_manual_id, Spare.page_reference, Spare.drawing_position)
+        ).order_by(Spare.source_manual_id, Spare.page_reference.asc().nulls_last(), Spare.id.asc())
     )
     spares = list(spares_result.scalars().all())
 
