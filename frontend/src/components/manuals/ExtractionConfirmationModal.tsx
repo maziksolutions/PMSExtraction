@@ -283,10 +283,10 @@ export function ExtractionConfirmationModal({
               ) : (
                 filteredAndSortedManuals.map((m) => {
                   const isChecked = selectedIds.has(m.id)
-                  // Page references preview text
-                  const compPages = m.pages_with_components_physical ?? m.pages_with_components
-                  const jobPages = m.pages_with_jobs_physical ?? m.pages_with_jobs
-                  const sparePages = m.pages_with_spares_physical ?? m.pages_with_spares
+                  // Page references preview text (only manually entered physical page references)
+                  const compPages = m.pages_with_components_physical
+                  const jobPages = m.pages_with_jobs_physical
+                  const sparePages = m.pages_with_spares_physical
 
                   return (
                     <div

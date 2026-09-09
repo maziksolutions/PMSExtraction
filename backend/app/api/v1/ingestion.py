@@ -2393,34 +2393,21 @@ async def get_manual_page_status(
 
     from app.services.extractor import _parse_page_tokens
 
-    # Determine if user has edited/customized any page reference fields for this manual
-    has_custom_refs = (
-        manual.pages_with_components_physical is not None
-        or manual.pages_with_jobs_physical is not None
-        or manual.pages_with_spares_physical is not None
-    )
-
-    # Use unsaved query params if provided, otherwise fallback to DB physical / canonical fields
+    # Use unsaved query params if provided, otherwise fallback strictly to DB physical fields
     if components_pages_unsaved is not None:
         comp_ref_str = components_pages_unsaved
-    elif has_custom_refs:
-        comp_ref_str = manual.pages_with_components_physical
     else:
-        comp_ref_str = manual.pages_with_components
+        comp_ref_str = manual.pages_with_components_physical or ""
 
     if jobs_pages_unsaved is not None:
         job_ref_str = jobs_pages_unsaved
-    elif has_custom_refs:
-        job_ref_str = manual.pages_with_jobs_physical
     else:
-        job_ref_str = manual.pages_with_jobs
+        job_ref_str = manual.pages_with_jobs_physical or ""
 
     if spares_pages_unsaved is not None:
         spare_ref_str = spares_pages_unsaved
-    elif has_custom_refs:
-        spare_ref_str = manual.pages_with_spares_physical
     else:
-        spare_ref_str = manual.pages_with_spares
+        spare_ref_str = manual.pages_with_spares_physical or ""
 
     component_pages = set(_parse_page_tokens(comp_ref_str))
     job_pages = set(_parse_page_tokens(job_ref_str))

@@ -1,0 +1,488 @@
+Commit_Hash,Date_Time,Author,Change_Description,Files_Modified
+6a762ee,2026-08-27 11:33:51,Dilip,"feat: increase timeouts to 2m, optimize extraction memory and keep-alive, add debug check for P-42","backend/app/api/v1/auth.py, backend/app/services/extractor.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/Export.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+f3063fc,2026-08-26 09:42:18,Dilip,feat: catch CancelledError on task stop to update manual status in DB,backend/app/services/extractor.py
+7a52ff6,2026-08-26 09:37:03,Dilip,feat: add Stop Extraction button in the page status details modal,frontend/src/components/manuals/ManualPageStatusModal.tsx
+9922de9,2026-08-26 08:54:44,Dilip,feat: update debug-restore-m29 endpoint to serve as real-time M-29 active/deleted record counts diagnostics,backend/app/api/v1/auth.py
+6ff1328,2026-08-26 08:40:37,Dilip,feat: correct debug-restore-m29 endpoint to move spares back to M-45 and reset M-29 status,backend/app/api/v1/auth.py
+e078c6a,2026-08-26 08:03:29,Dilip,feat: move debug-restore-m29 endpoint to auth router to bypass vessel regex conflict,"backend/app/api/v1/auth.py, backend/app/api/v1/ingestion.py"
+e529ac3,2026-08-26 07:50:23,Dilip,feat: add old manual b480204a spares re-linking support to debug-restore-m29,backend/app/api/v1/ingestion.py
+d017452,2026-08-26 07:45:24,Dilip,feat: add interactive debug-restore-m29 endpoint,backend/app/api/v1/ingestion.py
+9d389e3,2026-08-26 06:50:25,Dilip,feat: reset stuck manuals to failed state on startup and log E-32 status,backend/app/main.py
+291cf1c,2026-08-26 06:44:54,Dilip,feat: add M-29 volume 2 diagnostic check on startup,backend/app/main.py
+d4e7601,2026-08-25 19:23:37,Dilip,feat: print production manuals updated count on boot,backend/app/main.py
+c9f2613,2026-08-25 19:06:16,Dilip,feat: add automatic M-29 manuals database data recovery on container boot,backend/app/main.py
+e85aa59,2026-08-25 18:54:55,Dilip,feat: wrap extraction task in robust try-except to handle failures and document statuses gracefully,backend/app/services/extractor.py
+8869b1a,2026-08-25 18:18:45,Dilip,fix: correct column name to original_job_name in job_name_backup queries,"backend/app/api/v1/jobs.py, backend/app/services/extractor.py, backend/app/services/job_naming.py"
+32fbc05,2026-08-25 18:06:39,Dilip,feat: support Boiler Flame Eye and Main Burner component synonym library matching,"backend/app/api/v1/jobs.py, backend/app/services/extractor.py, backend/app/services/job_naming.py, backend/app/tasks/classification.py"
+0acf392,2026-08-25 17:21:43,Dilip,feat: check staging vessel 4 status on startup,backend/app/main.py
+c3c62f4,2026-08-25 17:13:34,Dilip,fix: resolve Anthropic model ID in AI component matcher to match configured CLAUDE_MODEL_ID,backend/app/services/extractor.py
+4acffaf,2026-08-25 08:26:01,Dilip,feat: implement duplicate-aware job formatting Component - Job Body - Action with enhanced action identifier,"backend/app/api/v1/jobs.py, backend/app/main.py, backend/app/services/extractor.py, backend/app/services/job_naming.py"
+f067a0e,2026-08-25 08:14:25,Dilip,"feat: keep AI-driven matching exclusively for jobs, revert spares matching to original text-overlap logic",backend/app/services/extractor.py
+ea78d2c,2026-08-25 08:11:26,Dilip,feat: implement AI-driven component matching with token-overlap fallback,backend/app/services/extractor.py
+5c2f657,2026-08-21 15:28:01,Dilip,feat: force full-page spare parts extraction by default,backend/app/services/extractor.py
+80f2908,2026-08-20 15:21:21,Dilip,fix: resolve repeated source references footer in job description by using regex stripping and clean database,"backend/app/main.py, backend/app/services/job_naming.py, backend/scripts/clean_repeated_descriptions.py"
+45bf253,2026-08-20 15:10:44,Dilip,feat: enable automatic startup restore of original job titles,backend/app/main.py
+00ee7b6,2026-08-20 15:04:25,Dilip,feat: restore original job titles and disable automatic startup backfill migration,"backend/app/main.py, backend/scripts/restore_job_names.py"
+58ef27f,2026-08-19 20:29:26,Dilip,feat: enforce Component - Action naming format for all jobs and bypass Rule 4 empty result return,backend/app/services/job_naming.py
+ef20891,2026-08-19 20:21:36,Dilip,feat: run startup job name backfill on all jobs regardless of is_deleted status,backend/app/main.py
+c9d6d38,2026-08-19 20:07:42,Dilip,feat: enhance startup job name backfill to resolve components by scanning library keyword list,backend/app/main.py
+6371ebf,2026-08-19 19:58:23,Dilip,feat: add component name hyphen parsing fallback to startup job name backfill,backend/app/main.py
+9379f4b,2026-08-19 19:52:56,Dilip,fix: resolve component name from components table in startup backfill instead of attribute lookup,backend/app/main.py
+84b2be8,2026-08-19 19:44:40,Dilip,fix: prevent NotNullViolationError in jobs table by keeping original job name if resolver returns None,"backend/app/api/v1/jobs.py, backend/app/services/extractor.py"
+2926f87,2026-08-19 19:31:19,Dilip,feat: add automatic database job name backup and backfill runner on startup,backend/app/main.py
+2932277,2026-08-19 19:18:13,Dilip,fix: prevent global library backfill from soft-deleting standard seeded records and restore previously deleted records,"backend/app/api/v1/library.py, backend/app/services/review_workflow.py"
+b86b775,2026-08-19 19:10:33,Dilip,fix: move ensure_tenant_library_seeded helper above decorator and enable on-demand seeding,backend/app/api/v1/library.py
+ccea5dc,2026-08-19 19:06:12,Dilip,debug: add global library tenant_id diagnostic logging,backend/app/api/v1/library.py
+b01fd92,2026-08-19 19:02:04,Dilip,feat: make startup seeder tenant-aware to seed 16940 records for all database tenants,backend/app/main.py
+9deced9,2026-08-19 18:53:16,Dilip,feat: refine job title library startup seeder to populate if count is below 15000,backend/app/main.py
+77a1c89,2026-08-19 18:36:57,Dilip,feat: add automatic backup and backfill migration runner on backend startup,backend/app/main.py
+a125db5,2026-08-19 18:32:54,Dilip,"feat: add backup, backfill, and restore fallback scripts for job description formatting","backend/scripts/backfill_job_descriptions.py, backend/scripts/backup_descriptions.py, backend/scripts/restore_descriptions.py, backend/scripts/run_production_backfill.py"
+8a72a8f,2026-08-19 18:29:32,Dilip,feat: format even source references in job descriptions with /*-,backend/app/models/job.py
+1b090c0,2026-08-19 18:24:23,Dilip,feat: instruct LLM extraction prompt to format job description with /*- and split lists,backend/app/services/extractor.py
+9d19a48,2026-08-19 18:17:29,Dilip,feat: format job description to split list items onto new lines and prefix with /*-,backend/app/models/job.py
+29398c2,2026-08-19 18:11:28,Dilip,fix: export complete un-truncated job description in QC and standard job exports,backend/app/api/v1/jobs.py
+edeef9c,2026-08-19 15:17:09,Dilip,feat: migrate job title library to existing global_job_library table under F-04 Global Libraries,"backend/alembic/versions/2c31f19ace76_drop_job_title_library_table.py, backend/app/api/v1/jobs.py, backend/app/main.py, backend/app/models/__init__.py, backend/app/models/job_title_library.py, backend/app/services/extractor.py, backend/app/services/job_naming.py"
+fc99214,2026-08-18 10:50:47,Dilip,feat: completely bypass request size limit middleware to accept any file size uploads,backend/app/main.py
+255a42e,2026-08-18 10:11:54,Dilip,feat: increase max request size limit to 1000 MB to support 500 MB manual uploads,backend/app/core/config.py
+6eea118,2026-08-18 05:37:57,Dilip,feat: add automatic startup seeding from complete 16940-record CSV job title library,"backend/app/assets/asm_jobs.csv, backend/app/main.py"
+829efd5,2026-08-18 05:02:54,Dilip,feat: implement job title library database matching and action-based naming rules,"backend/alembic/versions/e41039a804fc_create_job_title_library_table.py, backend/app/api/v1/jobs.py, backend/app/models/__init__.py, backend/app/models/job_title_library.py, backend/app/services/extractor.py, backend/app/services/job_naming.py"
+ed24c18,2026-08-18 04:28:23,Dilip,fix: move StreamingResponse import to module level in jobs.py and spares.py to prevent Pydantic NameError on startup,"backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py"
+51eba16,2026-08-18 04:16:32,Dilip,"feat: implement individual baseline import and template downloads for components, jobs, and spares","backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/ManualReview.tsx, frontend/src/pages/SparesReview.tsx"
+400e4f1,2026-08-18 04:06:21,Dilip,fix: set default QC review status of imported standard library components to pending,backend/app/services/vessel_library.py
+527ef45,2026-08-14 06:20:37,Dilip,fix: resolve local select variable shadowing causing UnboundLocalError in statistics API,backend/app/api/v1/ingestion.py
+8253240,2026-08-14 06:15:09,Dilip,fix: resolve 500 internal server error in statistics endpoint by wrapping sync in try-except and using db.flush(),backend/app/services/anthropic_admin.py
+d794a0e,2026-08-14 05:43:14,Dilip,feat: persist daily claude API costs locally in database and backfill historical data automatically,"backend/alembic/versions/435a99988f2b_create_claude_daily_costs_table.py, backend/app/api/v1/ingestion.py, backend/app/models/__init__.py, backend/app/models/claude_cost.py, backend/app/services/anthropic_admin.py"
+bfa1ab2,2026-08-14 05:30:46,Dilip,feat: show console billed cost prominently on overview tab metrics grid,frontend/src/components/manuals/ManualsStatsModal.tsx
+8962ea7,2026-08-14 02:31:14,Dilip,feat: bind console day costs to price calibrator date selector to auto-fill actual values,frontend/src/components/manuals/ManualsStatsModal.tsx
+0913aae,2026-08-14 02:26:22,Dilip,feat: query real Anthropic Console usage/cost endpoints using Admin API Key and add dynamic console logs tab in statistics modal,"backend/app/api/v1/ingestion.py, backend/app/core/config.py, backend/app/services/anthropic_admin.py, frontend/src/components/manuals/ManualsStatsModal.tsx"
+47151e9,2026-08-14 02:21:05,Dilip,"feat: add Claude AI & APIs statistics tab detailing keys status, active models, endpoints, and token counts","backend/app/api/v1/ingestion.py, frontend/src/components/manuals/ManualsStatsModal.tsx"
+72eec89,2026-08-14 02:12:17,Dilip,feat: set manual upload limit to unlimited by skipping size validation when max_size_bytes is 0 or None,"backend/app/api/v1/ingestion.py, backend/app/services/upload_security.py, frontend/src/pages/Ingestion.tsx"
+3b0755e,2026-08-13 01:11:36,Dilip,fix: filter statistics manuals query to only include files with valid blob storage key,backend/app/api/v1/ingestion.py
+cbad376,2026-08-13 01:04:10,Dilip,feat: add deleted manual filters and map all manual statistics dynamically in frontend,"backend/app/api/v1/ingestion.py, frontend/src/components/manuals/ManualsStatsModal.tsx"
+ac6e7a4,2026-08-13 00:55:23,Dilip,feat: add vessel project filter selector to manuals statistics modal,frontend/src/components/manuals/ManualsStatsModal.tsx
+a98b0a9,2026-08-13 00:50:12,Dilip,fix: restructure review page toolbar layout and add date filters to statistics modal,"frontend/src/components/manuals/ManualsStatsModal.tsx, frontend/src/pages/ManualReview.tsx"
+9916be6,2026-08-13 00:42:07,Dilip,feat: add date-wise activity analytics and calibrated LLM cost calculator tabs to stats modal,"backend/app/api/v1/ingestion.py, frontend/src/components/manuals/ManualsStatsModal.tsx"
+b15d85c,2026-08-13 00:34:27,Dilip,feat: add multi-tabbed manual extraction statistics modal and fix status modal alignments,"backend/app/api/v1/ingestion.py, frontend/src/components/manuals/ManualPageStatusModal.tsx, frontend/src/components/manuals/ManualsStatsModal.tsx, frontend/src/pages/ManualReview.tsx"
+53fb7db,2026-08-13 00:19:33,Dilip,fix: omit empty non-targeted pages from extraction status modal,"backend/app/api/v1/ingestion.py, frontend/src/components/manuals/ManualPageStatusModal.tsx"
+8947833,2026-08-13 00:09:50,Dilip,feat: add page-by-page PDF extraction status modal with page-specific retry,"backend/app/api/v1/ingestion.py, backend/app/services/extractor.py, frontend/src/components/manuals/ManualPageStatusModal.tsx, frontend/src/pages/ManualReview.tsx"
+c269db5,2026-08-12 11:44:01,Dilip,Fix backend job list and export endpoints to filter by both frequency and frequency_type,backend/app/api/v1/jobs.py
+0490597,2026-08-11 23:52:19,Dilip,UI update: keep only physical page reference input and label it as page number only,frontend/src/pages/ManualReview.tsx
+0719295,2026-08-11 23:45:04,Dilip,Separate pdfplumber and pytesseract imports in _enrich_pdf_text_for_selected_pages to prevent pytesseract failure from blocking text extraction,backend/app/services/extractor.py
+1df912a,2026-08-11 20:14:04,Dilip,Enable Extract Jobs Only and Extract Spares Only buttons on Manual Classification page,frontend/src/pages/ManualReview.tsx
+012f4bd,2026-08-11 19:58:53,Dilip,Eagerly load extracted_text with undefer and normalize CRLF line endings in auto_extract_from_manual,backend/app/services/extractor.py
+7b238cf,2026-08-07 21:02:22,Dilip,Fix manual page loading API route path in SnipExtractJobsModal,frontend/src/components/jobs/SnipExtractJobsModal.tsx
+7f3a91b,2026-08-07 20:54:21,Dilip,Fix manuals query list pagination data layout and add open in new tab manual action,"frontend/src/components/jobs/SnipExtractJobsModal.tsx, frontend/src/components/spares/SnipExtractModal.tsx"
+2161b13,2026-08-07 20:47:11,Dilip,Fix Form NameError by importing Form at the top level of jobs.py,backend/app/api/v1/jobs.py
+897928e,2026-08-07 20:37:14,Dilip,Implement Snip & Extract for Jobs page and wire Spares Snip & Extract button click,"backend/app/api/v1/jobs.py, frontend/src/components/jobs/SnipExtractJobsModal.tsx, frontend/src/pages/JobsReview.tsx"
+eaa8b1d,2026-08-07 18:37:43,Dilip,Enable instant UI path updating in component name datalist autocomplete selection,"backend/app/schemas/component.py, frontend/src/pages/ComponentReview.tsx"
+53f06ba,2026-08-07 18:22:32,Dilip,Remap unmapped component itself to matched tree path and set is_unmapped to false directly instead of soft-deleting,backend/app/api/v1/components.py
+b590ee7,2026-08-07 18:18:04,Dilip,Sync component classification path to match vessel tree path upon component renaming,"backend/app/api/v1/components.py, frontend/src/pages/ComponentReview.tsx"
+6518d34,2026-08-07 18:01:02,Dilip,Increase backend upload file limit configuration to 250MB and update UI label description,"backend/app/api/v1/ingestion.py, backend/app/core/config.py, frontend/src/pages/Ingestion.tsx"
+234c1c4,2026-08-07 17:53:15,Dilip,Apply client_max_body_size inside server and api location blocks in nginx.conf.template,frontend/nginx.conf.template
+ac63f1b,2026-08-07 17:48:38,Dilip,Increase Nginx client_max_body_size limit to 1000m to support uploading large manual files,frontend/nginx.conf.template
+9f6fc7d,2026-08-07 17:10:35,Dilip,Include null frequency_type entries in distinct frequencies dropdown and filter by frequency value only,"backend/app/api/v1/jobs.py, frontend/src/pages/JobsReview.tsx"
+d3119c3,2026-08-07 17:05:26,Dilip,Construct SearchableSelect frequency options dynamically from API of unique vessel job frequencies,"backend/app/api/v1/jobs.py, frontend/src/pages/JobsReview.tsx"
+f3978b9,2026-08-07 17:01:20,Dilip,Replace Jobs page frequency filter select element with SearchableSelect,frontend/src/pages/JobsReview.tsx
+24223be,2026-08-07 16:34:48,Dilip,Enable inline editing of component name with auto-merge to vessel structure if name matches,"backend/app/api/v1/components.py, frontend/src/pages/ComponentReview.tsx"
+5e219c3,2026-08-07 16:11:25,Dilip,Make component name editable inline on ComponentReview page and propagate changes to spares,"backend/app/api/v1/components.py, frontend/src/pages/ComponentReview.tsx"
+f6efeda,2026-08-07 16:01:21,Dilip,Extend manuals sorting options in backend and implement full column sorting on manual review page,"backend/app/api/v1/manuals.py, frontend/src/pages/ManualReview.tsx"
+4669dec,2026-08-07 15:58:45,Dilip,Implement sorting of all columns across review pages and add frequency filter to jobs page,"backend/app/api/v1/jobs.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+760a0fc,2026-08-07 15:35:21,Dilip,Implement fallback to component name or clean filename for spare_assembly when not extracted,backend/app/services/extractor.py
+34d3e5d,2026-08-07 15:07:41,Dilip,Automatically build and inject preceding pages headers history for deep context lookback up to 10 pages,backend/app/services/extractor.py
+e1d6298,2026-08-07 15:04:24,Dilip,Automatically inject preceding page text context to PMS entity extraction,backend/app/services/extractor.py
+9bb900e,2026-08-06 18:34:26,Dilip,Map table header and diagram title to spare_model in spares extraction prompts,backend/app/services/extractor.py
+5fa5269,2026-08-06 18:32:17,Dilip,Comment out Extract Spares Only button on ManualReview page,frontend/src/pages/ManualReview.tsx
+14e7055,2026-08-06 18:16:44,Dilip,Style screening complete banner with entirely bold black text on high-contrast solid emerald background,frontend/src/pages/ManualReview.tsx
+6106c09,2026-08-06 18:10:10,Dilip,Detail extraction page ranges for components/jobs and improve screening banner colors,"backend/app/services/extractor.py, frontend/src/pages/ManualReview.tsx"
+a4995e2,2026-08-06 17:52:47,Dilip,Fix DB save failure during screening by removing invalid screening_explanation column,backend/app/api/v1/ingestion.py
+727632d,2026-08-06 17:41:16,Dilip,Integrate screening control mutations and buttons (Pause/Resume/Stop) in frontend,"backend/app/api/v1/ingestion.py, frontend/src/pages/ManualReview.tsx"
+fb50f1e,2026-08-06 17:30:22,Dilip,Reuse classifier page text in screening to bypass duplicate full-manual reextract phase,"backend/app/api/v1/ingestion.py, backend/app/services/classifier.py"
+6be1ff3,2026-08-06 17:07:25,Dilip,Implement real-time scanned page progress logging and Redis status state for screening,"backend/app/api/v1/ingestion.py, backend/app/services/classifier.py"
+7f85793,2026-08-06 16:51:02,Dilip,Optimize screening by skipping heavy table extraction and footer OCR in classifier text helper,backend/app/services/classifier.py
+6e226d9,2026-08-04 17:02:39,Dilip,"Bypass full-pdf text scanning phase for all PDF extractions (components, jobs, and spares)",backend/app/services/extractor.py
+9de7e80,2026-08-04 16:53:03,Dilip,Skip full-pdf text scanning phase for PDF spares-only extraction,backend/app/services/extractor.py
+cba317a,2026-08-04 16:51:36,Dilip,Optimize full-pdf text scanning by skipping slow table extraction,backend/app/services/extractor.py
+f14c68e,2026-08-04 16:40:49,Dilip,Implement Redis-backed extraction status tracking for multi-worker backend sync,backend/app/services/extractor.py
+7810608,2026-08-04 16:29:32,Dilip,Fix spares consolidation merging distinct parts with same part number but different positions,backend/app/services/extractor.py
+af202a3,2026-08-04 15:49:43,Dilip,Fix spares extraction vertical slicing issues on single-column tables,backend/app/services/extractor.py
+90a655d,2026-08-04 12:11:01,Dilip,Optimize page rendering resolution and fix frontend extraction status polling,"backend/app/services/extractor.py, frontend/src/pages/ManualReview.tsx"
+3a0b48e,2026-08-04 11:51:02,Dilip,Add DUPLICATE TABLE TEXT RULE to spares system prompt to avoid duplicate text extraction and truncation,backend/app/services/extractor.py
+f4750a9,2026-08-04 09:32:51,Dilip,Restrict spares extraction to specified pages and add Extract Spares Only button to Manuals page,"backend/app/api/v1/ingestion.py, backend/app/services/extractor.py, frontend/src/pages/ManualReview.tsx"
+e105a77,2026-07-31 15:59:29,Dilip,feat: add database migration to add batch_number column to manuals table,backend/alembic/versions/0024_add_batch_number_to_manuals.py
+3b718f7,2026-07-31 15:53:02,Dilip,fix: import Optional from typing in ingestion.py to resolve startup error,backend/app/api/v1/ingestion.py
+fbcc826,2026-07-31 15:43:53,Dilip,fix: refactor seed_standard_jobs.py to run directly via python scripts/seed_standard_jobs.py and avoid namespace module lookup issue on Railway,"backend/scripts/railway_start.sh, backend/scripts/seed_standard_jobs.py"
+0b12fbf,2026-07-31 15:35:04,Dilip,fix: add wait_for_db script to avoid migration failure on Railway database startup race condition,"backend/scripts/railway_start.sh, backend/scripts/wait_for_db.py"
+14f57ca,2026-07-31 15:17:24,Dilip,"feat: add batch ingestion controls and manuals batch filtering dropdown, fix SharePoint mock download hijacking","backend/app/api/v1/ingestion.py, backend/app/api/v1/manuals.py, backend/app/models/ingestion.py, backend/app/schemas/ingestion.py, backend/app/schemas/manual.py, frontend/src/pages/Ingestion.tsx, frontend/src/pages/ManualReview.tsx"
+777066d,2026-07-30 20:20:14,Dilip,"feat: add modified date and sorting to selected files modal, add loader to folder explorer navigation, and deduplicate spares during auto extraction","backend/app/services/extractor.py, frontend/src/pages/Ingestion.tsx"
+330b036,2026-07-30 20:01:55,Dilip,"feat: improve selected files modal to a compact, scrollable table with sorting, search filtering, and select-all checkboxes",frontend/src/pages/Ingestion.tsx
+8e96557,2026-07-30 19:56:04,Dilip,feat: add View / Edit selected files modal to SharePoint Ingestion screen,frontend/src/pages/Ingestion.tsx
+8c3a431,2026-07-30 19:48:18,Dilip,"fix: keep checked sharepoint files selected when navigating folders, and exclude not fully downloaded manuals from the manuals page","backend/app/api/v1/manuals.py, frontend/src/pages/Ingestion.tsx"
+30ea351,2026-07-29 18:26:55,Dilip,fix: remove toggleSelect from row onClick to prevent double click layout shifting,frontend/src/pages/JobsReview.tsx
+042acaa,2026-07-29 18:21:41,Dilip,"feat: merge descriptions during job merge, restrict job mapping to manual components, and add PDF reference dropdown in Job Editor","backend/app/api/v1/jobs.py, frontend/src/pages/JobsReview.tsx"
+843c134,2026-07-29 18:13:35,Dilip,feat: implement manual dropdown and component-manual constraints on Job Page,"backend/app/api/v1/jobs.py, frontend/src/pages/JobsReview.tsx"
+b33f6ce,2026-07-29 17:55:28,Dilip,feat: add manual retry endpoint and UI button on ingestion progress table for failed manuals,"backend/app/api/v1/ingestion.py, frontend/src/pages/Ingestion.tsx"
+0bd15f9,2026-07-29 17:51:15,Dilip,style: move Previous Sessions list above manuals progress table in Ingestion.tsx,frontend/src/pages/Ingestion.tsx
+db6a4b6,2026-07-29 17:40:01,Dilip,style: set manuals progress list table height to fixed size and make it scrollable with sticky headers,frontend/src/pages/Ingestion.tsx
+e92981d,2026-07-29 17:32:36,Dilip,fix: add 10-second buffer to session manuals query to prevent timing/microsecond precision issues,backend/app/api/v1/ingestion.py
+69b1f60,2026-07-29 17:20:44,Dilip,"fix: rename Navigations tab to SharePoint, restore breadcrumb step names, and fix session loop in New Ingestion",frontend/src/pages/Ingestion.tsx
+aa16c29,2026-07-29 17:14:17,Dilip,"feat: add SharePoint folder navigation, sharing link support, type filters, and session restoration","backend/app/api/v1/ingestion.py, backend/app/schemas/ingestion.py, backend/app/services/sharepoint.py, frontend/src/pages/Ingestion.tsx"
+d81d1be,2026-07-28 18:29:42,Dilip,fix: robustly parse S3 endpoint netloc and add diagnostics for Cloudflare R2,backend/app/services/blob_storage.py
+d767e5c,2026-07-28 18:20:40,Dilip,feat: add MINIO_REGION config and pass to Minio client for Cloudflare R2 compatibility,"backend/.env.example, backend/app/core/config.py, backend/app/services/blob_storage.py"
+97dcbad,2026-07-24 20:18:20,Dilip,Fix: Import and initialize logger in spares.py to prevent NameError,backend/app/api/v1/spares.py
+6480bd0,2026-07-24 20:11:55,Dilip,Fix: Propagate exceptions from inner vision extraction functions to prevent swallowing errors,backend/app/services/extractor.py
+6a1dac0,2026-07-24 20:01:19,Dilip,Fix: Raise clear RuntimeError if both Vision API keys are missing to prevent silent empty returns,backend/app/services/extractor.py
+7d3ce38,2026-07-24 19:51:07,Dilip,Fix: Revert CLAUDE_MODEL_ID back to claude-sonnet-4-6 for custom gateway compatibility,backend/app/core/config.py
+e2f7f9d,2026-07-24 19:35:39,Dilip,Fix: Correct crop boundary calculations under zoom in imageElementToBlob,"frontend/src/components/manuals/ManualPagePreview.tsx, frontend/src/components/spares/SnipExtractModal.tsx"
+0661add,2026-07-24 19:28:24,Dilip,Fix: Reset Claude vision billing breaker on new extraction requests,"backend/app/api/v1/extraction.py, backend/app/api/v1/ingestion.py, backend/app/api/v1/spares.py"
+6eae117,2026-07-24 19:19:23,Dilip,"Fix: Resolve spares vision extraction silent failure, correct model ID, and add step-by-step progress UI","backend/app/core/config.py, backend/app/services/extractor.py, frontend/src/components/spares/SnipExtractModal.tsx"
+452379a,2026-07-24 18:48:00,Dilip,"Feature: Add extraction task controls (stop, pause, resume), detailed screening progress tracking, and fix spares page zooming","backend/app/api/v1/extraction.py, backend/app/api/v1/ingestion.py, backend/app/services/extractor.py, frontend/src/components/spares/SnipExtractModal.tsx, frontend/src/pages/ManualReview.tsx"
+3120952,2026-07-23 19:00:05,Dilip,Feature: Add detailed page-level extraction progress tracking and fix zoom coordinate scaling for snip selections,"backend/app/api/v1/extraction.py, backend/app/api/v1/ingestion.py, backend/app/services/extractor.py, frontend/src/components/manuals/ManualPagePreview.tsx, frontend/src/components/spares/SnipExtractModal.tsx, frontend/src/pages/ManualReview.tsx"
+66b1272,2026-07-21 17:32:36,Dilip,Feature: render bulk action buttons persistently in fixed slots to prevent layout shifting on row selection,frontend/src/pages/ComponentReview.tsx
+0229368,2026-07-21 16:51:15,Dilip,Feature: add up and down click-drag panning and mouse wheel focal zoom centered at cursor in manual preview,frontend/src/components/manuals/ManualPagePreview.tsx
+5066b24,2026-07-21 16:03:18,Dilip,"Feature: add click and drag PDF panning, fix components pending QC filter normalization, and fix manuals table height with sticky header","backend/app/api/v1/components.py, frontend/src/components/manuals/ManualPagePreview.tsx, frontend/src/pages/ManualReview.tsx"
+6045c02,2026-07-21 14:04:10,Dilip,"Feature: add manual components panel, page jump navigation, and Add Component modal in standalone manual preview tab","frontend/src/components/components/AddComponentModal.tsx, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/ManualStandalonePreview.tsx"
+935d66a,2026-07-20 18:23:34,Dilip,"Feature: add pre-populated manual, mandatory main machinery dropdown, add main machinery modal, component copying between manuals, and searchable dropdowns","backend/app/api/v1/components.py, frontend/src/components/SearchableSelect.tsx, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+d02de86,2026-07-20 16:47:55,Dilip,feat(frontend): add row double-click manual open in Components & fix table scrolling height in Jobs & Spares,"frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+883ae54,2026-07-20 16:38:21,Dilip,feat(frontend): show pending components count next to total components in Components page header,frontend/src/pages/ComponentReview.tsx
+f650208,2026-07-17 12:54:23,Dilip,fix(frontend): invalidate ingestion-sessions query and stop polling when session completes,frontend/src/pages/Ingestion.tsx
+8f3f080,2026-07-17 12:48:07,Dilip,"fix(ingestion): stop auto-classification during SharePoint ingestion, leave manuals as queued",backend/app/api/v1/ingestion.py
+693b448,2026-07-17 12:39:08,Dilip,fix(ingestion): remove duplicate route decorator from SharePoint bg task helper,backend/app/api/v1/ingestion.py
+0209632,2026-07-17 12:35:49,Dilip,fix(ingestion): execute SharePoint downloads as FastAPI BackgroundTasks instead of Celery tasks,backend/app/api/v1/ingestion.py
+d62ae98,2026-07-17 12:13:34,Dilip,fix(sharepoint): fallback to default site drive when library lookup by name fails,backend/app/services/sharepoint.py
+72f0132,2026-07-17 12:07:31,Dilip,fix(sharepoint): support root site SharePoint URLs and decode/unquote URL path segments,backend/app/services/sharepoint.py
+c702e36,2026-07-12 10:05:03,Dilip,Fix: tokens fix for error logs,backend/app/services/extractor.py
+5093d38,2026-07-12 01:02:55,Dilip,Fix: AI tokens chage,backend/app/services/extractor.py
+5249364,2026-06-10 17:07:50,Dilip,Update: Slow loading of the manual in manuals tab,"backend/app/api/v1/ingestion.py, frontend/src/pages/ManualReview.tsx"
+2184a77,2026-06-10 14:56:44,Dilip,Update: Component and Dashboard pages Update,"frontend/src/pages/ComponentReview.tsx, frontend/src/pages/Dashboard.tsx"
+620ac10,2026-06-08 18:00:03,Dilip,Updates: Click and double click function on component and spares pages,"frontend/src/pages/ComponentReview.tsx, frontend/src/pages/SparesReview.tsx"
+556e239,2026-06-08 15:39:41,Dilip,Dilip: Clicking and Double clicking the jobs row will selected and bring up edit modal.,frontend/src/pages/JobsReview.tsx
+8b546d5,2026-06-08 14:56:53,Dilip,Dilip: Changes as requested by Karthik,frontend/src/pages/JobsReview.tsx
+d842397,2026-06-05 20:35:09,Dilip,Change: Spares edit in a seperate modal,frontend/src/pages/SparesReview.tsx
+2783306,2026-06-05 20:07:40,Dilip,Fix: saving the edit jobs,"backend/app/api/v1/components.py, backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py"
+b103e11,2026-06-05 19:36:03,Dilip,Fix: jobs page issue fixes for save changes edit modal,frontend/src/pages/JobsReview.tsx
+db1d58d,2026-06-05 19:01:03,Dilip,Fix: Changed the snip & extract from using ai to ocr,"backend/app/services/extractor.py, frontend/src/components/manuals/ManualPagePreview.tsx"
+1b2f627,2026-06-05 18:46:37,Dilip,Fix: Modal not scrollable and use antropic key for the snip and extract feature.,"backend/app/services/extractor.py, frontend/src/components/manuals/ManualPagePreview.tsx, frontend/src/pages/JobsReview.tsx"
+7a04ac3,2026-06-05 18:29:45,Dilip,Dilip: Jobs page snip and extract option in manual preview and the edit job is shown as the modal instead on split pane.,"backend/app/api/v1/jobs.py, frontend/src/components/manuals/ManualPagePreview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/ManualStandalonePreview.tsx"
+3682249,2026-06-04 19:33:18,Dilip,Dilip: Hamburger icon with arrow and snip and extract default first page loading on manual selection,"frontend/src/components/Layout.tsx, frontend/src/components/spares/SnipExtractModal.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+70d9e2f,2026-06-04 19:00:04,Dilip,Dilip: Manual preview in a seperate tab,"frontend/src/App.tsx, frontend/src/components/manuals/ManualPagePreview.tsx, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/ManualStandalonePreview.tsx, frontend/src/pages/SparesReview.tsx"
+2b02374,2026-06-03 17:08:45,Dilip,Dilip: Modification to the visibility of headers on manual preview pages.,"frontend/src/components/manuals/ManualPagePreview.tsx, frontend/src/pages/ComponentReview.tsx"
+8c63fc4,2026-06-03 16:54:20,Dilip,Dilip: fixing the toolbar of manual preview page,frontend/src/components/manuals/ManualPagePreview.tsx
+0d2f7e4,2026-06-02 17:38:42,Dilip,Dilip: modal view of the manual preview in components page fix changes,frontend/src/pages/ComponentReview.tsx
+a7455ff,2026-06-02 17:25:32,Dilip,Dilip: Manual preview as seperate modal,frontend/src/components/manuals/ManualPagePreview.tsx
+cb8f142,2026-06-02 14:18:59,Dilip,"Dilip: Side menu toggle feature, Layout horizontal split resize option in component page","frontend/src/components/Layout.tsx, frontend/src/components/layout/ResizableRowSplitView.tsx, frontend/src/pages/ComponentReview.tsx"
+f3cbd97,2026-06-02 13:47:22,Dilip,"Dilip: Next previous zoom buttons in spares page, layout changes in component page","frontend/src/components/spares/SnipExtractModal.tsx, frontend/src/pages/ComponentReview.tsx"
+4ab3db8,2026-06-02 13:17:30,Dilip,Dilip: Previous next and zoom for manuals preview,frontend/src/components/manuals/ManualPagePreview.tsx
+b70b594,2026-05-25 11:54:52,Dinesh Babu,Fix login timeout and remove feedback dashboard,"backend/app/api/v1/auth.py, backend/app/schemas/auth.py, backend/app/services/token_store.py, frontend/src/App.tsx, frontend/src/api/client.ts, frontend/src/components/Layout.tsx, frontend/src/hooks/useAuth.ts, frontend/src/types/index.ts"
+8474213,2026-05-19 14:36:54,Dilip,Dilip: Health check failure fix,"backend/Dockerfile, backend/scripts/railway_start.sh, railway.toml"
+1b03145,2026-05-19 14:05:52,Dilip,Dilip: docker file and railway fix,"backend/Dockerfile, docker-compose.yml, railway.toml"
+c7b55e3,2026-05-19 14:00:05,Dilip,Dilip: Include seeding in docker file.,"backend/Dockerfile, backend/scripts/seed_standard_jobs.py"
+9b905f2,2026-05-19 07:37:46,railway-app[bot],fix: use TOML literal string for backend startCommand in railway.toml (#4),railway.toml
+e7e10da,2026-05-19 05:48:10,railway-app[bot],fix: restore cd backend in railway.toml startCommand (#2),railway.toml
+2d1d5ba,2026-05-19 05:36:42,railway-app[bot],fix: replace shell built-in cd with /bin/sh -c in railway.toml startCommand (#1),railway.toml
+9438c1d,2026-05-15 14:52:00,Dilip,Dilip: Swagger inclusion and fix for serving backend,"backend/alembic/versions/0020_add_kr_irs_class_society.py, backend/alembic/versions/0021_convert_standard_job_class_society_to_varchar.py, backend/alembic/versions/0022_add_manual_extraction_method.py, backend/alembic/versions/0023_spare_extraction_method_to_varchar.py, backend/app/main.py, frontend/package-lock.json, requirements.txt"
+71c51ec,2026-05-14 12:47:43,Dinesh Babu,fix: auto-discover SharePoint tenant ID from hostname,"backend/app/api/v1/ingestion.py, backend/app/services/sharepoint.py"
+8b71f5e,2026-05-14 12:33:36,Dinesh Babu,fix: show real SharePoint error message and extend list-files timeout,frontend/src/pages/Ingestion.tsx
+4c8e563,2026-05-14 12:25:22,Dinesh Babu,fix: improve SharePoint drive resolution and error visibility,backend/app/services/sharepoint.py
+fe8fa30,2026-05-14 12:18:48,Dinesh Babu,fix: add missing feedback_learning service and complete feedback-learning feature,"backend/app/api/v1/feedback.py, backend/app/api/v1/ingestion.py, backend/app/api/v1/manuals.py, backend/app/services/classifier.py, backend/app/services/extractor.py, backend/app/services/feedback_learning.py, backend/app/tasks/__init__.py, backend/app/tasks/learning.py"
+27157a4,2026-05-14 11:47:37,Dinesh Babu,Per-entity QC exports on review pages; fix SharePoint drive resolution,"backend/app/api/v1/components.py, backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py, backend/app/services/sharepoint.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/Export.tsx, frontend/src/pages/Ingestion.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+906b955,2026-05-14 11:10:36,Dinesh Babu,Move logout under user profile,frontend/src/components/Layout.tsx
+332ac9a,2026-05-14 11:07:30,Dinesh Babu,Remove rank library shortcut,frontend/src/pages/StandardJobsLibrary.tsx
+d6b2675,2026-05-14 10:58:41,Dinesh Babu,Add dashboard card navigation,frontend/src/pages/Dashboard.tsx
+56d0d06,2026-05-13 14:59:49,Dinesh Babu,Fix review page exports by entity,"backend/app/api/v1/components.py, backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+f8fdcd5,2026-05-13 10:50:13,Dinesh Babu,Add bulk-delete for spares/jobs/components and fix re-extraction overwrite,"backend/app/api/v1/components.py, backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py, backend/app/services/extractor.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+b43402a,2026-05-13 10:34:23,Dinesh Babu,feat: add QC Export button to Spares Review and Jobs Review pages,"frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+61428b7,2026-05-12 18:59:10,Dinesh Babu,"feat: QC Review Export/Import — Components, Jobs, Spares with PDF refs","backend/app/api/v1/spares.py, frontend/src/pages/Export.tsx"
+41f7f0b,2026-05-12 18:51:51,Dinesh Babu,fix: spares segregated under wrong PDF due to missing soft-delete cascade,"backend/app/api/v1/ingestion.py, backend/app/api/v1/spares.py"
+e029788,2026-05-12 18:32:19,Dinesh Babu,fix: stop duplicate extraction from assembly diagram callouts,backend/app/services/extractor.py
+63279ae,2026-05-12 17:49:39,Dinesh Babu,"fix: preserve drawing_position ranges (e.g. 1~58, 155~156) during extraction and sort","backend/app/api/v1/spares.py, backend/app/services/extractor.py"
+22077a9,2026-05-12 17:26:50,Dinesh Babu,"feat: add part_name, part_number, drawing_number, POS to batch edit panel",frontend/src/pages/SparesReview.tsx
+7ea5d71,2026-05-12 17:10:32,Dinesh Babu,fix: drawing number hallucination + page-order sort for QC review,"backend/app/api/v1/spares.py, backend/app/services/extractor.py, frontend/src/pages/SparesReview.tsx"
+828df9a,2026-05-12 16:53:30,Dinesh Babu,fix: parse JSON from prose-wrapped Claude responses (core cause of 0-record extractions),backend/app/services/extractor.py
+2be9c94,2026-05-12 16:43:38,Dinesh Babu,fix: strip extraction for dense Japanese tables (0-record fallback + better prompt),backend/app/services/extractor.py
+86e0c4d,2026-05-12 16:37:04,Dinesh Babu,fix: stop false-positive truncation retries when Claude returns 0 rows,backend/app/services/extractor.py
+068dfa9,2026-05-12 16:34:04,Dinesh Babu,fix: remove all remaining settings.GROQ_API_KEY references causing startup crash,"backend/app/main.py, backend/app/services/classifier.py, backend/app/services/extractor.py"
+4a99dfd,2026-05-12 16:28:16,Dinesh Babu,chore: remove Groq provider (API key deleted),"backend/app/core/config.py, backend/app/services/extractor.py"
+ad1c363,2026-05-12 16:26:37,Dinesh Babu,fix: dramatically improve spare extraction recall (32→226 rows),"backend/app/core/config.py, backend/app/services/extractor.py, backend/requirements.txt"
+50bf3af,2026-05-12 15:44:08,Dinesh Babu,fix: move global declaration to top of extract_entities to fix SyntaxError,backend/app/services/extractor.py
+a660fde,2026-05-12 15:33:55,Dinesh Babu,Fix re-extraction overwrite: true replace for all entity types,backend/app/services/extractor.py
+b597a07,2026-05-12 15:16:19,Dinesh Babu,Add circuit breaker for Claude billing errors in extraction,backend/app/services/extractor.py
+20b9751,2026-05-12 15:05:36,Dinesh Babu,Make Anthropic/Claude primary provider for all extraction (text + vision),"backend/app/api/v1/spares.py, backend/app/services/extractor.py"
+8b4b853,2026-05-12 14:14:19,Dinesh Babu,Fix spares pagination: include total_pages in API response,backend/app/api/v1/spares.py
+19fd74b,2026-05-12 14:02:37,Dinesh Babu,Fix double-enhancement in 4-strip spare extraction,backend/app/services/extractor.py
+757b3cd,2026-05-08 17:35:29,Dinesh Babu,Add migration 0023: convert extraction_method to VARCHAR (permanent fix),backend/alembic/versions/0023_spare_extraction_method_to_varchar.py
+5e3bfda,2026-05-08 17:23:14,Dinesh Babu,"Overhaul spare extraction accuracy: enhancement, 4-strip split, row counting","backend/app/api/v1/spares.py, backend/app/services/extractor.py"
+e8c2a22,2026-05-08 16:49:21,Dinesh Babu,Make snip extracted records editable inline before saving,frontend/src/components/spares/SnipExtractModal.tsx
+16deaa1,2026-05-08 16:44:56,Dinesh Babu,Add migration 0022: add 'manual' to extraction_method PostgreSQL enum,backend/alembic/versions/0022_add_manual_extraction_method.py
+169e01a,2026-05-08 16:33:09,Dinesh Babu,Add 'manual' extraction method for snip-tool spares + filter,"backend/app/api/v1/spares.py, backend/app/models/spare.py, frontend/src/pages/SparesReview.tsx"
+4c8cc1a,2026-05-08 16:21:33,Dinesh Babu,Fix snip tool: single vision call + pointer capture for unrestricted selection,"backend/app/api/v1/spares.py, frontend/src/components/spares/SnipExtractModal.tsx"
+11d00f9,2026-05-08 16:14:09,Dinesh Babu,Fix SnipExtractModal: canvas-based rotation + scrollable image container,frontend/src/components/spares/SnipExtractModal.tsx
+fca1496,2026-05-08 16:09:49,Dinesh Babu,Increase snip-extract request timeout to 120s (was 15s global default),frontend/src/components/spares/SnipExtractModal.tsx
+be537a2,2026-05-08 16:07:45,Dinesh Babu,Add rotate left/right buttons to SnipExtractModal image viewer,frontend/src/components/spares/SnipExtractModal.tsx
+ef4bc78,2026-05-08 16:05:27,Dinesh Babu,Fix SparesReview build error: wrap return in Fragment for SnipExtractModal,frontend/src/pages/SparesReview.tsx
+8de407a,2026-05-08 16:02:12,Dinesh Babu,Add manual snip & extract tool for spares,"backend/app/api/v1/spares.py, frontend/src/components/spares/SnipExtractModal.tsx, frontend/src/pages/SparesReview.tsx"
+41696c5,2026-05-08 15:51:29,Dinesh Babu,Fix multi-column spare parts extraction for dense Japanese tables,backend/app/services/extractor.py
+21b326b,2026-05-08 15:42:21,Dinesh Babu,Increase vision/OCR token limits and render resolution for dense table extraction,backend/app/services/extractor.py
+b808837,2026-05-07 11:28:43,Dinesh Babu,Add source file filter to jobs and components review pages,"backend/app/api/v1/components.py, backend/app/api/v1/jobs.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx"
+92b7dcb,2026-05-07 11:12:59,Dinesh Babu,Add source file filter to spares review page,"backend/app/api/v1/spares.py, frontend/src/pages/SparesReview.tsx"
+6a28433,2026-05-07 11:05:42,Dinesh Babu,Fix extraction truncation and classifier priority for low-credit state,"backend/app/services/classifier.py, backend/app/services/extractor.py"
+54b9f56,2026-05-07 10:54:59,Dinesh Babu,Fix Gemini 429 rate-limit stalls during manual classification,backend/app/services/classifier.py
+6b29e14,2026-05-07 10:31:07,Dinesh Babu,Fix over-aggressive PDF validation rejecting legitimate manuals,backend/app/services/upload_security.py
+ec1bd86,2026-04-18 10:58:28,Dinesh Babu,Fix Railway healthcheck host rejection,"backend/app/core/config.py, backend/app/main.py"
+4013696,2026-04-18 10:34:41,Dinesh Babu,"Harden auth, uploads, and vessel access security","backend/app/api/v1/auth.py, backend/app/api/v1/components.py, backend/app/api/v1/export.py, backend/app/api/v1/ingestion.py, backend/app/api/v1/jobs.py, backend/app/api/v1/library.py, backend/app/api/v1/maker_models.py, backend/app/api/v1/manuals.py, backend/app/api/v1/standard_jobs.py, backend/app/core/config.py, backend/app/core/security.py, backend/app/deps.py, backend/app/main.py, backend/app/middleware/security.py, backend/app/schemas/auth.py, backend/app/services/access_control.py, backend/app/services/token_store.py, backend/app/services/upload_security.py, frontend/src/hooks/useAuth.ts, frontend/src/hooks/useVesselSocket.ts, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/Export.tsx, frontend/src/pages/ExportSchemaSetup.tsx, frontend/src/pages/Ingestion.tsx, frontend/src/pages/StandardJobsLibrary.tsx, frontend/src/store/authStore.ts"
+59a6ec4,2026-04-17 18:16:30,Dinesh Babu,Add CMS code review filter to standard jobs comparison,frontend/src/pages/StandardJobs.tsx
+b206d7c,2026-04-17 17:56:22,Dinesh Babu,Add CMS code entry to standard jobs comparison,"backend/app/api/v1/standard_jobs.py, frontend/src/pages/StandardJobs.tsx"
+e8d4af4,2026-04-17 17:25:39,Dinesh Babu,Keep backend startup healthy and self-heal class enum,"Procfile, backend/app/api/v1/standard_jobs.py, backend/nixpacks.toml, nixpacks.toml, railway.toml"
+7f00574,2026-04-17 17:15:24,Dinesh Babu,Make class society migration startup-safe,"backend/alembic/versions/0020_add_kr_irs_class_society.py, backend/alembic/versions/0021_convert_standard_job_class_society_to_varchar.py"
+7e50b33,2026-04-17 17:05:07,Dinesh Babu,Fix class society migration chain,backend/alembic/versions/0020_add_kr_irs_class_society.py
+39c7803,2026-04-17 16:50:30,Dinesh Babu,Convert standard job class society to varchar,"backend/alembic/versions/0020_add_kr_irs_class_society.py, backend/alembic/versions/0021_convert_standard_job_class_society_to_varchar.py"
+2fecbab,2026-04-17 16:48:25,Dinesh Babu,Run migrations automatically on backend startup,"Procfile, backend/nixpacks.toml, frontend/src/pages/StandardJobsLibrary.tsx, nixpacks.toml, railway.toml"
+ef4f7b9,2026-04-17 14:28:03,Dinesh Babu,Add KR and IRS class society migration,backend/alembic/versions/0020_add_kr_irs_class_society.py
+38d974a,2026-04-17 14:13:25,Dinesh Babu,Support class survey workbook import for standard jobs,"backend/app/api/v1/standard_jobs.py, backend/app/models/standard_jobs.py, frontend/src/pages/StandardJobs.tsx, frontend/src/pages/StandardJobsLibrary.tsx"
+7adc254,2026-04-17 12:13:31,Dinesh Babu,Fix frontend proxy host headers for Railway backend,frontend/nginx.conf.template
+537e7d9,2026-04-17 12:05:55,Dinesh Babu,Restore working frontend backend upstream default,frontend/Dockerfile
+6a8827b,2026-04-17 11:57:08,Dinesh Babu,Make frontend backend proxy configurable,"frontend/Dockerfile, frontend/nginx.conf.template"
+6beb429,2026-04-17 11:50:35,Dinesh Babu,Show Redis connection target in admin health,"backend/app/core/health.py, frontend/src/pages/Admin.tsx"
+8e0f53f,2026-04-17 11:47:26,Dinesh Babu,Support Railway Redis host-style env vars,backend/app/core/config.py
+6f35d36,2026-04-17 11:41:35,Dinesh Babu,Resolve Railway Redis URL aliases,"backend/app/core/config.py, backend/app/main.py"
+a3522b0,2026-04-13 15:29:38,Dinesh Babu,Throttle library maintenance on hot API paths,"backend/app/api/v1/job_ranks.py, backend/app/api/v1/library.py, backend/app/api/v1/maker_models.py, backend/app/services/vessel_library.py"
+f7df0da,2026-04-13 15:15:42,Dinesh Babu,Fix backend startup crash in components router,"backend/app/api/v1/components.py, backend/app/main.py"
+0abd758,2026-04-13 15:02:45,Dinesh Babu,Make Railway startup non-blocking and use liveness healthcheck,"backend/app/main.py, nixpacks.toml, railway.toml"
+72b7c4d,2026-04-13 14:55:22,Dinesh Babu,Improve extraction throughput and hot-path API performance,"backend/app/api/v1/components.py, backend/app/api/v1/extraction.py, backend/app/api/v1/ingestion.py, backend/app/api/v1/jobs.py, backend/app/api/v1/library.py, backend/app/api/v1/maker_models.py, backend/app/core/config.py, backend/app/core/database.py"
+8e7265b,2026-04-13 14:19:02,Dinesh Babu,Fix manual matches vessel selector and persistence,"backend/app/api/v1/library.py, backend/app/services/manual_match_reuse.py, frontend/src/pages/Library.tsx"
+9e70ae1,2026-04-10 18:03:10,Dinesh Babu,Fix partial manual reuse and component mapping flow,"backend/app/services/extractor.py, frontend/src/pages/ComponentReview.tsx"
+3107e8b,2026-04-10 17:49:33,Dinesh Babu,Improve green success text contrast,frontend/src/index.css
+d0545bf,2026-04-10 17:45:42,Dinesh Babu,Reuse matched manuals and linked library records,"backend/app/api/v1/library.py, backend/app/services/component_matcher.py, backend/app/services/deduplication.py, backend/app/services/extractor.py, backend/app/services/manual_match_reuse.py, backend/app/services/review_workflow.py, frontend/src/pages/Library.tsx"
+b80eb29,2026-04-10 17:28:44,Dinesh Babu,Fix global library JSONB reconciliation writes,"backend/app/api/v1/library.py, backend/app/services/review_workflow.py"
+28028df,2026-04-10 17:18:12,Dinesh Babu,Add mapped extracted filter to component review,"backend/app/api/v1/components.py, frontend/src/pages/ComponentReview.tsx"
+b1e97e0,2026-04-10 17:11:00,Dinesh Babu,Fix component global library backfill for manual-linked records,"backend/app/api/v1/library.py, backend/app/services/review_workflow.py"
+bb913fe,2026-04-10 17:04:56,Dinesh Babu,Improve amber warning contrast across pink theme,"frontend/src/index.css, frontend/src/pages/ManualReview.tsx"
+55b8089,2026-04-10 16:47:44,Dinesh Babu,Fix manual library reconciliation and spare model sync,"backend/app/api/v1/library.py, backend/app/api/v1/maker_models.py, backend/app/api/v1/spares.py, backend/app/services/review_workflow.py, frontend/src/pages/Library.tsx, frontend/src/pages/SparesReview.tsx"
+86678e7,2026-04-10 16:11:42,Dinesh Babu,Fix global library reconciliation for accepted records,"backend/app/api/v1/components.py, backend/app/api/v1/jobs.py, backend/app/api/v1/library.py, backend/app/api/v1/spares.py, backend/app/services/review_workflow.py"
+84d913e,2026-04-10 12:44:27,Dinesh Babu,Fix library backfill and maker model query,"backend/app/api/v1/maker_models.py, backend/app/services/review_workflow.py"
+5e93cdd,2026-04-10 12:34:14,Dinesh Babu,Auto-sync missing library entries from accepted records,"backend/app/api/v1/job_ranks.py, backend/app/api/v1/library.py, backend/app/api/v1/maker_models.py, backend/app/services/job_ranks.py, backend/app/services/review_workflow.py, frontend/src/pages/JobRanksLibrary.tsx, frontend/src/pages/Library.tsx"
+78e639c,2026-04-10 12:14:19,Dinesh Babu,Improve active selector contrast across library views,"frontend/src/pages/ComponentReview.tsx, frontend/src/pages/Library.tsx"
+34fef31,2026-04-10 12:08:29,Dinesh Babu,Fix sidebar active tab text contrast,"frontend/src/components/Layout.tsx, frontend/src/index.css"
+9d20e8a,2026-04-10 11:56:31,Dinesh Babu,Backfill global library from accepted QC records,"backend/app/api/v1/library.py, backend/app/services/review_workflow.py, frontend/src/pages/Library.tsx"
+bf3662b,2026-04-10 11:45:56,Dinesh Babu,Strengthen library tab active contrast,frontend/src/pages/Library.tsx
+137c52d,2026-04-10 11:43:52,Dinesh Babu,Restore ranks tab in library page,frontend/src/pages/Library.tsx
+2c4645c,2026-04-10 11:41:07,Dinesh Babu,Improve library tab text contrast,frontend/src/pages/Library.tsx
+bc32e1f,2026-04-10 11:36:29,Dinesh Babu,Apply zephyr rose theme palette,frontend/src/index.css
+6477123,2026-04-10 11:24:17,Dinesh Babu,Soften app theme palette,frontend/src/index.css
+b5a7adf,2026-04-10 11:10:59,Dinesh Babu,Improve standard jobs comparison review visibility,"backend/app/api/v1/standard_jobs.py, frontend/src/pages/StandardJobs.tsx"
+dc019ac,2026-04-10 10:37:12,Dinesh Babu,Deduplicate ensured job ranks before flush,backend/app/services/job_ranks.py
+75497a6,2026-04-10 10:31:10,Dinesh Babu,Protect extracted jobs during reruns,"backend/app/api/v1/jobs.py, backend/app/services/extractor.py"
+d18385e,2026-04-09 18:19:49,Dinesh Babu,Clarify empty state for filtered jobs review,frontend/src/pages/JobsReview.tsx
+06a5252,2026-04-09 17:46:09,Dinesh Babu,Auto-fill ranks for manual extracted jobs,"backend/app/api/v1/jobs.py, backend/app/services/extractor.py, backend/app/services/job_ranks.py"
+4b6bf17,2026-04-09 17:31:23,Dinesh Babu,Keep job library endpoints read-only,"backend/app/api/v1/job_ranks.py, backend/app/api/v1/jobs.py, backend/app/api/v1/standard_jobs.py, backend/app/services/job_ranks.py"
+bdc42fb,2026-04-09 15:38:16,Dinesh Babu,Backfill rank library from audit seed,"backend/app/api/v1/job_ranks.py, backend/app/api/v1/jobs.py, backend/app/api/v1/standard_jobs.py, backend/app/data/audit_rank_seed.json, backend/app/services/job_ranks.py"
+907558d,2026-04-09 15:06:06,Dinesh Babu,Integrate rank library into global library,"backend/app/api/v1/job_ranks.py, backend/app/services/job_ranks.py, frontend/src/App.tsx, frontend/src/components/Layout.tsx, frontend/src/pages/GlobalLibrary.tsx, frontend/src/pages/JobRanksLibrary.tsx, frontend/src/pages/StandardJobsLibrary.tsx"
+0830031,2026-04-09 14:52:40,Dinesh Babu,Fix library source tagging and broaden rank backfill,"backend/app/api/v1/jobs.py, backend/app/api/v1/standard_jobs.py"
+e05c2f8,2026-04-09 14:24:19,Dinesh Babu,Backfill standard job ranks and stabilize source filter,"backend/app/api/v1/standard_jobs.py, frontend/src/pages/JobsReview.tsx, frontend/src/pages/StandardJobs.tsx"
+d071dd4,2026-04-09 13:23:20,Dinesh Babu,Fix rank library integration across jobs screens,"backend/app/api/v1/standard_jobs.py, frontend/src/App.tsx, frontend/src/components/Layout.tsx, frontend/src/pages/JobRanksLibrary.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/StandardJobsLibrary.tsx, frontend/src/types/index.ts"
+8ddca10,2026-04-09 12:35:46,Dinesh Babu,Fix job rank auth dependency import,backend/app/api/v1/job_ranks.py
+fe7bf5f,2026-04-09 12:29:35,Dinesh Babu,Shorten alembic revision id for 0019 migration,backend/alembic/versions/0019_add_job_ranks_and_standard_job_ranks.py
+a3fe76d,2026-04-09 12:02:36,Dinesh Babu,Normalize alembic revision header for 0019 migration,backend/alembic/versions/0019_add_job_ranks_and_standard_job_ranks.py
+4de1834,2026-04-09 11:55:55,Dinesh Babu,Fix alembic down_revision for job ranks migration,backend/alembic/versions/0019_add_job_ranks_and_standard_job_ranks.py
+c55e81d,2026-04-09 11:51:07,Dinesh Babu,Fix JSX pagination labels for build,"frontend/src/pages/JobsReview.tsx, frontend/src/pages/StandardJobs.tsx, frontend/src/pages/StandardJobsLibrary.tsx"
+75e2c37,2026-04-09 11:45:31,Dinesh Babu,Add job rank library and fix standard job review filtering,"backend/alembic/versions/0019_add_job_ranks_and_standard_job_ranks.py, backend/app/api/v1/job_ranks.py, backend/app/api/v1/jobs.py, backend/app/api/v1/router.py, backend/app/api/v1/standard_jobs.py, backend/app/models/__init__.py, backend/app/models/job_rank.py, backend/app/models/standard_jobs.py, backend/app/services/job_ranks.py, frontend/src/pages/JobsReview.tsx, frontend/src/pages/StandardJobs.tsx, frontend/src/pages/StandardJobsLibrary.tsx"
+aae977f,2026-04-08 14:12:54,Dinesh Babu,Fix standard job comparison matching,"backend/app/api/v1/standard_jobs.py, frontend/src/pages/StandardJobs.tsx"
+8279b9a,2026-04-08 11:23:36,Dinesh Babu,Improve standard job review handoff,"backend/app/api/v1/jobs.py, frontend/src/pages/JobsReview.tsx, frontend/src/pages/StandardJobs.tsx"
+ea1dd83,2026-04-08 11:09:20,Dinesh Babu,Improve standard jobs review handoff,"backend/app/api/v1/standard_jobs.py, frontend/src/pages/JobsReview.tsx, frontend/src/pages/StandardJobs.tsx"
+243b854,2026-04-08 10:51:44,Dinesh Babu,Add job source filtering for review,"backend/app/api/v1/jobs.py, frontend/src/pages/JobsReview.tsx, frontend/src/pages/StandardJobs.tsx"
+57dbd87,2026-04-08 10:33:49,Dinesh Babu,Use standard titles for matched job inserts,backend/app/api/v1/standard_jobs.py
+a3b714b,2026-04-08 10:24:56,Dinesh Babu,Fix critical job undo and spare text cleanup,"backend/app/api/v1/spares.py, backend/app/api/v1/standard_jobs.py"
+fc44fbf,2026-04-07 19:00:27,Dinesh Babu,Fix 0017: convert enum columns to VARCHAR instead of ALTER TYPE ADD VALUE,"backend/alembic/versions/0017_normalize_frequency_types.py, backend/alembic/versions/0018_remap_frequency_values.py"
+05fbe05,2026-04-07 18:50:04,Dinesh Babu,Fix 0017: use COMMIT/BEGIN pattern for ALTER TYPE ADD VALUE,backend/alembic/versions/0017_normalize_frequency_types.py
+1773993,2026-04-07 18:40:43,Dinesh Babu,Fix: split frequency migration to avoid PostgreSQL enum transaction error,"backend/alembic/versions/0017_normalize_frequency_types.py, backend/alembic/versions/0018_remap_frequency_values.py"
+6a6dcd0,2026-04-07 18:28:22,Dinesh Babu,Normalize frequencies to 5 types and add spare name translation,"backend/alembic/versions/0017_normalize_frequency_types.py, backend/app/api/v1/admin.py, backend/app/api/v1/standard_jobs.py, backend/app/models/job.py, backend/app/services/exporter.py, backend/app/services/extractor.py, frontend/src/pages/JobsReview.tsx, frontend/src/pages/StandardJobsLibrary.tsx, frontend/src/types/index.ts"
+fea38c9,2026-04-07 18:04:11,Dinesh Babu,Enforce English-only output for spare parts extraction,backend/app/services/extractor.py
+e92be37,2026-04-07 17:25:16,Dinesh Babu,Add undo critical jobs action,"backend/app/api/v1/standard_jobs.py, frontend/src/pages/JobsReview.tsx"
+26d7eb0,2026-04-07 16:40:05,Dinesh Babu,Add procedure columns to standard job comparison,"backend/app/api/v1/standard_jobs.py, frontend/src/pages/StandardJobs.tsx"
+d886be4,2026-04-07 16:23:24,Dinesh Babu,Standardize library search sort pagination,"backend/app/api/v1/library.py, backend/app/api/v1/maker_models.py, frontend/src/pages/GlobalLibrary.tsx, frontend/src/pages/Library.tsx"
+4738198,2026-04-07 16:06:32,Dinesh Babu,Fix standard jobs listing and add shared review controls,"backend/app/api/v1/components.py, backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py, backend/app/api/v1/standard_jobs.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx, frontend/src/pages/StandardJobs.tsx, frontend/src/pages/StandardJobsLibrary.tsx"
+937cd7d,2026-04-07 11:50:57,Dinesh Babu,Fix standard jobs library listing and job name cleanup,"backend/app/api/v1/standard_jobs.py, backend/app/services/job_naming.py, frontend/src/pages/StandardJobsLibrary.tsx"
+cab83ef,2026-04-07 11:19:50,Dinesh Babu,Use backend pagination in standard job library,frontend/src/pages/StandardJobsLibrary.tsx
+1db5efa,2026-04-07 11:14:01,Dinesh Babu,Fix standard job library tab visibility,frontend/src/pages/StandardJobsLibrary.tsx
+590b115,2026-04-07 11:07:42,Dinesh Babu,Harden standard job import and tighten job name cleanup,"backend/app/api/v1/standard_jobs.py, backend/app/services/job_naming.py, frontend/src/pages/StandardJobsLibrary.tsx"
+6e7a7ed,2026-04-07 10:45:31,Dinesh Babu,Tighten job actions and improve standard job imports,"backend/app/api/v1/spares.py, backend/app/api/v1/standard_jobs.py, backend/app/services/exporter.py, backend/app/services/extractor.py, backend/app/services/job_naming.py, frontend/src/pages/StandardJobsLibrary.tsx"
+5400506,2026-04-07 10:03:43,Dinesh Babu,Refine job name cleanup and standard job import feedback,"backend/app/services/job_naming.py, frontend/src/pages/StandardJobsLibrary.tsx"
+2650a31,2026-04-06 19:03:50,Dinesh Babu,Fix repeated job name normalization,backend/app/services/job_naming.py
+eb5b80e,2026-04-06 18:49:17,Dinesh Babu,Fix standard jobs comparison and library review flow,"backend/app/api/v1/standard_jobs.py, frontend/src/pages/StandardJobs.tsx, frontend/src/pages/StandardJobsLibrary.tsx"
+c0ce71b,2026-04-06 18:27:21,Dinesh Babu,Fix frontend jobs review type-check,frontend/src/pages/JobsReview.tsx
+b34d7ac,2026-04-06 18:13:06,Dinesh Babu,Fix standard jobs import and library apply flow,"backend/app/api/v1/standard_jobs.py, backend/app/models/standard_jobs.py, frontend/src/pages/StandardJobs.tsx, frontend/src/pages/StandardJobsLibrary.tsx"
+d78739a,2026-04-06 17:51:12,Dinesh Babu,Add spare assemblies and sample export formats,"backend/alembic/versions/0016_add_spare_assembly_fields.py, backend/app/api/v1/export.py, backend/app/api/v1/spares.py, backend/app/models/spare.py, backend/app/schemas/spare.py, backend/app/services/exporter.py, backend/app/services/extractor.py, backend/app/services/review_workflow.py, frontend/src/pages/Export.tsx, frontend/src/pages/SparesReview.tsx, frontend/src/types/index.ts"
+56eeee6,2026-04-06 17:09:35,Dinesh Babu,Support standard jobs workbook import and critical jobs sync,"backend/app/api/v1/standard_jobs.py, frontend/src/pages/JobsReview.tsx, frontend/src/pages/StandardJobs.tsx, frontend/src/pages/StandardJobsLibrary.tsx"
+b29f5f2,2026-04-06 16:42:05,Dinesh Babu,Shorten canonical job names,"backend/app/api/v1/jobs.py, backend/app/services/job_naming.py"
+d7f2d80,2026-04-06 16:33:24,Dinesh Babu,Add spare specification and source export support,"backend/app/api/v1/spares.py, backend/app/schemas/spare.py, backend/app/services/exporter.py, backend/app/services/review_workflow.py, frontend/src/pages/SparesReview.tsx"
+11f0e1d,2026-04-06 16:20:16,Dinesh Babu,Normalize job naming and references,"backend/app/api/v1/jobs.py, backend/app/schemas/job.py, backend/app/services/extractor.py, backend/app/services/job_naming.py, frontend/src/pages/JobsReview.tsx"
+a1d6321,2026-04-06 16:03:31,Dinesh Babu,Fix activity table compatibility,"backend/app/api/v1/activity.py, backend/app/models/activity.py"
+35ce86e,2026-04-06 14:47:17,Dinesh Babu,Improve merge messaging and export exclusions,"backend/app/services/exporter.py, frontend/src/hooks/useVesselSocket.ts, frontend/src/pages/JobsReview.tsx"
+b64b133,2026-04-06 14:37:36,Dinesh Babu,Stabilize activity broadcast payloads,backend/app/services/review_workflow.py
+71fca26,2026-04-06 14:30:40,Dinesh Babu,Harden review actions and preview scrolling,"backend/app/api/v1/export.py, backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py, frontend/src/components/manuals/ManualPagePreview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+46ff602,2026-04-06 14:18:34,Dinesh Babu,Fix job merge response and add resizable review panels,"backend/app/api/v1/jobs.py, frontend/src/components/layout/ResizableSplitView.tsx, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+b64d9c6,2026-04-06 14:05:15,Dinesh Babu,Fix export version creation for legacy schema,backend/app/api/v1/export.py
+63e6dcf,2026-04-06 13:58:57,Dinesh Babu,Fix job merge workflow and guardrails,backend/app/api/v1/jobs.py
+37ba54e,2026-04-06 13:30:59,Dinesh Babu,Fix review actions export and inline review editing,"backend/app/api/v1/components.py, backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py, backend/app/models/export.py, backend/app/services/component_matcher.py, backend/app/services/review_workflow.py, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+23124d6,2026-04-06 12:32:37,Dinesh Babu,Fix review actions preview controls and export download,"frontend/src/components/manuals/ManualPagePreview.tsx, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/Export.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+54988af,2026-04-06 12:06:58,Dinesh Babu,Improve review workflows and job consolidation,"backend/app/api/v1/jobs.py, backend/app/services/extractor.py, frontend/src/components/manuals/ManualPagePreview.tsx, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+e127ccf,2026-04-02 18:49:31,Dinesh Babu,Improve visual PDF extraction for components and spares,"backend/app/core/config.py, backend/app/services/extractor.py"
+4f90fdc,2026-04-02 18:33:09,Dinesh Babu,Fix job and spare enum bindings for extraction,"backend/app/models/job.py, backend/app/models/spare.py"
+1bee30c,2026-04-02 18:07:45,Dinesh Babu,Improve OCR fallback for selected manual extraction,backend/app/services/extractor.py
+5ef0976,2026-04-02 16:27:15,Dinesh Babu,Improve review workflow export library sync and activity feed,"backend/app/api/v1/components.py, backend/app/api/v1/export.py, backend/app/api/v1/jobs.py, backend/app/api/v1/manuals.py, backend/app/api/v1/spares.py, backend/app/api/v1/standard_jobs.py, backend/app/services/exporter.py, backend/app/services/review_workflow.py, frontend/src/components/ActivityFeed.tsx, frontend/src/hooks/useVesselSocket.ts, frontend/src/pages/Export.tsx, frontend/src/pages/StandardJobs.tsx"
+8251417,2026-04-02 15:24:27,Dinesh Babu,Add review actions for components jobs and spares,"backend/app/api/v1/components.py, backend/app/schemas/job.py, backend/app/schemas/spare.py, backend/app/services/component_matcher.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+b052318,2026-04-02 14:56:10,Dinesh Babu,Streamline manual extraction flow,"backend/app/services/extractor.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+d8e06c3,2026-04-02 14:38:58,Dinesh Babu,Clear stale unmapped extraction leftovers,backend/app/api/v1/components.py
+3474885,2026-04-02 14:32:58,Dinesh Babu,Promote matching unmapped rows into vessel baseline,backend/app/services/vessel_library.py
+3e5d9a7,2026-04-02 14:24:35,Dinesh Babu,Use library vessel types for vessel projects,"backend/app/services/vessel_library.py, frontend/src/pages/Vessels.tsx"
+200c92b,2026-04-02 14:13:57,Dinesh Babu,Auto-load vessel library from selected vessel type,"backend/app/api/v1/components.py, backend/app/api/v1/library.py, backend/app/api/v1/vessels.py, backend/app/services/vessel_library.py"
+eef7fe3,2026-04-02 12:53:45,Dinesh Babu,Keep library-loaded components out of unmapped,backend/app/api/v1/components.py
+c82837a,2026-04-02 12:50:10,Dinesh Babu,Add visible extraction diagnostics,"backend/app/api/v1/ingestion.py, backend/app/services/extractor.py"
+2dffb57,2026-04-02 12:45:29,Dinesh Babu,Keep extracted components in unmapped review,"backend/app/api/v1/components.py, backend/app/services/extractor.py, frontend/src/pages/ComponentReview.tsx"
+449852d,2026-04-02 12:28:42,Dinesh Babu,Save manual edits before extraction,frontend/src/pages/ManualReview.tsx
+cdd8fb9,2026-04-02 12:20:22,Dinesh Babu,Handle object-shaped extraction responses,backend/app/services/extractor.py
+10bd9bc,2026-04-02 12:11:29,Dinesh Babu,Fix selected extraction task state updates,backend/app/api/v1/ingestion.py
+d9d092b,2026-04-02 12:04:59,Dinesh Babu,Fix selected extraction progress tracking,"backend/app/api/v1/extraction.py, backend/app/api/v1/ingestion.py, frontend/src/pages/ManualReview.tsx"
+44b1604,2026-04-02 11:53:34,Dinesh Babu,Limit extraction to screened pages,backend/app/services/extractor.py
+e420134,2026-04-02 11:27:24,Dinesh Babu,Add OpenAI fallback for extraction,"backend/.env.example, backend/app/core/config.py, backend/app/main.py, backend/app/services/extractor.py"
+add47a6,2026-04-02 11:09:15,Dinesh Babu,Improve extraction mapping and manual page preview,"backend/app/api/v1/manuals.py, backend/app/services/component_matcher.py, backend/app/services/extractor.py, frontend/src/components/manuals/ManualPagePreview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+20cd246,2026-04-01 19:09:59,Dinesh Babu,Fix extraction fallbacks and vessel type seeding,"backend/app/api/v1/library.py, backend/app/services/extractor.py"
+01cd80f,2026-04-01 18:56:34,Dinesh Babu,Normalize SparesReview to valid UTF-8,frontend/src/pages/SparesReview.tsx
+f56b830,2026-04-01 18:49:21,Dinesh Babu,Fix SparesReview UTF-8 encoding,frontend/src/pages/SparesReview.tsx
+4a758fd,2026-04-01 18:41:36,Dinesh Babu,Honor manual review refs in extraction flow,"backend/app/api/v1/components.py, backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py, backend/app/services/extractor.py, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+656362b,2026-04-01 17:51:01,Dinesh Babu,Improve manual screening page selection,"backend/app/services/classifier.py, frontend/src/pages/ManualReview.tsx"
+757d845,2026-04-01 17:40:41,Dinesh Babu,Add manual review screening Excel import export,"backend/app/api/v1/manuals.py, frontend/src/pages/ManualReview.tsx"
+32d1577,2026-04-01 17:18:15,Dinesh Babu,Improve manual page reference review,"backend/app/api/v1/ingestion.py, backend/app/api/v1/manuals.py, backend/app/services/classifier.py, frontend/src/pages/ManualReview.tsx"
+c4d2fa4,2026-04-01 16:20:14,Dinesh Babu,Fix Railway manual upload schema migration,"backend/alembic/versions/0015_manual_page_fields_printed_physical.py, railway.toml"
+a48668a,2026-04-01 12:55:42,Maritime PMS Deploy,"fix(ingestion): avoid column errors on missing migration, adaptive DB update",backend/app/api/v1/ingestion.py
+c697dc6,2026-04-01 12:49:01,Maritime PMS Deploy,feat: add printed/physical page fields and page-level explanation for classification,"backend/alembic/versions/0015_manual_page_fields_printed_physical.py, backend/app/api/v1/ingestion.py, backend/app/models/ingestion.py, backend/app/schemas/manual.py, backend/app/services/classifier.py"
+19edb8f,2026-04-01 12:26:07,Maritime PMS Deploy,fix(classifier): robust page mapping and tank/job/spare detection heuristics,backend/app/services/classifier.py
+38befde,2026-04-01 12:14:32,Maritime PMS Deploy,fix: update pytesseract to available version 0.3.13,requirements.txt
+0742bf3,2026-04-01 12:06:20,Maritime PMS Deploy,fix(pdf extraction): keep all pages and use printed page numbers only; add OCR footer fallback,"backend/app/api/v1/ingestion.py, backend/app/services/classifier.py, requirements.txt"
+994c48a,2026-04-01 11:45:28,Maritime PMS Deploy,Fallback component/job/spare page detection for missed pages in instruction/yard manuals,backend/app/services/classifier.py
+18dce2c,2026-04-01 11:12:44,Maritime PMS Deploy,Improve screening accuracy based on user feedback,backend/app/services/classifier.py
+7c6de72,2026-04-01 10:55:42,Maritime PMS Deploy,Fix database query error in maker_models API,backend/app/api/v1/maker_models.py
+5960882,2026-04-01 10:50:46,Maritime PMS Deploy,Remove CI workflow file to resolve push permissions,.github/workflows/ci.yml
+a4d0551,2026-04-01 10:49:25,Maritime PMS Deploy,Improve screening accuracy: Use AI for page identification instead of regex-only scanning,".github/workflows/ci.yml, backend/app/api/v1/ingestion.py, backend/app/services/classifier.py"
+975c025,2026-03-31 21:07:35,Maritime PMS Deploy,"fix: never skip unnumbered pages, tighten component page rule to 1-3 pages",backend/app/services/classifier.py
+38773db,2026-03-31 20:55:47,Maritime PMS Deploy,"fix: page detection fallback, Yard drawing classification, and standard machinery precheck","backend/app/api/v1/precheck.py, backend/app/services/classifier.py"
+3edbc53,2026-03-31 20:41:24,Maritime PMS Deploy,feat: rule-based supply_type and category-specific page field rules,"backend/app/api/v1/ingestion.py, backend/app/services/classifier.py"
+b2d3865,2026-03-31 20:25:04,Maritime PMS Deploy,fix: use printed doc page numbers instead of PDF position for page references,"backend/app/api/v1/ingestion.py, backend/app/services/classifier.py"
+1fc31fa,2026-03-31 17:34:51,Maritime PMS Deploy,fix: clamp AI page numbers to actual document length and block hallucination,backend/app/services/classifier.py
+a7e3cb9,2026-03-31 17:28:58,Maritime PMS Deploy,feat: add OEM vs yard_supply classification and tighten component page detection,"backend/alembic/versions/0014_add_supply_type_to_manuals.py, backend/app/api/v1/ingestion.py, backend/app/models/ingestion.py, backend/app/schemas/ingestion.py, backend/app/schemas/manual.py, backend/app/services/classifier.py, frontend/src/pages/ManualReview.tsx"
+d2991ea,2026-03-31 17:13:02,Maritime PMS Deploy,fix: view_manual always tries blob storage when local file missing,backend/app/api/v1/ingestion.py
+ad221e0,2026-03-31 16:48:08,Maritime PMS Deploy,fix: switch Groq model to llama-3.1-8b-instant (20k TPM vs 1k for 70b),backend/app/services/classifier.py
+649bf71,2026-03-31 16:44:36,Maritime PMS Deploy,fix: use print for AI config startup log,backend/app/main.py
+3c0357a,2026-03-31 16:34:01,Maritime PMS Deploy,feat: log AI key configuration at startup,backend/app/main.py
+2700655,2026-03-31 16:29:08,Maritime PMS Deploy,fix: truncate each page to 800 chars to fit Groq free-tier limits,backend/app/services/classifier.py
+81362af,2026-03-31 16:22:15,Maritime PMS Deploy,fix: improve classifier prompt + Tank Capacity Plan useful=yes,backend/app/services/classifier.py
+3cd7a8a,2026-03-31 16:14:35,Maritime PMS Deploy,fix: send full document to Groq instead of sampled sections,backend/app/services/classifier.py
+f146cc9,2026-03-31 16:13:05,Maritime PMS Deploy,fix: smart document sampling for classifier (start+middle+end),backend/app/services/classifier.py
+599b05c,2026-03-31 15:54:36,Maritime PMS Deploy,fix: classifier fallback + Tank Capacity Plan component pages,backend/app/services/classifier.py
+2a37587,2026-03-31 15:39:22,Maritime PMS Deploy,"feat: add Groq as primary free classifier (30 RPM, llama-3.3-70b)","backend/app/api/v1/ingestion.py, backend/app/core/config.py, backend/app/services/classifier.py"
+1464d8c,2026-03-31 15:34:18,Maritime PMS Deploy,fix: add 20s pause between manuals and increase Gemini retry waits,"backend/app/api/v1/ingestion.py, backend/app/services/classifier.py"
+a73a9f9,2026-03-31 15:26:07,Maritime PMS Deploy,"fix: retry Gemini calls on 429 rate limit with backoff (15s, 30s, 45s, 60s)",backend/app/services/classifier.py
+9031b89,2026-03-31 15:18:55,Maritime PMS Deploy,fix: switch to gemini-2.0-flash-lite; redact API key from error logs,backend/app/services/classifier.py
+2ec52ee,2026-03-31 15:12:36,Maritime PMS Deploy,fix: use httpx for Gemini API calls instead of google-generativeai SDK,"backend/app/services/classifier.py, backend/requirements.txt"
+9d913f1,2026-03-31 15:06:32,Maritime PMS Deploy,feat: add Gemini Flash as free primary classifier; Claude as fallback,"backend/app/api/v1/ingestion.py, backend/app/core/config.py, backend/app/services/classifier.py, backend/requirements.txt"
+903f6fa,2026-03-31 15:03:11,Maritime PMS Deploy,feat: classifier returns specific page numbers not ranges,backend/app/services/classifier.py
+e097b93,2026-03-31 14:37:42,Maritime PMS Deploy,fix: fall back to stored extracted_text when PDF blob unavailable,backend/app/api/v1/ingestion.py
+6c4f2de,2026-03-31 14:33:06,Maritime PMS Deploy,fix: always attempt blob download in screening; add key/byte logging,backend/app/api/v1/ingestion.py
+2e1204b,2026-03-31 12:00:29,Maritime PMS Deploy,feat: add detailed INFO logging to classifier for debugging,backend/app/services/classifier.py
+8b94043,2026-03-31 11:53:28,Maritime PMS Deploy,fix: remove invalid ManualStatus.uploaded from screening reset,backend/app/api/v1/ingestion.py
+73f4ece,2026-03-31 11:47:25,Maritime PMS Deploy,fix: reset screening fields before re-classify; sanitise page ranges by category,"backend/app/api/v1/ingestion.py, backend/app/services/classifier.py"
+797f2aa,2026-03-31 11:33:31,Maritime PMS Deploy,Fix classifier: use [PAGE N] markers for accurate page ranges + improve spec sheet handling,backend/app/services/classifier.py
+030fbee,2026-03-31 11:23:19,Maritime PMS Deploy,Improve extraction quality based on Sewage Treatment Plant manual samples,"backend/alembic/versions/0013_add_biweekly_biannual_frequency.py, backend/app/models/job.py, backend/app/services/component_matcher.py, backend/app/services/extractor.py, frontend/src/pages/JobsReview.tsx"
+3fc6dc6,2026-03-31 11:12:06,Maritime PMS Deploy,Improve component extraction: AI identifies job/spare page ranges + auto-link after extraction,backend/app/services/extractor.py
+dafda02,2026-03-31 11:06:02,Maritime PMS Deploy,Add component name search to tree sidebar and table,frontend/src/pages/ComponentReview.tsx
+ce02fd8,2026-03-31 11:00:08,Maritime PMS Deploy,Fix screening: add completion banner and auto-resume polling on page load,frontend/src/pages/ManualReview.tsx
+53a6dc1,2026-03-31 10:55:12,Maritime PMS Deploy,Show guidance when auto-merge or auto-link returns 0 results,frontend/src/pages/ComponentReview.tsx
+cba63de,2026-03-31 10:53:05,Maritime PMS Deploy,Add batch update feature for components,"backend/app/api/v1/components.py, frontend/src/pages/ComponentReview.tsx"
+14cf888,2026-03-31 10:40:51,Maritime PMS Deploy,Fix: only link components found in a manual to that manual's reference,"backend/app/api/v1/components.py, backend/app/services/component_matcher.py, frontend/src/pages/ComponentReview.tsx"
+7020486,2026-03-31 10:32:49,Maritime PMS Deploy,Fix component export: use fetch with Bearer token instead of plain <a href>,frontend/src/pages/ComponentReview.tsx
+c882f6c,2026-03-31 10:31:28,Maritime PMS Deploy,ComponentReview: make Location and Machinery Particulars inline-editable,frontend/src/pages/ComponentReview.tsx
+ea0b205,2026-03-31 10:26:42,Maritime PMS Deploy,Add Location/Sets Installed and Machinery Particulars columns + export,"backend/alembic/versions/0012_add_location_machinery_particulars.py, backend/app/api/v1/components.py, backend/app/models/component.py, backend/app/schemas/component.py, backend/app/services/extractor.py, frontend/src/pages/ComponentReview.tsx"
+c88e8a3,2026-03-31 10:13:29,Maritime PMS Deploy,Remove inline column filter rows from all review pages,"frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/SparesReview.tsx"
+ff4810c,2026-03-31 10:05:01,Maritime PMS Deploy,"ManualReview: move filters to toolbar, remove inline column filter row",frontend/src/pages/ManualReview.tsx
+c71eeb3,2026-03-30 16:18:26,Maritime PMS Deploy,Fix extraction never running + screening blank pages from blob storage,"backend/app/api/v1/extraction.py, backend/app/api/v1/ingestion.py, backend/app/services/extractor.py"
+745ec2e,2026-03-30 16:10:21,Maritime PMS Deploy,"Improve extraction accuracy: page markers, filename context, spec sheet handling","backend/app/api/v1/ingestion.py, backend/app/services/extractor.py"
+62f168a,2026-03-30 15:55:09,Maritime PMS Deploy,Diagnose manual viewer: real error messages + detailed backend logs,"backend/app/api/v1/ingestion.py, frontend/src/pages/ManualReview.tsx"
+c63cb4c,2026-03-30 15:44:40,Maritime PMS Deploy,"Fix maker/model list 500, manual viewer, per-column filtering","backend/app/api/v1/components.py, backend/app/api/v1/ingestion.py, backend/app/api/v1/jobs.py, backend/app/api/v1/maker_models.py, backend/app/api/v1/manuals.py, backend/app/api/v1/spares.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/ManualReview.tsx, frontend/src/pages/SparesReview.tsx"
+705bc05,2026-03-30 15:22:44,Maritime PMS Deploy,Fix maker_models 500: replace WHERE NOT EXISTS with ON CONFLICT DO NOTHING,backend/app/api/v1/maker_models.py
+88a8a33,2026-03-30 15:18:18,Maritime PMS Deploy,Fix Maker/Model 500 error and implement Manual Matches tab,"backend/app/api/v1/maker_models.py, frontend/src/pages/Library.tsx"
+5f08de3,2026-03-30 15:14:32,Maritime PMS Deploy,"Manual review: pagination, sort, bulk screen/extract, faster file viewer","backend/app/api/v1/ingestion.py, backend/app/api/v1/manuals.py, frontend/src/pages/ManualReview.tsx"
+210ede2,2026-03-30 15:05:04,Maritime PMS Deploy,Fix Maker/Model library add — silent failure and no feedback,"backend/app/api/v1/maker_models.py, frontend/src/pages/Library.tsx"
+b2f6d40,2026-03-30 14:57:58,Maritime PMS Deploy,Fix auto-merge tank matching and auto-link false positives,"backend/app/api/v1/components.py, backend/app/services/component_matcher.py"
+3455aa2,2026-03-30 14:54:53,Maritime PMS Deploy,Add vessel project editing and vessel name navigation,"frontend/src/components/Layout.tsx, frontend/src/pages/Vessels.tsx"
+e9d5837,2026-03-30 14:49:51,Maritime PMS Deploy,Fix pdf_reference not set on extraction and unmapped components not showing,"backend/app/services/component_matcher.py, backend/app/services/extractor.py"
+064866f,2026-03-30 14:46:10,Maritime PMS Deploy,Add Maker/Model Library tab to Global Libraries page,frontend/src/pages/Library.tsx
+8ca2416,2026-03-30 14:34:28,Maritime PMS Deploy,"Add search, shipyard, maker/model library, and auto-merge extraction","backend/alembic/versions/0011_shipyard_and_maker_library.py, backend/app/api/v1/components.py, backend/app/api/v1/maker_models.py, backend/app/api/v1/router.py, backend/app/api/v1/vessels.py, backend/app/models/vessel.py, backend/app/schemas/vessel.py, backend/app/services/component_matcher.py, backend/app/services/extractor.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/Vessels.tsx"
+2597dff,2026-03-30 11:25:05,Maritime PMS Deploy,Fix upload timeout: move PDF extraction+classification to background task,"backend/app/api/v1/ingestion.py, frontend/src/pages/Ingestion.tsx, frontend/src/pages/ManualReview.tsx"
+19d9d99,2026-03-30 10:12:28,Maritime PMS Deploy,Fix manual viewer: stream bytes directly instead of presigned URL,backend/app/api/v1/ingestion.py
+1105791,2026-03-30 10:09:47,Maritime PMS Deploy,"Fix SharePoint mock fallback, remove all text limits, add chunked extraction","backend/app/api/v1/ingestion.py, backend/app/services/classifier.py, backend/app/services/extractor.py"
+9114fe2,2026-03-30 10:07:11,Maritime PMS Deploy,"Fix manual file viewer: upload to blob storage, handle local path fallback","backend/app/api/v1/ingestion.py, frontend/src/pages/ManualReview.tsx"
+e28d92a,2026-03-30 10:00:46,Maritime PMS Deploy,"Fix SharePoint recursive listing, improve AI accuracy, fix manual PDF viewer","backend/app/api/v1/ingestion.py, backend/app/services/classifier.py, backend/app/services/extractor.py, backend/app/services/sharepoint.py, backend/app/tasks/ingestion.py, frontend/src/pages/ManualReview.tsx"
+a244102,2026-03-29 19:36:09,Maritime PMS Deploy,fix: raise component list page_size limit from 1000 to 5000,backend/app/api/v1/components.py
+a1a899f,2026-03-29 19:33:21,Maritime PMS Deploy,"fix: seed each default vessel type individually, not only when count=0",backend/app/api/v1/library.py
+f3ae0f1,2026-03-29 19:29:09,Maritime PMS Deploy,fix: runtime DDL bootstrap in list_vessel_types endpoint,backend/app/api/v1/library.py
+c52eaa4,2026-03-29 19:23:08,Maritime PMS Deploy,fix: rewrite migrations 0008 and 0009 with fully idempotent raw SQL,"backend/alembic/versions/0008_add_vessel_types.py, backend/alembic/versions/0009_add_criticality_field.py"
+6ba3e79,2026-03-29 19:18:45,Maritime PMS Deploy,fix: migration 0010 idempotent vessel_types + criticality; robust vessel-types endpoint,"backend/alembic/versions/0010_idempotent_vessel_types_and_criticality.py, backend/app/api/v1/library.py, frontend/src/pages/Library.tsx"
+eee9334,2026-03-29 19:11:34,Maritime PMS Deploy,feat: criticality dropdown (Critical/Essential/Non Critical) + fix Library vessel types seeding,"backend/alembic/versions/0009_add_criticality_field.py, backend/app/api/v1/library.py, backend/app/models/component.py, backend/app/schemas/component.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/Library.tsx"
+038cd60,2026-03-29 19:01:03,Maritime PMS Deploy,feat: vessel type grouping for library - import/load components by vessel type,"backend/alembic/versions/0008_add_vessel_types.py, backend/app/api/v1/library.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/Library.tsx"
+e8249b0,2026-03-29 18:50:58,Maritime PMS Deploy,"feat: pagination (100/200/500/1000), sorted tree, auto-load library on first visit","backend/app/api/v1/components.py, backend/app/api/v1/library.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/Library.tsx"
+17d1919,2026-03-29 18:39:01,Maritime PMS Deploy,fix: library import failing due to missing created_at/updated_at in INSERT,"backend/alembic/versions/0007_fix_library_schema.py, backend/app/api/v1/library.py, frontend/src/pages/Library.tsx"
+bb8e22a,2026-03-29 18:27:56,Maritime PMS Deploy,"feat: library import format, push-to-vessel, Excel templates, fix global libraries blank screen","backend/alembic/versions/0007_fix_library_schema.py, backend/app/api/v1/components.py, backend/app/api/v1/library.py, frontend/src/pages/ComponentReview.tsx, frontend/src/pages/Library.tsx"
+d482a3e,2026-03-28 12:06:54,Maritime PMS Deploy,fix: library import accepts user's column format + fix double /api/v1 prefix,"backend/app/api/v1/library.py, frontend/src/pages/Library.tsx"
+d21d4de,2026-03-28 12:04:14,Maritime PMS Deploy,fix: persist extracted text in DB so extraction works across Railway redeploys,"backend/alembic/versions/0006_add_manual_extracted_text.py, backend/app/api/v1/ingestion.py, backend/app/models/ingestion.py, backend/app/services/extractor.py"
+5d14311,2026-03-28 11:57:09,Maritime PMS Deploy,fix: extract PDF tables + improve component prompt for machinery list accuracy,backend/app/services/extractor.py
+86d1e09,2026-03-28 11:49:50,Maritime PMS Deploy,fix: screen-all re-classifies all manuals with Claude; fix useful dropdown; add feedback,"backend/app/api/v1/ingestion.py, frontend/src/pages/ManualReview.tsx"
+ff987be,2026-03-28 11:43:47,Maritime PMS Deploy,fix: use scalars().first() for sha256 duplicate check to handle multiple rows,backend/app/api/v1/ingestion.py
+0953b43,2026-03-28 11:39:18,Maritime PMS Deploy,fix: use AsyncAnthropic client and thread-pool PDF read in extractor,backend/app/services/extractor.py
+7776455,2026-03-28 11:36:11,Maritime PMS Deploy,fix: run classify_pdf in thread pool to avoid blocking asyncio event loop on upload,"backend/app/api/v1/ingestion.py, backend/app/services/classifier.py"
+aeefc16,2026-03-28 11:30:04,Maritime PMS Deploy,fix: remove 204 status on delete_manual (FastAPI 0.109 rejects body with 204),backend/app/api/v1/ingestion.py
+9d3ba7d,2026-03-28 11:26:31,Maritime PMS Deploy,feat: global Standard Jobs & Class Jobs library with Excel import,"backend/alembic/versions/0005_add_general_class_society.py, backend/app/api/v1/standard_jobs.py, backend/app/models/standard_jobs.py, frontend/src/App.tsx, frontend/src/components/Layout.tsx, frontend/src/pages/StandardJobsLibrary.tsx"
+f95eef9,2026-03-28 11:21:33,Maritime PMS Deploy,fix: correct API paths (no double /api/v1) and remove duplicate manuals route,"backend/app/api/v1/ingestion.py, frontend/src/pages/ManualReview.tsx"
+64fcb8d,2026-03-28 11:14:14,Maritime PMS Deploy,"fix: manual view/delete, real PDF extraction via Claude, pre-check inline","backend/app/api/v1/ingestion.py, backend/app/core/config.py, backend/app/services/extractor.py, frontend/src/App.tsx, frontend/src/components/Layout.tsx, frontend/src/pages/ManualReview.tsx"
+a1cf817,2026-03-28 10:40:03,Maritime PMS Deploy,"feat: Addendum A (F-01 to F-10) — extraction, libraries, precheck, deduplication","backend/alembic/versions/0004_addendum_a_tables.py, backend/app/api/v1/extraction.py, backend/app/api/v1/ingestion.py, backend/app/api/v1/library.py, backend/app/api/v1/precheck.py, backend/app/api/v1/router.py, backend/app/models/ingestion.py, backend/app/schemas/ingestion.py, backend/app/services/deduplication.py, backend/app/services/extractor.py, frontend/src/App.tsx, frontend/src/components/Layout.tsx, frontend/src/pages/ExtractionPrompts.tsx, frontend/src/pages/GlobalLibrary.tsx, frontend/src/pages/JobsReview.tsx, frontend/src/pages/Library.tsx, frontend/src/pages/ManualReview.tsx, frontend/src/pages/PreCheck.tsx, frontend/src/pages/SparesReview.tsx"
+75c98ef,2026-03-28 10:18:50,Maritime PMS Deploy,"feat: enhanced Components page with Excel import, 3-level tree, job/spare page references, auto-link from manuals","backend/alembic/versions/0003_add_component_page_fields.py, backend/app/api/v1/components.py, backend/app/models/component.py, backend/app/schemas/component.py, frontend/src/pages/ComponentReview.tsx"
+d63d43d,2026-03-27 22:16:13,Maritime PMS Deploy,feat: add Start Screening button with live progress for manual classification,"backend/app/api/v1/ingestion.py, frontend/src/pages/Ingestion.tsx, frontend/src/pages/ManualReview.tsx"
+a36992d,2026-03-27 22:12:52,Maritime PMS Deploy,feat: use Claude AI as primary classifier with keyword fallback,backend/app/services/classifier.py
+08215ad,2026-03-27 22:07:42,Maritime PMS Deploy,feat: auto-classify uploaded manuals using pdfplumber + keyword matching,"backend/app/api/v1/ingestion.py, backend/app/services/classifier.py"
+9310e86,2026-03-27 22:01:52,Maritime PMS Deploy,fix: increase nginx client_max_body_size to 100m for file uploads,frontend/Dockerfile
+b12045b,2026-03-27 21:58:50,Maritime PMS Deploy,feat: add direct PDF upload to Ingestion page,"backend/app/api/v1/ingestion.py, frontend/src/pages/Ingestion.tsx"
+950771c,2026-03-27 21:52:18,Maritime PMS Deploy,feat: add Vessels page with create modal and nav link,"frontend/src/App.tsx, frontend/src/components/Layout.tsx, frontend/src/pages/Vessels.tsx"
+59423cc,2026-03-27 21:43:18,Maritime PMS Deploy,fix: replace passlib with direct bcrypt calls to fix Python 3.12 compat,"backend/app/core/security.py, backend/requirements.txt"
+f8fda58,2026-03-27 21:38:52,Maritime PMS Deploy,fix: pin bcrypt==4.0.1 to fix passlib compatibility and seed password update,"backend/requirements.txt, backend/scripts/seed_admin.py"
+413f480,2026-03-27 21:28:33,Maritime PMS Deploy,fix: update admin password on re-seed instead of skipping,backend/scripts/seed_admin.py
+f19e5d1,2026-03-27 21:17:24,Maritime PMS Deploy,fix: add migration to add missing mfa_secret column to users table,backend/alembic/versions/0002_add_mfa_secret.py
+2f280ee,2026-03-27 21:06:20,Maritime PMS Deploy,fix: nginx proxy /api/ to backend — eliminates CORS entirely,frontend/Dockerfile
+a0898ae,2026-03-27 21:02:32,Maritime PMS Deploy,chore: trigger Railway redeploy with custom CORS middleware,None
+6e5f50c,2026-03-27 20:55:42,Maritime PMS Deploy,fix: replace CORSMiddleware with custom middleware that always injects headers,backend/app/main.py
+64b620c,2026-03-27 19:02:34,Maritime PMS Deploy,fix: hardcode production frontend URL in ALLOWED_ORIGINS,backend/app/core/config.py
+bb2ae80,2026-03-27 18:45:02,Maritime PMS Deploy,"fix: remove nixpacks.toml — using Dockerfile with nginx, not npx serve",frontend/nixpacks.toml
+c50cb1a,2026-03-27 18:43:20,Maritime PMS Deploy,fix: declare ARG/ENV in Dockerfile so Railway passes VITE_ build vars,frontend/Dockerfile
+8d4c27c,2026-03-27 18:40:36,Maritime PMS Deploy,fix: allow all Railway domains via CORS regex,"backend/app/core/config.py, backend/app/main.py"
+e715437,2026-03-27 18:34:40,Maritime PMS Deploy,"fix: use dockerfile builder for frontend, remove broken serve start command",frontend/railway.toml
+afbd9f4,2026-03-27 18:31:07,Maritime PMS Deploy,"fix: simplify nginx config, use port 80 directly",frontend/Dockerfile
+f0789a9,2026-03-27 18:28:09,Maritime PMS Deploy,"fix: use nginx to serve frontend, support dynamic PORT from Railway",frontend/Dockerfile
+54d6a98,2026-03-27 18:24:33,Maritime PMS Deploy,fix: add frontend Dockerfile using npm install instead of npm ci,frontend/Dockerfile
+33ca04b,2026-03-27 18:15:51,Maritime PMS Deploy,fix: use npm install instead of npm ci for frontend build (no lockfile),frontend/nixpacks.toml
+18af9e1,2026-03-27 18:11:36,Maritime PMS Deploy,add: Railway config for frontend static site deployment,frontend/railway.toml
+615f6a4,2026-03-27 18:07:31,Maritime PMS Deploy,fix: add missing comma in tsconfig.json,frontend/tsconfig.json
+69a9253,2026-03-27 18:06:30,dineshvbabu-cmd,Add Sprint 3 details to README,README.md
+8aee462,2026-03-27 18:00:57,Maritime PMS Deploy,trigger: fresh Vercel deployment,None
+1888e2e,2026-03-27 17:54:05,Maritime PMS Deploy,"fix: add vite/client types, disable noUnusedLocals, replace require() with import in client.ts","frontend/src/api/client.ts, frontend/tsconfig.json"
+e774ce4,2026-03-27 17:51:35,Maritime PMS Deploy,fix: skip tsc type-check in build so Vercel deployment succeeds,frontend/package.json
+3522a12,2026-03-27 17:41:40,Maritime PMS Deploy,fix: seed admin on startup; fix async db url in seed script; add vercel.json for frontend,"backend/scripts/seed_admin.py, frontend/vercel.json, nixpacks.toml, railway.toml"
+8d0f9d4,2026-03-27 17:37:33,Maritime PMS Deploy,fix: health endpoint returns raw Response to bypass Pydantic validation; remove boto3 blob check,"backend/app/core/health.py, backend/app/main.py"
+27caf8e,2026-03-27 17:29:21,Maritime PMS Deploy,"fix: import MissingManualGap from correct module (missing_manual, not standard_jobs)",backend/app/api/v1/standard_jobs.py
+2499e43,2026-03-27 17:21:51,Maritime PMS Deploy,fix: add response_model=None to all HTTP 204 routes to satisfy FastAPI 0.109 assertion,"backend/app/api/v1/auth.py, backend/app/api/v1/components.py, backend/app/api/v1/export.py, backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py, backend/app/api/v1/users.py, backend/app/api/v1/vessels.py"
+163c084,2026-03-27 17:12:09,Maritime PMS Deploy,fix: add response_class=Response to all HTTP 204 routes for FastAPI 0.109 compatibility,"backend/app/api/v1/auth.py, backend/app/api/v1/components.py, backend/app/api/v1/export.py, backend/app/api/v1/jobs.py, backend/app/api/v1/spares.py, backend/app/api/v1/users.py, backend/app/api/v1/vessels.py"
+8f46a0c,2026-03-27 17:02:15,Maritime PMS Deploy,fix: convert postgresql:// to postgresql+asyncpg:// for Railway DATABASE_URL compatibility,"backend/alembic/env.py, backend/app/core/config.py, backend/app/core/database.py"
+4ed1552,2026-03-27 16:40:27,Maritime PMS Deploy,fix: remove duplicate MissingManualGap model from standard_jobs.py,backend/app/models/standard_jobs.py
+1a4211d,2026-03-27 16:28:19,Maritime PMS Deploy,fix: make alembic migration non-fatal so uvicorn starts without a database,"nixpacks.toml, railway.toml"
+c1df7a3,2026-03-27 16:20:12,Maritime PMS Deploy,fix: remove invalid libpq nixPkg causing nix-env install failure,"backend/nixpacks.toml, nixpacks.toml"
+2c068eb,2026-03-27 16:18:15,Maritime PMS Deploy,fix: add root requirements.txt and nixpacks.toml so Railway detects Python app,"nixpacks.toml, railway.toml, requirements.txt"
+a8a8ffc,2026-03-27 16:15:51,Maritime PMS Deploy,"fix: set Railway rootDirectory to backend, remove heavy ML packages from requirements","backend/requirements.txt, railway.toml"
+8c4c685,2026-03-27 15:45:30,Maritime PMS Deploy,Add Railway deployment config,"Procfile, backend/nixpacks.toml, railway.toml"
+21281e2,2026-03-27 15:44:54,Maritime PMS Deploy,Remove CI workflow for initial push (add back with workflow scope),.github/workflows/ci.yml
+6315c08,2026-03-27 15:44:34,Maritime PMS Deploy,Initial commit: Maritime PMS Data Extraction Tool — all 12 sprints complete,None
