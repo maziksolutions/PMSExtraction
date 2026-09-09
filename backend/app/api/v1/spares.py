@@ -1412,8 +1412,14 @@ async def export_spares_qc(
         manual_lookup=manual_lookup,
     )
 
-    safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
-    filename = f"Spares_QC_{safe_name}.xlsx"
+    safe_vessel_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
+    if pdf_reference:
+        clean_manual_name = pdf_reference.rsplit(".", 1)[0] if pdf_reference.lower().endswith(".pdf") else pdf_reference
+        safe_manual_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in clean_manual_name).strip()
+        filename = f"Spares_QC_{safe_manual_name}_{safe_vessel_name}.xlsx"
+    else:
+        filename = f"Spares_QC_{safe_vessel_name}.xlsx"
+
     return StreamingResponse(
         io.BytesIO(xlsx_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

@@ -1586,13 +1586,18 @@ async def export_jobs_qc(
     ws.column_dimensions[get_column_letter(2)].width = 45
     ws.column_dimensions[get_column_letter(13)].width = 35
 
-    buf = io.BytesIO()
-    wb.save(buf)
-    safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
+    safe_vessel_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
+    if pdf_reference:
+        clean_manual_name = pdf_reference.rsplit(".", 1)[0] if pdf_reference.lower().endswith(".pdf") else pdf_reference
+        safe_manual_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in clean_manual_name).strip()
+        filename = f"Jobs_QC_{safe_manual_name}_{safe_vessel_name}.xlsx"
+    else:
+        filename = f"Jobs_QC_{safe_vessel_name}.xlsx"
+
     return StreamingResponse(
         io.BytesIO(buf.getvalue()),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="Jobs_QC_{safe_name}.xlsx"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
