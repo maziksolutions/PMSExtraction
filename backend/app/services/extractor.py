@@ -301,6 +301,8 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "}\n\n"
             "RULES:\n"
             "- job_description formatting: Every non-empty line of the description body must start with /*-. If the description contains list items (like a. line, b. line, a) line, 1) line, etc.), each item must be placed on a new line and start with /*-.\n"
+            "- ENGLISH-ONLY & MULTILINGUAL TABLES: Maintenance jobs should be extracted ONLY from the English-language column or English text. All other language columns (Japanese, Chinese, Korean, etc.) MUST be ignored completely.\n"
+            "- PDF FILENAME PROHIBITION: PDF filenames must NEVER be captured in job_code or job_name. Leave these fields blank (null) if no valid value is present.\n"
             "- source_page_number from [PAGE N] markers — do not guess\n"
             "- Extract EVERY distinct job item — do not merge different tasks into one\n"
             "- For maintenance schedule tables: each row/item = one job record\n"
@@ -354,6 +356,16 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "}\n\n"
             "RULES:\n"
             "- source_page_number from [PAGE N] markers only\n"
+            "- ENGLISH-ONLY & MULTILINGUAL TABLES: Spare parts should be extracted ONLY from the English-language column or English text. All other language columns (Japanese, Chinese, Korean, etc.) MUST be ignored completely.\n"
+            "- SPECIFICATION COLUMN HEADER REFERENCES (CRITICAL): Every piece of detail in specification MUST explicitly include its table column header label as a prefix. For example:\n"
+            "    • Quantity: 'QTY: 2 PCS' or 'QTY: 1 SET'. If the column has only a unit string like 'PCS' or 'SET' without a number, format as 'QTY: 1 PCS' or 'QTY: 1 SET'.\n"
+            "    • Material: 'Material: STEEL', 'Material: NS12132', 'Material: GRAPHITE'\n"
+            "    • Size/Dimensions: 'Size: DN50', 'Dimensions: 15.5 x 2.4 FKM'\n"
+            "    • Remarks: 'Remarks: Items 7, 8 for blinding'\n"
+            "  Combine multiple column header details with semicolons: 'QTY: 2 PCS; Material: STEEL; Remarks: Items 7, 8 for blinding'. NEVER output raw unlabelled values like 'PCS', 'PCS, NS12132', or 'STEEL' without header labels!\n"
+            "- PART NUMBERS VALIDATION: Validate part numbers carefully. Do NOT extract serial numbers, prose/phrases ('refer to page...', 'see drawing'), or full page text into part_number. If no valid catalog part number is found in the manual, leave part_number as null.\n"
+            "- PDF FILENAME PROHIBITION: PDF filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf') must NEVER be captured in part_number, drawing_number, drawing_position, or spare_model. Leave these fields blank (null) if the information is not found in the manual.\n"
+            "- PART NAME & SPECIFICATION SEPARATION: If a spare name contains specifications, dimensions, or materials (e.g. 'O-RING (15.5 x 2.4 FKM)' or 'HEX BOLT M12 x 45 STAINLESS'), separate them. Capture ONLY the spare name (e.g. 'O-RING', 'HEX BOLT') in part_name, and capture the additional details (e.g. '15.5 x 2.4 FKM', 'M12 x 45 STAINLESS') in specification with header labels.\n"
             "- COUNT FIRST: count only structured table rows (grid rows with Part No/Name/Qty columns — NOT numbers in assembly diagram callouts). Output exactly that many records.\n"
             "- Extract EVERY row from parts tables — never skip rows\n"
             "- ASSEMBLY DIAGRAM RULE: If a page has an exploded-view/assembly diagram with numbered callouts AND a parts table below it, extract ONLY from the parts table rows. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them.\n"
@@ -441,26 +453,151 @@ def _recover_partial_json_array(raw_text: str) -> list[dict]:
     return []
 
 
-def _parse_json_records(raw_text: str) -> list[dict]:
+def _format_specification_headers(spec: str) -> str:
+    if not spec:
+        return None
+    spec_str = str(spec).strip()
+    if not spec_str:
+        return None
+
+    # Process semicolon-separated parts or raw comma-separated lists
+    parts = [p.strip() for p in spec_str.split(";") if p.strip()]
+    out_parts = []
+
+    for part in parts:
+        if re.search(r'^(QTY|Material|Size|Dimensions|Remarks|Notes|Specification):\s*', part, re.I):
+            # Clean up comma-separated values attached inside QTY header e.g. "QTY: 8 PCS, A4-80"
+            m = re.match(r'^(QTY:\s*(?:\d+|1)\s*(?:PCS|SET|EA|PCSA|SETA|KG|M|MM)?)\s*,\s*(.*)$', part, re.I)
+            if m:
+                out_parts.append(m.group(1).strip())
+                rest = m.group(2).strip()
+                if rest:
+                    out_parts.append(f"Material: {rest}")
+            else:
+                out_parts.append(part)
+            continue
+
+        # Unlabelled part e.g. "PCS, NS12132" or "PCS" or "STEEL" or "QTY: 2 PCS"
+        sub_parts = [sp.strip() for sp in part.split(",") if sp.strip()]
+        for sp in sub_parts:
+            sp_upper = sp.upper()
+            if sp_upper in {"PCS", "SET", "EA", "UNIT", "PCS.", "SET."}:
+                out_parts.append("QTY: 1 PCS" if "PCS" in sp_upper else f"QTY: 1 {sp_upper}")
+            elif re.match(r'^(?:QTY:?\s*)?(\d+)\s*(PCS|SET|EA|UNIT|KG|M|MM)?$', sp, re.I):
+                m_qty = re.match(r'^(?:QTY:?\s*)?(\d+)\s*(PCS|SET|EA|UNIT|KG|M|MM)?$', sp, re.I)
+                num = m_qty.group(1)
+                unit = (m_qty.group(2) or "PCS").upper()
+                out_parts.append(f"QTY: {num} {unit}")
+            elif re.match(r'^(?:M\d+|[0-9.]+\s*X\s*[0-9.]+|DN\d+|PN\d+)', sp, re.I):
+                out_parts.append(f"Size: {sp}")
+            else:
+                out_parts.append(f"Material: {sp}")
+
+    return "; ".join(out_parts) if out_parts else spec_str
+
+
+def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type: str = "") -> dict:
+    if not isinstance(record, dict):
+        return record
+
+    filename_lower = (filename or "").lower().strip()
+    filename_base = filename_lower.rsplit(".", 1)[0] if "." in filename_lower else filename_lower
+    filename_clean = re.sub(r'^[a-z0-9]+[_\s-]+', '', filename_base).strip()
+
+    # Rule 3: Prevent PDF Filename Leakage & Placeholders
+    for field in ("part_number", "drawing_number", "drawing_position", "job_code", "serial_number"):
+        val = str(record.get(field) or "").strip()
+        if not val:
+            continue
+        val_lower = val.lower()
+        if (filename_lower and val_lower == filename_lower) or (filename_base and val_lower == filename_base) or (len(filename_clean) > 4 and filename_clean in val_lower):
+            record[field] = None
+        elif val_lower in {"none", "n/a", "null", "unknown", "nil", "-", "--", "na"}:
+            record[field] = None
+
+    # Rule 2: Validate Part Number
+    part_num = str(record.get("part_number") or "").strip()
+    if part_num:
+        if len(part_num) > 50 or (" " in part_num and len(part_num.split()) > 3):
+            record["part_number"] = None
+        elif re.search(r'(refer to|see page|contained in|as per|figure|table)', part_num, re.I):
+            record["part_number"] = None
+
+    # Rule 4: Separate Part Name and Specification for Spares
+    if extraction_type == "spare" or "part_name" in record:
+        raw_part_name = str(record.get("part_name") or "").strip()
+        existing_spec = str(record.get("specification") or "").strip()
+
+        # Check for parenthetical spec e.g. "O-RING (15.5 x 2.4 FKM)" or "HEX BOLT (M12x45)"
+        paren_match = re.search(r'^(.*?)\s*\(([^)]+)\)\s*$', raw_part_name)
+        if paren_match:
+            clean_name = paren_match.group(1).strip()
+            extracted_spec = paren_match.group(2).strip()
+            if clean_name and len(clean_name) >= 2:
+                record["part_name"] = clean_name
+                combined_spec = f"{extracted_spec}; {existing_spec}".strip("; ") if existing_spec else extracted_spec
+                record["specification"] = combined_spec
+        else:
+            # Check for trailing dimension/size pattern e.g. "HEX BOLT M12X45 STAINLESS" or "O-RING 15.5X2.4"
+            dim_match = re.search(r'^(.*?)\s+((?:M\d+|[0-9.]+\s*X\s*[0-9.]+|#[0-9]+|DN\d+|PN\d+).*)$', raw_part_name, re.I)
+            if dim_match:
+                clean_name = dim_match.group(1).strip()
+                extracted_spec = dim_match.group(2).strip()
+                if clean_name and len(clean_name) >= 2:
+                    record["part_name"] = clean_name
+                    combined_spec = f"{extracted_spec}; {existing_spec}".strip("; ") if existing_spec else extracted_spec
+                    record["specification"] = combined_spec
+
+    # Format specification with explicit table column header prefixes
+    if record.get("specification"):
+        record["specification"] = _format_specification_headers(record["specification"])
+
+    # Rule 1: Strip non-English / non-ASCII characters from all string fields
+    for k, v in list(record.items()):
+        if isinstance(v, str) and v:
+            cleaned_str = re.sub(r'[^\x00-\x7F]+', '', v).strip()
+            if not cleaned_str and v:
+                if k in ("part_name", "job_name", "component_name"):
+                    record[k] = v
+                else:
+                    record[k] = None
+            else:
+                record[k] = cleaned_str
+
+    # Ensure required name fields are never None or empty
+    if "part_name" in record and not record["part_name"]:
+        record["part_name"] = "Unspecified Part"
+    if "job_name" in record and not record["job_name"]:
+        record["job_name"] = "Unspecified Job"
+    if "component_name" in record and not record["component_name"]:
+        record["component_name"] = "Unspecified Component"
+
+    return record
+
+
+def _parse_json_records(raw_text: str, filename: str = "", extraction_type: str = "") -> list[dict]:
     clean = _strip_code_fences(raw_text).strip()
-    # If the response starts with prose (e.g. "I'll carefully scan...") rather than JSON,
-    # extract the embedded array/object before attempting to parse.
     if not clean.startswith("[") and not clean.startswith("{"):
         clean = _extract_json_from_prose(raw_text).strip()
     try:
         parsed: Any = json.loads(clean)
     except json.JSONDecodeError:
-        return _recover_partial_json_array(clean)
+        parsed = _recover_partial_json_array(clean)
+
+    raw_list = []
     if isinstance(parsed, list):
-        return [r for r in parsed if isinstance(r, dict)]
-    if isinstance(parsed, dict):
+        raw_list = [r for r in parsed if isinstance(r, dict)]
+    elif isinstance(parsed, dict):
         for key in ("items", "records", "components", "jobs", "spares", "data", "results"):
             value = parsed.get(key)
             if isinstance(value, list):
-                return [r for r in value if isinstance(r, dict)]
-        if any(field in parsed for field in ("component_name", "job_name", "part_name", "source_page_number")):
-            return [parsed]
-    return []
+                raw_list = [r for r in value if isinstance(r, dict)]
+                break
+        else:
+            if any(field in parsed for field in ("component_name", "job_name", "part_name", "source_page_number")):
+                raw_list = [parsed]
+
+    return [_sanitize_extracted_record(r, filename=filename, extraction_type=extraction_type) for r in raw_list]
 
 
 def _redact_error_message(exc: Exception) -> str:
@@ -521,7 +658,7 @@ async def _extract_with_claude(
             messages=[{"role": "user", "content": user_message}],
         )
         raw_text: str = message.content[0].text.strip()
-        rows = _parse_json_records(raw_text)
+        rows = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
         # Only retry if the model was genuinely cut off (hit the token limit) or if we
         # received partial records but the JSON array didn't close. Do NOT retry when
         # rows==0 and stop_reason is end_turn — Claude returned prose ("no spares found")
@@ -569,7 +706,7 @@ async def _extract_with_openai(
     if not raw_text:
         raise RuntimeError("OpenAI returned an empty response")
     logger.info("extract_entities[openai]: %s/%s responded", filename, extraction_type)
-    return _parse_json_records(raw_text)
+    return _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
 
 
 
@@ -610,7 +747,7 @@ async def _extract_with_gemini(
     data = response.json()
     raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
     logger.info("extract_entities[gemini]: %s/%s responded", filename, extraction_type)
-    return _parse_json_records(raw_text)
+    return _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
 
 
 def _dedupe_records(records: list[dict], extraction_type: str) -> list[dict]:
@@ -1011,7 +1148,7 @@ async def _extract_entities_from_page_image_with_openai(
             max_tokens=32000,
         )
         raw_text = (response.choices[0].message.content or "").strip()
-        records = _parse_json_records(raw_text)
+        records = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
         for record in records:
             if record.get("source_page_number") in (None, "", 0):
                 record["source_page_number"] = page_no
@@ -1100,7 +1237,7 @@ async def _extract_entities_from_page_image_with_claude(
                 messages=[{"role": "user", "content": user_content}],
             )
             raw_text = message.content[0].text.strip()
-            records = _parse_json_records(raw_text)
+            records = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
             hard_cutoff = message.stop_reason == "max_tokens"
             partial_array = len(records) > 0 and not raw_text.rstrip().endswith("]")
             if not hard_cutoff and not partial_array:
