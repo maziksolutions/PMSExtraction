@@ -2408,25 +2408,37 @@ async def _process_and_save_page_records(
     # Clean replace existing auto-extracted items specifically on these pages
     if pages_to_clear:
         if etype == "component":
-            comp_delete_query = update(Component).where(
-                Component.source_manual_id.in_(all_manual_ids),
-                Component.is_deleted == False,
-                Component.page_reference.in_(pages_to_clear),
+            comp_delete_query = (
+                update(Component)
+                .where(
+                    Component.source_manual_id.in_(all_manual_ids),
+                    Component.is_deleted == False,
+                    Component.page_reference.in_(pages_to_clear),
+                )
+                .values(is_deleted=True)
             )
             await db.execute(comp_delete_query)
         elif etype == "job":
-            job_delete_query = update(Job).where(
-                Job.source_manual_id.in_(all_manual_ids),
-                Job.is_deleted == False,
-                Job.page_reference.in_(pages_to_clear),
+            job_delete_query = (
+                update(Job)
+                .where(
+                    Job.source_manual_id.in_(all_manual_ids),
+                    Job.is_deleted == False,
+                    Job.page_reference.in_(pages_to_clear),
+                )
+                .values(is_deleted=True)
             )
             await db.execute(job_delete_query)
         elif etype == "spare":
-            spare_delete_query = update(Spare).where(
-                Spare.source_manual_id.in_(all_manual_ids),
-                Spare.is_deleted == False,
-                Spare.extraction_method != _EM.manual,
-                Spare.page_reference.in_(pages_to_clear),
+            spare_delete_query = (
+                update(Spare)
+                .where(
+                    Spare.source_manual_id.in_(all_manual_ids),
+                    Spare.is_deleted == False,
+                    Spare.extraction_method != _EM.manual,
+                    Spare.page_reference.in_(pages_to_clear),
+                )
+                .values(is_deleted=True)
             )
             await db.execute(spare_delete_query)
 
@@ -3072,6 +3084,45 @@ async def auto_extract_from_manual(
             components_extracted_any = False
 
             for etype in extraction_types:
+                # Pre-clear existing auto-extracted records for the target pages being re-extracted
+                target_pages_to_clear = entity_pages.get(etype) or []
+                if page_numbers is not None:
+                    target_pages_to_clear = [p for p in target_pages_to_clear if p in page_numbers] or page_numbers
+
+                if target_pages_to_clear:
+                    if etype == "component":
+                        await db.execute(
+                            update(Component)
+                            .where(
+                                Component.source_manual_id.in_(all_manual_ids),
+                                Component.is_deleted == False,
+                                Component.page_reference.in_(target_pages_to_clear),
+                            )
+                            .values(is_deleted=True)
+                        )
+                    elif etype == "job":
+                        await db.execute(
+                            update(Job)
+                            .where(
+                                Job.source_manual_id.in_(all_manual_ids),
+                                Job.is_deleted == False,
+                                Job.page_reference.in_(target_pages_to_clear),
+                            )
+                            .values(is_deleted=True)
+                        )
+                    elif etype == "spare":
+                        await db.execute(
+                            update(Spare)
+                            .where(
+                                Spare.source_manual_id.in_(all_manual_ids),
+                                Spare.is_deleted == False,
+                                Spare.extraction_method != _EM.manual,
+                                Spare.page_reference.in_(target_pages_to_clear),
+                            )
+                            .values(is_deleted=True)
+                        )
+                    await db.commit()
+
                 all_records: list[dict] = []
                 is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
                 source_text = type_to_text.get(etype)
