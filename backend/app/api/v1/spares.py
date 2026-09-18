@@ -1294,12 +1294,37 @@ def _qc_review_workbook(
 
     # ── Spares sheet ────────────────────────────────────────────────────────
     if spares is not None:
+        from app.services.extractor import _format_specification_headers
+
         ws_spares = wb.create_sheet("Spares")
         spare_rows = []
-        for spare in spares:
+        
+        # Deduplicate spares for QC export (keeping newest per manual/page/part_name/part_number/drawing_position)
+        seen_spares_key = set()
+        deduped_spares = []
+        # Sort so newest items come first to select the best candidate
+        for spare in sorted(spares, key=lambda s: getattr(s, "created_at", None) or "", reverse=True):
+            mid = str(spare.source_manual_id or "")
+            page_ref = str(spare.page_reference or "")
+            name_key = (spare.part_name or "").strip().lower()
+            pn_key = (spare.part_number or "").strip().lower()
+            pos_key = (spare.drawing_position or "").strip().lower()
+            
+            dedupe_key = (mid, page_ref, name_key, pn_key, pos_key)
+            if name_key and dedupe_key in seen_spares_key:
+                continue
+            if name_key:
+                seen_spares_key.add(dedupe_key)
+            deduped_spares.append(spare)
+
+        # Restore original order (manual_id, page_reference, id)
+        deduped_spares.sort(key=lambda s: (str(s.source_manual_id or ""), s.page_reference or 0, str(s.id)))
+
+        for spare in deduped_spares:
             comp = component_lookup.get(spare.component_id)
             comp_name = comp.component_name if comp else ""
             manual_name = manual_lookup.get(spare.source_manual_id, "")
+            formatted_spec = _format_specification_headers(spare.specification) or ""
             spare_rows.append([
                 str(spare.id),
                 manual_name,
@@ -1311,7 +1336,7 @@ def _qc_review_workbook(
                 spare.part_number or "",
                 spare.drawing_number or "",
                 spare.drawing_position or "",
-                spare.specification or "",
+                formatted_spec,
                 spare.spare_maker or "",
                 spare.spare_model or "",
                 "Yes" if spare.is_critical else "No",

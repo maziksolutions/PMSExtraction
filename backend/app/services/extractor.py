@@ -453,47 +453,62 @@ def _recover_partial_json_array(raw_text: str) -> list[dict]:
     return []
 
 
-def _format_specification_headers(spec: str) -> str:
-    if not spec:
+def _format_specification_headers(spec: str | None) -> str | None:
+    if not spec or not str(spec).strip():
         return None
     spec_str = str(spec).strip()
-    if not spec_str:
-        return None
-
-    # Process semicolon-separated parts or raw comma-separated lists
-    parts = [p.strip() for p in spec_str.split(";") if p.strip()]
-    out_parts = []
+    
+    parts = [p.strip() for p in (spec_str.split(";") if ";" in spec_str else spec_str.split(",")) if p.strip()]
+    
+    formatted_parts = []
+    seen_prefixes = set()
 
     for part in parts:
-        if re.search(r'^(QTY|Material|Size|Dimensions|Remarks|Notes|Specification):\s*', part, re.I):
-            # Clean up comma-separated values attached inside QTY header e.g. "QTY: 8 PCS, A4-80"
-            m = re.match(r'^(QTY:\s*(?:\d+|1)\s*(?:PCS|SET|EA|PCSA|SETA|KG|M|MM)?)\s*,\s*(.*)$', part, re.I)
-            if m:
-                out_parts.append(m.group(1).strip())
-                rest = m.group(2).strip()
-                if rest:
-                    out_parts.append(f"Material: {rest}")
-            else:
-                out_parts.append(part)
+        prefix_match = re.match(r"^(QTY|Quantity|Material|Mat|Size|Dimensions|Dimension|Remarks|Remark|Spec|Specification):\s*(.*)$", part, re.I)
+        if prefix_match:
+            lbl = prefix_match.group(1).title()
+            if lbl.lower() in ("quantity", "qty"):
+                lbl = "QTY"
+            elif lbl.lower() in ("mat", "material"):
+                lbl = "Material"
+            elif lbl.lower() in ("dimension", "dimensions"):
+                lbl = "Dimensions"
+            elif lbl.lower() in ("remark", "remarks", "spec", "specification"):
+                lbl = "Remarks"
+            val = prefix_match.group(2).strip()
+            if val:
+                formatted_parts.append(f"{lbl}: {val}")
+                seen_prefixes.add(lbl)
             continue
 
-        # Unlabelled part e.g. "PCS, NS12132" or "PCS" or "STEEL" or "QTY: 2 PCS"
-        sub_parts = [sp.strip() for sp in part.split(",") if sp.strip()]
-        for sp in sub_parts:
-            sp_upper = sp.upper()
-            if sp_upper in {"PCS", "SET", "EA", "UNIT", "PCS.", "SET."}:
-                out_parts.append("QTY: 1 PCS" if "PCS" in sp_upper else f"QTY: 1 {sp_upper}")
-            elif re.match(r'^(?:QTY:?\s*)?(\d+)\s*(PCS|SET|EA|UNIT|KG|M|MM)?$', sp, re.I):
-                m_qty = re.match(r'^(?:QTY:?\s*)?(\d+)\s*(PCS|SET|EA|UNIT|KG|M|MM)?$', sp, re.I)
-                num = m_qty.group(1)
-                unit = (m_qty.group(2) or "PCS").upper()
-                out_parts.append(f"QTY: {num} {unit}")
-            elif re.match(r'^(?:M\d+|[0-9.]+\s*X\s*[0-9.]+|DN\d+|PN\d+)', sp, re.I):
-                out_parts.append(f"Size: {sp}")
-            else:
-                out_parts.append(f"Material: {sp}")
+        qty_match = re.search(r"^(?:QTY\s*)?(\d+)?\s*(PCS|PC|SET|SETS|EA|EA/ST|OFF|UNIT|UNITS|KG|M|MM|LITRES|PAIRS?)$", part, re.I)
+        if qty_match:
+            num = qty_match.group(1) or "1"
+            unit = qty_match.group(2).upper()
+            formatted_parts.append(f"QTY: {num} {unit}")
+            seen_prefixes.add("QTY")
+            continue
 
-    return "; ".join(out_parts) if out_parts else spec_str
+        if re.match(r"^\d+$", part):
+            if "QTY" not in seen_prefixes:
+                formatted_parts.append(f"QTY: {part} PCS")
+                seen_prefixes.add("QTY")
+                continue
+
+        mat_keywords = r"(STEEL|SUS\d+|STAINLESS|BRASS|BRONZE|RUBBER|ARAM|NBR|EPDM|IRON|GRAPHITE|COPPER|ALUMINUM|PVC|PHENOL|QUARTZ|CAC\d+|SB\d+|S20C|NS\d+|HVVZN|VZN|EN1\.\d+|FKM|A200|A\d+-\d+|\d+\.\d+VZN|\bST\b)"
+        if re.search(mat_keywords, part, re.I):
+            formatted_parts.append(f"Material: {part}")
+            seen_prefixes.add("Material")
+            continue
+
+        if re.search(r"^(DN\d+|M\d+.*|\d+.*X.*\d+|PT\d+.*|\d+/\d+\s*INCH.*|\d+\.\d+\s*x\s*\d+\.\d+.*)$", part, re.I):
+            formatted_parts.append(f"Size: {part}")
+            seen_prefixes.add("Size")
+            continue
+
+        formatted_parts.append(f"Remarks: {part}")
+
+    return "; ".join(formatted_parts) if formatted_parts else spec_str
 
 
 def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type: str = "") -> dict:
@@ -1812,30 +1827,36 @@ async def _consolidate_spares_for_manual(
             if getattr(candidate, "is_deleted", False):
                 continue
             
-            # Match component mappings
-            if target.component_id != candidate.component_id:
+            # Match component mappings unless it's an exact duplicate on the same manual page
+            page_t = getattr(target, "page_reference", None)
+            page_c = getattr(candidate, "page_reference", None)
+            same_page = page_t is not None and page_c is not None and page_t == page_c
+
+            pos_t = (target.drawing_position or "").strip().lower()
+            pos_c = (candidate.drawing_position or "").strip().lower()
+            name_t = (target.part_name or "").strip().lower()
+            name_c = (candidate.part_name or "").strip().lower()
+            pn_t = (target.part_number or "").strip().upper()
+            pn_c = (candidate.part_number or "").strip().upper()
+
+            is_exact_same_page_match = same_page and name_t and name_t == name_c and pn_t == pn_c and pos_t == pos_c
+
+            if not is_exact_same_page_match and target.component_id != candidate.component_id:
                 continue
 
             # If both have different non-empty drawing positions, do NOT merge them
-            pos_t = (target.drawing_position or "").strip().lower()
-            pos_c = (candidate.drawing_position or "").strip().lower()
             if pos_t and pos_c and pos_t != pos_c:
                 continue
 
             # Fuzzy name check
-            name_t = (target.part_name or "").strip().lower()
-            name_c = (candidate.part_name or "").strip().lower()
             if not name_t or not name_c:
                 continue
-            if fuzzy_similarity(name_t, name_c) < 0.88:
+            if not is_exact_same_page_match and fuzzy_similarity(name_t, name_c) < 0.88:
                 continue
 
             # Part number mismatch check
-            pn_t = (target.part_number or "").strip().upper()
-            pn_c = (candidate.part_number or "").strip().upper()
-            if pn_t and pn_c:
-                if pn_t != pn_c:
-                    continue
+            if pn_t and pn_c and pn_t != pn_c:
+                continue
 
             # Merge candidates metadata into target
             if not target.part_number and candidate.part_number:
@@ -1844,8 +1865,18 @@ async def _consolidate_spares_for_manual(
                 target.drawing_number = candidate.drawing_number
             if not target.drawing_position and candidate.drawing_position:
                 target.drawing_position = candidate.drawing_position
-            if not target.specification and candidate.specification:
-                target.specification = candidate.specification
+            
+            merged_spec = target.specification or candidate.specification
+            target.specification = _format_specification_headers(merged_spec)
+
+            if not target.spare_assembly and candidate.spare_assembly:
+                target.spare_assembly = candidate.spare_assembly
+            if not target.assembly_description and candidate.assembly_description:
+                target.assembly_description = candidate.assembly_description
+            if not target.spare_maker and candidate.spare_maker:
+                target.spare_maker = candidate.spare_maker
+            if not target.spare_model and candidate.spare_model:
+                target.spare_model = candidate.spare_model
             if not target.spare_assembly and candidate.spare_assembly:
                 target.spare_assembly = candidate.spare_assembly
             if not target.assembly_description and candidate.assembly_description:
@@ -2564,7 +2595,7 @@ async def _process_and_save_page_records(
                 part_number=record.get("part_number") or fallback_part_number,
                 drawing_number=record.get("drawing_number") or None,
                 drawing_position=record.get("drawing_position") or None,
-                specification=record.get("specification") or None,
+                specification=_format_specification_headers(record.get("specification")) or None,
                 spare_assembly=_assembly,
                 assembly_description=record.get("assembly_description") or _assembly or None,
                 spare_maker=record.get("spare_maker") or None,
