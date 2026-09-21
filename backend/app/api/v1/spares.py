@@ -1142,10 +1142,34 @@ async def snip_save_spares(
             qc_status=QCStatus.pending,
             confidence_score=int(record.get("confidence_score") or 75),
         )
-        db.add(spare)
-        saved_spares.append(spare)
-
     if saved_spares:
+        pages_to_clear = set()
+        if page_number is not None:
+            pages_to_clear.add(page_number)
+        for record in records:
+            sp_page = record.get("source_page_number") or record.get("page_number")
+            if sp_page is not None:
+                try:
+                    pages_to_clear.add(int(sp_page))
+                except (ValueError, TypeError):
+                    pass
+
+        if source_manual_id and pages_to_clear:
+            from sqlalchemy import update
+            await db.execute(
+                update(Spare)
+                .where(
+                    Spare.vessel_id == vessel_id,
+                    Spare.source_manual_id == source_manual_id,
+                    Spare.page_reference.in_(pages_to_clear),
+                    Spare.is_deleted == False,
+                    Spare.qc_status != QCStatus.accepted,
+                )
+                .values(is_deleted=True)
+            )
+
+        for spare in saved_spares:
+            db.add(spare)
         await db.commit()
         await _run_spare_side_effects(
             db,
@@ -1311,7 +1335,42 @@ def _qc_review_workbook(
     if jobs is not None:
         ws_jobs = wb.create_sheet("Jobs")
         job_rows = []
-        for job in jobs:
+
+        seen_jobs_key = set()
+        deduped_jobs = []
+        sorted_jobs = sorted(
+            jobs,
+            key=lambda j: (
+                0 if getattr(j, "qc_status", None) == QCStatus.accepted else 1,
+                -(getattr(j, "created_at", None).timestamp() if getattr(j, "created_at", None) else 0),
+            )
+        )
+        for job in sorted_jobs:
+            mid = str(job.source_manual_id or "")
+            page_ref = str(job.page_reference or "")
+            name_key = (job.job_name or "").strip().lower()
+            code_key = (job.job_code or "").strip().lower()
+
+            if code_key:
+                dedupe_key = (mid, page_ref, "code", code_key)
+            elif name_key:
+                dedupe_key = (mid, page_ref, "name", name_key)
+            else:
+                dedupe_key = (mid, page_ref, "id", str(job.id))
+
+            if dedupe_key in seen_jobs_key:
+                continue
+            seen_jobs_key.add(dedupe_key)
+            deduped_jobs.append(job)
+
+        deduped_jobs.sort(key=lambda j: (
+            str(j.source_manual_id or ""),
+            j.page_reference or 0,
+            str(j.job_code or ""),
+            str(j.id),
+        ))
+
+        for job in deduped_jobs:
             comp = component_lookup.get(job.component_id)
             comp_name = comp.component_name if comp else ""
             job_rows.append([
@@ -1338,26 +1397,45 @@ def _qc_review_workbook(
         ws_spares = wb.create_sheet("Spares")
         spare_rows = []
         
-        # Deduplicate spares for QC export (keeping newest per manual/page/part_name/part_number/drawing_position)
+        # Deduplicate spares for QC export (keeping newest/accepted per manual/page/pos_or_name)
         seen_spares_key = set()
         deduped_spares = []
-        # Sort so newest items come first to select the best candidate
-        for spare in sorted(spares, key=lambda s: getattr(s, "created_at", None) or "", reverse=True):
+        # Sort so accepted items come first, then newest items
+        sorted_spares = sorted(
+            spares,
+            key=lambda s: (
+                0 if getattr(s, "qc_status", None) == QCStatus.accepted else 1,
+                -(getattr(s, "created_at", None).timestamp() if getattr(s, "created_at", None) else 0),
+            )
+        )
+        for spare in sorted_spares:
             mid = str(spare.source_manual_id or "")
             page_ref = str(spare.page_reference or "")
             name_key = (spare.part_name or "").strip().lower()
-            pn_key = (spare.part_number or "").strip().lower()
             pos_key = (spare.drawing_position or "").strip().lower()
             
-            dedupe_key = (mid, page_ref, name_key, pn_key, pos_key)
-            if name_key and dedupe_key in seen_spares_key:
+            # If drawing position exists, deduplicate by (manual, page, pos)
+            # Otherwise deduplicate by (manual, page, part_name)
+            if pos_key:
+                dedupe_key = (mid, page_ref, "pos", pos_key)
+            elif name_key:
+                dedupe_key = (mid, page_ref, "name", name_key)
+            else:
+                dedupe_key = (mid, page_ref, "id", str(spare.id))
+                
+            if dedupe_key in seen_spares_key:
                 continue
-            if name_key:
-                seen_spares_key.add(dedupe_key)
+            seen_spares_key.add(dedupe_key)
             deduped_spares.append(spare)
 
-        # Restore original order (manual_id, page_reference, id)
-        deduped_spares.sort(key=lambda s: (str(s.source_manual_id or ""), s.page_reference or 0, str(s.id)))
+        # Restore original order (manual_id, page_reference, drawing_position/id)
+        deduped_spares.sort(key=lambda s: (
+            str(s.source_manual_id or ""),
+            s.page_reference or 0,
+            int(s.drawing_position) if s.drawing_position and s.drawing_position.isdigit() else 999999,
+            str(s.drawing_position or ""),
+            str(s.id),
+        ))
 
         for spare in deduped_spares:
             comp = component_lookup.get(spare.component_id)

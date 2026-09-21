@@ -1718,10 +1718,34 @@ async def snip_save_jobs(
             qc_status=QCStatus.pending,
             confidence_score=int(record.get("confidence_score") or 75),
         )
-        db.add(job)
-        saved_jobs.append(job)
-
     if saved_jobs:
+        pages_to_clear = set()
+        if page_number is not None:
+            pages_to_clear.add(page_number)
+        for record in records:
+            sp_page = record.get("source_page_number") or record.get("page_number")
+            if sp_page is not None:
+                try:
+                    pages_to_clear.add(int(sp_page))
+                except (ValueError, TypeError):
+                    pass
+
+        if source_manual_id and pages_to_clear:
+            from sqlalchemy import update
+            await db.execute(
+                update(Job)
+                .where(
+                    Job.vessel_id == vessel_id,
+                    Job.source_manual_id == source_manual_id,
+                    Job.page_reference.in_(pages_to_clear),
+                    Job.is_deleted == False,
+                    Job.qc_status != QCStatus.accepted,
+                )
+                .values(is_deleted=True)
+            )
+
+        for job in saved_jobs:
+            db.add(job)
         await db.commit()
         
         # Apply name normalized side-effects

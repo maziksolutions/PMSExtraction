@@ -2488,6 +2488,7 @@ async def _process_and_save_page_records(
                 .where(
                     Component.source_manual_id.in_(all_manual_ids),
                     Component.is_deleted == False,
+                    Component.qc_status != QCStatus.accepted,
                     Component.page_reference.in_(pages_to_clear),
                 )
                 .values(is_deleted=True)
@@ -2499,6 +2500,7 @@ async def _process_and_save_page_records(
                 .where(
                     Job.source_manual_id.in_(all_manual_ids),
                     Job.is_deleted == False,
+                    Job.qc_status != QCStatus.accepted,
                     Job.page_reference.in_(pages_to_clear),
                 )
                 .values(is_deleted=True)
@@ -2510,7 +2512,7 @@ async def _process_and_save_page_records(
                 .where(
                     Spare.source_manual_id.in_(all_manual_ids),
                     Spare.is_deleted == False,
-                    Spare.extraction_method != _EM.manual,
+                    Spare.qc_status != QCStatus.accepted,
                     Spare.page_reference.in_(pages_to_clear),
                 )
                 .values(is_deleted=True)
