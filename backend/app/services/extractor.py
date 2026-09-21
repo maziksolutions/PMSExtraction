@@ -344,39 +344,44 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "  A single page can contain 100-300 individual parts — extract EVERY one.\n\n"
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
-            '  "part_name": "exact part name from the document (e.g. \'UV LAMP\', \'O-RING\')",\n'
+            '  "part_name": "exact part name in Proper Text / Title Case (e.g. \'O-Ring\', \'Ball Bearing\', \'Mechanical Seal\', \'Suction Cover Gasket\', \'Hex Bolt\')",\n'
             '  "part_number": "catalog/part number exactly as printed or null",\n'
-            '  "drawing_number": "DWG.NO or drawing reference from the page title block — read the actual value printed on the page (e.g. \'B3798160-02\', \'Fig.7\') or null",\n'
+            '  "drawing_number": "DWG.NO or drawing reference in ALL CAPS (e.g. \'B3798160-02\', \'FIG.7\', \'DWG-1234\') or null",\n'
             '  "drawing_position": "REF.NO or position from the parts table — copy EXACTLY as printed, including ranges (e.g. \'1\', \'11\', \'1~58\', \'155~156\', \'101~105\') or null",\n'
-            '  "specification": "material, size, standard, quantity note (e.g. \'QUARTZ GLASS\', \'RUBBER\', \'STAINLESS STEEL\') or null",\n'
-            '  "spare_maker": "manufacturer — if manual is for a specific maker (e.g. TAIKO KIKAI), set that maker for all parts; null only if truly unknown",\n'
-            '  "spare_model": "the header of the parts table, drawing diagram title, section heading, or sub-assembly this spare belongs to (e.g. \'Machine spare parts list\', \'UV Sterilizer SBH-25\') or null",\n'
+            '  "specification": "material, size, standard, quantity note strictly as formatted in the manual with NO abbreviations or value modifications (e.g. \'QTY: 2 PCS; Material: SUS304; Size: DN50\') or null",\n'
+            '  "spare_assembly": "assembly or component name in Proper Text / Title Case (e.g. \'Cargo Pumping System\', \'Shaft Seal Assembly\') or null",\n'
+            '  "assembly_description": "assembly description in Proper Text / Title Case or null",\n'
+            '  "spare_maker": "manufacturer in ALL CAPS (e.g. \'WARTSILA\', \'YANMAR\', \'DAIHATSU\', \'SHINKO\', \'FRAMO\', \'TAIKO KIKAI\') or null",\n'
+            '  "spare_model": "model, drawing title, or sub-assembly tag in ALL CAPS (e.g. \'6L28/32H\', \'DK-20\', \'CB-125\', \'MACHINE SPARE PARTS LIST\') or null",\n'
             '  "source_page_number": integer from [PAGE N] marker or null,\n'
             '  "confidence_score": integer 70-98\n'
             "}\n\n"
             "RULES:\n"
             "- source_page_number from [PAGE N] markers only\n"
+            "- CASING & FORMATTING STANDARDS (CRITICAL):\n"
+            "    1. part_name, spare_assembly, and assembly_description MUST be in Proper Text / Title Case (Each word capitalized followed by lower case, e.g. 'O-Ring', 'Ball Bearing', 'Mechanical Seal', 'Suction Cover Gasket').\n"
+            "    2. spare_maker, spare_model, and drawing_number MUST be in ALL CAPS (e.g. 'WARTSILA', 'YANMAR', 'DK-20', 'FIG.7', 'DWG-102').\n"
+            "    3. specification MUST be captured as per the same format from the manual, with zero modifications, abbreviations, or changes to conventions or values.\n"
             "- ENGLISH-ONLY & MULTILINGUAL TABLES: Spare parts should be extracted ONLY from the English-language column or English text. All other language columns (Japanese, Chinese, Korean, etc.) MUST be ignored completely.\n"
             "- SPECIFICATION COLUMN HEADER REFERENCES (CRITICAL): Every piece of detail in specification MUST explicitly include its table column header label as a prefix. For example:\n"
             "    • Quantity: 'QTY: 2 PCS' or 'QTY: 1 SET'. If the column has only a unit string like 'PCS' or 'SET' without a number, format as 'QTY: 1 PCS' or 'QTY: 1 SET'.\n"
-            "    • Material: 'Material: STEEL', 'Material: NS12132', 'Material: GRAPHITE'\n"
+            "    • Material: 'Material: STEEL', 'Material: SUS304', 'Material: GRAPHITE'\n"
             "    • Size/Dimensions: 'Size: DN50', 'Dimensions: 15.5 x 2.4 FKM'\n"
             "    • Remarks: 'Remarks: Items 7, 8 for blinding'\n"
             "  Combine multiple column header details with semicolons: 'QTY: 2 PCS; Material: STEEL; Remarks: Items 7, 8 for blinding'. NEVER output raw unlabelled values like 'PCS', 'PCS, NS12132', or 'STEEL' without header labels!\n"
             "- PART NUMBERS VALIDATION: Validate part numbers carefully. Do NOT extract serial numbers, prose/phrases ('refer to page...', 'see drawing'), or full page text into part_number. If no valid catalog part number is found in the manual, leave part_number as null.\n"
             "- PDF FILENAME PROHIBITION: PDF filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf') must NEVER be captured in part_number, drawing_number, drawing_position, or spare_model. Leave these fields blank (null) if the information is not found in the manual.\n"
-            "- PART NAME & SPECIFICATION SEPARATION: If a spare name contains specifications, dimensions, or materials (e.g. 'O-RING (15.5 x 2.4 FKM)' or 'HEX BOLT M12 x 45 STAINLESS'), separate them. Capture ONLY the spare name (e.g. 'O-RING', 'HEX BOLT') in part_name, and capture the additional details (e.g. '15.5 x 2.4 FKM', 'M12 x 45 STAINLESS') in specification with header labels.\n"
+            "- PART NAME & SPECIFICATION SEPARATION: If a spare name contains specifications, dimensions, or materials (e.g. 'O-RING (15.5 x 2.4 FKM)' or 'HEX BOLT M12 x 45 STAINLESS'), separate them. Capture ONLY the spare name (e.g. 'O-Ring', 'Hex Bolt') in part_name, and capture the additional details (e.g. '15.5 x 2.4 FKM', 'M12 x 45 STAINLESS') in specification with header labels.\n"
             "- COUNT FIRST: count only structured table rows (grid rows with Part No/Name/Qty columns — NOT numbers in assembly diagram callouts). Output exactly that many records.\n"
             "- Extract EVERY row from parts tables — never skip rows\n"
             "- ASSEMBLY DIAGRAM RULE: If a page has an exploded-view/assembly diagram with numbered callouts AND a parts table below it, extract ONLY from the parts table rows. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them.\n"
             "- DUPLICATE TABLE TEXT RULE: Some pages contain the same table represented twice: once as plain unstructured text (where column values are printed inline) and once as a structured `[TABLE]` pipe-delimited block. Do NOT extract duplicate records from both. Extract ONLY from the structured `[TABLE]` block, and ignore the plain unstructured text of those same table rows to prevent duplicate/repeated records.\n"
-            "- REMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly variant tags — store in spare_model, NOT in part_name or drawing_number.\n"
+            "- REMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly variant tags — store in spare_model (in ALL CAPS), NOT in part_name or drawing_number.\n"
             "- For drawing parts tables (NO./NAME/MATERIAL): drawing_position=NO., specification=MATERIAL\n"
             "- Part numbers: include exactly as printed (do not reformat)\n"
-            "- spare_maker: infer from document title/header (e.g. 'TAIKO KIKAI INDUSTRIES' → 'Taiko Kikai')\n"
-            "- spare_model: identify the assembly details from the header of the table, section heading, or drawing/diagram title of the page (e.g. 'Machine spare parts list')\n"
             "- If no spare parts found, return []\n"
             "- Return ONLY the JSON array, no markdown fences\n"
+
             "LANGUAGE RULES (STRICT — NO EXCEPTIONS):\n"
             "- ALL output fields MUST contain English text ONLY\n"
             "- NEVER output Japanese, Chinese, Korean, or any other non-Latin characters in ANY field\n"
@@ -451,6 +456,28 @@ def _recover_partial_json_array(raw_text: str) -> list[dict]:
     except Exception:
         pass
     return []
+
+
+def to_proper_case(text: str | None) -> str | None:
+    """Convert string to Title Case / Proper Text (Each word capitalized followed by lower case)
+    while preserving hyphenated compounds like 'O-Ring', 'V-Belt', 'Non-Return', 'Anti-Vibration'
+    and slashes like 'Inlet/Outlet'.
+    """
+    if not text or not str(text).strip():
+        return None
+    s = str(text).strip()
+
+    def _capitalize_token(tok: str) -> str:
+        if "-" in tok and not tok.startswith("-") and not tok.endswith("-"):
+            return "-".join(_capitalize_token(sub) for sub in tok.split("-"))
+        if "/" in tok and not tok.startswith("/") and not tok.endswith("/"):
+            return "/".join(_capitalize_token(sub) for sub in tok.split("/"))
+        if not tok:
+            return tok
+        return tok[0].upper() + tok[1:].lower()
+
+    words = s.split()
+    return " ".join(_capitalize_token(w) for w in words)
 
 
 def _format_specification_headers(spec: str | None) -> str | None:
@@ -563,7 +590,7 @@ def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type
                     combined_spec = f"{extracted_spec}; {existing_spec}".strip("; ") if existing_spec else extracted_spec
                     record["specification"] = combined_spec
 
-    # Format specification with explicit table column header prefixes
+    # Format specification with explicit table column header prefixes (preserving verbatim manual values)
     if record.get("specification"):
         record["specification"] = _format_specification_headers(record["specification"])
 
@@ -578,6 +605,23 @@ def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type
                     record[k] = None
             else:
                 record[k] = cleaned_str
+
+    # Casing & Formatting Rules for Spares:
+    # 1. Part name, Assembly, Assembly Description in Proper Text / Title Case
+    # 2. Maker, Model, Drawing number in ALL CAPS
+    if extraction_type == "spare" or "part_name" in record:
+        if record.get("part_name"):
+            record["part_name"] = to_proper_case(record["part_name"])
+        if record.get("spare_assembly"):
+            record["spare_assembly"] = to_proper_case(record["spare_assembly"])
+        if record.get("assembly_description"):
+            record["assembly_description"] = to_proper_case(record["assembly_description"])
+        if record.get("spare_maker"):
+            record["spare_maker"] = str(record["spare_maker"]).strip().upper()
+        if record.get("spare_model"):
+            record["spare_model"] = str(record["spare_model"]).strip().upper()
+        if record.get("drawing_number"):
+            record["drawing_number"] = str(record["drawing_number"]).strip().upper()
 
     # Ensure required name fields are never None or empty
     if "part_name" in record and not record["part_name"]:
@@ -2585,21 +2629,27 @@ async def _process_and_save_page_records(
                     base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
                     _assembly = base_name.replace("-", " ").replace("_", " ").title()
 
+            _asm = to_proper_case(record.get("spare_assembly") or record.get("spare_model") or _assembly)
+            _asm_desc = to_proper_case(record.get("assembly_description") or _asm)
+            _maker = str(record.get("spare_maker")).strip().upper() if record.get("spare_maker") else None
+            _model = str(record.get("spare_model")).strip().upper() if record.get("spare_model") else (_asm.upper() if _asm else None)
+            _dwg = str(record.get("drawing_number")).strip().upper() if record.get("drawing_number") else None
+
             spare = Spare(
                 tenant_id=tenant_id,
                 vessel_id=vessel_id,
                 source_manual_id=manual.id,
                 confidence_score=confidence,
                 qc_status=QCStatus.pending,
-                part_name=record.get("part_name") or "Unknown Part",
+                part_name=to_proper_case(record.get("part_name")) or "Unknown Part",
                 part_number=record.get("part_number") or fallback_part_number,
-                drawing_number=record.get("drawing_number") or None,
+                drawing_number=_dwg,
                 drawing_position=record.get("drawing_position") or None,
-                specification=_format_specification_headers(record.get("specification")) or None,
-                spare_assembly=_assembly,
-                assembly_description=record.get("assembly_description") or _assembly or None,
-                spare_maker=record.get("spare_maker") or None,
-                spare_model=record.get("spare_model") or _assembly or None,
+                specification=_format_specification_headers(record.get("specification")) or (record.get("specification") or None),
+                spare_assembly=_asm,
+                assembly_description=_asm_desc,
+                spare_maker=_maker,
+                spare_model=_model,
                 page_reference=int(source_page) if source_page is not None else None,
             )
             to_add.append(spare)

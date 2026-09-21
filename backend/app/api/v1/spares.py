@@ -20,6 +20,7 @@ from app.models.spare import ExtractionMethod, Spare
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.spare import SpareCreate, SpareOut, SpareUpdate
+from app.services.extractor import _format_specification_headers, to_proper_case
 from app.services.feedback_learning import schedule_feedback_learning
 from app.services.review_workflow import (
     broadcast_activity,
@@ -597,10 +598,26 @@ async def create_spare(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> SpareOut:
     await _get_vessel_or_404(vessel_id, db)
+    data = body.model_dump()
+    if data.get("part_name"):
+        data["part_name"] = to_proper_case(data["part_name"])
+    if data.get("spare_assembly"):
+        data["spare_assembly"] = to_proper_case(data["spare_assembly"])
+    if data.get("assembly_description"):
+        data["assembly_description"] = to_proper_case(data["assembly_description"])
+    if data.get("spare_maker"):
+        data["spare_maker"] = str(data["spare_maker"]).strip().upper()
+    if data.get("spare_model"):
+        data["spare_model"] = str(data["spare_model"]).strip().upper()
+    if data.get("drawing_number"):
+        data["drawing_number"] = str(data["drawing_number"]).strip().upper()
+    if data.get("specification"):
+        data["specification"] = _format_specification_headers(data["specification"]) or data["specification"]
+
     spare = Spare(
         tenant_id=current_user.tenant_id,
         vessel_id=vessel_id,
-        **body.model_dump(),
+        **data,
     )
     if spare.spare_assembly and not spare.assembly_description:
         spare.assembly_description = spare.spare_assembly
@@ -647,6 +664,21 @@ async def update_spare(
     original = {"part_name": spare.part_name, "qc_status": spare.qc_status.value}
     original_qc_status = spare.qc_status
     update_data = body.model_dump(exclude_unset=True)
+    if "part_name" in update_data and update_data["part_name"]:
+        update_data["part_name"] = to_proper_case(update_data["part_name"])
+    if "spare_assembly" in update_data and update_data["spare_assembly"]:
+        update_data["spare_assembly"] = to_proper_case(update_data["spare_assembly"])
+    if "assembly_description" in update_data and update_data["assembly_description"]:
+        update_data["assembly_description"] = to_proper_case(update_data["assembly_description"])
+    if "spare_maker" in update_data and update_data["spare_maker"]:
+        update_data["spare_maker"] = str(update_data["spare_maker"]).strip().upper()
+    if "spare_model" in update_data and update_data["spare_model"]:
+        update_data["spare_model"] = str(update_data["spare_model"]).strip().upper()
+    if "drawing_number" in update_data and update_data["drawing_number"]:
+        update_data["drawing_number"] = str(update_data["drawing_number"]).strip().upper()
+    if "specification" in update_data and update_data["specification"]:
+        update_data["specification"] = _format_specification_headers(update_data["specification"]) or update_data["specification"]
+
     for field, value in update_data.items():
         setattr(spare, field, value)
     if "spare_assembly" in update_data and "assembly_description" not in update_data:
@@ -1081,21 +1113,28 @@ async def snip_save_spares(
 
     saved_spares: list[Spare] = []
     for record in records:
-        part_name = str(record.get("part_name") or "").strip()
+        part_name = to_proper_case(str(record.get("part_name") or "").strip())
         if not part_name:
             continue
+        _asm = to_proper_case(record.get("spare_assembly") or record.get("spare_model"))
+        _asm_desc = to_proper_case(record.get("assembly_description") or record.get("spare_assembly") or record.get("spare_model"))
+        _maker = str(record.get("spare_maker")).strip().upper() if record.get("spare_maker") else None
+        _model = str(record.get("spare_model")).strip().upper() if record.get("spare_model") else None
+        _dwg = str(record.get("drawing_number")).strip().upper() if record.get("drawing_number") else None
+        _spec = _format_specification_headers(record.get("specification")) or (record.get("specification") or None)
+
         spare = Spare(
             tenant_id=current_user.tenant_id,
             vessel_id=vessel_id,
             part_name=part_name,
             part_number=record.get("part_number") or None,
-            drawing_number=record.get("drawing_number") or None,
+            drawing_number=_dwg,
             drawing_position=record.get("drawing_position") or None,
-            specification=record.get("specification") or None,
-            spare_assembly=record.get("spare_model") or None,
-            assembly_description=record.get("spare_model") or None,
-            spare_maker=record.get("spare_maker") or None,
-            spare_model=record.get("spare_model") or None,
+            specification=_spec,
+            spare_assembly=_asm,
+            assembly_description=_asm_desc,
+            spare_maker=_maker,
+            spare_model=_model,
             source_manual_id=source_manual_id,
             page_reference=page_number,
             extraction_method=ExtractionMethod.manual,
