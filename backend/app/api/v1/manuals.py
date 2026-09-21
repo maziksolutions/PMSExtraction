@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
+import logging
 import os
 import re
+import tempfile
 import uuid
 from typing import Annotated, Any, Optional
 
@@ -11,6 +14,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 
 from app.core.database import get_db
 from app.deps import get_current_user
@@ -24,6 +28,9 @@ from app.services.review_workflow import broadcast_activity, log_activity
 from app.services.upload_security import validate_uploaded_file_bytes
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+MANUAL_CACHE_DIR = os.path.join(tempfile.gettempdir(), "pms_manual_cache")
+
 
 VESSEL_TYPE_MANUAL_TEMPLATES = {
     "Bulk Carrier": [
@@ -349,8 +356,102 @@ async def _download_manual_bytes(manual: Manual) -> bytes:
         with open(blob_key, "rb") as fh:
             return fh.read()
 
+    # Check local container cache
+    os.makedirs(MANUAL_CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(MANUAL_CACHE_DIR, f"{manual.id}.pdf")
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as fh:
+                cached_data = fh.read()
+                if len(cached_data) > 0:
+                    return cached_data
+        except Exception as err:
+            logger.warning(f"Could not read cached manual {manual.id}: {err}")
+
     blob_service = BlobStorageService()
-    return await blob_service.download_bytes(blob_key)
+    file_bytes = await blob_service.download_bytes(blob_key)
+    try:
+        with open(cache_path, "wb") as fh:
+            fh.write(file_bytes)
+    except Exception as err:
+        logger.warning(f"Could not write manual to cache {manual.id}: {err}")
+    return file_bytes
+
+
+def _render_pdf_preview_pages_sync(
+    file_bytes: bytes,
+    requested_pages: list[int],
+    page_text_lookup: dict[int, str],
+) -> tuple[int, list[dict[str, Any]]]:
+    """Render preview pages for a PDF file using PyMuPDF (fitz) with pdfplumber fallback."""
+    preview_pages: list[dict[str, Any]] = []
+    total_pages = 0
+
+    # 1. High-performance PyMuPDF (fitz) rendering (~30ms per page)
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        total_pages = len(doc)
+        for page_number in requested_pages:
+            page_payload: dict[str, Any] = {
+                "page_number": page_number,
+                "text_excerpt": (page_text_lookup.get(page_number) or "")[:4000],
+                "image_data_url": None,
+            }
+            if 1 <= page_number <= len(doc):
+                page = doc.load_page(page_number - 1)
+                try:
+                    pix = page.get_pixmap(dpi=140)
+                    png_bytes = pix.tobytes("png")
+                    page_payload["image_data_url"] = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+                except Exception as render_exc:
+                    logger.warning(f"PyMuPDF rendering error on page {page_number}: {render_exc}")
+                    page_payload["image_data_url"] = None
+
+                if not page_payload["text_excerpt"]:
+                    try:
+                        page_payload["text_excerpt"] = (page.get_text() or "")[:4000]
+                    except Exception:
+                        page_payload["text_excerpt"] = ""
+            else:
+                page_payload["error"] = "Requested page is outside the PDF page count."
+            preview_pages.append(page_payload)
+        doc.close()
+        return total_pages, preview_pages
+    except Exception as fitz_err:
+        logger.warning(f"PyMuPDF failed or unavailable, falling back to pdfplumber: {fitz_err}")
+
+    # 2. Fallback to pdfplumber
+    import pdfplumber
+
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        total_pages = len(pdf.pages)
+        for page_number in requested_pages:
+            page_payload: dict[str, Any] = {
+                "page_number": page_number,
+                "text_excerpt": (page_text_lookup.get(page_number) or "")[:4000],
+                "image_data_url": None,
+            }
+            if 1 <= page_number <= len(pdf.pages):
+                page = pdf.pages[page_number - 1]
+                try:
+                    page_payload["image_data_url"] = _encode_png_data_url(
+                        page.to_image(resolution=140).original
+                    )
+                except Exception:
+                    page_payload["image_data_url"] = None
+                if not page_payload["text_excerpt"]:
+                    try:
+                        page_payload["text_excerpt"] = (page.extract_text() or "")[:4000]
+                    except Exception:
+                        page_payload["text_excerpt"] = ""
+            else:
+                page_payload["error"] = "Requested page is outside the PDF page count."
+            preview_pages.append(page_payload)
+
+    return total_pages, preview_pages
+
 
 
 def _encode_png_data_url(image: Any) -> str:
@@ -593,32 +694,13 @@ async def preview_manual_pages(
     if (manual.file_extension or "").lower() == "pdf":
         file_bytes = await _download_manual_bytes(manual)
         try:
-            import pdfplumber
-
-            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                page_count = page_count or len(pdf.pages)
-                for page_number in requested_pages:
-                    page_payload: dict[str, Any] = {
-                        "page_number": page_number,
-                        "text_excerpt": (page_text_lookup.get(page_number) or "")[:4000],
-                        "image_data_url": None,
-                    }
-                    if 1 <= page_number <= len(pdf.pages):
-                        page = pdf.pages[page_number - 1]
-                        try:
-                            page_payload["image_data_url"] = _encode_png_data_url(
-                                page.to_image(resolution=140).original
-                            )
-                        except Exception:
-                            page_payload["image_data_url"] = None
-                        if not page_payload["text_excerpt"]:
-                            try:
-                                page_payload["text_excerpt"] = (page.extract_text() or "")[:4000]
-                            except Exception:
-                                page_payload["text_excerpt"] = ""
-                    else:
-                        page_payload["error"] = "Requested page is outside the PDF page count."
-                    preview_pages.append(page_payload)
+            total_pages, preview_pages = await asyncio.to_thread(
+                _render_pdf_preview_pages_sync,
+                file_bytes,
+                requested_pages,
+                page_text_lookup,
+            )
+            page_count = page_count or total_pages
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,

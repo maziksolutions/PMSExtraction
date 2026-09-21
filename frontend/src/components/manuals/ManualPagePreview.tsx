@@ -136,6 +136,7 @@ const ManualPagePreview: React.FC<ManualPagePreviewProps> = ({
       apiClient
         .get(`/vessels/${vesselId}/manuals/${manualId}/page-preview`, {
           params: { pages: requestedPages },
+          timeout: 0,
         })
         .then((response) => response.data),
     enabled: !!manualId && !!requestedPages,

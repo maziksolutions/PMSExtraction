@@ -154,9 +154,54 @@ const SnipExtractJobsModal: React.FC<SnipExtractJobsModalProps> = ({ vesselId, o
     setSaveMessage(null)
   }
 
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const [loadingElapsed, setLoadingElapsed] = useState(0)
+
+  // Track elapsed seconds while loading
+  React.useEffect(() => {
+    let interval: any
+    if (isLoadingPage) {
+      setLoadingElapsed(0)
+      interval = setInterval(() => {
+        setLoadingElapsed((s) => s + 1)
+      }, 1000)
+    } else {
+      setLoadingElapsed(0)
+    }
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [isLoadingPage])
+
+  // Clean up abort controller on unmount
+  React.useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+    }
+  }, [])
+
+  const cancelPageLoading = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+    setIsLoadingPage(false)
+    setPageLoadError(null)
+  }
+
   // Handle manual selection & page loading
   const loadPageWithNum = async (pageNum: number, manualId = selectedManualId) => {
     if (!manualId || pageNum < 1) return
+
+    // Cancel any previous in-flight page load
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
     setIsLoadingPage(true)
     setPageLoadError(null)
     setDisplayImageUrl(null)
@@ -166,6 +211,8 @@ const SnipExtractJobsModal: React.FC<SnipExtractJobsModalProps> = ({ vesselId, o
     try {
       const res = await apiClient.get(`/vessels/${vesselId}/manuals/${manualId}/page-preview`, {
         params: { pages: String(pageNum) },
+        signal: controller.signal,
+        timeout: 0, // No timeout action unless user clicks cancel
       })
       const page = (res.data.pages ?? [])[0]
       if (page?.image_data_url) {
@@ -175,10 +222,16 @@ const SnipExtractJobsModal: React.FC<SnipExtractJobsModalProps> = ({ vesselId, o
       } else {
         setPageLoadError('No image available for this page.')
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') {
+        return // Intentionally cancelled by user or replaced by newer request
+      }
       setPageLoadError(getApiError(err))
     } finally {
-      setIsLoadingPage(false)
+      if (abortControllerRef.current === controller) {
+        setIsLoadingPage(false)
+        abortControllerRef.current = null
+      }
     }
   }
 
@@ -467,13 +520,25 @@ const SnipExtractJobsModal: React.FC<SnipExtractJobsModalProps> = ({ vesselId, o
                   <ChevronRight className="h-3.5 w-3.5" />
                 </button>
               )}
-              <button
-                onClick={loadPage}
-                disabled={!selectedManualId || isLoadingPage}
-                className="rounded-lg bg-sky-600 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
-              >
-                {isLoadingPage ? 'Loading...' : 'Go'}
-              </button>
+              {isLoadingPage ? (
+                <button
+                  type="button"
+                  onClick={cancelPageLoading}
+                  className="flex items-center gap-1 rounded-lg border border-red-800/80 bg-red-950/40 px-3 py-2 text-xs font-medium text-red-300 hover:bg-red-900/60 transition-colors"
+                  title="Cancel loading"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Cancel
+                </button>
+              ) : (
+                <button
+                  onClick={loadPage}
+                  disabled={!selectedManualId || isLoadingPage}
+                  className="rounded-lg bg-sky-600 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-500 disabled:opacity-50"
+                >
+                  Go
+                </button>
+              )}
               {selectedManualId && (
                 <button
                   type="button"
@@ -522,9 +587,30 @@ const SnipExtractJobsModal: React.FC<SnipExtractJobsModalProps> = ({ vesselId, o
             )}
 
             {isLoadingPage && (
-              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-slate-950/80 gap-2">
-                <Loader2 className="h-8 w-8 animate-spin text-sky-500" />
-                <span className="text-xs text-slate-400">Rendering page image...</span>
+              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-slate-950/85 p-8 text-center gap-3">
+                <div className="relative flex h-12 w-12 items-center justify-center rounded-full bg-sky-950/80 border border-sky-800/60">
+                  <Loader2 className="h-6 w-6 animate-spin text-sky-400" />
+                </div>
+                <h4 className="text-sm font-semibold text-slate-200">
+                  Rendering Page {pageInput || 1}...
+                </h4>
+                <p className="text-xs text-slate-400 max-w-xs">
+                  Fetching document and generating page preview ({loadingElapsed}s elapsed)
+                </p>
+
+                {/* Animated Progress Bar */}
+                <div className="w-60 max-w-full overflow-hidden rounded-full bg-slate-800/90 p-0.5 border border-slate-700/60 shadow-inner">
+                  <div className="h-1.5 w-full rounded-full bg-gradient-to-r from-sky-500 via-indigo-400 to-sky-400 animate-pulse" />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={cancelPageLoading}
+                  className="mt-2 flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/90 px-3.5 py-1.5 text-xs font-medium text-slate-300 hover:bg-red-950/60 hover:border-red-800 hover:text-red-300 transition-colors"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Cancel Loading
+                </button>
               </div>
             )}
 
