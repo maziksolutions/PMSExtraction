@@ -2,6 +2,7 @@ import React, { useRef, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Scissors, Upload, X, Loader2, CheckCircle, ChevronDown, RotateCcw, RotateCw, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, ExternalLink } from 'lucide-react'
 import apiClient from '@/api/client'
+import { SearchableSelect } from '@/components/SearchableSelect'
 
 interface ExtractedRecord {
   job_name: string
@@ -468,18 +469,19 @@ const SnipExtractJobsModal: React.FC<SnipExtractJobsModalProps> = ({ vesselId, o
           {/* Manual picker */}
           {imageMode === 'manual' && (
             <div className="flex shrink-0 items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 p-3">
-              <div className="relative flex-1">
-                <select
+              <div className="relative flex-1 min-w-0">
+                <SearchableSelect
                   value={selectedManualId}
-                  onChange={(e) => setSelectedManualId(e.target.value)}
-                  className="w-full appearance-none rounded-lg border border-slate-700 bg-slate-800 py-2 pl-3 pr-8 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                >
-                  <option value="">Select a manual…</option>
-                  {manuals.map((m) => (
-                    <option key={m.id} value={m.id}>{m.original_filename}</option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+                  onChange={(val) => setSelectedManualId(val)}
+                  options={manuals.map((m) => ({
+                    value: m.id,
+                    label: m.original_filename,
+                  }))}
+                  placeholder="Select a manual…"
+                  searchPlaceholder="Filter manuals by name…"
+                  allowCustom={false}
+                  disabled={isLoadingPage}
+                />
               </div>
               {loadedPage !== null && (
                 <button
