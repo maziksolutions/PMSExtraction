@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
+import { useTabStore } from '@/store/tabStore'
 import type { AuthTokens, User } from '@/types'
 
 interface LoginPayload {
@@ -63,6 +64,11 @@ export function useAuth(): UseAuthReturn {
       // Clear the local session even if the revoke request fails.
     } finally {
       storeLogout()
+      try {
+        useTabStore.getState().clearTabsOnLogout()
+      } catch {
+        // Ignore
+      }
       navigate('/login', { replace: true })
     }
   }, [navigate, refreshToken, storeLogout])

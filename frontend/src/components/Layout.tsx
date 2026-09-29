@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { NavLink, Outlet, useParams, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import apiClient from '@/api/client'
 import {
@@ -23,6 +23,9 @@ import {
 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useAuth } from '@/hooks/useAuth'
+import { useTabStore } from '@/store/tabStore'
+import { WorkspaceTabBar } from '@/components/layout/WorkspaceTabBar'
+import { WorkspaceBreadcrumbs } from '@/components/layout/WorkspaceBreadcrumbs'
 import { UserRole } from '@/types'
 import ActivityFeed from '@/components/ActivityFeed'
 import PresenceIndicators from '@/components/PresenceIndicators'
@@ -69,6 +72,7 @@ const Layout: React.FC = () => {
   const { user } = useAuthStore()
   const { logout } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const { vesselId } = useParams<{ vesselId?: string }>()
 
   const vesselQuery = useQuery<{ name: string; imo_number: string; vessel_type: string }>({
@@ -83,6 +87,14 @@ const Layout: React.FC = () => {
     if (typeof window === 'undefined') return false
     return window.localStorage.getItem('desktopSidebarCollapsed') === 'true'
   })
+
+  const { openTab, switchTab, syncWithRoute } = useTabStore()
+
+  // Sync active tab path and breadcrumb trail with browser navigation
+  React.useEffect(() => {
+    const fullPath = location.pathname + location.search
+    syncWithRoute(fullPath, vesselQuery.data?.name)
+  }, [location.pathname, location.search, vesselQuery.data?.name, syncWithRoute])
 
   React.useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -101,6 +113,19 @@ const Layout: React.FC = () => {
         ? 'border border-[#b6426b] bg-[#d4537e] text-[#fffdfd] shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]'
         : 'border border-transparent text-[#72243e] hover:bg-[#fff3f7] hover:text-[#4b1528]',
     ].join(' ')
+
+  const handleNavClick = (
+    e: React.MouseEvent,
+    to: string,
+    title?: string,
+    iconName?: string
+  ) => {
+    e.preventDefault()
+    const newTabId = openTab(to, title, iconName)
+    switchTab(newTabId)
+    navigate(to)
+    setSidebarOpen(false)
+  }
 
   const SidebarContent = () => (
     <div className="flex h-full flex-col">
@@ -128,7 +153,7 @@ const Layout: React.FC = () => {
               to={item.to}
               end={item.exact}
               className={navLinkClass}
-              onClick={() => setSidebarOpen(false)}
+              onClick={(e) => handleNavClick(e, item.to, item.label, item.icon?.displayName || item.icon?.name)}
             >
               <item.icon className="h-4 w-4 shrink-0" />
               {item.label}
@@ -142,7 +167,8 @@ const Layout: React.FC = () => {
           <>
             <div className="mt-4 mb-1 px-2">
               <button
-                onClick={() => { navigate('/vessels'); setSidebarOpen(false) }}
+                type="button"
+                onClick={(e) => handleNavClick(e, '/vessels', 'Vessels', 'Ship')}
                 className="flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-xs text-slate-500 hover:text-slate-300 transition-colors"
               >
                 <ChevronLeft className="h-3 w-3 shrink-0" />
@@ -150,7 +176,15 @@ const Layout: React.FC = () => {
               </button>
               {vesselQuery.data && (
                 <button
-                  onClick={() => { navigate(`/vessels/${vesselId}/ingestion`); setSidebarOpen(false) }}
+                  type="button"
+                  onClick={(e) =>
+                    handleNavClick(
+                      e,
+                      `/vessels/${vesselId}/ingestion`,
+                      `${vesselQuery.data.name} - Ingestion`,
+                      'FolderOpen'
+                    )
+                  }
                   className="mt-0.5 flex w-full flex-col rounded-lg border border-slate-800 bg-slate-800/60 px-3 py-2 text-left hover:border-sky-700 hover:bg-slate-800 transition-colors"
                 >
                   <span className="truncate text-sm font-semibold text-white leading-tight">
@@ -165,17 +199,23 @@ const Layout: React.FC = () => {
             <p className="mb-2 mt-3 px-3 text-xs font-semibold uppercase tracking-widest text-slate-600">
               Vessel Workflow
             </p>
-            {vesselNavItems(vesselId).map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={navLinkClass}
-                onClick={() => setSidebarOpen(false)}
-              >
-                <item.icon className="h-4 w-4 shrink-0" />
-                {item.label}
-              </NavLink>
-            ))}
+            {vesselNavItems(vesselId).map((item) => {
+              const fullTitle = vesselQuery.data?.name
+                ? `${vesselQuery.data.name} - ${item.label}`
+                : item.label
+
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={navLinkClass}
+                  onClick={(e) => handleNavClick(e, item.to, fullTitle, item.icon?.displayName || item.icon?.name)}
+                >
+                  <item.icon className="h-4 w-4 shrink-0" />
+                  {item.label}
+                </NavLink>
+              )
+            })}
           </>
         )}
       </nav>
@@ -233,7 +273,7 @@ const Layout: React.FC = () => {
       {/* Main content area */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top bar */}
-        <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900 px-4 md:px-6">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-800 bg-slate-900 px-4 md:px-6">
           <div className="flex items-center gap-3">
             <button
               className="flex items-center gap-1 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
@@ -298,6 +338,12 @@ const Layout: React.FC = () => {
             )}
           </div>
         </header>
+
+        {/* Multi-Tab Workspace Bar */}
+        <WorkspaceTabBar />
+
+        {/* Dynamic Breadcrumbs Bar */}
+        <WorkspaceBreadcrumbs />
 
         {/* Body: page content + optional activity feed panel */}
         <div className="flex flex-1 overflow-hidden">
