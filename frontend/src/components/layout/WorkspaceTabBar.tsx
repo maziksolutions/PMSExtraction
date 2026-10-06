@@ -60,6 +60,7 @@ export const WorkspaceTabBar: React.FC = () => {
   } = useTabStore()
 
   const tabListRef = useRef<HTMLDivElement>(null)
+  const newTabButtonRef = useRef<HTMLButtonElement>(null)
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
 
   // Scroll active tab into view smoothly
@@ -72,53 +73,92 @@ export const WorkspaceTabBar: React.FC = () => {
     }
   }, [activeTabId])
 
-  // Global keyboard shortcuts
+  // Global keyboard shortcuts simulating instant clicks
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // 1. Alt + 1..9 directly jumps to tab 1..9
+      // 1. Alt + 1..9 directly simulates clicking tab 1..9
       if (e.altKey && !e.ctrlKey && !e.metaKey && e.key >= '1' && e.key <= '9') {
         e.preventDefault()
         const targetIndex = parseInt(e.key, 10) - 1
-        const targetPath = switchToIndex(targetIndex)
-        if (targetPath) {
-          navigate(targetPath)
+        const allTabElements = tabListRef.current?.querySelectorAll<HTMLDivElement>('[data-tab-item="true"]')
+        if (allTabElements && allTabElements.length > 0) {
+          let elToClick: HTMLDivElement | undefined
+          if (targetIndex === 8 && allTabElements.length > 9) {
+            // Alt+9 clicks the last tab
+            elToClick = allTabElements[allTabElements.length - 1]
+          } else if (targetIndex < allTabElements.length) {
+            elToClick = allTabElements[targetIndex]
+          }
+          if (elToClick) {
+            elToClick.click()
+            return
+          }
         }
+        // Fallback direct store switch
+        const targetPath = switchToIndex(targetIndex)
+        if (targetPath) navigate(targetPath)
         return
       }
 
-      // 2. Alt + ArrowRight / Ctrl + PageDown -> Cycle Next Tab
+      // 2. Alt + ArrowRight / Ctrl + PageDown -> Cycle Next Tab click
       if ((e.altKey && e.key === 'ArrowRight') || (e.ctrlKey && e.key === 'PageDown')) {
         e.preventDefault()
-        const nextPath = cycleTab('next')
-        if (nextPath) {
-          navigate(nextPath)
+        const allTabElements = tabListRef.current?.querySelectorAll<HTMLDivElement>('[data-tab-item="true"]')
+        if (allTabElements && allTabElements.length > 1) {
+          const currentIdx = Array.from(allTabElements).findIndex(
+            (el) => el.getAttribute('data-active') === 'true'
+          )
+          if (currentIdx !== -1) {
+            const nextIdx = (currentIdx + 1) % allTabElements.length
+            allTabElements[nextIdx].click()
+            return
+          }
         }
+        const nextPath = cycleTab('next')
+        if (nextPath) navigate(nextPath)
         return
       }
 
-      // 3. Alt + ArrowLeft / Ctrl + PageUp -> Cycle Prev Tab
+      // 3. Alt + ArrowLeft / Ctrl + PageUp -> Cycle Prev Tab click
       if ((e.altKey && e.key === 'ArrowLeft') || (e.ctrlKey && e.key === 'PageUp')) {
         e.preventDefault()
-        const prevPath = cycleTab('prev')
-        if (prevPath) {
-          navigate(prevPath)
+        const allTabElements = tabListRef.current?.querySelectorAll<HTMLDivElement>('[data-tab-item="true"]')
+        if (allTabElements && allTabElements.length > 1) {
+          const currentIdx = Array.from(allTabElements).findIndex(
+            (el) => el.getAttribute('data-active') === 'true'
+          )
+          if (currentIdx !== -1) {
+            const prevIdx = (currentIdx - 1 + allTabElements.length) % allTabElements.length
+            allTabElements[prevIdx].click()
+            return
+          }
         }
+        const prevPath = cycleTab('prev')
+        if (prevPath) navigate(prevPath)
         return
       }
 
-      // 4. Alt + W -> Close active tab
+      // 4. Alt + W -> Simulate clicking the close button of active tab
       if (e.altKey && (e.key === 'w' || e.key === 'W')) {
         e.preventDefault()
-        const nextPath = closeTab(activeTabId)
-        if (nextPath) {
-          navigate(nextPath)
+        const activeTabEl = tabListRef.current?.querySelector<HTMLDivElement>('[data-tab-item="true"][data-active="true"]')
+        const closeBtn = activeTabEl?.querySelector<HTMLButtonElement>('button[data-close-btn="true"]')
+        if (closeBtn) {
+          closeBtn.click()
+          return
         }
+        const nextPath = closeTab(activeTabId)
+        if (nextPath) navigate(nextPath)
         return
       }
 
-      // 5. Alt + T -> Open new tab
+      // 5. Alt + T -> Simulate clicking the New Tab (+) button
       if (e.altKey && (e.key === 't' || e.key === 'T')) {
         e.preventDefault()
+        if (newTabButtonRef.current) {
+          newTabButtonRef.current.click()
+          return
+        }
         const newTabId = openTab('/')
         switchTab(newTabId)
         navigate('/')
@@ -132,7 +172,7 @@ export const WorkspaceTabBar: React.FC = () => {
 
   // Close context menu on outside click
   useEffect(() => {
-    const handleOutsideClick = (e: MouseEvent) => {
+    const handleOutsideClick = () => {
       if (contextMenu) {
         setContextMenu(null)
       }
@@ -191,6 +231,9 @@ export const WorkspaceTabBar: React.FC = () => {
           return (
             <div
               key={tab.id}
+              data-tab-item="true"
+              data-tab-id={tab.id}
+              data-tab-index={index}
               data-active={isActive ? 'true' : 'false'}
               onClick={() => handleTabClick(tab)}
               onContextMenu={(e) => handleContextMenu(e, tab.id)}
@@ -216,6 +259,7 @@ export const WorkspaceTabBar: React.FC = () => {
               {tab.isClosable !== false && tabs.length > 1 && (
                 <button
                   type="button"
+                  data-close-btn="true"
                   onClick={(e) => handleClose(e, tab.id)}
                   className="flex h-4 w-4 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-800 hover:text-red-400 transition-colors opacity-70 group-hover:opacity-100"
                   title="Close tab (Alt+W / Middle Click)"
@@ -229,6 +273,7 @@ export const WorkspaceTabBar: React.FC = () => {
 
         {/* Add Tab Button */}
         <button
+          ref={newTabButtonRef}
           type="button"
           onClick={handleNewTab}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition-colors ml-0.5"
