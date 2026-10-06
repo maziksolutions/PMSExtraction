@@ -25,8 +25,12 @@ interface TabStoreState {
 interface TabStoreActions {
   openTab: (path: string, customTitle?: string, customIcon?: string) => string
   switchTab: (tabId: string) => string | null
+  switchToIndex: (index: number) => string | null
+  cycleTab: (direction: 'next' | 'prev') => string | null
   closeTab: (tabId: string) => string | null
   closeOtherTabs: (keepTabId: string) => void
+  closeTabsToRight: (tabId: string) => void
+  duplicateTab: (tabId: string) => string | null
   closeAllTabs: () => string
   updateActiveTab: (updates: Partial<WorkspaceTab>) => void
   updateTabTitle: (tabId: string, title: string) => void
@@ -153,6 +157,43 @@ export const useTabStore = create<TabStore>()(
         return null
       },
 
+      switchToIndex: (index: number) => {
+        const { tabs } = get()
+        if (tabs.length === 0) return null
+
+        // Standard browser Alt+9 behavior: switch to last tab if 9th pressed
+        let targetIndex = index
+        if (index === 8 && tabs.length > 9) {
+          targetIndex = tabs.length - 1
+        }
+
+        if (targetIndex >= 0 && targetIndex < tabs.length) {
+          const targetTab = tabs[targetIndex]
+          set({ activeTabId: targetTab.id })
+          return targetTab.path
+        }
+        return null
+      },
+
+      cycleTab: (direction: 'next' | 'prev') => {
+        const { tabs, activeTabId } = get()
+        if (tabs.length <= 1) return null
+
+        const currentIdx = tabs.findIndex((t) => t.id === activeTabId)
+        if (currentIdx === -1) return null
+
+        let nextIdx: number
+        if (direction === 'next') {
+          nextIdx = (currentIdx + 1) % tabs.length
+        } else {
+          nextIdx = (currentIdx - 1 + tabs.length) % tabs.length
+        }
+
+        const nextTab = tabs[nextIdx]
+        set({ activeTabId: nextTab.id })
+        return nextTab.path
+      },
+
       closeTab: (tabId: string) => {
         const state = get()
         const tabIndex = state.tabs.findIndex((t) => t.id === tabId)
@@ -186,6 +227,47 @@ export const useTabStore = create<TabStore>()(
           tabs: kept.length > 0 ? kept : [createDefaultTab()],
           activeTabId: keepTabId,
         })
+      },
+
+      closeTabsToRight: (tabId: string) => {
+        const state = get()
+        const tabIndex = state.tabs.findIndex((t) => t.id === tabId)
+        if (tabIndex === -1) return
+
+        const kept = state.tabs.slice(0, tabIndex + 1)
+        const isCurrentActiveKept = kept.some((t) => t.id === state.activeTabId)
+
+        set({
+          tabs: kept,
+          activeTabId: isCurrentActiveKept ? state.activeTabId : tabId,
+        })
+      },
+
+      duplicateTab: (tabId: string) => {
+        const state = get()
+        const sourceTab = state.tabs.find((t) => t.id === tabId)
+        if (!sourceTab) return null
+
+        const sourceIndex = state.tabs.findIndex((t) => t.id === tabId)
+        const newTabId = `tab-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`
+
+        const newTab: WorkspaceTab = {
+          ...sourceTab,
+          id: newTabId,
+          title: `${sourceTab.title} (Copy)`,
+          isClosable: true,
+          createdAt: Date.now(),
+        }
+
+        const newTabs = [...state.tabs]
+        newTabs.splice(sourceIndex + 1, 0, newTab)
+
+        set({
+          tabs: newTabs,
+          activeTabId: newTabId,
+        })
+
+        return newTab.path
       },
 
       closeAllTabs: () => {
