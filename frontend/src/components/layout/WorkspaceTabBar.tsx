@@ -50,8 +50,6 @@ export const WorkspaceTabBar: React.FC = () => {
     tabs,
     activeTabId,
     switchTab,
-    switchToIndex,
-    cycleTab,
     closeTab,
     closeOtherTabs,
     closeTabsToRight,
@@ -73,102 +71,125 @@ export const WorkspaceTabBar: React.FC = () => {
     }
   }, [activeTabId])
 
-  // Global keyboard shortcuts simulating instant clicks
+  // Global capture-phase keyboard shortcuts simulating native clicks immediately
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // 1. Alt + 1..9 directly simulates clicking tab 1..9
-      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key >= '1' && e.key <= '9') {
+      const isDigit = e.key >= '1' && e.key <= '9'
+      const isAltDigit = e.altKey && !e.ctrlKey && !e.metaKey && isDigit
+      const isCtrlDigit = e.ctrlKey && !e.altKey && !e.metaKey && isDigit
+
+      // 1. Alt + 1..9 (or Ctrl + 1..9) -> Direct Tab Switch Click
+      if (isAltDigit || isCtrlDigit) {
         e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+
+        const currentTabs = useTabStore.getState().tabs
         const targetIndex = parseInt(e.key, 10) - 1
-        const allTabElements = tabListRef.current?.querySelectorAll<HTMLDivElement>('[data-tab-item="true"]')
-        if (allTabElements && allTabElements.length > 0) {
-          let elToClick: HTMLDivElement | undefined
-          if (targetIndex === 8 && allTabElements.length > 9) {
-            // Alt+9 clicks the last tab
-            elToClick = allTabElements[allTabElements.length - 1]
-          } else if (targetIndex < allTabElements.length) {
-            elToClick = allTabElements[targetIndex]
-          }
-          if (elToClick) {
-            elToClick.click()
-            return
+        let targetTab: WorkspaceTab | undefined
+
+        if (targetIndex === 8 && currentTabs.length > 9) {
+          targetTab = currentTabs[currentTabs.length - 1]
+        } else if (targetIndex < currentTabs.length) {
+          targetTab = currentTabs[targetIndex]
+        }
+
+        if (targetTab) {
+          const tabEl = tabListRef.current?.querySelector<HTMLDivElement>(`[data-tab-id="${targetTab.id}"]`)
+          if (tabEl) {
+            tabEl.click()
+          } else {
+            const nextPath = useTabStore.getState().switchTab(targetTab.id)
+            if (nextPath) navigate(nextPath)
           }
         }
-        // Fallback direct store switch
-        const targetPath = switchToIndex(targetIndex)
-        if (targetPath) navigate(targetPath)
         return
       }
 
-      // 2. Alt + ArrowRight / Ctrl + PageDown -> Cycle Next Tab click
+      // 2. Alt + ArrowRight / Ctrl + PageDown -> Cycle Next Tab Click
       if ((e.altKey && e.key === 'ArrowRight') || (e.ctrlKey && e.key === 'PageDown')) {
         e.preventDefault()
-        const allTabElements = tabListRef.current?.querySelectorAll<HTMLDivElement>('[data-tab-item="true"]')
-        if (allTabElements && allTabElements.length > 1) {
-          const currentIdx = Array.from(allTabElements).findIndex(
-            (el) => el.getAttribute('data-active') === 'true'
-          )
-          if (currentIdx !== -1) {
-            const nextIdx = (currentIdx + 1) % allTabElements.length
-            allTabElements[nextIdx].click()
-            return
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+
+        const currentTabs = useTabStore.getState().tabs
+        const currentActiveId = useTabStore.getState().activeTabId
+        const currentIdx = currentTabs.findIndex((t) => t.id === currentActiveId)
+        if (currentIdx !== -1 && currentTabs.length > 1) {
+          const nextIdx = (currentIdx + 1) % currentTabs.length
+          const nextTab = currentTabs[nextIdx]
+          const tabEl = tabListRef.current?.querySelector<HTMLDivElement>(`[data-tab-id="${nextTab.id}"]`)
+          if (tabEl) {
+            tabEl.click()
+          } else {
+            const nextPath = useTabStore.getState().switchTab(nextTab.id)
+            if (nextPath) navigate(nextPath)
           }
         }
-        const nextPath = cycleTab('next')
-        if (nextPath) navigate(nextPath)
         return
       }
 
-      // 3. Alt + ArrowLeft / Ctrl + PageUp -> Cycle Prev Tab click
+      // 3. Alt + ArrowLeft / Ctrl + PageUp -> Cycle Prev Tab Click
       if ((e.altKey && e.key === 'ArrowLeft') || (e.ctrlKey && e.key === 'PageUp')) {
         e.preventDefault()
-        const allTabElements = tabListRef.current?.querySelectorAll<HTMLDivElement>('[data-tab-item="true"]')
-        if (allTabElements && allTabElements.length > 1) {
-          const currentIdx = Array.from(allTabElements).findIndex(
-            (el) => el.getAttribute('data-active') === 'true'
-          )
-          if (currentIdx !== -1) {
-            const prevIdx = (currentIdx - 1 + allTabElements.length) % allTabElements.length
-            allTabElements[prevIdx].click()
-            return
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+
+        const currentTabs = useTabStore.getState().tabs
+        const currentActiveId = useTabStore.getState().activeTabId
+        const currentIdx = currentTabs.findIndex((t) => t.id === currentActiveId)
+        if (currentIdx !== -1 && currentTabs.length > 1) {
+          const prevIdx = (currentIdx - 1 + currentTabs.length) % currentTabs.length
+          const prevTab = currentTabs[prevIdx]
+          const tabEl = tabListRef.current?.querySelector<HTMLDivElement>(`[data-tab-id="${prevTab.id}"]`)
+          if (tabEl) {
+            tabEl.click()
+          } else {
+            const nextPath = useTabStore.getState().switchTab(prevTab.id)
+            if (nextPath) navigate(nextPath)
           }
         }
-        const prevPath = cycleTab('prev')
-        if (prevPath) navigate(prevPath)
         return
       }
 
-      // 4. Alt + W -> Simulate clicking the close button of active tab
-      if (e.altKey && (e.key === 'w' || e.key === 'W')) {
+      // 4. Alt + W / Ctrl + W -> Close Active Tab Click
+      if ((e.altKey && (e.key === 'w' || e.key === 'W')) || (e.ctrlKey && (e.key === 'w' || e.key === 'W'))) {
         e.preventDefault()
-        const activeTabEl = tabListRef.current?.querySelector<HTMLDivElement>('[data-tab-item="true"][data-active="true"]')
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+
+        const currentActiveId = useTabStore.getState().activeTabId
+        const activeTabEl = tabListRef.current?.querySelector<HTMLDivElement>(`[data-tab-id="${currentActiveId}"]`)
         const closeBtn = activeTabEl?.querySelector<HTMLButtonElement>('button[data-close-btn="true"]')
         if (closeBtn) {
           closeBtn.click()
-          return
+        } else {
+          const nextPath = useTabStore.getState().closeTab(currentActiveId)
+          if (nextPath) navigate(nextPath)
         }
-        const nextPath = closeTab(activeTabId)
-        if (nextPath) navigate(nextPath)
         return
       }
 
-      // 5. Alt + T -> Simulate clicking the New Tab (+) button
-      if (e.altKey && (e.key === 't' || e.key === 'T')) {
+      // 5. Alt + T / Alt + N -> New Tab (+) Button Click
+      if (e.altKey && (e.key === 't' || e.key === 'T' || e.key === 'n' || e.key === 'N')) {
         e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+
         if (newTabButtonRef.current) {
           newTabButtonRef.current.click()
-          return
+        } else {
+          const newTabId = useTabStore.getState().openTab('/')
+          useTabStore.getState().switchTab(newTabId)
+          navigate('/')
         }
-        const newTabId = openTab('/')
-        switchTab(newTabId)
-        navigate('/')
         return
       }
     }
 
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [switchToIndex, cycleTab, closeTab, activeTabId, openTab, switchTab, navigate])
+    window.addEventListener('keydown', handleKeyDown, { capture: true })
+    return () => window.removeEventListener('keydown', handleKeyDown, { capture: true })
+  }, [navigate])
 
   // Close context menu on outside click
   useEffect(() => {
