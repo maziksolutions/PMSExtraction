@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application source
 COPY backend/ .
 
+# Ensure startup scripts have UNIX line endings and executable permissions
+RUN sed -i 's/\r$//' /app/backend/scripts/*.sh && chmod +x /app/backend/scripts/*.sh
+
 # Expose API port
 EXPOSE 8000
 
