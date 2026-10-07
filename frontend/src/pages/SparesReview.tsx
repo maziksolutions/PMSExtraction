@@ -138,8 +138,8 @@ function SpareEditorModal({
     drawing_number: initialValues?.drawing_number ?? '',
     drawing_position: initialValues?.drawing_position ?? '',
     specification: initialValues?.specification ?? '',
-    spare_assembly: initialValues?.spare_assembly ?? initialValues?.spare_model ?? '',
-    assembly_description: initialValues?.assembly_description ?? initialValues?.spare_assembly ?? initialValues?.spare_model ?? '',
+    spare_assembly: initialValues?.spare_assembly ?? '',
+    assembly_description: initialValues?.assembly_description ?? initialValues?.spare_assembly ?? '',
     spare_maker: initialValues?.spare_maker ?? '',
     spare_model: initialValues?.spare_model ?? '',
     component_id: initialValues?.component_id ?? '',
@@ -156,8 +156,8 @@ function SpareEditorModal({
       drawing_number: initialValues?.drawing_number ?? '',
       drawing_position: initialValues?.drawing_position ?? '',
       specification: initialValues?.specification ?? '',
-      spare_assembly: initialValues?.spare_assembly ?? initialValues?.spare_model ?? '',
-      assembly_description: initialValues?.assembly_description ?? initialValues?.spare_assembly ?? initialValues?.spare_model ?? '',
+      spare_assembly: initialValues?.spare_assembly ?? '',
+      assembly_description: initialValues?.assembly_description ?? initialValues?.spare_assembly ?? '',
       spare_maker: initialValues?.spare_maker ?? '',
       spare_model: initialValues?.spare_model ?? '',
       component_id: initialValues?.component_id ?? '',
@@ -1027,18 +1027,18 @@ const SparesReview: React.FC = () => {
                     </td>
                     <td className="px-4 py-2.5">
                       <input
-                        value={edits[spare.id]?.spare_assembly ?? (spare.spare_assembly ?? spare.spare_model ?? '')}
+                        value={edits[spare.id]?.spare_assembly ?? (spare.spare_assembly ?? '')}
                         onChange={(e) => setEdit(spare.id, 'spare_assembly', e.target.value)}
                         className="w-[240px] rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                        title={spare.spare_assembly ?? spare.spare_model ?? ''}
+                        title={spare.spare_assembly ?? ''}
                       />
                     </td>
                     <td className="px-4 py-2.5">
                       <input
-                        value={edits[spare.id]?.assembly_description ?? (spare.assembly_description ?? spare.spare_assembly ?? spare.spare_model ?? '')}
+                        value={edits[spare.id]?.assembly_description ?? (spare.assembly_description ?? spare.spare_assembly ?? '')}
                         onChange={(e) => setEdit(spare.id, 'assembly_description', e.target.value)}
                         className="w-[260px] rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-                        title={spare.assembly_description ?? spare.spare_assembly ?? spare.spare_model ?? ''}
+                        title={spare.assembly_description ?? spare.spare_assembly ?? ''}
                       />
                     </td>
                     <td className="px-4 py-2.5">

@@ -349,10 +349,10 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             '  "drawing_number": "DWG.NO or drawing reference in ALL CAPS (e.g. \'B3798160-02\', \'FIG.7\', \'DWG-1234\') or null",\n'
             '  "drawing_position": "REF.NO or position from the parts table — copy EXACTLY as printed, including ranges (e.g. \'1\', \'11\', \'1~58\', \'155~156\', \'101~105\') or null",\n'
             '  "specification": "material, size, standard, quantity note strictly as formatted in the manual with NO abbreviations or value modifications (e.g. \'QTY: 2 PCS; Material: SUS304; Size: DN50\') or null",\n'
-            '  "spare_assembly": "assembly or component name in Proper Text / Title Case (e.g. \'Cargo Pumping System\', \'Shaft Seal Assembly\') or null",\n'
+            '  "spare_assembly": "assembly name, parts table title, or diagram section in Proper Text / Title Case (e.g. \'Cargo Pumping System\', \'Shaft Seal Assembly\', \'Main Components Exploded View\', \'Machine Spare Parts List\') or null",\n'
             '  "assembly_description": "assembly description in Proper Text / Title Case or null",\n'
             '  "spare_maker": "manufacturer in ALL CAPS (e.g. \'WARTSILA\', \'YANMAR\', \'DAIHATSU\', \'SHINKO\', \'FRAMO\', \'TAIKO KIKAI\') or null",\n'
-            '  "spare_model": "model, drawing title, or sub-assembly tag in ALL CAPS (e.g. \'6L28/32H\', \'DK-20\', \'CB-125\', \'MACHINE SPARE PARTS LIST\') or null",\n'
+            '  "spare_model": "equipment/machinery model number or type code ONLY in ALL CAPS (e.g. \'6L28/32H\', \'DK-20\', \'CB-125\', \'6EY18ALW\') — NEVER put generic assembly titles or parts list titles here, or null",\n'
             '  "source_page_number": integer from [PAGE N] marker or null,\n'
             '  "confidence_score": integer 70-98\n'
             "}\n\n"
@@ -363,6 +363,9 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "    2. spare_assembly and assembly_description MUST be in Proper Text / Title Case (Each word capitalized followed by lower case).\n"
             "    3. spare_maker, spare_model, and drawing_number MUST be in ALL CAPS (e.g. 'WARTSILA', 'YANMAR', 'DK-20', 'FIG.7', 'DWG-102').\n"
             "    4. specification MUST be captured as per the same format from the manual, with zero modifications, abbreviations, or changes to conventions or values.\n"
+            "- ASSEMBLY VS MODEL SEPARATION (CRITICAL):\n"
+            "    • spare_assembly: Put the assembly title, drawing section, sub-assembly, or parts table title here in Proper Text / Title Case (e.g. 'Main Components Exploded View', 'Cylinder Cover Assembly', 'Shaft Seal Assembly', 'Machine Spare Parts List').\n"
+            "    • spare_model: Put ONLY the equipment model number / machinery type code here in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125', '6L28/32H'). NEVER put assembly titles, table titles, or parts list names into spare_model. If no specific equipment model number is on the page, leave spare_model as null.\n"
             "- ENGLISH-ONLY & MULTILINGUAL TABLES: Spare parts should be extracted ONLY from the English-language column or English text. All other language columns (Japanese, Chinese, Korean, etc.) MUST be ignored completely.\n"
             "- SPECIFICATION COLUMN HEADER REFERENCES (CRITICAL): Every piece of detail in specification MUST explicitly include its table column header label as a prefix. For example:\n"
             "    • Quantity: 'QTY: 2 PCS' or 'QTY: 1 SET'. If the column has only a unit string like 'PCS' or 'SET' without a number, format as 'QTY: 1 PCS' or 'QTY: 1 SET'.\n"
@@ -1187,7 +1190,8 @@ async def _extract_entities_from_page_image_with_openai(
                 "\n  • part_number → PC.NO value"
                 "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
                 "\n  • specification → QTY + REMARKS translated to English"
-                "\n  • spare_model → the header/title of the parts table or the diagram title of the page (e.g. 'Machine spare parts list', 'Main Components Exploded View')"
+                "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
+                "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
             )
         if context_note:
             text_instructions += f"\n\nAdditional context:\n{context_note}"
@@ -1270,7 +1274,8 @@ async def _extract_entities_from_page_image_with_claude(
                 "\n  • part_number → PC.NO value"
                 "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
                 "\n  • specification → QTY + REMARKS translated to English"
-                "\n  • spare_model → the header/title of the parts table or the diagram title of the page (e.g. 'Machine spare parts list', 'Main Components Exploded View')"
+                "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
+                "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
             )
         if context_note:
             text_instructions += f"\n\nAdditional context:\n{context_note}"
@@ -2623,7 +2628,7 @@ async def _process_and_save_page_records(
                 if source_page is not None
                 else filename
             )
-            _assembly = record.get("spare_assembly") or record.get("spare_model") or None
+            _assembly = record.get("spare_assembly") or None
             if not _assembly:
                 candidates = extracted_component_context or existing_manual_component_context
                 if candidates:
@@ -2632,10 +2637,10 @@ async def _process_and_save_page_records(
                     base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
                     _assembly = base_name.replace("-", " ").replace("_", " ").title()
 
-            _asm = to_proper_case(record.get("spare_assembly") or record.get("spare_model") or _assembly)
+            _asm = to_proper_case(record.get("spare_assembly") or _assembly)
             _asm_desc = to_proper_case(record.get("assembly_description") or _asm)
             _maker = str(record.get("spare_maker")).strip().upper() if record.get("spare_maker") else None
-            _model = str(record.get("spare_model")).strip().upper() if record.get("spare_model") else (_asm.upper() if _asm else None)
+            _model = str(record.get("spare_model")).strip().upper() if record.get("spare_model") else None
             _dwg = str(record.get("drawing_number")).strip().upper() if record.get("drawing_number") else None
 
             spare = Spare(
