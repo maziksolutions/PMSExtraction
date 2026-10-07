@@ -344,7 +344,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "  A single page can contain 100-300 individual parts — extract EVERY one.\n\n"
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
-            '  "part_name": "exact part name in Proper Text / Title Case (e.g. \'O-Ring\', \'Ball Bearing\', \'Mechanical Seal\', \'Suction Cover Gasket\', \'Hex Bolt\')",\n'
+            '  "part_name": "part name captured exactly as written in the manual in Proper Text / Title Case, preserving original wording, abbreviations, and misspellings with zero modification (e.g. \'O-Ring\', \'Vlv Stem\', \'Ball Bearing\', \'Fltr Element\', \'Hex Bolt\')",\n'
             '  "part_number": "catalog/part number exactly as printed or null",\n'
             '  "drawing_number": "DWG.NO or drawing reference in ALL CAPS (e.g. \'B3798160-02\', \'FIG.7\', \'DWG-1234\') or null",\n'
             '  "drawing_position": "REF.NO or position from the parts table — copy EXACTLY as printed, including ranges (e.g. \'1\', \'11\', \'1~58\', \'155~156\', \'101~105\') or null",\n'
@@ -359,9 +359,10 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "RULES:\n"
             "- source_page_number from [PAGE N] markers only\n"
             "- CASING & FORMATTING STANDARDS (CRITICAL):\n"
-            "    1. part_name, spare_assembly, and assembly_description MUST be in Proper Text / Title Case (Each word capitalized followed by lower case, e.g. 'O-Ring', 'Ball Bearing', 'Mechanical Seal', 'Suction Cover Gasket').\n"
-            "    2. spare_maker, spare_model, and drawing_number MUST be in ALL CAPS (e.g. 'WARTSILA', 'YANMAR', 'DK-20', 'FIG.7', 'DWG-102').\n"
-            "    3. specification MUST be captured as per the same format from the manual, with zero modifications, abbreviations, or changes to conventions or values.\n"
+            "    1. part_name MUST be captured verbatim as written/printed in the manual — even if misspelled or abbreviated. Do NOT correct spelling, do NOT expand abbreviations, and do NOT modify or standardize the wording. Format the text in Proper Text / Title Case (e.g. 'O-Ring', 'Vlv Stem', 'Ball Bearing', 'Fltr Element', 'Mispelled Part').\n"
+            "    2. spare_assembly and assembly_description MUST be in Proper Text / Title Case (Each word capitalized followed by lower case).\n"
+            "    3. spare_maker, spare_model, and drawing_number MUST be in ALL CAPS (e.g. 'WARTSILA', 'YANMAR', 'DK-20', 'FIG.7', 'DWG-102').\n"
+            "    4. specification MUST be captured as per the same format from the manual, with zero modifications, abbreviations, or changes to conventions or values.\n"
             "- ENGLISH-ONLY & MULTILINGUAL TABLES: Spare parts should be extracted ONLY from the English-language column or English text. All other language columns (Japanese, Chinese, Korean, etc.) MUST be ignored completely.\n"
             "- SPECIFICATION COLUMN HEADER REFERENCES (CRITICAL): Every piece of detail in specification MUST explicitly include its table column header label as a prefix. For example:\n"
             "    • Quantity: 'QTY: 2 PCS' or 'QTY: 1 SET'. If the column has only a unit string like 'PCS' or 'SET' without a number, format as 'QTY: 1 PCS' or 'QTY: 1 SET'.\n"
@@ -371,7 +372,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "  Combine multiple column header details with semicolons: 'QTY: 2 PCS; Material: STEEL; Remarks: Items 7, 8 for blinding'. NEVER output raw unlabelled values like 'PCS', 'PCS, NS12132', or 'STEEL' without header labels!\n"
             "- PART NUMBERS VALIDATION: Validate part numbers carefully. Do NOT extract serial numbers, prose/phrases ('refer to page...', 'see drawing'), or full page text into part_number. If no valid catalog part number is found in the manual, leave part_number as null.\n"
             "- PDF FILENAME PROHIBITION: PDF filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf') must NEVER be captured in part_number, drawing_number, drawing_position, or spare_model. Leave these fields blank (null) if the information is not found in the manual.\n"
-            "- PART NAME & SPECIFICATION SEPARATION: If a spare name contains specifications, dimensions, or materials (e.g. 'O-RING (15.5 x 2.4 FKM)' or 'HEX BOLT M12 x 45 STAINLESS'), separate them. Capture ONLY the spare name (e.g. 'O-Ring', 'Hex Bolt') in part_name, and capture the additional details (e.g. '15.5 x 2.4 FKM', 'M12 x 45 STAINLESS') in specification with header labels.\n"
+            "- PART NAME & SPECIFICATION SEPARATION: If a spare name contains specifications, dimensions, or materials (e.g. 'O-RING (15.5 x 2.4 FKM)' or 'HEX BOLT M12 x 45 STAINLESS'), separate them. Capture the spare name (preserving abbreviations/spelling as printed, e.g. 'O-Ring', 'Hex Bolt') in part_name, and capture the additional details (e.g. '15.5 x 2.4 FKM', 'M12 x 45 STAINLESS') in specification with header labels. Do NOT modify, replace, or normalize the part name wording.\n"
             "- COUNT FIRST: count only structured table rows (grid rows with Part No/Name/Qty columns — NOT numbers in assembly diagram callouts). Output exactly that many records.\n"
             "- Extract EVERY row from parts tables — never skip rows\n"
             "- ASSEMBLY DIAGRAM RULE: If a page has an exploded-view/assembly diagram with numbered callouts AND a parts table below it, extract ONLY from the parts table rows. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them.\n"
@@ -1184,7 +1185,7 @@ async def _extract_entities_from_page_image_with_openai(
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
                 "\n  • drawing_position → REF.NO value — copy EXACTLY as printed, including ranges (e.g. '1~58', '155~156')"
                 "\n  • part_number → PC.NO value"
-                "\n  • part_name → DESCRIPTION translated to English"
+                "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
                 "\n  • specification → QTY + REMARKS translated to English"
                 "\n  • spare_model → the header/title of the parts table or the diagram title of the page (e.g. 'Machine spare parts list', 'Main Components Exploded View')"
             )
@@ -1267,7 +1268,7 @@ async def _extract_entities_from_page_image_with_claude(
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
                 "\n  • drawing_position → REF.NO value — copy EXACTLY as printed, including ranges (e.g. '1~58', '155~156')"
                 "\n  • part_number → PC.NO value"
-                "\n  • part_name → DESCRIPTION translated to English"
+                "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
                 "\n  • specification → QTY + REMARKS translated to English"
                 "\n  • spare_model → the header/title of the parts table or the diagram title of the page (e.g. 'Machine spare parts list', 'Main Components Exploded View')"
             )
