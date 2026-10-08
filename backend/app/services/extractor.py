@@ -464,8 +464,8 @@ def _recover_partial_json_array(raw_text: str) -> list[dict]:
 
 def to_proper_case(text: str | None) -> str | None:
     """Convert string to Title Case / Proper Text (Each word capitalized followed by lower case)
-    while preserving hyphenated compounds like 'O-Ring', 'V-Belt', 'Non-Return', 'Anti-Vibration'
-    and slashes like 'Inlet/Outlet'.
+    while preserving hyphenated compounds like 'O-Ring', 'V-Belt', 'Non-Return', 'Anti-Vibration',
+    slashes like 'Inlet/Outlet', and parenthesized/bracketed words like '(Ptfe)', '[Auxiliary]'.
     """
     if not text or not str(text).strip():
         return None
@@ -478,7 +478,11 @@ def to_proper_case(text: str | None) -> str | None:
             return "/".join(_capitalize_token(sub) for sub in tok.split("/"))
         if not tok:
             return tok
-        return tok[0].upper() + tok[1:].lower()
+        m = re.match(r"^([^a-zA-Z0-9]*)([a-zA-Z0-9])(.*)$", tok)
+        if m:
+            prefix, first_char, rest = m.groups()
+            return prefix + first_char.upper() + rest.lower()
+        return tok
 
     words = s.split()
     return " ".join(_capitalize_token(w) for w in words)

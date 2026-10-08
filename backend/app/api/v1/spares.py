@@ -105,8 +105,8 @@ def _spare_out_payload(spare: Spare) -> dict[str, Any]:
         "drawing_number": spare.drawing_number,
         "drawing_position": spare.drawing_position,
         "specification": spare.specification,
-        "spare_assembly": spare.spare_assembly or spare.spare_model,
-        "assembly_description": spare.assembly_description or spare.spare_assembly or spare.spare_model,
+        "spare_assembly": spare.spare_assembly,
+        "assembly_description": spare.assembly_description or spare.spare_assembly,
         "spare_maker": spare.spare_maker,
         "spare_model": spare.spare_model,
         "machinery_maker": spare.machinery_maker,
@@ -1116,8 +1116,8 @@ async def snip_save_spares(
         part_name = to_proper_case(str(record.get("part_name") or "").strip())
         if not part_name:
             continue
-        _asm = to_proper_case(record.get("spare_assembly") or record.get("spare_model"))
-        _asm_desc = to_proper_case(record.get("assembly_description") or record.get("spare_assembly") or record.get("spare_model"))
+        _asm = to_proper_case(record.get("spare_assembly"))
+        _asm_desc = to_proper_case(record.get("assembly_description") or record.get("spare_assembly"))
         _maker = str(record.get("spare_maker")).strip().upper() if record.get("spare_maker") else None
         _model = str(record.get("spare_model")).strip().upper() if record.get("spare_model") else None
         _dwg = str(record.get("drawing_number")).strip().upper() if record.get("drawing_number") else None
