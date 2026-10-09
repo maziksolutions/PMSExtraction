@@ -1643,8 +1643,13 @@ async def export_components_qc(
     else:
         filename = f"Components_QC_{safe_vessel_name}.xlsx"
 
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
     return StreamingResponse(
-        io.BytesIO(buf.getvalue()),
+        buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
