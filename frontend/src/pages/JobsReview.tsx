@@ -183,6 +183,24 @@ function getApiErrorMessage(error: unknown): string {
   return maybeError?.message ?? 'Request failed.'
 }
 
+function parseLowestFrequency(val: string | number | null | undefined): number | null {
+  if (val === null || val === undefined || val === '') return null
+  if (typeof val === 'number') return isNaN(val) ? null : val
+  const str = String(val).trim()
+  const rangeMatch = str.match(/(\d+)\s*(?:[-~–—/]|to)\s*(\d+)/i)
+  if (rangeMatch) {
+    const n1 = parseInt(rangeMatch[1], 10)
+    const n2 = parseInt(rangeMatch[2], 10)
+    return Math.min(n1, n2)
+  }
+  const singleMatch = str.match(/\b\d+\b/)
+  if (singleMatch) {
+    const n = parseInt(singleMatch[0], 10)
+    return isNaN(n) ? null : n
+  }
+  return null
+}
+
 function buildJobPayload(edit: InlineJobEdit | BatchJobFields): Record<string, unknown> {
   const payload: Record<string, unknown> = {}
   if ('job_name' in edit) payload.job_name = edit.job_name ?? ''
@@ -190,7 +208,7 @@ function buildJobPayload(edit: InlineJobEdit | BatchJobFields): Record<string, u
   if ('job_code' in edit) payload.job_code = edit.job_code ? edit.job_code : null
   if ('performing_rank' in edit) payload.performing_rank = edit.performing_rank ? edit.performing_rank : null
   if ('verifying_rank' in edit) payload.verifying_rank = edit.verifying_rank ? edit.verifying_rank : null
-  if ('frequency' in edit) payload.frequency = edit.frequency ? Number(edit.frequency) : null
+  if ('frequency' in edit) payload.frequency = parseLowestFrequency(edit.frequency)
   if ('frequency_type' in edit) payload.frequency_type = edit.frequency_type ? edit.frequency_type : null
   if ('cms_id' in edit) payload.cms_id = edit.cms_id ? edit.cms_id : null
   if ('qc_status' in edit && edit.qc_status) payload.qc_status = edit.qc_status
@@ -476,9 +494,9 @@ function JobEditor({
             tools_required: form.tools_required || null,
             performing_rank: form.performing_rank || null,
             verifying_rank: form.verifying_rank || null,
-            frequency: form.frequency ? Number(form.frequency) : null,
+            frequency: parseLowestFrequency(form.frequency),
             frequency_type: form.frequency_type || null,
-            initial_due: form.initial_due ? Number(form.initial_due) : null,
+            initial_due: parseLowestFrequency(form.initial_due),
             initial_frequency_type: form.initial_frequency_type || null,
             cms_id: form.cms_id || null,
             is_critical: form.is_critical,

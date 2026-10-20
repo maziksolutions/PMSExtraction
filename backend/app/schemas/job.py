@@ -1,13 +1,37 @@
-from __future__ import annotations
-
+import re
+from typing import Any, Optional
 import uuid
 from datetime import datetime
-from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.models.component import QCStatus
 from app.models.job import FrequencyType
+
+
+def _parse_frequency_lowest(v: Any) -> Optional[int]:
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        try:
+            return int(v)
+        except (ValueError, TypeError, OverflowError):
+            return None
+    s = str(v).strip()
+    if not s or s.lower() in ("none", "null", "n/a", "-"):
+        return None
+    range_match = re.search(r"(\d+)\s*(?:[-~–—/]|to)\s*(\d+)", s, re.I)
+    if range_match:
+        n1 = int(range_match.group(1))
+        n2 = int(range_match.group(2))
+        return min(n1, n2)
+    num_match = re.search(r"\b\d+\b", s)
+    if num_match:
+        try:
+            return int(num_match.group(0))
+        except (ValueError, TypeError):
+            return None
+    return None
 
 
 class JobOut(BaseModel):
@@ -61,6 +85,11 @@ class JobCreate(BaseModel):
     source_reference: Optional[str] = None
     source_manual_id: Optional[uuid.UUID] = None
 
+    @field_validator("frequency", mode="before")
+    @classmethod
+    def parse_frequency_lowest(cls, v: Any) -> Optional[int]:
+        return _parse_frequency_lowest(v)
+
 
 class JobUpdate(BaseModel):
     job_name: Optional[str] = None
@@ -81,3 +110,9 @@ class JobUpdate(BaseModel):
     page_reference: Optional[int] = None
     pdf_reference: Optional[str] = None
     source_reference: Optional[str] = None
+
+    @field_validator("frequency", mode="before")
+    @classmethod
+    def parse_frequency_lowest(cls, v: Any) -> Optional[int]:
+        return _parse_frequency_lowest(v)
+

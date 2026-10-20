@@ -41,6 +41,7 @@ from app.services.job_naming import (
     summarize_reference_entries,
 )
 from app.services.upload_security import validate_uploaded_file_bytes
+from app.services.extractor import parse_job_frequency
 
 router = APIRouter()
 _JOB_MAINTENANCE_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
@@ -1696,16 +1697,14 @@ async def snip_save_jobs(
             continue
         
         freq_raw = record.get("frequency")
-        frequency: Optional[int] = None
-        if freq_raw is not None:
+        raw_freq_type = record.get("frequency_type")
+        frequency, freq_type_str = parse_job_frequency(freq_raw, raw_freq_type)
+        freq_type = None
+        if freq_type_str:
             try:
-                frequency = int(freq_raw)
-            except (ValueError, TypeError):
-                pass
-                
-        freq_type = record.get("frequency_type")
-        if freq_type not in ["daily", "weekly", "monthly", "yearly", "hourly"]:
-            freq_type = None
+                freq_type = FrequencyType(freq_type_str)
+            except ValueError:
+                freq_type = None
 
         job = Job(
             tenant_id=current_user.tenant_id,
@@ -1936,20 +1935,14 @@ async def import_jobs(
         is_critical = critical_raw in {"yes", "true", "1", "y"}
 
         raw_freq_type = r.get("frequency_type") or ""
+        raw_freq = r.get("frequency") or ""
+        freq_val, freq_type_str = parse_job_frequency(raw_freq, raw_freq_type)
         freq_type: Optional[FrequencyType] = None
-        if raw_freq_type:
+        if freq_type_str:
             try:
-                freq_type = FrequencyType(raw_freq_type.lower().strip())
+                freq_type = FrequencyType(freq_type_str)
             except ValueError:
                 freq_type = None
-
-        raw_freq = r.get("frequency") or ""
-        freq_val: Optional[int] = None
-        if raw_freq:
-            try:
-                freq_val = int(float(raw_freq))
-            except ValueError:
-                freq_val = None
 
         new_job = Job(
             tenant_id=current_user.tenant_id,

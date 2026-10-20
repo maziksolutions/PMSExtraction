@@ -283,6 +283,13 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "  Monthly / Every month / 30 days / Quarterly / Every 3 months / Half yearly / Every 6 months → frequency_type='monthly', frequency=<month count>\n"
             "  Yearly / Annually / Once a year / Every 2 years / Biannual → frequency_type='yearly', frequency=<year count>\n"
             "  Running hours / Every Nh / Engine hours → frequency_type='hourly', frequency=<hour value>\n\n"
+            "FREQUENCY RANGE RULE (CRITICAL):\n"
+            "  When an inspection or maintenance interval is given as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs', '1-2 years'), ALWAYS extract the LOWEST (minimum) value of the range as an integer.\n"
+            "  Examples:\n"
+            "    - '4-6 months' → frequency=4, frequency_type='monthly' (NEVER average to 5 or use the upper bound 6)\n"
+            "    - '500 - 1000 hours' → frequency=500, frequency_type='hourly'\n"
+            "    - '1~2 weeks' → frequency=1, frequency_type='weekly'\n"
+            "    - '2 to 3 years' → frequency=2, frequency_type='yearly'\n\n"
             "IMPORTANT — job_name formatting:\n"
             "  - Be specific: 'Replace UV lamp' not 'Replace lamp'\n"
             "  - Include equipment context: 'Check aeration blower air filter'\n"
@@ -293,13 +300,14 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             '  "job_code": "section/item number from manual (e.g. \'8.3.2\', \'Item 4\') or null",\n'
             '  "job_description": "full procedure text. Every line must start with /*- and any list items (e.g. a., b., 1., 2., a), b), 1), 2)) must be placed on a new line starting with /*-",\n'
             '  "safety_precaution": "WARNING/CAUTION/NOTICE text relevant to this job or null",\n'
-            '  "frequency": integer representing the interval value (1 for daily, 2 for biweekly, 12 for yearly, etc.) or null,\n'
+            '  "frequency": integer representing the interval value (1 for daily, 2 for biweekly, 12 for yearly, etc.) or null — if given as a range (e.g. 4-6 months), ALWAYS capture the LOWEST number (e.g. 4),\n'
             '  "frequency_type": "daily|weekly|monthly|yearly|hourly — ONLY these 5 values or null",\n'
             '  "is_critical": true if this job is for safety/regulatory equipment or has a WARNING label,\n'
             '  "source_page_number": integer from [PAGE N] marker or null,\n'
             '  "confidence_score": integer 70-98\n'
             "}\n\n"
             "RULES:\n"
+            "- FREQUENCY RANGE RULE (CRITICAL): If frequency or interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound.\n"
             "- job_description formatting: Every non-empty line of the description body must start with /*-. If the description contains list items (like a. line, b. line, a) line, 1) line, etc.), each item must be placed on a new line and start with /*-.\n"
             "- ENGLISH-ONLY & MULTILINGUAL TABLES: Maintenance jobs should be extracted ONLY from the English-language column or English text. All other language columns (Japanese, Chinese, Korean, etc.) MUST be ignored completely.\n"
             "- PDF FILENAME PROHIBITION: PDF filenames must NEVER be captured in job_code or job_name. Leave these fields blank (null) if no valid value is present.\n"
@@ -316,7 +324,8 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "Extract all maintenance jobs, service intervals, and inspection tasks. "
             "Use [PAGE N] markers for source_page_number.\n"
             "Look for: maintenance schedule tables (Interval | Description), numbered procedure sections, "
-            "and section headings describing service tasks.\n\n{text}"
+            "and section headings describing service tasks.\n"
+            "NOTE: If frequency is given as a range (e.g. 4-6 months), ALWAYS extract the LOWEST value (e.g. 4).\n\n{text}"
         ),
     },
     "spare": {
@@ -488,6 +497,58 @@ def to_proper_case(text: str | None) -> str | None:
     return " ".join(_capitalize_token(w) for w in words)
 
 
+def parse_job_frequency(raw_freq: Any, raw_freq_type: Any = None) -> tuple[int | None, str | None]:
+    """Parse frequency and frequency_type, strictly resolving ranges (e.g. '4-6 months', '500-1000 hrs')
+    to the lowest numeric interval value (e.g. 4, 500).
+    """
+    freq_val: int | None = None
+    freq_type_str: str | None = None
+
+    if raw_freq_type:
+        raw_ft = str(raw_freq_type).strip().lower()
+        if raw_ft in {"daily", "weekly", "monthly", "yearly", "hourly"}:
+            freq_type_str = raw_ft
+
+    if raw_freq is not None and str(raw_freq).strip():
+        if isinstance(raw_freq, (int, float)):
+            try:
+                freq_val = int(raw_freq)
+            except (ValueError, TypeError, OverflowError):
+                freq_val = None
+        else:
+            s = str(raw_freq).strip()
+            # If string contains units or range, e.g. "4-6 months", "500 - 1000 hours"
+            # Try inferring frequency_type if not already known
+            if not freq_type_str:
+                s_lower = s.lower()
+                if "hour" in s_lower or "hr" in s_lower or re.search(r"\b\d+h\b", s_lower):
+                    freq_type_str = "hourly"
+                elif "month" in s_lower:
+                    freq_type_str = "monthly"
+                elif "week" in s_lower:
+                    freq_type_str = "weekly"
+                elif "year" in s_lower or "annual" in s_lower:
+                    freq_type_str = "yearly"
+                elif "day" in s_lower or "daily" in s_lower:
+                    freq_type_str = "daily"
+
+            # Check range pattern like "4-6", "4 to 6", "4 - 6", "4~6", "4/6"
+            range_match = re.search(r"(\d+)\s*(?:[-~–—/]|to)\s*(\d+)", s, re.I)
+            if range_match:
+                n1 = int(range_match.group(1))
+                n2 = int(range_match.group(2))
+                freq_val = min(n1, n2)
+            else:
+                num_match = re.search(r"\b\d+\b", s)
+                if num_match:
+                    try:
+                        freq_val = int(num_match.group(0))
+                    except (ValueError, TypeError):
+                        freq_val = None
+
+    return freq_val, freq_type_str
+
+
 def _format_specification_headers(spec: str | None) -> str | None:
     if not spec or not str(spec).strip():
         return None
@@ -630,6 +691,16 @@ def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type
             record["spare_model"] = str(record["spare_model"]).strip().upper()
         if record.get("drawing_number"):
             record["drawing_number"] = str(record["drawing_number"]).strip().upper()
+
+    # Normalization for Jobs:
+    # Resolve ranges to lowest numeric frequency value (e.g. '4-6 months' -> 4)
+    if extraction_type == "job" or "job_name" in record:
+        if record.get("frequency") is not None or record.get("frequency_type"):
+            f_val, f_type = parse_job_frequency(record.get("frequency"), record.get("frequency_type"))
+            record["frequency"] = f_val
+            if f_type:
+                record["frequency_type"] = f_type
+
 
     # Ensure required name fields are never None or empty
     if "part_name" in record and not record["part_name"]:
@@ -1197,6 +1268,10 @@ async def _extract_entities_from_page_image_with_openai(
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
             )
+        elif extraction_type == "job":
+            text_instructions += (
+                "\n\nFREQUENCY RANGE RULE (CRITICAL): If frequency or maintenance interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound."
+            )
         if context_note:
             text_instructions += f"\n\nAdditional context:\n{context_note}"
 
@@ -1280,6 +1355,10 @@ async def _extract_entities_from_page_image_with_claude(
                 "\n  • specification → QTY + REMARKS translated to English"
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
+            )
+        elif extraction_type == "job":
+            text_instructions += (
+                "\n\nFREQUENCY RANGE RULE (CRITICAL): If frequency or maintenance interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound."
             )
         if context_note:
             text_instructions += f"\n\nAdditional context:\n{context_note}"
@@ -2580,20 +2659,14 @@ async def _process_and_save_page_records(
 
         elif etype == "job":
             raw_freq_type = record.get("frequency_type")
+            raw_freq = record.get("frequency")
+            freq_val, freq_type_str = parse_job_frequency(raw_freq, raw_freq_type)
             freq_type: Optional[FrequencyType] = None
-            if raw_freq_type:
+            if freq_type_str:
                 try:
-                    freq_type = FrequencyType(raw_freq_type.lower())
+                    freq_type = FrequencyType(freq_type_str)
                 except ValueError:
                     freq_type = None
-
-            raw_freq = record.get("frequency")
-            freq_val: Optional[int] = None
-            if raw_freq is not None:
-                try:
-                    freq_val = int(raw_freq)
-                except (TypeError, ValueError):
-                    freq_val = None
 
             job = Job(
                 tenant_id=tenant_id,
