@@ -382,6 +382,11 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "    • Size/Dimensions: 'Size: DN50', 'Dimensions: 15.5 x 2.4 FKM'\n"
             "    • Remarks: 'Remarks: Items 7, 8 for blinding'\n"
             "  Combine multiple column header details with semicolons: 'QTY: 2 PCS; Material: STEEL; Remarks: Items 7, 8 for blinding'. NEVER output raw unlabelled values like 'PCS', 'PCS, NS12132', or 'STEEL' without header labels!\n"
+            "- QTY AND REMARKS SEPARATION (CRITICAL):\n"
+            "    • Under specification, 'QTY:' MUST strictly contain ONLY the numeric quantity and its unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS', 'QTY: 4 EA', 'QTY: 6 EA/ST').\n"
+            "    • NEVER merge remarks, comments, notes, model variants, applicability notes, parentheses, or materials into the QTY field!\n"
+            "    • If a table has a REMARKS or NOTE column (or parenthetical remarks next to quantity like '(USH-20)' or 'For pump outlet'), ALWAYS place that text under 'Remarks:' with a semicolon separator (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet', NOT 'QTY: 1 SET (USH-20) For pump outlet').\n"
+            "    • If material information is present (e.g. SUS304, Steel, Rubber), place it under 'Material:' (e.g. 'QTY: 1 PCS; Material: SUS304; Remarks: For pump outlet').\n"
             "- PART NUMBERS VALIDATION: Validate part numbers carefully. Do NOT extract serial numbers, prose/phrases ('refer to page...', 'see drawing'), or full page text into part_number. If no valid catalog part number is found in the manual, leave part_number as null.\n"
             "- PDF FILENAME PROHIBITION: PDF filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf') must NEVER be captured in part_number, drawing_number, drawing_position, or spare_model. Leave these fields blank (null) if the information is not found in the manual.\n"
             "- PART NAME & SPECIFICATION SEPARATION: If a spare name contains specifications, dimensions, or materials (e.g. 'O-RING (15.5 x 2.4 FKM)' or 'HEX BOLT M12 x 45 STAINLESS'), separate them. Capture the spare name (preserving abbreviations/spelling as printed, e.g. 'O-Ring', 'Hex Bolt') in part_name, and capture the additional details (e.g. '15.5 x 2.4 FKM', 'M12 x 45 STAINLESS') in specification with header labels. Do NOT modify, replace, or normalize the part name wording.\n"
@@ -411,7 +416,8 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "Use [PAGE N] markers for source_page_number.\n"
             "Look for: parts tables (NO./NAME/MATERIAL/QTY), drawing parts lists, "
             "sections titled 'Spare Parts', 'Parts List', 'Recommended Spares'.\n"
-            "IMPORTANT: All extracted data must be in English only. Translate any non-English text (Japanese, Chinese, etc.) to English.\n\n{text}"
+            "IMPORTANT: All extracted data must be in English only. Translate any non-English text (Japanese, Chinese, etc.) to English.\n"
+            "CRITICAL: Keep QTY strictly limited to quantity and unit (e.g. 'QTY: 1 SET'). Never merge remarks, applicability, or notes into QTY; put them under 'Remarks:' separated by semicolons.\n\n{text}"
         ),
     },
 }
@@ -549,60 +555,198 @@ def parse_job_frequency(raw_freq: Any, raw_freq_type: Any = None) -> tuple[int |
     return freq_val, freq_type_str
 
 
+_KNOWN_UNITS = r"(?:PCS|PC|SETS?|EA(?:/ST)?|OFF|UNITS?|KG|MM|M(?!\d)|LITRES?|LTRS?|L(?!\d)|PAIRS?|BOX(?:ES)?|ROLLS?|PKT|PACKS?)"
+_PER_UNIT = r"(?:/(?:ST|SET|ENG|VESSEL|UNIT|CYL|PUMP))?"
+_MAT_KEYWORDS = r"\b(STEEL|SUS\d*|STAINLESS|BRASS|BRONZE|RUBBER|ARAM|NBR|EPDM|IRON|CAST\s*IRON|GRAPHITE|COPPER|ALUMINUM|ALUMINIUM|PVC|PHENOL|QUARTZ|CAC\d*|SB\d*|S20C|NS\d*|HVVZN|VZN|EN1\.\d+|FKM|PTFE|TEFLON|NYLON|TITANIUM|CARBON|A200|A\d+-\d+|\d+\.\d+VZN|ST)\b"
+_SIZE_PATTERN = r"\b(DN\d+|M\d+.*|\d+.*X.*\d+|PT\d+.*|\d+/\d+\s*INCH.*|\d+\.\d+\s*x\s*\d+\.\d+.*)\b"
+
+
+def decompose_qty_value(raw_val: str) -> tuple[str | None, list[tuple[str, str]]]:
+    """Decomposes a raw QTY value that may have extra remarks, materials, or notes merged into it.
+    Returns: (clean_qty_str, list_of_(label, remaining_val))
+    """
+    s = (raw_val or "").strip()
+    if not s:
+        return None, []
+
+    extra_items: list[tuple[str, str]] = []
+
+    # Check if there is an explicit embedded header like 'Remarks:', 'Material:', 'Size:'
+    embedded_header_split = re.split(
+        r"\b(Material|Mat|Size|Dimensions?|Remarks?|Spec|Specification|Notes?):\s*", s, flags=re.I
+    )
+    if len(embedded_header_split) > 1:
+        s = embedded_header_split[0].strip()
+        s = re.sub(r"[\s\(\[\{]+$", "", s).strip()
+        for i in range(1, len(embedded_header_split), 2):
+            h_lbl = embedded_header_split[i].title()
+            if h_lbl.lower() in ("mat", "material"):
+                h_lbl = "Material"
+            elif h_lbl.lower() in ("dimension", "dimensions", "size"):
+                h_lbl = "Size"
+            else:
+                h_lbl = "Remarks"
+            h_val = embedded_header_split[i + 1].strip() if i + 1 < len(embedded_header_split) else ""
+            h_val = re.sub(r"[\s\)\]\}]+$", "", h_val).strip()
+            if h_val:
+                extra_items.append((h_lbl, h_val))
+
+    s = re.sub(r"[\s,;/-]+$", "", s).strip()
+
+    # If string starts with a size like M6S, M12x25, DN50, it is not a quantity
+    if re.match(r"^M\d+", s, re.I):
+        return None, [("Size", s)]
+
+    # Support "1/SET" -> "1 SET"
+    s_norm = re.sub(r"^(\d+)/(" + _KNOWN_UNITS + r")\b", r"\1 \2", s, flags=re.I)
+
+    qty_regex = re.compile(
+        rf"^(\d+(?:\.\d+)?|\d+\s*(?:[-~–—/]|to)\s*\d+)?\s*({_KNOWN_UNITS}{_PER_UNIT})?(.*)$",
+        re.I,
+    )
+    m = qty_regex.match(s_norm)
+
+    clean_qty: str | None = None
+    remaining_text = ""
+
+    if m:
+        num_part = (m.group(1) or "").strip()
+        unit_part = (m.group(2) or "").strip().upper()
+        tail = (m.group(3) or "").strip()
+
+        if num_part or unit_part:
+            if num_part and unit_part:
+                clean_qty = f"{num_part} {unit_part}"
+            elif unit_part:
+                clean_qty = f"1 {unit_part}"
+            elif num_part:
+                clean_qty = f"{num_part} PCS"
+
+            remaining_text = tail
+        else:
+            remaining_text = s
+    else:
+        remaining_text = s
+
+    remaining_text = re.sub(r"^[\s,;/:–—-]+", "", remaining_text).strip()
+
+    if remaining_text:
+        inner_m = re.match(r"^\((.+)\)$", remaining_text)
+        inner_content = inner_m.group(1).strip() if inner_m else remaining_text
+
+        if re.search(_MAT_KEYWORDS, inner_content, re.I) and not re.search(
+            r"\b(for|pump|engine|cylinder|outlet|inlet)\b", inner_content, re.I
+        ):
+            extra_items.append(("Material", inner_content))
+        elif re.match(_SIZE_PATTERN, inner_content, re.I):
+            extra_items.append(("Size", inner_content))
+        else:
+            extra_items.append(("Remarks", remaining_text))
+
+    return clean_qty, extra_items
+
+
 def _format_specification_headers(spec: str | None) -> str | None:
     if not spec or not str(spec).strip():
         return None
     spec_str = str(spec).strip()
-    
-    parts = [p.strip() for p in (spec_str.split(";") if ";" in spec_str else spec_str.split(",")) if p.strip()]
-    
-    formatted_parts = []
-    seen_prefixes = set()
 
-    for part in parts:
-        prefix_match = re.match(r"^(QTY|Quantity|Material|Mat|Size|Dimensions|Dimension|Remarks|Remark|Spec|Specification):\s*(.*)$", part, re.I)
+    if ";" in spec_str:
+        raw_parts = [p.strip() for p in spec_str.split(";") if p.strip()]
+    else:
+        raw_parts = [p.strip() for p in re.split(r",\s*(?![^()]*\))|/\s*(?=[A-Za-z]+:)", spec_str) if p.strip()]
+
+    items: list[tuple[str, str]] = []
+
+    for part in raw_parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        prefix_match = re.match(
+            r"^(QTY|Quantity|Material|Mat|Size|Dimensions?|Remarks?|Spec|Specification|Notes?):\s*(.*)$",
+            part,
+            re.I,
+        )
         if prefix_match:
             lbl = prefix_match.group(1).title()
             if lbl.lower() in ("quantity", "qty"):
                 lbl = "QTY"
             elif lbl.lower() in ("mat", "material"):
                 lbl = "Material"
-            elif lbl.lower() in ("dimension", "dimensions"):
-                lbl = "Dimensions"
-            elif lbl.lower() in ("remark", "remarks", "spec", "specification"):
+            elif lbl.lower() in ("dimension", "dimensions", "size"):
+                lbl = "Size"
+            else:
                 lbl = "Remarks"
             val = prefix_match.group(2).strip()
-            if val:
-                formatted_parts.append(f"{lbl}: {val}")
-                seen_prefixes.add(lbl)
+
+            if lbl == "QTY":
+                cq, extras = decompose_qty_value(val)
+                if cq:
+                    items.append(("QTY", cq))
+                elif val:
+                    items.append(("QTY", val))
+                for ex_lbl, ex_val in extras:
+                    items.append((ex_lbl, ex_val))
+            else:
+                if val:
+                    items.append((lbl, val))
             continue
 
-        qty_match = re.search(r"^(?:QTY\s*)?(\d+)?\s*(PCS|PC|SET|SETS|EA|EA/ST|OFF|UNIT|UNITS|KG|M|MM|LITRES|PAIRS?)$", part, re.I)
-        if qty_match:
-            num = qty_match.group(1) or "1"
-            unit = qty_match.group(2).upper()
-            formatted_parts.append(f"QTY: {num} {unit}")
-            seen_prefixes.add("QTY")
+        cq, extras = decompose_qty_value(part)
+        if cq:
+            items.append(("QTY", cq))
+            for ex_lbl, ex_val in extras:
+                items.append((ex_lbl, ex_val))
             continue
 
         if re.match(r"^\d+$", part):
-            if "QTY" not in seen_prefixes:
-                formatted_parts.append(f"QTY: {part} PCS")
-                seen_prefixes.add("QTY")
-                continue
-
-        mat_keywords = r"(STEEL|SUS\d+|STAINLESS|BRASS|BRONZE|RUBBER|ARAM|NBR|EPDM|IRON|GRAPHITE|COPPER|ALUMINUM|PVC|PHENOL|QUARTZ|CAC\d+|SB\d+|S20C|NS\d+|HVVZN|VZN|EN1\.\d+|FKM|A200|A\d+-\d+|\d+\.\d+VZN|\bST\b)"
-        if re.search(mat_keywords, part, re.I):
-            formatted_parts.append(f"Material: {part}")
-            seen_prefixes.add("Material")
+            items.append(("QTY", f"{part} PCS"))
             continue
 
-        if re.search(r"^(DN\d+|M\d+.*|\d+.*X.*\d+|PT\d+.*|\d+/\d+\s*INCH.*|\d+\.\d+\s*x\s*\d+\.\d+.*)$", part, re.I):
-            formatted_parts.append(f"Size: {part}")
-            seen_prefixes.add("Size")
+        if re.search(_MAT_KEYWORDS, part, re.I) and not re.search(
+            r"\b(for|pump|engine|cylinder|outlet|inlet)\b", part, re.I
+        ):
+            items.append(("Material", part))
             continue
 
-        formatted_parts.append(f"Remarks: {part}")
+        if re.match(_SIZE_PATTERN, part, re.I):
+            items.append(("Size", part))
+            continue
+
+        items.append(("Remarks", part))
+
+    formatted_parts: list[str] = []
+    seen_qty: str | None = None
+    materials: list[str] = []
+    sizes: list[str] = []
+    remarks: list[str] = []
+
+    for lbl, val in items:
+        clean_val = re.sub(rf"^(?:{lbl}|Quantity|Remarks?|Material|Size):\s*", "", val, flags=re.I).strip()
+        if not clean_val:
+            continue
+        if lbl == "QTY":
+            if seen_qty is None:
+                seen_qty = clean_val
+        elif lbl == "Material":
+            if clean_val not in materials:
+                materials.append(clean_val)
+        elif lbl == "Size":
+            if clean_val not in sizes:
+                sizes.append(clean_val)
+        else:
+            if clean_val not in remarks:
+                remarks.append(clean_val)
+
+    if seen_qty:
+        formatted_parts.append(f"QTY: {seen_qty}")
+    if materials:
+        formatted_parts.append(f"Material: {', '.join(materials)}")
+    if sizes:
+        formatted_parts.append(f"Size: {', '.join(sizes)}")
+    if remarks:
+        formatted_parts.append(f"Remarks: {'; '.join(remarks)}")
 
     return "; ".join(formatted_parts) if formatted_parts else spec_str
 
@@ -1264,7 +1408,7 @@ async def _extract_entities_from_page_image_with_openai(
                 "\n  • drawing_position → REF.NO value — copy EXACTLY as printed, including ranges (e.g. '1~58', '155~156')"
                 "\n  • part_number → PC.NO value"
                 "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
-                "\n  • specification → QTY + REMARKS translated to English"
+                "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
             )
@@ -1352,7 +1496,7 @@ async def _extract_entities_from_page_image_with_claude(
                 "\n  • drawing_position → REF.NO value — copy EXACTLY as printed, including ranges (e.g. '1~58', '155~156')"
                 "\n  • part_number → PC.NO value"
                 "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
-                "\n  • specification → QTY + REMARKS translated to English"
+                "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
             )

@@ -713,6 +713,41 @@ async def _run_startup_backfill_and_backup() -> None:
                 print("[STARTUP MIGRATION] No job titles needed renaming.", flush=True)
 
 
+async def _sanitize_spares_specifications_startup() -> None:
+    from app.core.database import AsyncSessionLocal
+    from sqlalchemy import text
+    from app.services.extractor import _format_specification_headers
+    try:
+        async with AsyncSessionLocal() as db:
+            print("[STARTUP SPEC CLEANUP] Checking spares for merged QTY and remarks...", flush=True)
+            res = await db.execute(text("""
+                SELECT id, specification FROM spares 
+                WHERE is_deleted = false 
+                  AND specification IS NOT NULL 
+                  AND specification != '';
+            """))
+            rows = res.fetchall()
+            updated_count = 0
+            for row in rows:
+                sid, orig_spec = row[0], row[1]
+                if not orig_spec:
+                    continue
+                new_spec = _format_specification_headers(orig_spec)
+                if new_spec and new_spec != orig_spec:
+                    await db.execute(
+                        text("UPDATE spares SET specification = :new_spec WHERE id = :sid;"),
+                        {"new_spec": new_spec, "sid": sid}
+                    )
+                    updated_count += 1
+            if updated_count > 0:
+                await db.commit()
+                print(f"[STARTUP SPEC CLEANUP] Successfully normalized specification for {updated_count} spares!", flush=True)
+            else:
+                print("[STARTUP SPEC CLEANUP] All spare specifications are already clean.", flush=True)
+    except Exception as e:
+        print(f"[STARTUP SPEC CLEANUP ERROR] Failed to clean spares specifications: {e}", flush=True)
+
+
 @app.on_event("startup")
 async def _log_ai_config() -> None:
     print(
@@ -745,6 +780,10 @@ async def _log_ai_config() -> None:
         await _check_vessel4_status()
     except Exception as e:
         print(f"[STARTUP CHECK ERROR] Failed to run vessel 4 check: {e}", flush=True)
+    try:
+        await _sanitize_spares_specifications_startup()
+    except Exception as e:
+        print(f"[STARTUP SPEC CLEANUP ERROR] Failed to run spares specification cleanup: {e}", flush=True)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)
