@@ -37,6 +37,7 @@ from app.services.review_workflow import (
 from app.services.job_naming import (
     append_source_references_to_description,
     build_canonical_job_name,
+    extract_reference_entries_from_description,
     split_reference_entries,
     summarize_reference_entries,
 )
@@ -167,6 +168,7 @@ async def _apply_job_name_and_references(db: AsyncSession, job: Job) -> None:
         pdf_reference=job.pdf_reference,
         page_reference=job.page_reference,
         source_reference=job.source_reference,
+        description=job.job_description,
     )
     resolved_name = await build_canonical_job_name(
         db,
@@ -941,6 +943,21 @@ async def update_job(
             component_id=job.component_id,
         )
         job.performing_rank = normalize_rank_name(inferred_rank)
+
+    if "job_description" in update_data and job.job_description:
+        desc_entries = extract_reference_entries_from_description(
+            job.job_description,
+            default_pdf=job.pdf_reference,
+        )
+        if desc_entries:
+            pdf_ref, prim_page, src_ref = summarize_reference_entries(desc_entries)
+            if pdf_ref:
+                job.pdf_reference = pdf_ref
+            if prim_page is not None:
+                job.page_reference = prim_page
+            if src_ref:
+                job.source_reference = src_ref
+
     db.add(job)
 
     feedback_id: uuid.UUID | None = None
@@ -1288,22 +1305,30 @@ async def merge_jobs(
     
     # Strip footer from target description first to prevent truncation loop bug
     from app.services.job_naming import strip_source_reference_footer
-    target_clean_desc = strip_source_reference_footer(target.job_description)
-    merged_names: list[str | None] = [target.job_name]
-    merged_descriptions: list[str | None] = [target_clean_desc]
-    target.job_description = target_clean_desc
-    
     reference_entries = split_reference_entries(
         pdf_reference=target.pdf_reference,
         page_reference=target.page_reference,
         source_reference=target.source_reference,
+        description=target.job_description,
     )
+    target_clean_desc = strip_source_reference_footer(target.job_description)
+    merged_names: list[str | None] = [target.job_name]
+    merged_descriptions: list[str | None] = [target_clean_desc]
+    target.job_description = target_clean_desc
     for job in jobs:
         if job.id == target.id:
             continue
         merged_names.append(job.job_name)
         
         # Strip footer from job description before merging
+        reference_entries.extend(
+            split_reference_entries(
+                pdf_reference=job.pdf_reference,
+                page_reference=job.page_reference,
+                source_reference=job.source_reference,
+                description=job.job_description,
+            )
+        )
         job_clean_desc = strip_source_reference_footer(job.job_description)
         merged_descriptions.append(job_clean_desc)
         target.job_description = _merge_text_values(target.job_description, job_clean_desc)
@@ -1327,13 +1352,6 @@ async def merge_jobs(
         target.is_critical = bool(target.is_critical or job.is_critical)
         if (job.confidence_score or 0) > (target.confidence_score or 0):
             target.confidence_score = job.confidence_score
-        reference_entries.extend(
-            split_reference_entries(
-                pdf_reference=job.pdf_reference,
-                page_reference=job.page_reference,
-                source_reference=job.source_reference,
-            )
-        )
         if not target.source_manual_id and job.source_manual_id:
             target.source_manual_id = job.source_manual_id
         job.is_deleted = True

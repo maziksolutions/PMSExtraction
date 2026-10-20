@@ -410,7 +410,8 @@ async def _run_startup_desc_cleanup() -> None:
     from app.services.job_naming import (
         strip_source_reference_footer,
         split_reference_entries,
-        append_source_references_to_description
+        append_source_references_to_description,
+        summarize_reference_entries,
     )
     from sqlalchemy import select
     try:
@@ -427,12 +428,26 @@ async def _run_startup_desc_cleanup() -> None:
                 reference_entries = split_reference_entries(
                     pdf_reference=job.pdf_reference,
                     page_reference=job.page_reference,
-                    source_reference=job.source_reference
+                    source_reference=job.source_reference,
+                    description=orig_desc,
                 )
+                pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
                 stripped_desc = strip_source_reference_footer(orig_desc)
                 new_desc = append_source_references_to_description(stripped_desc, reference_entries)
+                changed = False
                 if new_desc != orig_desc:
                     job.job_description = new_desc
+                    changed = True
+                if pdf_reference and job.pdf_reference != pdf_reference:
+                    job.pdf_reference = pdf_reference
+                    changed = True
+                if primary_page is not None and job.page_reference != primary_page:
+                    job.page_reference = primary_page
+                    changed = True
+                if source_reference and job.source_reference != source_reference:
+                    job.source_reference = source_reference
+                    changed = True
+                if changed:
                     db.add(job)
                     updated_count += 1
             if updated_count > 0:

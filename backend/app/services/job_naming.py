@@ -135,7 +135,11 @@ _GENERIC_COMPONENT_LABELS = {
     "component",
     "unknown component",
 }
-_REF_RE = re.compile(r"^\s*(.+?)\s*\(p\.(\d+)\)\s*$", re.I)
+_REF_RE = re.compile(r"^\s*(.+?)\s*\((?:p(?:age)?\.?\s*)(\d+)\)\s*$", re.I)
+_FOOTER_SPLIT_RE = re.compile(
+    r"\n+(?:/\*-?\s*|[-#*]\s*)?Source\s+References?(?:\s*:)?",
+    re.I,
+)
 
 
 def _unique_nonempty(values: Iterable[str]) -> list[str]:
@@ -173,13 +177,27 @@ def strip_source_reference_footer(text: str | None) -> str | None:
     cleaned = (text or "").strip()
     if not cleaned:
         return None
-    import re
-    # Match one or more newlines, followed by optional '/*-' comments/spaces, and the SOURCE_HEADER
-    pattern = re.compile(r'\n+(?:/\*-?\s*)?' + re.escape(SOURCE_HEADER), re.I)
-    match = pattern.search(cleaned)
+    match = _FOOTER_SPLIT_RE.search(cleaned)
     if match:
-        cleaned = cleaned[:match.start()].rstrip()
-    return cleaned or None
+        return cleaned[:match.start()].rstrip() or None
+
+    lines = cleaned.split("\n")
+    cut_idx = len(lines)
+    while cut_idx > 0:
+        l = lines[cut_idx - 1].strip()
+        if not l:
+            cut_idx -= 1
+            continue
+        l_clean = re.sub(r"^(?:/\*-?\s*|[-*•]\s*)+", "", l).strip()
+        if _REF_RE.match(l_clean) or re.match(r"^Source\s+References?", l_clean, re.I):
+            cut_idx -= 1
+        else:
+            break
+
+    if cut_idx < len(lines):
+        result = "\n".join(lines[:cut_idx]).rstrip()
+        return result or None
+    return cleaned
 
 
 def _strip_component_prefix(text: str | None, component_name: str | None) -> str:
@@ -268,21 +286,85 @@ def _join_body_parts(parts: Sequence[str]) -> str:
     return ", ".join(unique_parts[:-1]) + f", and {unique_parts[-1]}"
 
 
+def extract_reference_entries_from_description(
+    text: str | None,
+    default_pdf: str | None = None,
+) -> list[str]:
+    """Extracts reference entries (e.g. 'Manual.pdf (p.15)') directly from description footer or body lines."""
+    if not text:
+        return []
+
+    entries: list[str] = []
+    match = _FOOTER_SPLIT_RE.search(text)
+    section = text[match.start():] if match else text
+
+    for line in section.split("\n"):
+        line_clean = re.sub(r"^(?:/\*-?\s*|[-*•]\s*)+", "", line.strip()).strip()
+        if not line_clean:
+            continue
+        if re.match(r"^Source\s+References?", line_clean, re.I):
+            line_clean = re.sub(r"^Source\s+References?(?:\s*:)?\s*", "", line_clean, flags=re.I).strip()
+            if not line_clean:
+                continue
+
+        m = _REF_RE.match(line_clean)
+        if m:
+            entries.append(f"{m.group(1).strip()} (p.{m.group(2)})")
+            continue
+
+        page_only_m = re.match(r"^\(?\s*p(?:age)?\.?\s*(\d+)\)?$", line_clean, re.I)
+        if page_only_m and default_pdf:
+            entries.append(f"{default_pdf.strip()} (p.{page_only_m.group(1)})")
+            continue
+
+    return _unique_nonempty(entries)
+
+
 def split_reference_entries(
     *,
     pdf_reference: str | None = None,
     page_reference: int | None = None,
     source_reference: str | None = None,
+    description: str | None = None,
 ) -> list[str]:
     entries: list[str] = []
+    seen_pdfs: set[str] = set()
+
+    # 1. Authoritative user edits in description take priority!
+    desc_entries = extract_reference_entries_from_description(description, default_pdf=pdf_reference)
+    for de in desc_entries:
+        entries.append(de)
+        m = _REF_RE.match(de)
+        if m:
+            seen_pdfs.add(m.group(1).strip().lower())
+        else:
+            seen_pdfs.add(de.strip().lower())
+
+    # 2. Check source_reference for any manuals not already covered by description
     raw_source = (source_reference or "").strip()
     if raw_source:
         for part in re.split(r";\s*", raw_source):
             part_clean = part.strip().lstrip("-").strip()
-            if part_clean and part_clean != SOURCE_HEADER:
-                entries.append(part_clean)
+            if part_clean and not re.match(r"^Source\s+References?", part_clean, re.I):
+                m = _REF_RE.match(part_clean)
+                pdf_key = m.group(1).strip().lower() if m else part_clean.lower()
+
+                if pdf_key in seen_pdfs:
+                    continue
+
+                if m and page_reference is not None and pdf_reference and pdf_key == pdf_reference.strip().lower():
+                    entries.append(f"{pdf_reference.strip()} (p.{page_reference})")
+                    seen_pdfs.add(pdf_key)
+                else:
+                    entries.append(part_clean)
+                    seen_pdfs.add(pdf_key)
+
     elif pdf_reference:
-        entries.append(f"{pdf_reference} (p.{page_reference})" if page_reference else pdf_reference)
+        pdf_key = pdf_reference.strip().lower()
+        if pdf_key not in seen_pdfs:
+            entries.append(f"{pdf_reference} (p.{page_reference})" if page_reference else pdf_reference)
+            seen_pdfs.add(pdf_key)
+
     return _unique_nonempty(entries)
 
 

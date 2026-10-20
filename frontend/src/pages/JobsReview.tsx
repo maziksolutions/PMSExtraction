@@ -242,6 +242,56 @@ function toForm(initial?: Partial<Job>): JobForm {
   }
 }
 
+function extractPageAndSourceRef(
+  description: string | null | undefined,
+  currentPdf: string | null | undefined,
+  defaultPage: number | null,
+  defaultSource: string | null,
+): { page: number | null; source: string | null } {
+  if (!description) {
+    return { page: defaultPage, source: defaultSource }
+  }
+  const footerMatch = description.match(/(?:\/\*-?\s*|[-#*]\s*)?Source\s+References?(?:\s*:)?([\s\S]*)$/i)
+  const textToScan = footerMatch ? footerMatch[1] : description
+  const entries: string[] = []
+  let foundPage: number | null = null
+
+  for (const line of textToScan.split('\n')) {
+    let clean = line.replace(/^(?:\/\*-?\s*|[-*•]\s*)+/, '').trim()
+    if (!clean) continue
+    if (/^Source\s+References?/i.test(clean)) {
+      clean = clean.replace(/^Source\s+References?(?:\s*:)?\s*/i, '').trim()
+      if (!clean) continue
+    }
+    const fullMatch = clean.match(/^(.+?)\s*\((?:p(?:age)?\.?\s*)(\d+)\)$/i)
+    if (fullMatch) {
+      const pageNum = parseInt(fullMatch[2], 10)
+      entries.push(`${fullMatch[1].trim()} (p.${pageNum})`)
+      if (foundPage === null) {
+        foundPage = pageNum
+      }
+      continue
+    }
+    const pageOnlyMatch = clean.match(/^\(?\s*p(?:age)?\.?\s*(\d+)\)?$/i)
+    if (pageOnlyMatch && currentPdf) {
+      const pageNum = parseInt(pageOnlyMatch[1], 10)
+      entries.push(`${currentPdf.trim()} (p.${pageNum})`)
+      if (foundPage === null) {
+        foundPage = pageNum
+      }
+      continue
+    }
+  }
+
+  if (entries.length > 0) {
+    return {
+      page: foundPage ?? defaultPage,
+      source: entries.join('; '),
+    }
+  }
+  return { page: defaultPage, source: defaultSource }
+}
+
 function JobEditor({
   title,
   submitLabel,
@@ -485,27 +535,35 @@ function JobEditor({
           </button>
         )}
         <button
-          onClick={() => onSubmit({
-            job_name: form.job_name,
-            job_code: form.job_code || null,
-            component_id: form.component_id || null,
-            job_description: form.job_description || null,
-            safety_precaution: form.safety_precaution || null,
-            tools_required: form.tools_required || null,
-            performing_rank: form.performing_rank || null,
-            verifying_rank: form.verifying_rank || null,
-            frequency: parseLowestFrequency(form.frequency),
-            frequency_type: form.frequency_type || null,
-            initial_due: parseLowestFrequency(form.initial_due),
-            initial_frequency_type: form.initial_frequency_type || null,
-            cms_id: form.cms_id || null,
-            is_critical: form.is_critical,
-            qc_status: form.qc_status,
-            page_reference: initial?.page_reference ?? null,
-            pdf_reference: form.pdf_reference || null,
-            source_reference: initial?.source_reference ?? null,
-            source_manual_id: form.pdf_reference === initial?.pdf_reference ? (initial?.source_manual_id ?? null) : null,
-          })}
+          onClick={() => {
+            const refData = extractPageAndSourceRef(
+              form.job_description,
+              form.pdf_reference || initial?.pdf_reference,
+              initial?.page_reference ?? null,
+              initial?.source_reference ?? null,
+            )
+            onSubmit({
+              job_name: form.job_name,
+              job_code: form.job_code || null,
+              component_id: form.component_id || null,
+              job_description: form.job_description || null,
+              safety_precaution: form.safety_precaution || null,
+              tools_required: form.tools_required || null,
+              performing_rank: form.performing_rank || null,
+              verifying_rank: form.verifying_rank || null,
+              frequency: parseLowestFrequency(form.frequency),
+              frequency_type: form.frequency_type || null,
+              initial_due: parseLowestFrequency(form.initial_due),
+              initial_frequency_type: form.initial_frequency_type || null,
+              cms_id: form.cms_id || null,
+              is_critical: form.is_critical,
+              qc_status: form.qc_status,
+              page_reference: refData.page,
+              pdf_reference: form.pdf_reference || null,
+              source_reference: refData.source,
+              source_manual_id: form.pdf_reference === initial?.pdf_reference ? (initial?.source_manual_id ?? null) : null,
+            })
+          }}
           disabled={!form.job_name || isPending}
           className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
         >

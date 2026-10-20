@@ -19,6 +19,7 @@ from app.services.job_naming import (
     append_source_references_to_description,
     build_canonical_job_name,
     split_reference_entries,
+    strip_source_reference_footer,
     summarize_reference_entries,
 )
 
@@ -2024,15 +2025,19 @@ async def _consolidate_jobs_for_manual(
                 pdf_reference=target.pdf_reference,
                 page_reference=target.page_reference,
                 source_reference=target.source_reference,
+                description=target.job_description,
             )
             reference_entries.extend(
                 split_reference_entries(
                     pdf_reference=candidate.pdf_reference,
                     page_reference=candidate.page_reference,
                     source_reference=candidate.source_reference,
+                    description=candidate.job_description,
                 )
             )
-            target.job_description = _combine_unique_text_parts(target.job_description, candidate.job_description)
+            target_clean = strip_source_reference_footer(target.job_description)
+            cand_clean = strip_source_reference_footer(candidate.job_description)
+            target.job_description = _combine_unique_text_parts(target_clean, cand_clean)
             target.safety_precaution = _combine_unique_text_parts(target.safety_precaution, candidate.safety_precaution)
             target.tools_required = _combine_unique_text_parts(target.tools_required, candidate.tools_required)
             if not target.job_code and candidate.job_code:
