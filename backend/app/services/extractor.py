@@ -391,6 +391,15 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "- PART NUMBERS VALIDATION: Validate part numbers carefully. Do NOT extract serial numbers, prose/phrases ('refer to page...', 'see drawing'), or full page text into part_number. If no valid catalog part number is found in the manual, leave part_number as null.\n"
             "- PDF FILENAME PROHIBITION: PDF filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf') must NEVER be captured in part_number, drawing_number, drawing_position, or spare_model. Leave these fields blank (null) if the information is not found in the manual.\n"
             "- PART NAME & SPECIFICATION SEPARATION: If a spare name contains specifications, dimensions, or materials (e.g. 'O-RING (15.5 x 2.4 FKM)' or 'HEX BOLT M12 x 45 STAINLESS'), separate them. Capture the spare name (preserving abbreviations/spelling as printed, e.g. 'O-Ring', 'Hex Bolt') in part_name, and capture the additional details (e.g. '15.5 x 2.4 FKM', 'M12 x 45 STAINLESS') in specification with header labels. Do NOT modify, replace, or normalize the part name wording.\n"
+            "- MULTI-MODEL & VARIANT TABLES GUIDE (CRITICAL FOR ENGINES & COMPRESSORS):\n"
+            "    1. VARIANT QUANTITY COLUMNS (e.g. Sabb Motor / Scandinavian manuals):\n"
+            "       • Tables often feature multiple quantity columns (e.g. '1, 2, 3, 4' under 'Ant. / Qty') corresponding to different engine variants, with a TYPEVARIANT / MODEL legend on the page (e.g. '1: L2.093 / LPW2', '2: L3.139 / LPW3', '3: L4.186 / LPW4').\n"
+            "       • When a target equipment model is specified in context (e.g. 'L3 139LB', 'L3.139', 'LPW3', or 'Variant 2'): extract ONLY rows that have a quantity listed under that target variant column. Do NOT extract rows that are blank/dash for this model. Use that column's numeric quantity in 'QTY: <count> <unit>' and set spare_model to the target model in ALL CAPS.\n"
+            "       • When NO target model is specified in context: extract each row. If all variant columns have the same quantity, use that quantity in 'QTY: <count> <unit>'. If variants differ, place the first numeric quantity in 'QTY: <first_qty> <unit>' and detail the breakdown in 'Remarks: Variant 1: <qty>; Variant 2: <qty>...'. NEVER put multiple comma-separated quantities into the QTY field itself.\n"
+            "    2. REMARKS MODEL APPLICABILITY TAGS (e.g. Atlas Copco LT compressors, Daihatsu, Yanmar):\n"
+            "       • Multi-model tables often list parts with specific model codes in the 'Remarks' or 'Description' column (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)').\n"
+            "       • When a target equipment model is specified in context (e.g. 'LT-55'): extract ONLY rows applicable to this model — including rows designated for this model (e.g. 'LT55', 'LT-55', 'LT55, -75/50Hz', 'LT-55(RH)') and common rows with no model restriction in Remarks. Ignore rows strictly designated for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS (e.g. 'LT-55').\n"
+            "       • When NO target model is specified in context: extract each row, storing the specific model tag in spare_model (e.g. 'LT-55', 'LT22') and keeping the notes under 'Remarks:'.\n"
             "- COUNT FIRST: count only structured table rows (grid rows with Part No/Name/Qty columns — NOT numbers in assembly diagram callouts). Output exactly that many records.\n"
             "- Extract EVERY row from parts tables — never skip rows\n"
             "- ASSEMBLY DIAGRAM RULE: If a page has an exploded-view/assembly diagram with numbered callouts AND a parts table below it, extract ONLY from the parts table rows. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them.\n"
@@ -399,8 +408,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "- For drawing parts tables (NO./NAME/MATERIAL): drawing_position=NO., specification=MATERIAL\n"
             "- Part numbers: include exactly as printed (do not reformat)\n"
             "- If no spare parts found, return []\n"
-            "- Return ONLY the JSON array, no markdown fences\n"
-
+            "- Return ONLY the JSON array, no markdown fences\n\n"
             "LANGUAGE RULES (STRICT — NO EXCEPTIONS):\n"
             "- ALL output fields MUST contain English text ONLY\n"
             "- NEVER output Japanese, Chinese, Korean, or any other non-Latin characters in ANY field\n"
@@ -418,10 +426,29 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "Look for: parts tables (NO./NAME/MATERIAL/QTY), drawing parts lists, "
             "sections titled 'Spare Parts', 'Parts List', 'Recommended Spares'.\n"
             "IMPORTANT: All extracted data must be in English only. Translate any non-English text (Japanese, Chinese, etc.) to English.\n"
-            "CRITICAL: Keep QTY strictly limited to quantity and unit (e.g. 'QTY: 1 SET'). Never merge remarks, applicability, or notes into QTY; put them under 'Remarks:' separated by semicolons.\n\n{text}"
+            "CRITICAL: Keep QTY strictly limited to quantity and unit (e.g. 'QTY: 1 SET'). Never merge remarks, applicability, or notes into QTY; put them under 'Remarks:' separated by semicolons.\n"
+            "MULTI-MODEL TABLES: When extracting for a target equipment model, extract only rows/columns applicable to that model (e.g. Variant 2 for L3.139, or LT55 parts for LT-55) and ignore parts strictly for other models.\n\n{text}"
         ),
     },
 }
+
+
+def _safe_int_page(val: Any) -> int | None:
+    """Safely convert page number to integer, handling ranges and string prefixes gracefully."""
+    if val is None:
+        return None
+    if isinstance(val, int):
+        return val
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        m = re.search(r"\d+", str(val))
+        if m:
+            try:
+                return int(m.group(0))
+            except (ValueError, TypeError):
+                pass
+        return None
 
 
 _PAGE_BLOCK_RE = re.compile(r"\[PAGE\s+(\d+)\]\s*\n?(.*?)(?=(?:\n\[PAGE\s+\d+\])|\Z)", re.S)
@@ -820,32 +847,69 @@ def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type
             else:
                 record[k] = cleaned_str
 
+    # Safe source_page_number integer parsing
+    if "source_page_number" in record and record["source_page_number"] is not None:
+        record["source_page_number"] = _safe_int_page(record["source_page_number"])
+
     # Casing & Formatting Rules for Spares:
     # 1. Part name, Assembly, Assembly Description in Proper Text / Title Case
     # 2. Maker, Model, Drawing number in ALL CAPS
+    # 3. String truncation to schema limits
     if extraction_type == "spare" or "part_name" in record:
         if record.get("part_name"):
-            record["part_name"] = to_proper_case(record["part_name"])
+            record["part_name"] = to_proper_case(record["part_name"])[:500]
+        if record.get("part_number"):
+            record["part_number"] = str(record["part_number"]).strip()[:200]
+        if record.get("drawing_position"):
+            record["drawing_position"] = str(record["drawing_position"]).strip()[:100]
         if record.get("spare_assembly"):
-            record["spare_assembly"] = to_proper_case(record["spare_assembly"])
+            record["spare_assembly"] = to_proper_case(record["spare_assembly"])[:300]
         if record.get("assembly_description"):
             record["assembly_description"] = to_proper_case(record["assembly_description"])
         if record.get("spare_maker"):
-            record["spare_maker"] = str(record["spare_maker"]).strip().upper()
+            record["spare_maker"] = str(record["spare_maker"]).strip().upper()[:200]
         if record.get("spare_model"):
-            record["spare_model"] = str(record["spare_model"]).strip().upper()
+            raw_model = str(record["spare_model"]).strip()
+            # If spare_model is a long sentence or assembly phrase (e.g. "PRM DELTA-30 GEAR WITH ADAPTOR FOR L3.139..."),
+            # avoid storing entire titles in spare_model.
+            is_assembly_phrase = (
+                len(raw_model) > 40
+                or any(w in raw_model.lower() for w in ("parts list", "exploded view", "assembly", "section", "catalogue", " with ", " for ", "gear", "system", "arrangement"))
+            )
+            if is_assembly_phrase:
+                if not record.get("spare_assembly"):
+                    record["spare_assembly"] = to_proper_case(raw_model)[:300]
+                # Try extracting actual model code from it, e.g. "LT-55", "L3.139", "LPW3", "6EY18"
+                m_code = re.search(r'\b(LT-?\d+[A-Z0-9/]*|L\d\s*\.?\s*\d+[A-Z0-9/]*|LPW\d+|[A-Z0-9]{2,}-\d+[A-Z0-9]*)\b', raw_model, re.I)
+                if m_code:
+                    record["spare_model"] = m_code.group(1).upper()
+                else:
+                    record["spare_model"] = None
+            else:
+                record["spare_model"] = raw_model.upper()[:200]
         if record.get("drawing_number"):
-            record["drawing_number"] = str(record["drawing_number"]).strip().upper()
+            record["drawing_number"] = str(record["drawing_number"]).strip().upper()[:200]
 
     # Normalization for Jobs:
     # Resolve ranges to lowest numeric frequency value (e.g. '4-6 months' -> 4)
     if extraction_type == "job" or "job_name" in record:
+        if record.get("job_name"):
+            record["job_name"] = str(record["job_name"])[:500]
+        if record.get("job_code"):
+            record["job_code"] = str(record["job_code"])[:100]
         if record.get("frequency") is not None or record.get("frequency_type"):
             f_val, f_type = parse_job_frequency(record.get("frequency"), record.get("frequency_type"))
             record["frequency"] = f_val
             if f_type:
                 record["frequency_type"] = f_type
 
+    if extraction_type == "component" or "component_name" in record:
+        if record.get("component_name"):
+            record["component_name"] = str(record["component_name"])[:500]
+        if record.get("maker"):
+            record["maker"] = str(record["maker"])[:200]
+        if record.get("model"):
+            record["model"] = str(record["model"])[:200]
 
     # Ensure required name fields are never None or empty
     if "part_name" in record and not record["part_name"]:
@@ -1412,6 +1476,9 @@ async def _extract_entities_from_page_image_with_openai(
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
+                "\n\nMULTI-MODEL & VARIANT TABLES RULE (CRITICAL):"
+                "\n• Variant quantity columns (e.g. '1, 2, 3, 4' under Ant./Qty with TYPEVARIANT legend like '1: L2.093/LPW2, 2: L3.139/LPW3, 3: L4.186/LPW4'): When a target model is specified in context (e.g. L3 139LB / LPW3 / Variant 2), extract ONLY rows with a quantity in that model's column; do NOT extract rows that are blank/dash for this model. Use that column's quantity in 'QTY: <count> <unit>' and set spare_model to the target model."
+                "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
             )
         elif extraction_type == "job":
             text_instructions += (
@@ -1500,6 +1567,9 @@ async def _extract_entities_from_page_image_with_claude(
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
+                "\n\nMULTI-MODEL & VARIANT TABLES RULE (CRITICAL):"
+                "\n• Variant quantity columns (e.g. '1, 2, 3, 4' under Ant./Qty with TYPEVARIANT legend like '1: L2.093/LPW2, 2: L3.139/LPW3, 3: L4.186/LPW4'): When a target model is specified in context (e.g. L3 139LB / LPW3 / Variant 2), extract ONLY rows with a quantity in that model's column; do NOT extract rows that are blank/dash for this model. Use that column's quantity in 'QTY: <count> <unit>' and set spare_model to the target model."
+                "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
             )
         elif extraction_type == "job":
             text_instructions += (
@@ -1908,18 +1978,39 @@ def _manual_page_refs_summary(manual: Any) -> str:
 
 
 def _build_component_context_text(components: list[Any], manual: Any) -> str:
-    if not components:
+    if not components and not manual:
         return ""
     def _value(component: Any, key: str) -> Any:
         if isinstance(component, dict):
             return component.get(key)
         return getattr(component, key, None)
 
+    # Collect distinct equipment models
+    distinct_models: list[str] = []
+    seen_models: set[str] = set()
+    for component in (components or []):
+        m = _value(component, "model")
+        if m and isinstance(m, str):
+            clean_m = m.strip()
+            if clean_m and clean_m.upper() not in {"N/A", "UNKNOWN", "NONE", "-", "--", "NULL", "UNSPECIFIED"}:
+                if clean_m.upper() not in seen_models:
+                    seen_models.add(clean_m.upper())
+                    distinct_models.append(clean_m)
+
+    # If components did not provide a model, inspect manual filename
+    manual_filename = (getattr(manual, "original_filename", None) or getattr(manual, "filename", None) or "").strip()
+    if not distinct_models and manual_filename:
+        m_match = re.search(r'\b(LT-?\d+[A-Z0-9/]*|L\d\s*\.?\s*\d+[A-Z0-9/]*|LPW\d+|[A-Z0-9]{2,}-\d+[A-Z0-9]*)\b', manual_filename, re.I)
+        if m_match:
+            candidate = m_match.group(1).strip()
+            if candidate.upper() not in {"PDF", "AIR", "BOAT", "RESCUE", "LIFE", "COMPRESSOR", "ENGINE"}:
+                distinct_models.append(candidate)
+
     lines = [
         "Known component context from this manual:",
         f"Manual screening refs -> {_manual_page_refs_summary(manual) or 'not set'}",
     ]
-    for component in components[:40]:
+    for component in (components or [])[:40]:
         lines.append(
             " - "
             + " | ".join(
@@ -1935,9 +2026,21 @@ def _build_component_context_text(components: list[Any], manual: Any) -> str:
                 )
             )
         )
-    lines.append(
-        "When extracting jobs or spares, prefer linking each record to one of these components via job_name wording, spare_model, or component context."
-    )
+
+    if distinct_models:
+        models_str = ", ".join(distinct_models)
+        lines.append(
+            f"TARGET EQUIPMENT MODEL(S): {models_str}\n"
+            "CRITICAL: If the parts table contains model-specific rows or columns for multiple models (e.g. Atlas Copco LT22 vs LT55, or Sabb/Lister Petter Variant 1: LPW2 vs Variant 2: LPW3/L3.139):\n"
+            f"- Extract ONLY rows/columns applicable to the target model ({models_str}).\n"
+            "- Ignore parts that strictly belong to other models or engine variants.\n"
+            "- If the table uses multi-variant quantity columns (e.g. 1, 2, 3), use the quantity from the column corresponding to the target model.\n"
+            "- Set spare_model to the matching target model in ALL CAPS."
+        )
+    else:
+        lines.append(
+            "When extracting jobs or spares, prefer linking each record to one of these components via job_name wording, spare_model, or component context."
+        )
     return "\n".join(lines)
 
 
@@ -2761,15 +2864,16 @@ async def _process_and_save_page_records(
     to_add = []
     for record in records:
         confidence = int(record.get("confidence_score", 70))
-        source_page = record.get("source_page_number")
-        if source_page is None and page_no is not None:
-            source_page = page_no
+        raw_source_page = record.get("source_page_number")
+        if raw_source_page is None and page_no is not None:
+            raw_source_page = page_no
+        safe_page = _safe_int_page(raw_source_page)
 
         if etype == "component":
-            _maker = record.get("maker") or None
-            _model = record.get("model") or None
+            _maker = str(record.get("maker")).strip()[:200] if record.get("maker") else None
+            _model = str(record.get("model")).strip()[:200] if record.get("model") else None
             if not _maker and vessel_shipyard:
-                _maker = vessel_shipyard
+                _maker = vessel_shipyard[:200]
             if not _model and _maker:
                 _model = "N/A"
             comp = Component(
@@ -2779,20 +2883,20 @@ async def _process_and_save_page_records(
                 confidence_score=confidence,
                 qc_status=QCStatus.pending,
                 is_unmapped=True,
-                group1=record.get("group1") or "Uncategorised",
-                group2=record.get("group2") or "Uncategorised",
-                main_machinery=record.get("main_machinery") or "Unknown",
-                component_name=record.get("component_name") or "Unknown Component",
+                group1=str(record.get("group1") or "Uncategorised")[:100],
+                group2=str(record.get("group2") or "Uncategorised")[:100],
+                main_machinery=str(record.get("main_machinery") or "Unknown")[:200],
+                component_name=str(record.get("component_name") or "Unknown Component")[:500],
                 maker=_maker,
                 model=_model,
-                serial_number=record.get("serial_number") or None,
+                serial_number=str(record.get("serial_number"))[:100] if record.get("serial_number") else None,
                 specification=record.get("specification") or None,
-                location=record.get("location") or None,
-                machinery_particulars=record.get("machinery_particulars") or None,
+                location=str(record.get("location"))[:200] if record.get("location") else None,
+                machinery_particulars=str(record.get("machinery_particulars"))[:200] if record.get("machinery_particulars") else None,
                 is_critical=bool(record.get("is_critical", False)),
                 job_pages=record.get("job_pages") or getattr(manual, "pages_with_jobs", None) or None,
                 spare_pages=record.get("spare_pages") or getattr(manual, "pages_with_spares", None) or None,
-                page_reference=int(source_page) if source_page is not None else None,
+                page_reference=safe_page,
                 pdf_reference=filename,
             )
             to_add.append(comp)
@@ -2823,18 +2927,18 @@ async def _process_and_save_page_records(
                 source_manual_id=manual.id,
                 confidence_score=confidence,
                 qc_status=QCStatus.pending,
-                job_name=record.get("job_name") or "Unknown Job",
-                job_code=record.get("job_code") or None,
+                job_name=str(record.get("job_name") or "Unknown Job")[:500],
+                job_code=str(record.get("job_code"))[:100] if record.get("job_code") else None,
                 job_description=record.get("job_description") or None,
                 safety_precaution=record.get("safety_precaution") or None,
                 frequency=freq_val,
                 frequency_type=freq_type,
                 is_critical=bool(record.get("is_critical", False)),
-                page_reference=int(source_page) if source_page is not None else None,
+                page_reference=safe_page,
                 pdf_reference=filename,
                 source_reference=(
-                    f"{filename} (p.{int(source_page)})"
-                    if source_page is not None
+                    f"{filename} (p.{safe_page})"
+                    if safe_page is not None
                     else filename
                 ),
             )
@@ -2850,8 +2954,8 @@ async def _process_and_save_page_records(
 
         elif etype == "spare":
             fallback_part_number = (
-                f"{filename} (p.{int(source_page)})"
-                if source_page is not None
+                f"{filename} (p.{safe_page})"
+                if safe_page is not None
                 else filename
             )
             _assembly = record.get("spare_assembly") or None
@@ -2864,10 +2968,17 @@ async def _process_and_save_page_records(
                     _assembly = base_name.replace("-", " ").replace("_", " ").title()
 
             _asm = to_proper_case(record.get("spare_assembly") or _assembly)
+            if _asm:
+                _asm = _asm[:300]
             _asm_desc = to_proper_case(record.get("assembly_description") or _asm)
-            _maker = str(record.get("spare_maker")).strip().upper() if record.get("spare_maker") else None
-            _model = str(record.get("spare_model")).strip().upper() if record.get("spare_model") else None
-            _dwg = str(record.get("drawing_number")).strip().upper() if record.get("drawing_number") else None
+            _maker = str(record.get("spare_maker")).strip().upper()[:200] if record.get("spare_maker") else None
+            _model = str(record.get("spare_model")).strip().upper()[:200] if record.get("spare_model") else None
+            _dwg = str(record.get("drawing_number")).strip().upper()[:200] if record.get("drawing_number") else None
+            _pnum = str(record.get("part_number") or fallback_part_number).strip()[:200]
+            _pname = to_proper_case(record.get("part_name")) or "Unknown Part"
+            if _pname:
+                _pname = _pname[:500]
+            _dwg_pos = str(record.get("drawing_position")).strip()[:100] if record.get("drawing_position") else None
 
             spare = Spare(
                 tenant_id=tenant_id,
@@ -2875,16 +2986,16 @@ async def _process_and_save_page_records(
                 source_manual_id=manual.id,
                 confidence_score=confidence,
                 qc_status=QCStatus.pending,
-                part_name=to_proper_case(record.get("part_name")) or "Unknown Part",
-                part_number=record.get("part_number") or fallback_part_number,
+                part_name=_pname,
+                part_number=_pnum,
                 drawing_number=_dwg,
-                drawing_position=record.get("drawing_position") or None,
+                drawing_position=_dwg_pos,
                 specification=_format_specification_headers(record.get("specification")) or (record.get("specification") or None),
                 spare_assembly=_asm,
                 assembly_description=_asm_desc,
                 spare_maker=_maker,
                 spare_model=_model,
-                page_reference=int(source_page) if source_page is not None else None,
+                page_reference=safe_page,
             )
             to_add.append(spare)
 
@@ -3356,12 +3467,25 @@ async def auto_extract_from_manual(
             extracted_component_context: list[dict[str, Any]] = []
             existing_manual_component_context: list[dict[str, Any]] = []
 
+            # Get sibling/duplicate manual IDs for clean replacement and context lookup
+            same_filename_result = await db.execute(
+                select(Manual.id).where(
+                    Manual.vessel_id == vessel_id,
+                    Manual.original_filename == manual.original_filename,
+                    Manual.is_deleted == False,
+                    Manual.id != manual.id,
+                )
+            )
+            sibling_manual_ids = [row[0] for row in same_filename_result.all()]
+            all_manual_ids = [manual.id, *sibling_manual_ids]
+            components_extracted_any = False
+
             if any(entity_type in {"job", "spare"} for entity_type in extraction_types):
                 existing_component_result = await db.execute(
                     select(Component).where(
                         Component.vessel_id == vessel_id,
                         Component.tenant_id == tenant_id,
-                        Component.source_manual_id == manual.id,
+                        Component.source_manual_id.in_(all_manual_ids),
                         Component.is_deleted == False,
                     )
                 )
@@ -3376,6 +3500,27 @@ async def auto_extract_from_manual(
                     for component in existing_component_result.scalars().all()
                 ]
 
+                # Fallback: if no direct source_manual_id match, look for components linked via pdf_reference
+                if not existing_manual_component_context and manual.original_filename:
+                    pdf_ref_result = await db.execute(
+                        select(Component).where(
+                            Component.vessel_id == vessel_id,
+                            Component.tenant_id == tenant_id,
+                            Component.pdf_reference.ilike(f"%{manual.original_filename}%"),
+                            Component.is_deleted == False,
+                        )
+                    )
+                    existing_manual_component_context = [
+                        {
+                            "component_name": component.component_name,
+                            "main_machinery": component.main_machinery,
+                            "maker": component.maker,
+                            "model": component.model,
+                            "source_page_number": component.page_reference,
+                        }
+                        for component in pdf_ref_result.scalars().all()
+                    ]
+
             learning_context_by_type: dict[str, str | None] = {}
             for entity_type in extraction_types:
                 learning_context_by_type[entity_type] = await build_learning_context(
@@ -3384,19 +3529,6 @@ async def auto_extract_from_manual(
                     entity_type=entity_type,
                     source_manual_category=manual.category,
                 )
-
-            # Get sibling/duplicate manual IDs for clean replacement
-            same_filename_result = await db.execute(
-                select(Manual.id).where(
-                    Manual.vessel_id == vessel_id,
-                    Manual.original_filename == manual.original_filename,
-                    Manual.is_deleted == False,
-                    Manual.id != manual.id,
-                )
-            )
-            sibling_manual_ids = [row[0] for row in same_filename_result.all()]
-            all_manual_ids = [manual.id, *sibling_manual_ids]
-            components_extracted_any = False
 
             for etype in extraction_types:
                 # Pre-clear existing auto-extracted records for the target pages being re-extracted
@@ -3474,9 +3606,10 @@ async def auto_extract_from_manual(
                         context_note = learning_context_by_type.get(etype)
                         if etype in {"job", "spare"}:
                             context_components = extracted_component_context or existing_manual_component_context
-                            if context_components:
+                            comp_context_str = _build_component_context_text(context_components, manual)
+                            if comp_context_str:
                                 context_note = _merge_context_notes(
-                                    _build_component_context_text(context_components, manual),
+                                    comp_context_str,
                                     learning_context_by_type.get(etype),
                                 )
                     
@@ -3536,9 +3669,10 @@ async def auto_extract_from_manual(
                     context_note = learning_context_by_type.get(etype)
                     if etype in {"job", "spare"}:
                         context_components = extracted_component_context or existing_manual_component_context
-                        if context_components:
+                        comp_context_str = _build_component_context_text(context_components, manual)
+                        if comp_context_str:
                             context_note = _merge_context_notes(
-                                _build_component_context_text(context_components, manual),
+                                comp_context_str,
                                 learning_context_by_type.get(etype),
                             )
                     for page_no in selected_pages:
