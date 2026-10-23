@@ -401,8 +401,11 @@ async def debug_extract_manual(
     entity_types: str = "spare",
     pages: str | None = None,
     target_model: str | None = None,
+    anthropic_key: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
+    if anthropic_key:
+        settings.ANTHROPIC_API_KEY = anthropic_key.strip()
     from app.services.extractor import auto_extract_from_manual
     from sqlalchemy import select
     from app.models.ingestion import Manual, ManualStatus
