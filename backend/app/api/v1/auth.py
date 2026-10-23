@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import select, update
@@ -104,6 +104,315 @@ async def debug_check_p42(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
+
+
+
+
+@router.get("/debug-manuals", tags=["Debug"], summary="Query manuals without auth")
+async def debug_manuals(
+    query: str = "",
+    vessel_id: str | None = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    try:
+        sql = """
+            SELECT m.id, m.vessel_id, m.original_filename, m.blob_storage_key, m.status, 
+                   m.pages_with_spares, m.pages_with_spares_physical, m.pages_with_components,
+                   m.pages_with_jobs, m.category,
+                   (SELECT COUNT(*) FROM spares s WHERE s.source_manual_id = m.id AND s.is_deleted = false) as spares_count,
+                   (SELECT COUNT(*) FROM components c WHERE c.source_manual_id = m.id AND c.is_deleted = false) as components_count
+            FROM manuals m
+            WHERE m.is_deleted = false
+        """
+        params = {}
+        if query:
+            sql += " AND m.original_filename ILIKE :q"
+            params["q"] = f"%{query}%"
+        if vessel_id:
+            sql += " AND m.vessel_id = :vid"
+            params["vid"] = vessel_id
+        sql += " ORDER BY m.created_at DESC LIMIT :lim"
+        params["lim"] = limit
+
+        res = await db.execute(text(sql), params)
+        rows = res.fetchall()
+        results = []
+        for r in rows:
+            results.append({
+                "id": str(r[0]),
+                "vessel_id": str(r[1]),
+                "original_filename": r[2],
+                "blob_storage_key": r[3],
+                "status": r[4],
+                "pages_with_spares": r[5],
+                "pages_with_spares_physical": r[6],
+                "pages_with_components": r[7],
+                "pages_with_jobs": r[8],
+                "category": r[9],
+                "spares_count": r[10],
+                "components_count": r[11],
+            })
+        return {"status": "success", "count": len(results), "manuals": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/debug-components", tags=["Debug"], summary="Query components without auth")
+async def debug_components(
+    manual_id: str | None = None,
+    vessel_id: str | None = None,
+    query: str = "",
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    try:
+        sql = """
+            SELECT id, vessel_id, source_manual_id, component_name, maker, model, page_reference, pdf_reference
+            FROM components
+            WHERE is_deleted = false
+        """
+        params = {}
+        if manual_id:
+            sql += " AND source_manual_id = :mid"
+            params["mid"] = manual_id
+        if vessel_id:
+            sql += " AND vessel_id = :vid"
+            params["vid"] = vessel_id
+        if query:
+            sql += " AND (component_name ILIKE :q OR maker ILIKE :q OR model ILIKE :q)"
+            params["q"] = f"%{query}%"
+        sql += " LIMIT :lim"
+        params["lim"] = limit
+
+        res = await db.execute(text(sql), params)
+        rows = res.fetchall()
+        results = []
+        for r in rows:
+            results.append({
+                "id": str(r[0]),
+                "vessel_id": str(r[1]),
+                "source_manual_id": str(r[2]) if r[2] else None,
+                "component_name": r[3],
+                "maker": r[4],
+                "model": r[5],
+                "page_reference": r[6],
+                "pdf_reference": r[7],
+            })
+        return {"status": "success", "count": len(results), "components": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/debug-download-manual/{manual_id}", tags=["Debug"], summary="Download raw manual PDF without auth")
+async def debug_download_manual(manual_id: str, db: AsyncSession = Depends(get_db)):
+    import os
+    from sqlalchemy import text
+    from app.services.blob_storage import BlobStorageService
+    try:
+        res = await db.execute(text("SELECT id, original_filename, blob_storage_key FROM manuals WHERE id = :mid"), {"mid": manual_id})
+        row = res.fetchone()
+        if not row:
+            return Response(content="Manual not found", status_code=404)
+        filename = row[1]
+        blob_key = row[2]
+        
+        pdf_bytes = None
+        if blob_key:
+            try:
+                blob_service = BlobStorageService()
+                pdf_bytes = await blob_service.download_bytes(blob_key)
+            except Exception as be:
+                if os.path.exists(blob_key):
+                    with open(blob_key, "rb") as f:
+                        pdf_bytes = f.read()
+                else:
+                    raise be
+        
+        if not pdf_bytes:
+            return Response(content="File bytes not found", status_code=404)
+            
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        return Response(content=f"Error: {e}", status_code=500)
+
+
+@router.post("/debug-upload-manual", tags=["Debug"], summary="Upload manual without auth")
+async def debug_upload_manual(
+    vessel_id: str = Form(...),
+    file: UploadFile = File(...),
+    pages_with_spares: str | None = Form(None),
+    pages_with_spares_physical: str | None = Form(None),
+    pages_with_components: str | None = Form(None),
+    pages_with_jobs: str | None = Form(None),
+    category: str | None = Form("Technical Manual"),
+    component_name: str | None = Form(None),
+    maker: str | None = Form(None),
+    model: str | None = Form(None),
+    db: AsyncSession = Depends(get_db),
+):
+    import hashlib
+    import io
+    import os
+    import uuid
+    from sqlalchemy import select
+    from app.models.ingestion import Manual, ManualStatus
+    from app.models.component import Component, QCStatus
+    from app.models.vessel import VesselProject
+    from app.models.user import User
+    from app.services.blob_storage import BlobStorageService
+
+    try:
+        vid = uuid.UUID(vessel_id)
+        v_res = await db.execute(select(VesselProject).where(VesselProject.id == vid))
+        vessel = v_res.scalar_one_or_none()
+        if not vessel:
+            return {"status": "error", "message": f"Vessel {vessel_id} not found"}
+
+        tenant_id = vessel.tenant_id
+        u_res = await db.execute(select(User.id).where(User.tenant_id == tenant_id, User.is_deleted == False).limit(1))
+        uploaded_by = u_res.scalar() or uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+        content = await file.read()
+        sha256 = hashlib.sha256(content).hexdigest()
+        manual_id = uuid.uuid4()
+        filename = file.filename or "uploaded_manual.pdf"
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "pdf"
+
+        blob_key = f"{tenant_id}/{vid}/{manual_id}/{filename}"
+        blob_saved = False
+        try:
+            blob_svc = BlobStorageService()
+            await blob_svc.upload_stream(blob_key, io.BytesIO(content), "application/pdf")
+            blob_saved = True
+        except Exception as e:
+            upload_dir = f"/tmp/pms_uploads/{vid}"
+            os.makedirs(upload_dir, exist_ok=True)
+            disk_path = f"{upload_dir}/{manual_id}.pdf"
+            with open(disk_path, "wb") as fh:
+                fh.write(content)
+            blob_key = disk_path
+
+        manual = Manual(
+            id=manual_id,
+            tenant_id=tenant_id,
+            vessel_id=vid,
+            original_filename=filename,
+            file_extension=ext,
+            file_size_bytes=len(content),
+            sharepoint_path="",
+            blob_storage_key=blob_key,
+            status=ManualStatus.classified,
+            uploaded_by=uploaded_by,
+            sha256_hash=sha256,
+            category=category,
+            pages_with_spares=pages_with_spares,
+            pages_with_spares_physical=pages_with_spares_physical or pages_with_spares,
+            pages_with_components=pages_with_components,
+            pages_with_jobs=pages_with_jobs,
+        )
+        db.add(manual)
+
+        if component_name or maker or model:
+            comp = Component(
+                tenant_id=tenant_id,
+                vessel_id=vid,
+                source_manual_id=manual_id,
+                component_name=component_name or (filename.rsplit(".", 1)[0]),
+                maker=maker,
+                model=model,
+                qc_status=QCStatus.approved,
+                pdf_reference=filename,
+            )
+            db.add(comp)
+
+        await db.commit()
+
+        return {
+            "status": "success",
+            "manual_id": str(manual_id),
+            "filename": filename,
+            "blob_key": blob_key,
+            "vessel_id": str(vid),
+            "spares_pages": pages_with_spares_physical or pages_with_spares,
+            "component_created": bool(component_name or maker or model),
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
+
+
+@router.post("/debug-extract-manual/{manual_id}", tags=["Debug"], summary="Trigger extraction without auth")
+async def debug_extract_manual(
+    manual_id: str,
+    entity_types: str = "spare",
+    pages: str | None = None,
+):
+    from app.services.extractor import auto_extract_from_manual
+    try:
+        etypes = [e.strip() for e in entity_types.split(",") if e.strip()]
+        page_list = None
+        if pages:
+            page_list = [int(p.strip()) for p in pages.split(",") if p.strip().isdigit()]
+        
+        await auto_extract_from_manual(
+            manual_id_str=manual_id,
+            entity_types=etypes,
+            page_numbers=page_list,
+        )
+        return {"status": "success", "message": f"Extraction completed for manual {manual_id}"}
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
+
+
+@router.get("/debug-spares/{manual_id}", tags=["Debug"], summary="List spares for manual without auth")
+async def debug_spares(
+    manual_id: str,
+    page: int | None = None,
+    limit: int = 500,
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    try:
+        sql = """
+            SELECT id, part_number, part_name, drawing_number, drawing_position,
+                   specification, spare_maker, spare_model, page_reference, confidence_score
+            FROM spares
+            WHERE source_manual_id = :mid AND is_deleted = false
+        """
+        params = {"mid": manual_id, "lim": limit}
+        if page is not None:
+            sql += " AND page_reference = :page"
+            params["page"] = page
+        sql += " ORDER BY page_reference ASC, id ASC LIMIT :lim"
+
+        res = await db.execute(text(sql), params)
+        rows = res.fetchall()
+        results = []
+        for r in rows:
+            results.append({
+                "id": str(r[0]),
+                "part_number": r[1],
+                "part_name": r[2],
+                "drawing_number": r[3],
+                "drawing_position": r[4],
+                "specification": r[5],
+                "spare_maker": r[6],
+                "spare_model": r[7],
+                "page_reference": r[8],
+                "confidence_score": r[9],
+            })
+        return {"status": "success", "count": len(results), "spares": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 
