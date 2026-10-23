@@ -364,20 +364,26 @@ async def debug_extract_manual(
     try:
         etypes = [e.strip() for e in entity_types.split(",") if e.strip()]
         page_list = None
-        if pages:
-            page_list = [int(p.strip()) for p in pages.split(",") if p.strip().isdigit()]
-            mid = uuid.UUID(manual_id)
-            res = await db.execute(select(Manual).where(Manual.id == mid))
-            m = res.scalar_one_or_none()
-            if m:
-                if "spare" in etypes and not m.pages_with_spares:
+        m_filename = None
+        m_ext = None
+        mid = uuid.UUID(manual_id)
+        res = await db.execute(select(Manual).where(Manual.id == mid))
+        m = res.scalar_one_or_none()
+        if m:
+            m_filename = m.original_filename
+            if not m.file_extension and m.original_filename and "." in m.original_filename:
+                m.file_extension = m.original_filename.rsplit(".", 1)[-1].lower()
+            m_ext = m.file_extension
+            if pages:
+                page_list = [int(p.strip()) for p in pages.split(",") if p.strip().isdigit()]
+                if "spare" in etypes:
                     m.pages_with_spares = pages
                     m.pages_with_spares_physical = pages
-                if target_model:
-                    m.target_model = target_model.strip()
-                m.status = ManualStatus.classified
-                db.add(m)
-                await db.commit()
+            if target_model:
+                m.target_model = target_model.strip()
+            m.status = ManualStatus.classified
+            db.add(m)
+            await db.commit()
 
         await auto_extract_from_manual(
             manual_id_str=manual_id,
@@ -385,7 +391,21 @@ async def debug_extract_manual(
             page_numbers=page_list,
             target_model=target_model,
         )
-        return {"status": "success", "message": f"Extraction completed for manual {manual_id}", "target_model": target_model}
+        from sqlalchemy import text
+        spares_res = await db.execute(
+            text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid AND is_deleted = false"),
+            {"mid": mid}
+        )
+        total_spares = spares_res.scalar() or 0
+        return {
+            "status": "success",
+            "message": f"Extraction completed for manual {manual_id}",
+            "filename": m_filename,
+            "extension": m_ext,
+            "target_model": target_model,
+            "pages": pages,
+            "spares_extracted": total_spares,
+        }
     except Exception as e:
         import traceback
         return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}

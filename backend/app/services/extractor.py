@@ -3202,7 +3202,7 @@ async def auto_extract_from_manual(
             file_path = manual.blob_storage_key
             full_text = ""
             file_bytes: Optional[bytes] = None
-            ext = (manual.file_extension or "").lower()
+            ext = (manual.file_extension or (manual.original_filename.rsplit(".", 1)[-1] if "." in (manual.original_filename or "") else "")).lower()
 
             stored_text = getattr(manual, "extracted_text", None) or ""
             if isinstance(stored_text, str):
