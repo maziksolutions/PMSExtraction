@@ -1690,6 +1690,17 @@ def _render_single_pdf_page_image(
     resolution: int = 200,
 ) -> Optional[bytes]:
     try:
+        import fitz
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        if 1 <= page_no <= len(doc):
+            page = doc[page_no - 1]
+            pix = page.get_pixmap(dpi=resolution)
+            png_bytes = pix.tobytes("png")
+            doc.close()
+            return png_bytes
+    except Exception as fitz_exc:
+        logger.warning("fitz single page render failed: page=%d error=%s", page_no, fitz_exc)
+    try:
         import pdfplumber
         import io
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:

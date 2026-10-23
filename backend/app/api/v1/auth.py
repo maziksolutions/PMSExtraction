@@ -43,15 +43,15 @@ async def debug_test_render(manual_id: str, page: int = 105, db: AsyncSession = 
         t = ""
         page_count = 0
         try:
-            import pdfplumber, io
-            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                page_count = len(pdf.pages)
-                p = pdf.pages[page - 1]
-                t = p.extract_text() or ""
-                p_img = p.to_image(resolution=150).original
-                buf = io.BytesIO()
-                p_img.save(buf, format="PNG")
-                img_len = len(buf.getvalue())
+            import fitz
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            page_count = len(doc)
+            p = doc[page - 1]
+            t = p.get_text() or ""
+            pix = p.get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            img_len = len(img_bytes)
+            doc.close()
         except Exception as e:
             err = traceback.format_exc()
         
