@@ -2196,7 +2196,7 @@ async def _consolidate_spares_for_manual(
     tenant_id: uuid.UUID,
 ) -> int:
     from sqlalchemy import select
-    from app.models.spare import Spare
+    from app.models.spare import Spare, ExtractionMethod as _EM
     from app.services.deduplication import fuzzy_similarity
 
     result = await db.execute(
@@ -2607,7 +2607,7 @@ async def _link_records_to_components(
     from sqlalchemy import select
     from app.models.component import Component, QCStatus
     from app.models.job import Job
-    from app.models.spare import Spare
+    from app.models.spare import Spare, ExtractionMethod as _EM
 
     comp_result = await db.execute(
         select(Component).where(
@@ -3027,7 +3027,7 @@ async def auto_extract_from_manual(
     from app.models.component import Component, QCStatus
     from app.models.ingestion import Manual, ManualStatus
     from app.models.job import FrequencyType, Job
-    from app.models.spare import Spare
+    from app.models.spare import Spare, ExtractionMethod as _EM
     from app.services.feedback_learning import build_learning_context
     from sqlalchemy import select, update
 
