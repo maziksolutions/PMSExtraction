@@ -3027,6 +3027,7 @@ async def auto_extract_from_manual(
     entity_types: Optional[list[str]] = None,
     page_numbers: Optional[list[int]] = None,
     target_model: Optional[str] = None,
+    debug_log: Optional[list[str]] = None,
 ) -> None:
     """
     Background task: extract Components, Jobs, and Spares from a Manual.
@@ -3060,6 +3061,8 @@ async def auto_extract_from_manual(
                 )
             )
             manual: Optional[Manual] = result.scalar_one_or_none()
+            if debug_log is not None:
+                debug_log.append(f"Loaded manual: {getattr(manual, 'original_filename', None)}, status={getattr(manual, 'status', None)}, spares_ref={getattr(manual, 'pages_with_spares', None)}")
             if manual is None:
                 logger.warning("auto_extract_from_manual: manual %s not found", manual_id_str)
                 return
@@ -3321,7 +3324,11 @@ async def auto_extract_from_manual(
                     entity_type for entity_type in extraction_types if entity_type in remaining_extraction_types
                 ]
 
+            if debug_log is not None:
+                debug_log.append(f"entity_pages={entity_pages}, selected_extraction_types={selected_extraction_types}, extraction_types={extraction_types}")
             if not extraction_types:
+                if debug_log is not None:
+                    debug_log.append(f"EXIT: no extraction_types for manual {filename}")
                 logger.warning(
                     "auto_extract_from_manual: skipping manual %s because no screened extraction pages are set",
                     filename,
@@ -3699,8 +3706,12 @@ async def auto_extract_from_manual(
                                 learning_context_by_type.get(etype),
                             )
                     for page_no in selected_pages:
+                        if debug_log is not None:
+                            debug_log.append(f"Processing {etype} page {page_no}, file_bytes={len(file_bytes) if file_bytes else 0}")
                         # Render single page image on-demand to keep memory footprint low
                         image_bytes = await asyncio.to_thread(_render_single_pdf_page_image, file_bytes, page_no, 200)
+                        if debug_log is not None:
+                            debug_log.append(f"Rendered image for page {page_no}: {len(image_bytes) if image_bytes else 'FAILED/NONE'}")
                         if not image_bytes:
                             continue
 
@@ -3781,6 +3792,8 @@ async def auto_extract_from_manual(
                                         etype, page_no, filename
                                     )
                                     vision_records = []
+                            if debug_log is not None:
+                                debug_log.append(f"Vision returned {len(vision_records)} records for page {page_no}")
                             if vision_records:
                                 if etype == "component":
                                     components_extracted_any = True

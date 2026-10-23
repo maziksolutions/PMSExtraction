@@ -428,11 +428,13 @@ async def debug_extract_manual(
             db.add(m)
             await db.commit()
 
+        d_logs = []
         await auto_extract_from_manual(
             manual_id_str=manual_id,
             entity_types=etypes,
             page_numbers=page_list,
             target_model=target_model,
+            debug_log=d_logs,
         )
         from sqlalchemy import text
         spares_res = await db.execute(
@@ -448,6 +450,7 @@ async def debug_extract_manual(
             "target_model": target_model,
             "pages": pages,
             "spares_extracted": total_spares,
+            "debug_log": d_logs,
         }
     except Exception as e:
         import traceback
