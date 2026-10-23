@@ -76,6 +76,7 @@ class ManualUpdate(BaseModel):
     pages_with_components: Optional[str] = None
     pages_with_jobs: Optional[str] = None
     pages_with_spares: Optional[str] = None
+    target_model: Optional[str] = None
     reviewer_comments: Optional[str] = None
     supply_type: Optional[str] = None
 
@@ -172,6 +173,7 @@ class ManualOut(BaseModel):
     pages_with_components: Optional[str] = None
     pages_with_jobs: Optional[str] = None
     pages_with_spares: Optional[str] = None
+    target_model: Optional[str] = None
     reviewer_comments: Optional[str] = None
     supply_type: Optional[str] = None
     # F-09 duplicate detection

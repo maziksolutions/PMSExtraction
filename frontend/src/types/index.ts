@@ -164,6 +164,7 @@ export interface Manual {
   pages_with_components: string | null
   pages_with_jobs: string | null
   pages_with_spares: string | null
+  target_model: string | null
   reviewer_comments: string | null
   created_at: string
   updated_at: string
@@ -175,6 +176,7 @@ export interface ManualUpdate {
   pages_with_components?: string
   pages_with_jobs?: string
   pages_with_spares?: string
+  target_model?: string
   reviewer_comments?: string
 }
 

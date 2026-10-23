@@ -354,20 +354,38 @@ async def debug_extract_manual(
     manual_id: str,
     entity_types: str = "spare",
     pages: str | None = None,
+    target_model: str | None = None,
+    db: AsyncSession = Depends(get_db),
 ):
     from app.services.extractor import auto_extract_from_manual
+    from sqlalchemy import select
+    from app.models.ingestion import Manual, ManualStatus
+    import uuid
     try:
         etypes = [e.strip() for e in entity_types.split(",") if e.strip()]
         page_list = None
         if pages:
             page_list = [int(p.strip()) for p in pages.split(",") if p.strip().isdigit()]
-        
+            mid = uuid.UUID(manual_id)
+            res = await db.execute(select(Manual).where(Manual.id == mid))
+            m = res.scalar_one_or_none()
+            if m:
+                if "spare" in etypes and not m.pages_with_spares:
+                    m.pages_with_spares = pages
+                    m.pages_with_spares_physical = pages
+                if target_model:
+                    m.target_model = target_model.strip()
+                m.status = ManualStatus.classified
+                db.add(m)
+                await db.commit()
+
         await auto_extract_from_manual(
             manual_id_str=manual_id,
             entity_types=etypes,
             page_numbers=page_list,
+            target_model=target_model,
         )
-        return {"status": "success", "message": f"Extraction completed for manual {manual_id}"}
+        return {"status": "success", "message": f"Extraction completed for manual {manual_id}", "target_model": target_model}
     except Exception as e:
         import traceback
         return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}

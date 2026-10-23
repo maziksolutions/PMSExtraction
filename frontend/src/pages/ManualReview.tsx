@@ -55,6 +55,7 @@ interface Manual {
   page_explanations: string | null
   reviewer_comments: string | null
   supply_type: string | null
+  target_model?: string | null
   is_duplicate: boolean
   duplicate_of_id: string | null
   blob_storage_key?: string | null
@@ -650,8 +651,17 @@ const ManualReview: React.FC = () => {
   const extractSelectedMutation = useMutation({
     mutationFn: async (manualIds: string[]) => {
       await saveManualEdits(manualIds)
+      const targetModels: Record<string, string> = {}
+      manualIds.forEach((id) => {
+        const m = manuals.find((x) => x.id === id)
+        const edit = edits[id]
+        const tm = (edit?.target_model as string | undefined) ?? m?.target_model
+        if (tm && tm.trim()) {
+          targetModels[id] = tm.trim()
+        }
+      })
       return apiClient
-        .post(`/vessels/${vesselId}/manuals/extract-selected`, { manual_ids: manualIds })
+        .post(`/vessels/${vesselId}/manuals/extract-selected`, { manual_ids: manualIds, target_models: targetModels })
         .then((r) => r.data)
     },
     onSuccess: (data) => {
@@ -665,10 +675,20 @@ const ManualReview: React.FC = () => {
   const extractSelectedSparesOnlyMutation = useMutation({
     mutationFn: async (manualIds: string[]) => {
       await saveManualEdits(manualIds)
+      const targetModels: Record<string, string> = {}
+      manualIds.forEach((id) => {
+        const m = manuals.find((x) => x.id === id)
+        const edit = edits[id]
+        const tm = (edit?.target_model as string | undefined) ?? m?.target_model
+        if (tm && tm.trim()) {
+          targetModels[id] = tm.trim()
+        }
+      })
       return apiClient
         .post(`/vessels/${vesselId}/manuals/extract-selected`, {
           manual_ids: manualIds,
           entity_types: ['spare'],
+          target_models: targetModels,
         })
         .then((r) => r.data)
     },
@@ -1430,6 +1450,7 @@ const ManualReview: React.FC = () => {
                 <th className="px-3 py-3">Comp. Ref</th>
                 <th className="px-3 py-3">Job Ref</th>
                 <th className="px-3 py-3">Spare Ref</th>
+                <th className="px-3 py-3">Target Model</th>
                 <th className="px-3 py-3">Page Status</th>
                 <th className="px-3 py-3">{renderSortHeader('Source', 'created_at')}</th>
                 <th className="px-3 py-3">{renderSortHeader('Confidence', 'confidence')}</th>
@@ -1584,6 +1605,16 @@ const ManualReview: React.FC = () => {
                         onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_spares_physical', value)}
                         explanationRows={spareExplanationRows}
                         physicalPlaceholder=""
+                      />
+                    </td>
+                    <td className="px-3 py-3">
+                      <input
+                        type="text"
+                        value={(edit.target_model as string | undefined) ?? m.target_model ?? ''}
+                        onChange={(e) => handleEdit(m.id, 'target_model', e.target.value)}
+                        placeholder="e.g. L3 139LB, LT-55"
+                        className="w-28 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+                        title="Target model/variant for multi-model pages (e.g. L3 139LB, LT-55)"
                       />
                     </td>
                     <td className="px-3 py-3">

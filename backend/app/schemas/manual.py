@@ -39,6 +39,7 @@ class ManualOut(BaseModel):
     page_explanations: Optional[str] = None
     reviewer_comments: Optional[str] = None
     supply_type: Optional[str] = None
+    target_model: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -60,4 +61,5 @@ class ManualUpdate(BaseModel):
     page_explanations: Optional[str] = None
     reviewer_comments: Optional[str] = None
     supply_type: Optional[str] = None
+    target_model: Optional[str] = None
     classification_confidence: Optional[int] = None

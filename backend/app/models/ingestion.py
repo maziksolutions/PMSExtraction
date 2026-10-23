@@ -197,6 +197,11 @@ class Manual(TenantBase):
     page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Supply type — OEM instruction manual vs yard-supply/final-drawing package
+    target_model: Mapped[Optional[str]] = mapped_column(
+        String(200),
+        nullable=True,
+    )
+
     supply_type: Mapped[Optional[str]] = mapped_column(
         String(20),
         nullable=True,

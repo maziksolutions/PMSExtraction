@@ -1879,6 +1879,8 @@ async def _run_extract_selected_task(
     manual_ids: list[str],
     entity_types: Optional[list[str]] = None,
     page_numbers: Optional[list[int]] = None,
+    target_models: Optional[dict[str, str]] = None,
+    global_target_model: Optional[str] = None,
 ) -> None:
 
     """Background task: runs auto_extract_from_manual with bounded parallelism."""
@@ -1934,7 +1936,8 @@ async def _run_extract_selected_task(
 
                     )
 
-                    await auto_extract_from_manual(manual_id, entity_types=entity_types, page_numbers=page_numbers)
+                    m_target = (target_models or {}).get(manual_id) or global_target_model
+                    await auto_extract_from_manual(manual_id, entity_types=entity_types, page_numbers=page_numbers, target_model=m_target)
 
                 except Exception as exc:
 
@@ -2051,6 +2054,8 @@ async def extract_selected_manuals(
     manual_ids: list[str] = body.get("manual_ids", [])
     entity_types: Optional[list[str]] = body.get("entity_types", None)
     page_numbers: Optional[list[int]] = body.get("page_numbers", None)
+    target_model_global: Optional[str] = body.get("target_model")
+    target_models_map: dict[str, str] = body.get("target_models") or {}
 
     if not manual_ids:
 
@@ -2124,7 +2129,23 @@ async def extract_selected_manuals(
 
     set_extraction_state(vessel_id_str, total=len(runnable_manual_ids), done=0, status="running")
 
-    background_tasks.add_task(_run_extract_selected_task, vessel_id_str, runnable_manual_ids, entity_types, page_numbers)
+    # Persist target model on manual records if provided
+    for manual in manuals:
+        m_model = target_models_map.get(str(manual.id)) or target_model_global
+        if m_model and manual.target_model != m_model.strip():
+            manual.target_model = m_model.strip()
+            db.add(manual)
+    await db.commit()
+
+    background_tasks.add_task(
+        _run_extract_selected_task,
+        vessel_id_str,
+        runnable_manual_ids,
+        entity_types,
+        page_numbers,
+        target_models_map,
+        target_model_global,
+    )
 
     return {"started": True, "total": len(runnable_manual_ids)}
 
@@ -2522,6 +2543,7 @@ async def get_manual_page_status(
         "original_filename": manual.original_filename,
         "page_count": manual.page_count,
         "status": manual.status,
+        "target_model": getattr(manual, "target_model", None),
         "pages": pages_data,
     }
 

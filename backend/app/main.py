@@ -728,6 +728,18 @@ async def _run_startup_backfill_and_backup() -> None:
                 print("[STARTUP MIGRATION] No job titles needed renaming.", flush=True)
 
 
+async def _ensure_manual_target_model_column() -> None:
+    from app.core.database import AsyncSessionLocal
+    from sqlalchemy import text
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("ALTER TABLE manuals ADD COLUMN IF NOT EXISTS target_model VARCHAR(200);"))
+            await db.commit()
+            print("[STARTUP SCHEMA] Ensured target_model column exists on manuals table.", flush=True)
+    except Exception as e:
+        print(f"[STARTUP SCHEMA ERROR] Failed to ensure target_model column: {e}", flush=True)
+
+
 async def _sanitize_spares_specifications_startup() -> None:
     from app.core.database import AsyncSessionLocal
     from sqlalchemy import text
@@ -795,6 +807,10 @@ async def _log_ai_config() -> None:
         await _check_vessel4_status()
     except Exception as e:
         print(f"[STARTUP CHECK ERROR] Failed to run vessel 4 check: {e}", flush=True)
+    try:
+        await _ensure_manual_target_model_column()
+    except Exception as e:
+        print(f"[STARTUP SCHEMA ERROR] Failed to run target_model migration: {e}", flush=True)
     try:
         await _sanitize_spares_specifications_startup()
     except Exception as e:

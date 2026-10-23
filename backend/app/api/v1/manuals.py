@@ -167,6 +167,7 @@ def _original_manual_snapshot(manual: Manual) -> dict[str, Any]:
         "page_explanations": manual.page_explanations,
         "reviewer_comments": manual.reviewer_comments,
         "supply_type": manual.supply_type,
+        "target_model": manual.target_model,
     }
 
 
@@ -276,6 +277,7 @@ def _manual_export_headers() -> list[str]:
         "Job Physical Page Ref",
         "Spare Printed Page Ref",
         "Spare Physical Page Ref",
+        "Target Model",
         "Reviewer Comments",
     ]
 

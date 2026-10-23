@@ -1988,6 +1988,11 @@ def _build_component_context_text(components: list[Any], manual: Any) -> str:
     # Collect distinct equipment models
     distinct_models: list[str] = []
     seen_models: set[str] = set()
+
+    manual_target_model = (getattr(manual, "target_model", None) or "").strip()
+    if manual_target_model and manual_target_model.upper() not in {"N/A", "UNKNOWN", "NONE", "-", "--", "NULL", "UNSPECIFIED"}:
+        distinct_models.append(manual_target_model)
+        seen_models.add(manual_target_model.upper())
     for component in (components or []):
         m = _value(component, "model")
         if m and isinstance(m, str):
@@ -2973,6 +2978,8 @@ async def _process_and_save_page_records(
             _asm_desc = to_proper_case(record.get("assembly_description") or _asm)
             _maker = str(record.get("spare_maker")).strip().upper()[:200] if record.get("spare_maker") else None
             _model = str(record.get("spare_model")).strip().upper()[:200] if record.get("spare_model") else None
+            if not _model and getattr(manual, "target_model", None):
+                _model = str(manual.target_model).strip().upper()[:200]
             _dwg = str(record.get("drawing_number")).strip().upper()[:200] if record.get("drawing_number") else None
             _pnum = str(record.get("part_number") or fallback_part_number).strip()[:200]
             _pname = to_proper_case(record.get("part_name")) or "Unknown Part"
@@ -3008,6 +3015,7 @@ async def auto_extract_from_manual(
     manual_id_str: str,
     entity_types: Optional[list[str]] = None,
     page_numbers: Optional[list[int]] = None,
+    target_model: Optional[str] = None,
 ) -> None:
     """
     Background task: extract Components, Jobs, and Spares from a Manual.
@@ -3044,6 +3052,10 @@ async def auto_extract_from_manual(
             if manual is None:
                 logger.warning("auto_extract_from_manual: manual %s not found", manual_id_str)
                 return
+
+            if target_model and manual.target_model != target_model.strip():
+                manual.target_model = target_model.strip()
+                await db.commit()
 
             vessel_id = manual.vessel_id
             tenant_id = manual.tenant_id

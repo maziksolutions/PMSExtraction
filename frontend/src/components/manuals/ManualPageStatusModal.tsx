@@ -58,6 +58,7 @@ interface PageStatusResponse {
   original_filename: string
   page_count: number | null
   status: string
+  target_model?: string | null
   pages: PageStatusRow[]
 }
 
@@ -82,6 +83,13 @@ export function ManualPageStatusModal({
 }: ManualPageStatusModalProps) {
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
+  const [targetModel, setTargetModel] = useState<string>('')
+
+  useEffect(() => {
+    if (data?.target_model) {
+      setTargetModel(data.target_model)
+    }
+  }, [data?.target_model])
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all')
   const [expandedPages, setExpandedPages] = useState<Record<number, boolean>>({})
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
@@ -139,6 +147,7 @@ export function ManualPageStatusModal({
         manual_ids: [manualId],
         page_numbers: [vars.pageNumber],
         entity_types: vars.entityTypes,
+        target_model: targetModel.trim() || undefined,
       })
       return res.data
     },
@@ -165,6 +174,7 @@ export function ManualPageStatusModal({
     mutationFn: async () => {
       const res = await apiClient.post(`/vessels/${vesselId}/manuals/extract-selected`, {
         manual_ids: [manualId],
+        target_model: targetModel.trim() || undefined,
       })
       return res.data
     },
@@ -340,8 +350,8 @@ export function ManualPageStatusModal({
 
             {/* Topbar Search & Filter Controls */}
             <div className="flex items-center justify-between gap-3 px-6 py-4 shrink-0 border-b border-slate-800">
-              <div className="flex items-center gap-2 flex-1 max-w-sm">
-                <div className="relative w-full">
+              <div className="flex items-center gap-3 flex-1 max-w-lg">
+                <div className="relative flex-1">
                   <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-500" />
                   <input
                     type="text"
@@ -349,6 +359,17 @@ export function ManualPageStatusModal({
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Search by page number, item name..."
                     className="w-full rounded-lg border border-slate-700 bg-slate-800 pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  />
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="text-[11px] text-slate-400 font-medium">Model:</span>
+                  <input
+                    type="text"
+                    value={targetModel}
+                    onChange={(e) => setTargetModel(e.target.value)}
+                    placeholder="e.g. L3 139LB, LT-55"
+                    className="w-32 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-white placeholder-slate-500 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                    title="Target model/variant for multi-model tables"
                   />
                 </div>
               </div>
