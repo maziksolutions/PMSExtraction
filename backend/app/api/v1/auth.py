@@ -62,6 +62,9 @@ async def debug_test_render(manual_id: str, page: int = 105, db: AsyncSession = 
             "text_sample": t[:300],
             "img_len": img_len,
             "render_err": err,
+            "anthropic_key_set": bool(settings.ANTHROPIC_API_KEY),
+            "claude_model": getattr(settings, "CLAUDE_MODEL_ID", None),
+            "openai_key_set": bool(settings.OPENAI_API_KEY),
         }
     except Exception as e:
         return {"error": str(e), "traceback": traceback.format_exc()}

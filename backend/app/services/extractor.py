@@ -3752,6 +3752,8 @@ async def auto_extract_from_manual(
                                     detailed_status=f"Extracting spares from image page {page_no} (starting)..."
                                 )
                                 try:
+                                    if debug_log is not None:
+                                        debug_log.append(f"Calling vision for page {page_no}, anthropic_key={bool(settings.ANTHROPIC_API_KEY)}, openai_key={bool(settings.OPENAI_API_KEY)}")
                                     vision_records = await asyncio.wait_for(
                                         _extract_spare_parts_from_image_split(
                                             image_bytes=image_bytes,
@@ -3762,10 +3764,14 @@ async def auto_extract_from_manual(
                                         ),
                                         timeout=240.0
                                     )
-                                except asyncio.TimeoutError:
+                                    if debug_log is not None:
+                                        debug_log.append(f"Vision returned {len(vision_records)} records")
+                                except Exception as v_err:
+                                    if debug_log is not None:
+                                        debug_log.append(f"Vision error on page {page_no}: {type(v_err).__name__}: {v_err}")
                                     logger.error(
-                                        "auto_extract_from_manual: vision spares page %d for %s timed out after 4 minutes. Skipping.",
-                                        page_no, filename
+                                        "auto_extract_from_manual: vision spares page %d for %s error: %s",
+                                        page_no, filename, v_err
                                     )
                                     vision_records = []
                             else:
