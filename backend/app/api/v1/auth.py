@@ -23,6 +23,49 @@ from app.schemas.user import UserResponse
 from app.services.token_store import is_token_revoked, revoke_token_payload
 
 router = APIRouter()
+
+@router.get("/debug-test-render/{manual_id}", tags=["Debug"])
+async def debug_test_render(manual_id: str, page: int = 105, db: AsyncSession = Depends(get_db)):
+    from app.services.blob_storage import BlobStorageService
+    from sqlalchemy import text
+    import traceback
+    try:
+        res = await db.execute(text("SELECT id, original_filename, blob_storage_key FROM manuals WHERE id = :mid"), {"mid": manual_id})
+        m = res.fetchone()
+        if not m:
+            return {"error": "manual not found"}
+        blob_key = m[2]
+        blob_svc = BlobStorageService()
+        pdf_bytes = await blob_svc.download_bytes(blob_key)
+        
+        err = None
+        img_len = None
+        t = ""
+        page_count = 0
+        try:
+            import pdfplumber, io
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                page_count = len(pdf.pages)
+                p = pdf.pages[page - 1]
+                t = p.extract_text() or ""
+                p_img = p.to_image(resolution=150).original
+                buf = io.BytesIO()
+                p_img.save(buf, format="PNG")
+                img_len = len(buf.getvalue())
+        except Exception as e:
+            err = traceback.format_exc()
+        
+        return {
+            "pdf_len": len(pdf_bytes),
+            "page_count": page_count,
+            "text_len": len(t),
+            "text_sample": t[:300],
+            "img_len": img_len,
+            "render_err": err,
+        }
+    except Exception as e:
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
 optional_bearer = HTTPBearer(auto_error=False)
 
 
