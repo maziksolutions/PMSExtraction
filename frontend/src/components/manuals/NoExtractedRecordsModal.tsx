@@ -1,5 +1,6 @@
 import React from 'react'
-import { X, AlertTriangle, FileText } from 'lucide-react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { X, AlertTriangle, FileText, CheckCircle2, Package, Wrench, BookOpen } from 'lucide-react'
 
 interface NoExtractedManual {
   manual_id: string
@@ -29,6 +30,8 @@ export function NoExtractedRecordsModal({
 }: NoExtractedRecordsModalProps) {
   if (!isOpen) return null
 
+  const navigate = useNavigate()
+  const { vesselId } = useParams<{ vesselId?: string }>()
   const manuals = data?.manuals || []
 
   return (
@@ -56,9 +59,37 @@ export function NoExtractedRecordsModal({
         {/* Content Body */}
         <div className="flex-1 overflow-auto mt-4 pr-1">
           {manuals.length === 0 ? (
-            <div className="py-12 text-center text-slate-500">
-              <FileText className="mx-auto h-12 w-12 opacity-30 mb-3" />
-              <p className="text-sm font-medium">All specified pages have at least one extracted record!</p>
+            <div className="py-10 text-center text-slate-400">
+              <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-400 mb-3" />
+              <p className="text-base font-semibold text-slate-100">All specified pages have at least one extracted record!</p>
+              <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                No targeted pages were skipped or returned zero records. You can review all extracted data in their respective review sections:
+              </p>
+              {vesselId && (
+                <div className="flex items-center justify-center gap-3 mt-6">
+                  <button
+                    onClick={() => { onClose(); navigate(`/vessels/${vesselId}/components`) }}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-emerald-400 border border-slate-700 transition-colors shadow-sm"
+                  >
+                    <Wrench className="h-3.5 w-3.5" />
+                    Components Review
+                  </button>
+                  <button
+                    onClick={() => { onClose(); navigate(`/vessels/${vesselId}/jobs`) }}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-sky-400 border border-slate-700 transition-colors shadow-sm"
+                  >
+                    <BookOpen className="h-3.5 w-3.5" />
+                    Jobs Review
+                  </button>
+                  <button
+                    onClick={() => { onClose(); navigate(`/vessels/${vesselId}/spares`) }}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-amber-400 border border-slate-700 transition-colors shadow-sm"
+                  >
+                    <Package className="h-3.5 w-3.5" />
+                    Spares Review
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="overflow-x-auto rounded-lg border border-slate-850 bg-slate-950">

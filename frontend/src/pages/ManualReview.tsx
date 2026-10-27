@@ -620,7 +620,14 @@ const ManualReview: React.FC = () => {
 
     if (prevExtractionStatusRef.current === 'running' && extractionData?.status === 'completed') {
       queryClient.invalidateQueries({ queryKey: ['no-extracted-records', vesselId] })
-      setShowNoExtractedModal(true)
+      apiClient
+        .get(`/vessels/${vesselId}/manuals/no-extracted-records`)
+        .then((res) => {
+          if ((res.data?.total_no_extracted_pages || 0) > 0) {
+            setShowNoExtractedModal(true)
+          }
+        })
+        .catch(() => {})
     }
     prevExtractionStatusRef.current = extractionData?.status
   }, [extractionData?.status, vesselId, queryClient])

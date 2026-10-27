@@ -84,12 +84,6 @@ export function ManualPageStatusModal({
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
   const [targetModel, setTargetModel] = useState<string>('')
-
-  useEffect(() => {
-    if (data?.target_model) {
-      setTargetModel(data.target_model)
-    }
-  }, [data?.target_model])
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed'>('all')
   const [expandedPages, setExpandedPages] = useState<Record<number, boolean>>({})
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
@@ -128,6 +122,12 @@ export function ManualPageStatusModal({
       return false
     },
   })
+
+  useEffect(() => {
+    if (data?.target_model) {
+      setTargetModel(data.target_model)
+    }
+  }, [data?.target_model])
 
   useEffect(() => {
     refetch()
