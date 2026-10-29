@@ -355,9 +355,9 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
             '  "part_name": "part name captured exactly as written in the manual in Proper Text / Title Case, preserving original wording, abbreviations, and misspellings with zero modification (e.g. \'O-Ring\', \'Vlv Stem\', \'Ball Bearing\', \'Fltr Element\', \'Hex Bolt\')",\n'
-            '  "part_number": "catalog/part number exactly as printed or null",\n'
+            '  "part_number": "catalog/part number exactly as printed, or Item No. / Reference No. / Serial No. / No. if no separate catalog Part Number is provided. Leave null if not found — NEVER capture PDF filenames or page references here",\n'
             '  "drawing_number": "DWG.NO or drawing reference in ALL CAPS (e.g. \'B3798160-02\', \'FIG.7\', \'DWG-1234\') or null",\n'
-            '  "drawing_position": "REF.NO or position from the parts table — copy EXACTLY as printed, including ranges (e.g. \'1\', \'11\', \'1~58\', \'155~156\', \'101~105\') or null",\n'
+            '  "drawing_position": "ONLY capture when clearly identified as Position No., Pos., Pos. No., or Position (e.g. \'1\', \'11\', \'1~58\'). Do NOT treat Item No., Reference No., or No. as Position Numbers — leave null if no explicit Position column exists",\n'
             '  "specification": "material, size, standard, quantity note strictly as formatted in the manual with NO abbreviations or value modifications (e.g. \'QTY: 2 PCS; Material: SUS304; Size: DN50\') or null",\n'
             '  "spare_assembly": "assembly name, parts table title, or diagram section in Proper Text / Title Case (e.g. \'Cargo Pumping System\', \'Shaft Seal Assembly\', \'Main Components Exploded View\', \'Machine Spare Parts List\') or null",\n'
             '  "assembly_description": "assembly description in Proper Text / Title Case or null",\n'
@@ -405,7 +405,14 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "- ASSEMBLY DIAGRAM RULE: If a page has an exploded-view/assembly diagram with numbered callouts AND a parts table below it, extract ONLY from the parts table rows. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them.\n"
             "- DUPLICATE TABLE TEXT RULE: Some pages contain the same table represented twice: once as plain unstructured text (where column values are printed inline) and once as a structured `[TABLE]` pipe-delimited block. Do NOT extract duplicate records from both. Extract ONLY from the structured `[TABLE]` block, and ignore the plain unstructured text of those same table rows to prevent duplicate/repeated records.\n"
             "- REMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly variant tags — store in spare_model (in ALL CAPS), NOT in part_name or drawing_number.\n"
-            "- For drawing parts tables (NO./NAME/MATERIAL): drawing_position=NO., specification=MATERIAL\n"
+            "- POSITION NUMBER VS PART NUMBER EXTRACTION RULE (STRICT — BUG-002 & OCT 27 FEEDBACK):\n"
+            "    1. Capture drawing_position ONLY when the table or column is clearly labeled as 'Position No.', 'Pos.', 'Pos. No.', 'Position', or similar explicit position-related labels.\n"
+            "    2. Do NOT treat 'Item No.', 'Reference No.', 'Serial No.', 'No.', or general item numbering fields as Position Numbers.\n"
+            "    3. Treat 'Item No.', 'Reference No.', 'Serial No.', and 'No.' as part_number when used to identify spare parts and no separate catalog Part Number column is provided.\n"
+            "    4. If no part number or item numbering exists, leave part_number as null. PDF filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf') must NEVER be captured in part_number, drawing_number, drawing_position, or spare_model under any circumstances! Leave these fields blank (null).\n"
+            "- ASSEMBLY & ASSEMBLY DESCRIPTION UNIQUENESS & CONSISTENCY (CRITICAL):\n"
+            "    • Capture spare_assembly and assembly_description as unique, consistent data across all pages of the manual.\n"
+            "    • Maintain uniform formatting, casing, and wording across pages to avoid creating duplicate Assembly records.\n"
             "- Part numbers: include exactly as printed (do not reformat)\n"
             "- If no spare parts found, return []\n"
             "- Return ONLY the JSON array, no markdown fences\n\n"
@@ -1470,8 +1477,8 @@ async def _extract_entities_from_page_image_with_openai(
                 "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
                 "A single page can contain 50-300 parts — extract ALL of them."
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
-                "\n  • drawing_position → REF.NO value — copy EXACTLY as printed, including ranges (e.g. '1~58', '155~156')"
-                "\n  • part_number → PC.NO value"
+                "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). Do NOT map Item No. or Ref No. to drawing_position."
+                "\n  • part_number → catalog Part Number (PC.NO, CODE NO, etc.), OR Item No. / Ref No. / No. if no separate part number column is provided. Leave null if not found — NEVER capture PDF filenames or page references here."
                 "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
@@ -1561,8 +1568,8 @@ async def _extract_entities_from_page_image_with_claude(
                 "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
                 "A single page can contain 50-300 parts — extract ALL of them."
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
-                "\n  • drawing_position → REF.NO value — copy EXACTLY as printed, including ranges (e.g. '1~58', '155~156')"
-                "\n  • part_number → PC.NO value"
+                "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). Do NOT map Item No. or Ref No. to drawing_position."
+                "\n  • part_number → catalog Part Number (PC.NO, CODE NO, etc.), OR Item No. / Ref No. / No. if no separate part number column is provided. Leave null if not found — NEVER capture PDF filenames or page references here."
                 "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
@@ -2969,11 +2976,6 @@ async def _process_and_save_page_records(
             to_add.append(job)
 
         elif etype == "spare":
-            fallback_part_number = (
-                f"{filename} (p.{safe_page})"
-                if safe_page is not None
-                else filename
-            )
             _assembly = record.get("spare_assembly") or None
             if not _assembly:
                 candidates = extracted_component_context or existing_manual_component_context
@@ -2992,7 +2994,10 @@ async def _process_and_save_page_records(
             if not _model and getattr(manual, "target_model", None):
                 _model = str(manual.target_model).strip().upper()[:200]
             _dwg = str(record.get("drawing_number")).strip().upper()[:200] if record.get("drawing_number") else None
-            _pnum = str(record.get("part_number") or fallback_part_number).strip()[:200]
+            _raw_pnum = record.get("part_number")
+            _pnum = str(_raw_pnum).strip()[:200] if _raw_pnum else None
+            if _pnum and (_pnum.lower() in {"none", "null", "n/a", "nil", "-", "--", "na"} or ".pdf" in _pnum.lower() or "(p." in _pnum.lower()):
+                _pnum = None
             _pname = to_proper_case(record.get("part_name")) or "Unknown Part"
             if _pname:
                 _pname = _pname[:500]

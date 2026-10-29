@@ -55,12 +55,15 @@ def _format_spare_source_reference(
 
 def _fallback_spare_part_number(
     part_number: Optional[str],
-    manual_name: Optional[str],
-    page_reference: Optional[int],
+    manual_name: Optional[str] = None,
+    page_reference: Optional[int] = None,
 ) -> Optional[str]:
+    # Bug-002 Item 3: Part number must remain blank/null if not found in manual, never fallback to PDF filename
     if part_number:
-        return part_number
-    return _format_spare_source_reference(manual_name, page_reference)
+        p_clean = str(part_number).strip()
+        if p_clean and not (".pdf" in p_clean.lower() or "(p." in p_clean.lower()):
+            return p_clean
+    return None
 
 
 def _contains_cjk(value: Optional[str]) -> bool:
@@ -370,6 +373,10 @@ async def list_spares(
         manual_name = manual.original_filename if manual else None
         source_reference = _format_spare_source_reference(manual_name, spare.page_reference)
         component_name = component.component_name if component else None
+        raw_pn = payload.get("part_number")
+        if raw_pn and (".pdf" in raw_pn.lower() or "(p." in raw_pn.lower()):
+            raw_pn = None
+
         payload.update(
             {
                 "component_name": component_name,
@@ -378,20 +385,11 @@ async def list_spares(
                 "source_manual_name": manual_name,
                 "pdf_reference": manual_name,
                 "source_reference": source_reference,
-                "part_number": _fallback_spare_part_number(
-                    payload.get("part_number"),
-                    manual_name,
-                    spare.page_reference,
-                ),
+                "part_number": raw_pn,
             }
         )
         english_part_number = _normalize_spare_text(
-            payload.get("part_number"),
-            fallback=_fallback_spare_part_number(
-                None,
-                manual_name,
-                spare.page_reference,
-            ),
+            raw_pn,
             compact=True,
         )
         payload["part_number"] = english_part_number

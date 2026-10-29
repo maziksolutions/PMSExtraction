@@ -445,7 +445,11 @@ class ExportService:
             manual = manual_lookup.get(spare.source_manual_id) if spare.source_manual_id else None
             pdf_reference = manual.original_filename if manual else ""
             source_reference = self._source_reference(pdf_reference, spare.page_reference, None)
-            part_number = spare.part_number or source_reference or pdf_reference or ""
+            # Bug-002 Item 3: Part number must be left blank if not found, never fallback to PDF filename
+            raw_pn = (spare.part_number or "").strip()
+            if ".pdf" in raw_pn.lower() or "(p." in raw_pn.lower():
+                raw_pn = ""
+            part_number = raw_pn
             row = {
                 "part_name": spare.part_name,
                 "part_number": part_number,
@@ -852,14 +856,18 @@ class ExportService:
                 spare.page_reference,
                 None,
             )
+            raw_pn = (spare.part_number or "").strip()
+            if ".pdf" in raw_pn.lower() or "(p." in raw_pn.lower():
+                raw_pn = ""
+
             rows.append(
                 {
                     "vesselName": vessel.name,
-                    "inventoryCode": spare.part_number or source_reference or spare.drawing_number or "",
+                    "inventoryCode": raw_pn or spare.drawing_number or "",
                     "inventoryName": spare.part_name,
                     "minimumLevel": "",
                     "priority": self._priority(spare.is_critical),
-                    "partNo": spare.part_number or source_reference or "",
+                    "partNo": raw_pn,
                     "makerReference": self._maker_reference(spare),
                     "capacity": spare.specification or "",
                     "category": component.component_name if component else "",
