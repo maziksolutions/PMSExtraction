@@ -395,6 +395,66 @@ async def debug_upload_manual(
         return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
 
 
+@router.get("/debug-claude-status", tags=["Debug"], summary="Check Claude API key and circuit breaker status")
+async def debug_claude_status(
+    reset_breaker: bool = True,
+    key_override: str | None = None,
+    test_call: bool = True,
+):
+    from app.services.extractor import is_claude_vision_billing_tripped, reset_claude_billing_breakers
+    breaker_before = is_claude_vision_billing_tripped()
+
+    if key_override:
+        settings.ANTHROPIC_API_KEY = key_override.strip()
+
+    if reset_breaker:
+        reset_claude_billing_breakers()
+
+    breaker_after = is_claude_vision_billing_tripped()
+
+    current_key = getattr(settings, "ANTHROPIC_API_KEY", "") or ""
+    key_prefix = current_key[:12] if current_key else None
+    key_suffix = current_key[-4:] if len(current_key) > 16 else None
+    key_len = len(current_key)
+
+    test_result = {}
+    if test_call and current_key:
+        try:
+            import anthropic
+            client = anthropic.AsyncAnthropic(api_key=current_key)
+            model_id = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
+            msg = await client.messages.create(
+                model=model_id,
+                max_tokens=20,
+                messages=[{"role": "user", "content": "Respond with OK"}]
+            )
+            test_result = {
+                "success": True,
+                "model": msg.model,
+                "reply": msg.content[0].text if msg.content else None,
+            }
+        except Exception as exc:
+            test_result = {
+                "success": False,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            }
+    elif not current_key:
+        test_result = {"success": False, "error": "No ANTHROPIC_API_KEY set"}
+
+    return {
+        "status": "success",
+        "key_configured": bool(current_key),
+        "key_prefix": key_prefix,
+        "key_suffix": key_suffix,
+        "key_length": key_len,
+        "claude_model": getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6",
+        "breaker_tripped_before": breaker_before,
+        "breaker_tripped_after": breaker_after,
+        "claude_test_call": test_result,
+    }
+
+
 @router.post("/debug-extract-manual/{manual_id}", tags=["Debug"], summary="Trigger extraction without auth")
 async def debug_extract_manual(
     manual_id: str,
@@ -404,9 +464,10 @@ async def debug_extract_manual(
     anthropic_key: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
+    from app.services.extractor import auto_extract_from_manual, reset_claude_billing_breakers
+    reset_claude_billing_breakers()
     if anthropic_key:
         settings.ANTHROPIC_API_KEY = anthropic_key.strip()
-    from app.services.extractor import auto_extract_from_manual
     from sqlalchemy import select
     from app.models.ingestion import Manual, ManualStatus
     import uuid

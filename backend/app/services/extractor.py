@@ -1639,6 +1639,59 @@ async def _extract_entities_from_page_image_with_claude(
 
 
 _claude_vision_billing_failed = False  # module-level circuit breaker; reset on process restart
+_claude_vision_billing_failed_until: float = 0.0
+_claude_text_billing_failed = False
+_claude_text_billing_failed_until: float = 0.0
+
+
+def is_claude_vision_billing_tripped() -> bool:
+    import time
+    global _claude_vision_billing_failed, _claude_vision_billing_failed_until
+    if _claude_vision_billing_failed_until > 0:
+        if time.time() < _claude_vision_billing_failed_until:
+            return True
+        else:
+            _claude_vision_billing_failed = False
+            _claude_vision_billing_failed_until = 0.0
+            return False
+    return bool(_claude_vision_billing_failed)
+
+
+def trip_claude_vision_billing(cooldown_seconds: float = 60.0) -> None:
+    import time
+    global _claude_vision_billing_failed, _claude_vision_billing_failed_until
+    _claude_vision_billing_failed = True
+    _claude_vision_billing_failed_until = time.time() + cooldown_seconds
+
+
+def is_claude_text_billing_tripped() -> bool:
+    import time
+    global _claude_text_billing_failed, _claude_text_billing_failed_until
+    if _claude_text_billing_failed_until > 0:
+        if time.time() < _claude_text_billing_failed_until:
+            return True
+        else:
+            _claude_text_billing_failed = False
+            _claude_text_billing_failed_until = 0.0
+            return False
+    return bool(_claude_text_billing_failed) or is_claude_vision_billing_tripped()
+
+
+def trip_claude_text_billing(cooldown_seconds: float = 60.0) -> None:
+    import time
+    global _claude_text_billing_failed, _claude_text_billing_failed_until
+    _claude_text_billing_failed = True
+    _claude_text_billing_failed_until = time.time() + cooldown_seconds
+    trip_claude_vision_billing(cooldown_seconds)
+
+
+def reset_claude_billing_breakers() -> None:
+    global _claude_vision_billing_failed, _claude_vision_billing_failed_until
+    global _claude_text_billing_failed, _claude_text_billing_failed_until
+    _claude_vision_billing_failed = False
+    _claude_vision_billing_failed_until = 0.0
+    _claude_text_billing_failed = False
+    _claude_text_billing_failed_until = 0.0
 
 
 async def _extract_entities_from_page_image(
@@ -1650,9 +1703,8 @@ async def _extract_entities_from_page_image(
     context_note: str | None = None,
 ) -> list[dict]:
     """Try Claude vision first; fall back to OpenAI vision."""
-    global _claude_vision_billing_failed
     claude_err = None
-    if settings.ANTHROPIC_API_KEY and not _claude_vision_billing_failed:
+    if settings.ANTHROPIC_API_KEY and not is_claude_vision_billing_tripped():
         try:
             records = await _extract_entities_from_page_image_with_claude(
                 image_bytes=image_bytes,
@@ -1669,9 +1721,10 @@ async def _extract_entities_from_page_image(
             if "credit balance" in err_str.lower() or "402" in err_str or (
                 "400" in err_str and "credit" in err_str.lower()
             ):
-                _claude_vision_billing_failed = True
+                trip_claude_vision_billing(cooldown_seconds=60.0)
                 logger.warning(
-                    "extract_entities[claude-vision]: billing error — disabling Claude vision for this session, using OpenAI"
+                    "extract_entities[claude-vision]: billing error (%s) — cooling down Claude vision for 60s",
+                    _redact_error_message(exc),
                 )
             # Fall through to OpenAI regardless
 
@@ -1680,6 +1733,8 @@ async def _extract_entities_from_page_image(
             raise claude_err
         if not settings.ANTHROPIC_API_KEY:
             raise RuntimeError("No Vision LLM API Key is configured on the server (both ANTHROPIC_API_KEY and OPENAI_API_KEY are empty).")
+        if is_claude_vision_billing_tripped():
+            raise RuntimeError("Claude Vision billing/credit limit was reached recently (cooldown active), and no OpenAI fallback is configured.")
         return []
 
     return await _extract_entities_from_page_image_with_openai(
@@ -2340,7 +2395,6 @@ async def extract_entities(
     user_message = prompt_config["user_template"].format(text=text_chunk, filename=filename)
     if context_note:
         user_message = f"{user_message}\n\nAdditional extraction context:\n{context_note}"
-    _claude_text_billing_failed = _claude_vision_billing_failed  # inherit session circuit breaker
     providers: list[tuple[str, Any]] = [
         ("claude", _extract_with_claude),
         ("openai", _extract_with_openai),
@@ -2349,7 +2403,7 @@ async def extract_entities(
     last_error: Exception | None = None
 
     for provider_name, provider in providers:
-        if provider_name == "claude" and _claude_text_billing_failed:
+        if provider_name == "claude" and is_claude_text_billing_tripped():
             continue
         try:
             records = await provider(
@@ -2381,10 +2435,9 @@ async def extract_entities(
             if provider_name == "claude" and (
                 "credit balance" in err_str.lower() or ("400" in err_str and "credit" in err_str.lower())
             ):
-                _claude_text_billing_failed = True
-                _claude_vision_billing_failed = True
+                trip_claude_text_billing(cooldown_seconds=60.0)
                 logger.warning(
-                    "extract_entities: Claude billing error — skipping Claude for remaining providers"
+                    "extract_entities: Claude billing error — cooling down Claude for 60s"
                 )
             else:
                 logger.warning(
@@ -3066,6 +3119,7 @@ async def auto_extract_from_manual(
                 )
             )
             manual: Optional[Manual] = result.scalar_one_or_none()
+            reset_claude_billing_breakers()
             if debug_log is not None:
                 debug_log.append(f"Loaded manual: {getattr(manual, 'original_filename', None)}, status={getattr(manual, 'status', None)}, spares_ref={getattr(manual, 'pages_with_spares', None)}")
             if manual is None:
