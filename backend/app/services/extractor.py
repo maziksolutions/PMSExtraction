@@ -310,7 +310,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "RULES:\n"
             "- FREQUENCY RANGE RULE (CRITICAL): If frequency or interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound.\n"
             "- job_description formatting: Every non-empty line of the description body must start with /*-. If the description contains list items (like a. line, b. line, a) line, 1) line, etc.), each item must be placed on a new line and start with /*-.\n"
-            "- ENGLISH-ONLY & MULTILINGUAL TABLES: Maintenance jobs should be extracted ONLY from the English-language column or English text. All other language columns (Japanese, Chinese, Korean, etc.) MUST be ignored completely.\n"
+            "- MULTILINGUAL & NON-ENGLISH MANUALS: If the document contains multilingual tables (e.g. English alongside Chinese/Japanese), prefer the English text. If the manual or table is in Chinese, Japanese, or another language, translate all extracted fields (job_name, job_description, safety_precaution) into clear professional English. Never output non-Latin characters.\n"
             "- PDF FILENAME PROHIBITION: PDF filenames must NEVER be captured in job_code or job_name. Leave these fields blank (null) if no valid value is present.\n"
             "- source_page_number from [PAGE N] markers — do not guess\n"
             "- Extract EVERY distinct job item — do not merge different tasks into one\n"
@@ -3559,7 +3559,7 @@ async def auto_extract_from_manual(
                 else:
                     type_chunks_count[etype] = 0
 
-                if ext == "pdf" and file_bytes is not None and (etype in {"component", "spare"} or (etype == "job" and (not all_records or not source_text.strip()))):
+                if ext == "pdf" and file_bytes is not None and (etype in {"component", "spare"} or (etype == "job" and not source_text.strip())):
                     selected_pages = entity_pages.get(etype) or []
                     if etype == "spare":
                         total_sub_steps += len(selected_pages) * 4
@@ -3768,7 +3768,7 @@ async def auto_extract_from_manual(
                                 vessel_id=vessel_id,
                                 tenant_id=tenant_id,
                                 vessel_shipyard=vessel_shipyard,
-                                page_no=None,
+                                page_no=(int(found_pages[0]) if found_pages else None),
                                 extracted_component_context=extracted_component_context,
                                 existing_manual_component_context=existing_manual_component_context,
                              )
