@@ -1565,6 +1565,7 @@ const ManualReview: React.FC = () => {
                     className="rounded border-slate-600"
                   />
                 </th>
+                <th className="px-3 py-3">{renderSortHeader('Extraction', 'extraction_status')}</th>
                 <th className="px-3 py-3">{renderSortHeader('File Name', 'filename')}</th>
                 <th className="px-3 py-3">{renderSortHeader('Size', 'file_size')}</th>
                 <th className="px-3 py-3">{renderSortHeader('Category', 'category')}</th>
@@ -1572,7 +1573,6 @@ const ManualReview: React.FC = () => {
                 <th className="px-3 py-3">Comp. Ref</th>
                 <th className="px-3 py-3">Job Ref</th>
                 <th className="px-3 py-3">Spare Ref</th>
-                <th className="px-3 py-3">{renderSortHeader('Extraction', 'extraction_status')}</th>
                 <th className="px-3 py-3">Target Model</th>
                 <th className="px-3 py-3">Page Status</th>
                 <th className="px-3 py-3">{renderSortHeader('Source', 'created_at')}</th>
@@ -1613,6 +1613,9 @@ const ManualReview: React.FC = () => {
                         onChange={() => toggleSelect(m.id)}
                         className="rounded border-slate-600"
                       />
+                    </td>
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      {renderExtractionStatusCell(m, edit)}
                     </td>
                     <td className="px-3 py-3 max-w-xs">
                       <button
@@ -1729,9 +1732,6 @@ const ManualReview: React.FC = () => {
                         explanationRows={spareExplanationRows}
                         physicalPlaceholder=""
                       />
-                    </td>
-                    <td className="px-3 py-3 whitespace-nowrap">
-                      {renderExtractionStatusCell(m, edit)}
                     </td>
                     <td className="px-3 py-3">
                       <input

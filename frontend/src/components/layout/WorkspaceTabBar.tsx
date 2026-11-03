@@ -19,6 +19,7 @@ import {
   Copy,
   ArrowRightToLine,
   XCircle,
+  Trash2,
 } from 'lucide-react'
 import { useTabStore, WorkspaceTab } from '@/store/tabStore'
 
@@ -55,6 +56,7 @@ export const WorkspaceTabBar: React.FC = () => {
     closeTabsToRight,
     duplicateTab,
     openTab,
+    closeAllTabs,
   } = useTabStore()
 
   const tabListRef = useRef<HTMLDivElement>(null)
@@ -170,6 +172,16 @@ export const WorkspaceTabBar: React.FC = () => {
         return
       }
 
+      // 4b. Alt + Shift + W -> Clear All Tabs Click
+      if (e.altKey && e.shiftKey && (e.key === 'w' || e.key === 'W')) {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        const nextPath = useTabStore.getState().closeAllTabs()
+        if (nextPath) navigate(nextPath)
+        return
+      }
+
       // 5. Alt + T / Alt + N -> New Tab (+) Button Click
       if (e.altKey && (e.key === 't' || e.key === 'T' || e.key === 'n' || e.key === 'N')) {
         e.preventDefault()
@@ -217,6 +229,13 @@ export const WorkspaceTabBar: React.FC = () => {
       navigate(nextPath)
     }
   }, [closeTab, navigate])
+
+  const handleCloseAll = useCallback(() => {
+    const nextPath = closeAllTabs()
+    if (nextPath) {
+      navigate(nextPath)
+    }
+  }, [closeAllTabs, navigate])
 
   const handleNewTab = () => {
     const newTabId = openTab('/')
@@ -304,6 +323,21 @@ export const WorkspaceTabBar: React.FC = () => {
         </button>
       </div>
 
+      {/* Clear All Tabs Action Button */}
+      {tabs.length > 1 && (
+        <div className="flex items-center pl-2 shrink-0 border-l border-slate-800/80 ml-2">
+          <button
+            type="button"
+            onClick={handleCloseAll}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium text-slate-400 hover:text-rose-300 hover:bg-rose-950/30 border border-slate-800 hover:border-rose-900/60 transition-all shrink-0 select-none shadow-sm"
+            title="Clear all tabs (Alt+Shift+W)"
+          >
+            <Trash2 className="h-3.5 w-3.5 text-slate-400" />
+            <span className="hidden sm:inline">Clear all tabs</span>
+          </button>
+        </div>
+      )}
+
       {/* Right-Click Context Menu */}
       {contextMenu && contextTab && (
         <div
@@ -375,6 +409,21 @@ export const WorkspaceTabBar: React.FC = () => {
             >
               <ArrowRightToLine className="h-3.5 w-3.5 text-slate-400" />
               <span>Close Tabs to the Right</span>
+            </button>
+          )}
+
+          {/* Clear All Tabs */}
+          {tabs.length > 1 && (
+            <button
+              type="button"
+              onClick={() => {
+                handleCloseAll()
+                setContextMenu(null)
+              }}
+              className="flex w-full items-center gap-2 px-3 py-1.5 hover:bg-slate-800 hover:text-rose-400 transition-colors text-left"
+            >
+              <Trash2 className="h-3.5 w-3.5 text-slate-400" />
+              <span>Clear All Tabs</span>
             </button>
           )}
 

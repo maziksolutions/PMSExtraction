@@ -254,7 +254,7 @@ export function NoExtractedRecordsModal({
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-bold text-slate-100">Specified Pages with No Extracted Records</h2>
                 {manuals.length > 0 && (
-                  <span className="bg-amber-950/80 text-amber-300 border border-amber-800/80 text-xs font-semibold px-2 py-0.5 rounded-full">
+                  <span className="bg-amber-400 text-slate-950 border border-amber-300 text-xs font-extrabold px-2.5 py-0.5 rounded-full shadow-md tracking-wide">
                     {data?.total_no_extracted_pages || 0} pages pending
                   </span>
                 )}
