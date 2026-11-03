@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   CheckCircle,
   CheckCircle2,
+  BookOpen,
   RefreshCw,
   Save,
   ScanSearch,

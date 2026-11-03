@@ -783,7 +783,7 @@ export function NoExtractedRecordsModal({
                                               </button>
                                             )}
                                             {queued && (
-                                              <CheckCircle2 className="h-2.5 w-2.5 text-sky-600 shrink-0" title="Queued" />
+                                              <span title="Queued" className="inline-flex items-center"><CheckCircle2 className="h-2.5 w-2.5 text-sky-600 shrink-0" /></span>
                                             )}
                                           </div>
                                         )
@@ -875,7 +875,7 @@ export function NoExtractedRecordsModal({
                                               </button>
                                             )}
                                             {queued && (
-                                              <CheckCircle2 className="h-2.5 w-2.5 text-sky-600 shrink-0" title="Queued" />
+                                              <span title="Queued" className="inline-flex items-center"><CheckCircle2 className="h-2.5 w-2.5 text-sky-600 shrink-0" /></span>
                                             )}
                                           </div>
                                         )
@@ -967,7 +967,7 @@ export function NoExtractedRecordsModal({
                                               </button>
                                             )}
                                             {queued && (
-                                              <CheckCircle2 className="h-2.5 w-2.5 text-sky-600 shrink-0" title="Queued" />
+                                              <span title="Queued" className="inline-flex items-center"><CheckCircle2 className="h-2.5 w-2.5 text-sky-600 shrink-0" /></span>
                                             )}
                                           </div>
                                         )
