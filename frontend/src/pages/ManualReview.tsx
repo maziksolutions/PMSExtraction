@@ -766,7 +766,12 @@ const ManualReview: React.FC = () => {
       if (data.started) {
         setExtractionPolling(true)
         queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+      } else {
+        alert(data.message || 'Extraction could not start. Please verify reference page numbers.')
       }
+    },
+    onError: (err: any) => {
+      alert(`Extraction failed to start: ${err?.response?.data?.detail ?? err?.message}`)
     },
   })
 
@@ -794,17 +799,32 @@ const ManualReview: React.FC = () => {
       if (data.started) {
         setExtractionPolling(true)
         queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+      } else {
+        alert(data.message || 'Spares extraction could not start. Please check that Spare reference pages are saved.')
       }
+    },
+    onError: (err: any) => {
+      alert(`Spares extraction failed to start: ${err?.response?.data?.detail ?? err?.message}`)
     },
   })
 
   const extractSelectedJobsOnlyMutation = useMutation({
     mutationFn: async (manualIds: string[]) => {
       await saveManualEdits(manualIds)
+      const targetModels: Record<string, string> = {}
+      manualIds.forEach((id) => {
+        const m = manuals.find((x) => x.id === id)
+        const edit = edits[id]
+        const tm = (edit?.target_model as string | undefined) ?? m?.target_model
+        if (tm && tm.trim()) {
+          targetModels[id] = tm.trim()
+        }
+      })
       return apiClient
         .post(`/vessels/${vesselId}/manuals/extract-selected`, {
           manual_ids: manualIds,
           entity_types: ['job'],
+          target_models: targetModels,
         })
         .then((r) => r.data)
     },
@@ -812,7 +832,12 @@ const ManualReview: React.FC = () => {
       if (data.started) {
         setExtractionPolling(true)
         queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+      } else {
+        alert(data.message || 'Job extraction could not start. Please check that Job reference pages are saved for the selected manual.')
       }
+    },
+    onError: (err: any) => {
+      alert(`Job extraction failed to start: ${err?.response?.data?.detail ?? err?.message}`)
     },
   })
 

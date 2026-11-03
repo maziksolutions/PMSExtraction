@@ -328,6 +328,16 @@ export function ExtractionConfirmationModal({
                           {compPages && <span>Comp Pages: <span className="text-slate-400">{compPages}</span></span>}
                           {jobPages && <span>Job Pages: <span className="text-slate-400">{jobPages}</span></span>}
                           {sparePages && <span>Spare Pages: <span className="text-slate-400">{sparePages}</span></span>}
+                          {extractionType === 'jobs' && !jobPages && !m.pages_with_jobs && (
+                            <span className="text-amber-400 font-semibold bg-amber-950/60 border border-amber-800/80 px-1.5 py-0.5 rounded text-[10px]">
+                              ⚠️ No Job pages defined in Job Ref column
+                            </span>
+                          )}
+                          {extractionType === 'spares' && !sparePages && !m.pages_with_spares && (
+                            <span className="text-amber-400 font-semibold bg-amber-950/60 border border-amber-800/80 px-1.5 py-0.5 rounded text-[10px]">
+                              ⚠️ No Spare pages defined in Spare Ref column
+                            </span>
+                          )}
                           {!compPages && !jobPages && !sparePages && <span className="italic text-slate-600">No page references defined</span>}
                         </div>
                       </div>

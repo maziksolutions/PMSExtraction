@@ -1205,7 +1205,7 @@ def _filter_text_to_pages(text: str, selected_pages: list[int], include_context:
     if not selected_pages:
         return text
     if "[PAGE " not in text:
-        return ""
+        return text
     
     if not include_context:
         page_set = set(selected_pages)
@@ -3168,10 +3168,13 @@ async def auto_extract_from_manual(
                     manual_id_str,
                 )
 
-            entity_pages = {
-                entity_type: _selected_manual_pages(manual, entity_type)
-                for entity_type in ("component", "job", "spare")
-            }
+            entity_pages = {}
+            for entity_type in ("component", "job", "spare"):
+                pages = _selected_manual_pages(manual, entity_type)
+                if not pages and page_numbers and (entity_types is None or entity_type in entity_types):
+                    pages = page_numbers
+                entity_pages[entity_type] = pages
+
             if entity_types is not None:
                 entity_pages = {
                     k: v for k, v in entity_pages.items() if k in entity_types

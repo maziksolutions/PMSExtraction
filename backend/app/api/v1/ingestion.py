@@ -2086,40 +2086,36 @@ async def extract_selected_manuals(
 
     manuals = result.scalars().all()
 
-    manual_page_signals = {
-
-        str(manual.id): any(
-
+    def _manual_has_requested_pages(manual: Manual) -> bool:
+        if manual_pages_map and manual_pages_map.get(str(manual.id)):
+            return True
+        if page_numbers:
+            return True
+        if entity_types:
+            checks: list[bool] = []
+            if "component" in entity_types:
+                checks.append(bool(manual.pages_with_components_physical or manual.pages_with_components))
+            if "job" in entity_types:
+                checks.append(bool(manual.pages_with_jobs_physical or manual.pages_with_jobs))
+            if "spare" in entity_types:
+                checks.append(bool(manual.pages_with_spares_physical or manual.pages_with_spares))
+            return any(checks)
+        return any(
             [
-
                 manual.pages_with_components_physical or manual.pages_with_components,
-
                 manual.pages_with_jobs_physical or manual.pages_with_jobs,
-
                 manual.pages_with_spares_physical or manual.pages_with_spares,
-
             ]
-
         )
 
-        for manual in manuals
-
-    }
-
-    runnable_manual_ids = [manual_id for manual_id in manual_ids if manual_page_signals.get(manual_id)]
-
-
+    runnable_manual_ids = [str(manual.id) for manual in manuals if _manual_has_requested_pages(manual)]
 
     if not runnable_manual_ids:
-
+        type_desc = ", ".join(entity_types) if entity_types else "component/job/spare"
         return {
-
             "started": False,
-
             "total": 0,
-
-            "message": "Selected manuals have no saved component/job/spare page refs. Save the screening refs first, then extract.",
-
+            "message": f"Selected manual(s) have no saved page references for {type_desc}. Please specify page numbers in the {type_desc.capitalize()} Ref column and save first, then extract.",
         }
 
 
