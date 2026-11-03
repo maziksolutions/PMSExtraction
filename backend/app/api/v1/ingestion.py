@@ -1881,6 +1881,7 @@ async def _run_extract_selected_task(
     page_numbers: Optional[list[int]] = None,
     target_models: Optional[dict[str, str]] = None,
     global_target_model: Optional[str] = None,
+    manual_pages_map: Optional[dict[str, list[int]]] = None,
 ) -> None:
 
     """Background task: runs auto_extract_from_manual with bounded parallelism."""
@@ -1937,7 +1938,8 @@ async def _run_extract_selected_task(
                     )
 
                     m_target = (target_models or {}).get(manual_id) or global_target_model
-                    await auto_extract_from_manual(manual_id, entity_types=entity_types, page_numbers=page_numbers, target_model=m_target)
+                    m_pages = (manual_pages_map or {}).get(manual_id) or page_numbers
+                    await auto_extract_from_manual(manual_id, entity_types=entity_types, page_numbers=m_pages, target_model=m_target)
 
                 except Exception as exc:
 
@@ -2054,6 +2056,7 @@ async def extract_selected_manuals(
     manual_ids: list[str] = body.get("manual_ids", [])
     entity_types: Optional[list[str]] = body.get("entity_types", None)
     page_numbers: Optional[list[int]] = body.get("page_numbers", None)
+    manual_pages_map: Optional[dict[str, list[int]]] = body.get("manual_pages_map", None)
     target_model_global: Optional[str] = body.get("target_model")
     target_models_map: dict[str, str] = body.get("target_models") or {}
 
@@ -2145,6 +2148,7 @@ async def extract_selected_manuals(
         page_numbers,
         target_models_map,
         target_model_global,
+        manual_pages_map,
     )
 
     return {"started": True, "total": len(runnable_manual_ids)}

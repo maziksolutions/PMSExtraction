@@ -1143,12 +1143,13 @@ async def get_no_extracted_records_report(
 
     report = []
     total_no_extracted_pages = 0
+    all_manuals_summary: dict[str, Any] = {}
 
     for manual in manuals:
         # Determine if user has edited/customized any page reference fields for this manual
-        comp_ref_str = manual.pages_with_components_physical or ""
-        job_ref_str = manual.pages_with_jobs_physical or ""
-        spare_ref_str = manual.pages_with_spares_physical or ""
+        comp_ref_str = manual.pages_with_components_physical or manual.pages_with_components or ""
+        job_ref_str = manual.pages_with_jobs_physical or manual.pages_with_jobs or ""
+        spare_ref_str = manual.pages_with_spares_physical or manual.pages_with_spares or ""
 
         comp_pages = set(_parse_page_tokens(comp_ref_str))
         job_pages = set(_parse_page_tokens(job_ref_str))
@@ -1161,6 +1162,24 @@ async def get_no_extracted_records_report(
         missing_comp = sorted(list(comp_pages - ext_comp))
         missing_job = sorted(list(job_pages - ext_job))
         missing_spare = sorted(list(spare_pages - ext_spare))
+
+        total_target_pages = len(comp_pages) + len(job_pages) + len(spare_pages)
+        has_target_pages = total_target_pages > 0
+        missing_count = len(missing_comp) + len(missing_job) + len(missing_spare)
+        is_complete = has_target_pages and (missing_count == 0)
+
+        all_manuals_summary[str(manual.id)] = {
+            "has_target_pages": has_target_pages,
+            "total_target_pages": total_target_pages,
+            "is_complete": is_complete,
+            "total_missing_pages_count": missing_count,
+            "missing_components_count": len(missing_comp),
+            "missing_jobs_count": len(missing_job),
+            "missing_spares_count": len(missing_spare),
+            "missing_components_pages": missing_comp,
+            "missing_jobs_pages": missing_job,
+            "missing_spares_pages": missing_spare,
+        }
 
         if missing_comp or missing_job or missing_spare:
             missing_count = len(missing_comp) + len(missing_job) + len(missing_spare)
@@ -1180,4 +1199,5 @@ async def get_no_extracted_records_report(
     return {
         "manuals": report,
         "total_no_extracted_pages": total_no_extracted_pages,
+        "all_manuals_summary": all_manuals_summary,
     }

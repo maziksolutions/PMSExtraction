@@ -30,7 +30,7 @@ import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
 import { ManualPageStatusModal } from '@/components/manuals/ManualPageStatusModal'
 import { ManualsStatsModal } from '@/components/manuals/ManualsStatsModal'
-import { NoExtractedRecordsModal } from '@/components/manuals/NoExtractedRecordsModal'
+import { NoExtractedRecordsModal, QueuedPageItem } from '@/components/manuals/NoExtractedRecordsModal'
 import { ExtractionConfirmationModal } from '@/components/manuals/ExtractionConfirmationModal'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -496,6 +496,97 @@ const ManualReview: React.FC = () => {
   const [selectedManualForStatus, setSelectedManualForStatus] = useState<Manual | null>(null)
   const [showStatsModal, setShowStatsModal] = useState(false)
   const [showNoExtractedModal, setShowNoExtractedModal] = useState(false)
+  const [queuedExtractionPages, setQueuedExtractionPages] = useState<QueuedPageItem[]>([])
+
+  const handleExtractQueuedPages = async (queuedItems: QueuedPageItem[]) => {
+    if (!vesselId || queuedItems.length === 0) return
+    const manualIds = Array.from(new Set(queuedItems.map((i) => i.manualId)))
+    const entityTypes = Array.from(new Set(queuedItems.map((i) => i.entityType)))
+    const manualPagesMap: Record<string, number[]> = {}
+    queuedItems.forEach((item) => {
+      if (!manualPagesMap[item.manualId]) manualPagesMap[item.manualId] = []
+      if (!manualPagesMap[item.manualId].includes(item.page)) {
+        manualPagesMap[item.manualId].push(item.page)
+      }
+    })
+
+    try {
+      await apiClient.post(`/vessels/${vesselId}/manuals/extract-selected`, {
+        manual_ids: manualIds,
+        entity_types: entityTypes,
+        manual_pages_map: manualPagesMap,
+      })
+      setExtractionPolling(true)
+      queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+    } catch (err: any) {
+      alert(`Failed to trigger extraction on queued pages: ${err?.response?.data?.detail ?? err?.message}`)
+    }
+  }
+
+  const renderExtractionStatusCell = (m: Manual, edit: Partial<Manual>) => {
+    const summary = noExtractedData?.all_manuals_summary?.[m.id]
+    const compRef = (edit.pages_with_components_physical as string | undefined) ?? m.pages_with_components_physical ?? m.pages_with_components ?? ''
+    const jobRef = (edit.pages_with_jobs_physical as string | undefined) ?? m.pages_with_jobs_physical ?? m.pages_with_jobs ?? ''
+    const spareRef = (edit.pages_with_spares_physical as string | undefined) ?? m.pages_with_spares_physical ?? m.pages_with_spares ?? ''
+    const hasTargetPages = Boolean(compRef.trim() || jobRef.trim() || spareRef.trim())
+
+    if (!hasTargetPages) {
+      return <span className="text-xs text-slate-500 italic">No targets</span>
+    }
+
+    if (summary?.is_complete) {
+      return (
+        <div
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-sm cursor-default"
+          title="All specified pages have extracted records"
+        >
+          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+          <span>Complete</span>
+        </div>
+      )
+    }
+
+    // Incomplete: render the 3 compact badges
+    return (
+      <button
+        type="button"
+        onClick={() => setShowNoExtractedModal(true)}
+        className="inline-flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity focus:outline-none"
+        title="Incomplete extraction — click to view unextracted pages details"
+      >
+        <span
+          className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-bold border transition-colors ${
+            (summary?.missing_components_count ?? 0) > 0
+              ? 'bg-rose-950/70 text-rose-300 border-rose-800/80 shadow-xs'
+              : 'bg-slate-800/40 text-slate-500 border-slate-700/40'
+          }`}
+          title={`Components: ${summary?.missing_components_count ?? 0} unextracted page(s)`}
+        >
+          C: {summary?.missing_components_count ?? 0}
+        </span>
+        <span
+          className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-bold border transition-colors ${
+            (summary?.missing_jobs_count ?? 0) > 0
+              ? 'bg-amber-950/70 text-amber-300 border-amber-800/80 shadow-xs'
+              : 'bg-slate-800/40 text-slate-500 border-slate-700/40'
+          }`}
+          title={`Jobs: ${summary?.missing_jobs_count ?? 0} unextracted page(s)`}
+        >
+          J: {summary?.missing_jobs_count ?? 0}
+        </span>
+        <span
+          className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-bold border transition-colors ${
+            (summary?.missing_spares_count ?? 0) > 0
+              ? 'bg-orange-950/70 text-orange-300 border-orange-800/80 shadow-xs'
+              : 'bg-slate-800/40 text-slate-500 border-slate-700/40'
+          }`}
+          title={`Spares: ${summary?.missing_spares_count ?? 0} unextracted page(s)`}
+        >
+          S: {summary?.missing_spares_count ?? 0}
+        </span>
+      </button>
+    )
+  }
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [confirmModalSelectedIds, setConfirmModalSelectedIds] = useState<Set<string> | string[]>(new Set())
   const [confirmModalExtractionType, setConfirmModalExtractionType] = useState<'general' | 'jobs' | 'spares'>('general')
@@ -1001,7 +1092,31 @@ const ManualReview: React.FC = () => {
   const extractionProgress = extractionData && extractionData.total > 0
     ? Math.round((extractionData.done / extractionData.total) * 100) : 0
 
-  const manuals: Manual[] = data?.items ?? []
+  const manuals: Manual[] = useMemo(() => {
+    const raw: Manual[] = data?.items ?? []
+    if (sortBy !== 'extraction_status') return raw
+    const list = [...raw]
+    list.sort((a, b) => {
+      const summaryA = noExtractedData?.all_manuals_summary?.[a.id]
+      const summaryB = noExtractedData?.all_manuals_summary?.[b.id]
+
+      const getScore = (m: Manual, s: any) => {
+        const compRef = (edits[m.id]?.pages_with_components_physical as string | undefined) ?? m.pages_with_components_physical ?? m.pages_with_components ?? ''
+        const jobRef = (edits[m.id]?.pages_with_jobs_physical as string | undefined) ?? m.pages_with_jobs_physical ?? m.pages_with_jobs ?? ''
+        const spareRef = (edits[m.id]?.pages_with_spares_physical as string | undefined) ?? m.pages_with_spares_physical ?? m.pages_with_spares ?? ''
+        const hasTarget = Boolean(compRef.trim() || jobRef.trim() || spareRef.trim())
+        if (!hasTarget) return 999999
+        if (s?.is_complete) return 0
+        return s?.total_missing_pages_count ?? 1
+      }
+
+      const scoreA = getScore(a, summaryA)
+      const scoreB = getScore(b, summaryB)
+
+      return sortOrder === 'asc' ? scoreA - scoreB : scoreB - scoreA
+    })
+    return list
+  }, [data?.items, sortBy, sortOrder, noExtractedData, edits])
   const total: number = data?.total ?? 0
   const gaps: Gap[] = missingReport?.gaps ?? []
 
@@ -1457,6 +1572,7 @@ const ManualReview: React.FC = () => {
                 <th className="px-3 py-3">Comp. Ref</th>
                 <th className="px-3 py-3">Job Ref</th>
                 <th className="px-3 py-3">Spare Ref</th>
+                <th className="px-3 py-3">{renderSortHeader('Extraction', 'extraction_status')}</th>
                 <th className="px-3 py-3">Target Model</th>
                 <th className="px-3 py-3">Page Status</th>
                 <th className="px-3 py-3">{renderSortHeader('Source', 'created_at')}</th>
@@ -1614,6 +1730,9 @@ const ManualReview: React.FC = () => {
                         physicalPlaceholder=""
                       />
                     </td>
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      {renderExtractionStatusCell(m, edit)}
+                    </td>
                     <td className="px-3 py-3">
                       <input
                         type="text"
@@ -1767,6 +1886,11 @@ const ManualReview: React.FC = () => {
           isOpen={showNoExtractedModal}
           onClose={() => setShowNoExtractedModal(false)}
           data={noExtractedData || null}
+          vesselId={vesselId ?? ''}
+          isExtracting={extractionPolling || extractionData?.status === 'running'}
+          onExtractQueued={handleExtractQueuedPages}
+          queuedPages={queuedExtractionPages}
+          setQueuedPages={setQueuedExtractionPages}
         />
       )}
       {showConfirmModal && (
