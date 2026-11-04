@@ -354,7 +354,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "  A single page can contain 100-300 individual parts — extract EVERY one.\n\n"
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
-            '  "part_name": "part name captured exactly as written in the manual in Proper Text / Title Case, preserving original wording, abbreviations, and misspellings with zero modification (e.g. \'O-Ring\', \'Vlv Stem\', \'Ball Bearing\', \'Fltr Element\', \'Hex Bolt\')",\n'
+            '  "part_name": "the pure spare name ONLY in Proper Text / Title Case, preserving original name spelling and abbreviations with zero normalization of the noun (e.g. \'O-Ring\', \'Vlv Stem\', \'Ball Bearing\', \'Fltr Element\', \'Hex Bolt\'). CRITICAL: Never include dimensions, sizes, materials, or specifications in part_name — separate them into specification",\n'
             '  "part_number": "catalog part number (e.g. PC.NO, CODE NO, PART NO), or row Item No. from the table grid. Leave null if not found — NEVER capture PDF filenames, drawing titles, or page references here",\n'
             '  "drawing_number": "DWG.NO or drawing reference in ALL CAPS (e.g. \'B3798160-02\', \'FIG.7\', \'DWG-1234\') or null",\n'
             '  "drawing_position": "ONLY capture when clearly identified as Position No., Pos., Pos. No., or Position (e.g. \'1\', \'11\', \'1~58\'). Do NOT treat Item No., Reference No., or No. as Position Numbers — leave null if no explicit Position column exists",\n'
@@ -369,7 +369,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "RULES:\n"
             "- source_page_number from [PAGE N] markers only\n"
             "- CASING & FORMATTING STANDARDS (CRITICAL):\n"
-            "    1. part_name MUST be captured verbatim as written/printed in the manual — even if misspelled or abbreviated. Do NOT correct spelling, do NOT expand abbreviations, and do NOT modify or standardize the wording. Format the text in Proper Text / Title Case (e.g. 'O-Ring', 'Vlv Stem', 'Ball Bearing', 'Fltr Element', 'Mispelled Part').\n"
+            "    1. part_name MUST contain ONLY the spare part name/noun (e.g. 'O-Ring', 'Vlv Stem', 'Ball Bearing', 'Fltr Element', 'Hex Bolt', 'Gasket', 'Oil Seal') in Proper Text / Title Case. Do NOT include dimensions, sizes (e.g. 'M12x45', '6205', '15.5 x 2.4'), materials (e.g. 'SUS316', 'FKM'), or parenthetical notes in part_name; always separate them into specification.\n"
             "    2. spare_assembly and assembly_description MUST be in Proper Text / Title Case (Each word capitalized followed by lower case).\n"
             "    3. spare_maker, spare_model, and drawing_number MUST be in ALL CAPS (e.g. 'WARTSILA', 'YANMAR', 'DK-20', 'FIG.7', 'DWG-102').\n"
             "    4. specification MUST be captured as per the same format from the manual, with zero modifications, abbreviations, or changes to conventions or values.\n"
@@ -592,7 +592,35 @@ def parse_job_frequency(raw_freq: Any, raw_freq_type: Any = None) -> tuple[int |
 
 _KNOWN_UNITS = r"(?:PCS|PC|SETS?|EA(?:/ST)?|OFF|UNITS?|KG|MM|M(?!\d)|LITRES?|LTRS?|L(?!\d)|PAIRS?|BOX(?:ES)?|ROLLS?|PKT|PACKS?)"
 _PER_UNIT = r"(?:/(?:ST|SET|ENG|VESSEL|UNIT|CYL|PUMP))?"
-_MAT_KEYWORDS = r"\b(STEEL|SUS\d*|STAINLESS|BRASS|BRONZE|RUBBER|ARAM|NBR|EPDM|IRON|CAST\s*IRON|GRAPHITE|COPPER|ALUMINUM|ALUMINIUM|PVC|PHENOL|QUARTZ|CAC\d*|SB\d*|S20C|NS\d*|HVVZN|VZN|EN1\.\d+|FKM|PTFE|TEFLON|NYLON|TITANIUM|CARBON|A200|A\d+-\d+|\d+\.\d+VZN|ST)\b"
+_MAT_KEYWORDS = r"\b(STEEL|SUS\d*|STAINLESS|BRASS|BRONZE|RUBBER|ARAM|NBR|EPDM|IRON|CAST\s*IRON|GRAPHITE|COPPER|ALUMINUM|ALUMINIUM|PVC|PHENOL|QUARTZ|CAC\d*|SB\d*|S20C|NS\d*|HVVZN|VZN|EN1\.\d+|FKM|PTFE|TEFLON|NYLON|TITANIUM|CARBON|A200|A\d+-\d+|\d+\.\d+VZN|ST|STELLITE|NIMONIC\s*\d*[A-Z]*|NON[- ]ASBESTOS)\b"
+_SIZE_PATTERN_ENHANCED = (
+    r"^(?:"
+    r"M\d+.*|W\d+.*|DN\d+.*|PN\d+.*|"
+    r"[0-9.]+\s*[-*xX]\s*[0-9.]+.*|"
+    r"\d+[AK]\s+\d+[AK].*|\d+[AK]\b.*|"
+    r"[0-9]{4,5}(?:[-/][0-9a-z]+|[a-z]{1,4})*|"
+    r"(?:NU|NJ|NUP|NN|N|UC|NA|RNA|HK|BK)\s*\d+[0-9a-z]*|"
+    r"(?:(?:1A-|1B-|4D-)?[PGVS]-?\d+|AS568-\d+|JIS\s+B\s*\d+).*|"
+    r"(?:SPA|SPB|SPC|SPZ|[A-E]|3V|5V|8V)\s*[- ]?\s*\d+.*|"
+    r"(?:TC|SC|TB|SB|VC|VB)\s*\d+.*|"
+    r"(?:PT|NPT|RC|PF|G|R)\s*[0-9/.]+.*|"
+    r"T\s*=\s*[0-9.]+.*|[0-9.]+\s*T\b.*"
+    r")$"
+)
+
+
+def is_spec_size(val: str | None) -> bool:
+    if not val:
+        return False
+    v = str(val).strip()
+    return bool(re.match(_SIZE_PATTERN_ENHANCED, v, re.I))
+
+
+def is_spec_material(val: str | None) -> bool:
+    if not val:
+        return False
+    v = str(val).strip()
+    return bool(re.search(_MAT_KEYWORDS, v, re.I) and not re.search(r"\b(for|pump|engine|cylinder|outlet|inlet)\b", v, re.I))
 _SIZE_PATTERN = r"\b(DN\d+|M\d+.*|\d+.*X.*\d+|PT\d+.*|\d+/\d+\s*INCH.*|\d+\.\d+\s*x\s*\d+\.\d+.*)\b"
 
 
@@ -628,9 +656,11 @@ def decompose_qty_value(raw_val: str) -> tuple[str | None, list[tuple[str, str]]
 
     s = re.sub(r"[\s,;/-]+$", "", s).strip()
 
-    # If string starts with a size like M6S, M12x25, DN50, it is not a quantity
-    if re.match(r"^M\d+", s, re.I):
+    # If string matches size or material pattern, it is not a quantity
+    if is_spec_size(s) or re.match(r"^M\d+", s, re.I):
         return None, [("Size", s)]
+    if is_spec_material(s):
+        return None, [("Material", s)]
 
     # Support "1/SET" -> "1 SET"
     s_norm = re.sub(r"^(\d+)/(" + _KNOWN_UNITS + r")\b", r"\1 \2", s, flags=re.I)
@@ -728,6 +758,14 @@ def _format_specification_headers(spec: str | None) -> str | None:
                     items.append((lbl, val))
             continue
 
+        if is_spec_material(part):
+            items.append(("Material", part))
+            continue
+
+        if is_spec_size(part) or re.match(_SIZE_PATTERN, part, re.I):
+            items.append(("Size", part))
+            continue
+
         cq, extras = decompose_qty_value(part)
         if cq:
             items.append(("QTY", cq))
@@ -786,49 +824,163 @@ def _format_specification_headers(spec: str | None) -> str | None:
     return "; ".join(formatted_parts) if formatted_parts else spec_str
 
 
-def is_leaked_filename_or_doc_ref(val: str | None, filename: str | None = None) -> bool:
-    """Return True if val represents a PDF filename, page reference, document title, or placeholder."""
-    if not val:
-        return False
-    v = str(val).strip()
-    if not v:
-        return False
-    v_lower = v.lower()
-
-    # 1. Any .pdf reference or page reference
-    if ".pdf" in v_lower or "(p." in v_lower or bool(re.search(r'\b(?:pages?|pp?|pg)\b\.?\s*\d+', v_lower)):
-        return True
-
-    # 2. Common placeholder values
-    if v_lower in {"none", "n/a", "null", "unknown", "nil", "-", "--", "na", "/", "not available"}:
-        return True
-
-    # 3. References to other sections or figures
-    if re.search(r'\b(refer to|see page|contained in|as per|figure|fig\.|drawing\s+title|manual\s+title)\b', v_lower):
-        return True
-
-    # 4. Compare with manual filename if provided
-    if filename:
-        fn_lower = filename.lower().strip()
-        fn_base = fn_lower.rsplit(".", 1)[0] if "." in fn_lower else fn_lower
-
-        if v_lower == fn_lower or v_lower == fn_base:
-            return True
-
-        # Strip non-ASCII and leading numbering/symbols: "30# ", "A-10_", etc.
-        fn_ascii = re.sub(r'[^\x00-\x7F]+', ' ', fn_base)
-        fn_clean = re.sub(r'^[0-9a-z]+[#_\s\-.]+', '', fn_ascii.strip(), flags=re.I).strip()
-        fn_clean = re.sub(r'\s+', ' ', fn_clean).strip()
-
-        if len(fn_clean) >= 4:
-            if fn_clean in v_lower:
-                return True
-            v_clean = re.sub(r'^[0-9a-z]+[#_\s\-.]+', '', re.sub(r'[^\x00-\x7F]+', ' ', v_lower).strip(), flags=re.I).strip()
-            v_clean = re.sub(r'\s+', ' ', v_clean).strip()
-            if v_clean and (v_clean == fn_clean or (len(v_clean) >= 4 and v_clean in fn_clean)):
-                return True
-
+def is_leaked_filename_or_doc_ref(val: str | None, filename: str | None = None) -> bool:
+    """Return True if val represents a PDF filename, page reference, document title, or placeholder."""
+    if not val:
+        return False
+    v = str(val).strip()
+    if not v:
+        return False
+    v_lower = v.lower()
+
+    # 1. Any .pdf reference or page reference
+    if ".pdf" in v_lower or "(p." in v_lower or bool(re.search(r'\b(?:pages?|pp?|pg)\b\.?\s*\d+', v_lower)):
+        return True
+
+    # 2. Common placeholder values
+    if v_lower in {"none", "n/a", "null", "unknown", "nil", "-", "--", "na", "/", "not available"}:
+        return True
+
+    # 3. References to other sections or figures
+    if re.search(r'\b(refer to|see page|contained in|as per|figure|fig\.|drawing\s+title|manual\s+title)\b', v_lower):
+        return True
+
+    # 4. Compare with manual filename if provided
+    if filename:
+        fn_lower = filename.lower().strip()
+        fn_base = fn_lower.rsplit(".", 1)[0] if "." in fn_lower else fn_lower
+
+        if v_lower == fn_lower or v_lower == fn_base:
+            return True
+
+        # Strip non-ASCII and leading numbering/symbols: "30# ", "A-10_", etc.
+        fn_ascii = re.sub(r'[^\x00-\x7F]+', ' ', fn_base)
+        fn_clean = re.sub(r'^[0-9a-z]+[#_\s\-.]+', '', fn_ascii.strip(), flags=re.I).strip()
+        fn_clean = re.sub(r'\s+', ' ', fn_clean).strip()
+
+        if len(fn_clean) >= 4:
+            if fn_clean in v_lower:
+                return True
+            v_clean = re.sub(r'^[0-9a-z]+[#_\s\-.]+', '', re.sub(r'[^\x00-\x7F]+', ' ', v_lower).strip(), flags=re.I).strip()
+            v_clean = re.sub(r'\s+', ' ', v_clean).strip()
+            if v_clean and (v_clean == fn_clean or (len(v_clean) >= 4 and v_clean in fn_clean)):
+                return True
+
     return False
+
+def separate_spare_name_and_spec(part_name: str | None, existing_spec: str | None = None) -> tuple[str, str | None]:
+    """
+    Separates embedded specifications, dimensions, materials, and notes from part_name,
+    returning (clean_part_name, formatted_specification).
+    """
+    if not part_name or not str(part_name).strip():
+        return (part_name or ""), existing_spec
+
+    clean_name = str(part_name).strip()
+    extracted_specs: list[str] = []
+
+    # 1. Extract and remove all parenthetical clauses: e.g. 'O-RING (15.5 x 2.4 FKM)' or 'VALVE SEAT (SUS316)'
+    def _extract_paren(m):
+        content = m.group(1).strip()
+        if content:
+            extracted_specs.append(content)
+        return ""
+
+    clean_name = re.sub(r"\s*\(([^)]+)\)", _extract_paren, clean_name).strip()
+
+    # 2. If existing_spec has values, check if those exact values are in clean_name and strip them
+    if existing_spec:
+        spec_pieces = re.split(r"[;,]", existing_spec)
+        for piece in spec_pieces:
+            val = re.sub(r"^(?:QTY|Quantity|Size|Dimensions?|Material|Mat|Remarks?|Notes?|Spec|Specification):\s*", "", piece.strip(), flags=re.I).strip()
+            if val and len(val) >= 2 and val.lower() not in ("pcs", "set", "ea", "unit", "none", "n/a"):
+                val_escaped = re.escape(val)
+                clean_name = re.sub(rf"(?:\s+[-/]?\s*|\s*,\s*){val_escaped}\b", "", clean_name, flags=re.I).strip()
+                if " " in val:
+                    val_no_space = re.escape(re.sub(r"\s+", "", val))
+                    clean_name = re.sub(rf"(?:\s+[-/]?\s*|\s*,\s*){val_no_space}\b", "", clean_name, flags=re.I).strip()
+
+    # 3. Trailing specifications by common patterns:
+    patterns = [
+        # Gasket ratings: e.g. '150A 10K T=2.0', '50A 10K', 'T=1.5', '1.5T', 'JIS 10K 50A'
+        r"^(.*\b(?:gasket|packing|flange|joint\s+sheet))\s+((?:JIS\s+)?(?:\d+[AK]\s+\d+[AK]|\d+[AK])\b.*|T\s*=\s*[0-9.]+.*|[0-9.]+\s*T\b.*)$",
+
+        # Thread/pipe fittings: e.g. 'PLUG PT 1/2', 'NIPPLE R 1/4', 'UNION NPT 3/8'
+        r"^(.*\b(?:plug|nipple|union|elbow|coupling|valve))\s+((?:PT|NPT|RC|PF|G|R)\s*[0-9/.]+.*)$",
+
+        # Bearing numbers: e.g. 'BALL BEARING 6205-2RS', 'BEARING NU206', 'ROLLER BEARING 30206'
+        r"^(.*\b(?:bearing))\s+([0-9]{4,5}(?:[-/][0-9a-z]+|[a-z]{1,4})*|(?:NU|NJ|NUP|NN|N|UC|NA|RNA|HK|BK)\s*\d+[0-9a-z]*)$",
+
+        # O-Ring standard series: e.g. 'O-RING G-35', 'O-RING P15', 'O-RING 1A-P15', 'O-RING AS568-010'
+        r"^(.*\b(?:o[- ]?ring))\s+((?:(?:1A-|1B-|4D-)?[PGVS]-?\d+|AS568-\d+|JIS\s+B\s*\d+).*)$",
+
+        # V-Belt sizes: e.g. 'V-BELT B-48', 'V-BELT SPA 1250', 'BELT 3V-500'
+        r"^(.*\b(?:belt))\s+((?:SPA|SPB|SPC|SPZ|[A-E]|3V|5V|8V)\s*[- ]?\s*\d+.*)$",
+
+        # Oil Seal dimensions: e.g. 'OIL SEAL TC 25 45 8', 'OIL SEAL 25X45X8', 'OIL SEAL SC355511'
+        r"^(.*\b(?:oil[- ]?seal|lip[- ]?seal|seal))\s+((?:TC|SC|TB|SB|VC|VB)?\s*\d+\s*[-*xX ]\s*\d+\s*[-*xX ]\s*\d+.*)$",
+
+        # Dimensions / metric thread / sizes: e.g. 'HEX BOLT M12X45', 'O-RING 15.5X2.4', 'STUD M16X60'
+        r"^(.*?)\s+((?:M\d+|W\d+|DN\d+|PN\d+|[0-9.]+\s*X\s*[0-9.]+|#[0-9]+).*)$",
+
+        # Standalone Material at the end: e.g. 'VALVE SEAT SUS316', 'PACKING TEFLON', 'GASKET NON-ASBESTOS'
+        rf"^(.*?)\s+({_MAT_KEYWORDS}.*)$",
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, clean_name, re.I)
+        if m:
+            cand_name = m.group(1).strip()
+            cand_spec = m.group(2).strip()
+            if len(cand_name) >= 2 and re.search(r"[A-Za-z]", cand_name):
+                clean_name = cand_name
+                extracted_specs.append(cand_spec)
+                break
+
+    # Tag extracted specs properly with headers (Size:, Material:, Remarks:)
+    tagged_extracted: list[str] = []
+    for es in extracted_specs:
+        es_clean = es.strip(" ;,")
+        if not es_clean:
+            continue
+        if re.match(r"^(?:QTY|Quantity|Size|Dimensions?|Material|Mat|Remarks?|Notes?|Spec|Specification):\s*", es_clean, re.I):
+            tagged_extracted.append(es_clean)
+            continue
+
+        # Check if contains both material and other details (e.g. 'M12 X 45 STAINLESS' or '15.5 x 2.4 FKM')
+        mat_m = re.search(_MAT_KEYWORDS, es_clean, re.I)
+        if mat_m:
+            mat_val = mat_m.group(0).strip()
+            rem_val = re.sub(rf"\b{re.escape(mat_val)}\b", "", es_clean, flags=re.I).strip(" ;,")
+            if rem_val:
+                if is_spec_size(rem_val):
+                    tagged_extracted.append(f"Size: {rem_val}")
+                else:
+                    tagged_extracted.append(f"Remarks: {rem_val}")
+                tagged_extracted.append(f"Material: {mat_val}")
+                continue
+            else:
+                tagged_extracted.append(f"Material: {mat_val}")
+                continue
+
+        if is_spec_size(es_clean):
+            tagged_extracted.append(f"Size: {es_clean}")
+        else:
+            tagged_extracted.append(f"Remarks: {es_clean}")
+
+    # Build final combined specification
+    final_spec = existing_spec or ""
+    for te in tagged_extracted:
+        if final_spec:
+            val = te.split(":", 1)[1].strip() if ":" in te else te
+            if val.lower() not in final_spec.lower():
+                final_spec = f"{final_spec}; {te}"
+        else:
+            final_spec = te
+
+    formatted_spec = _format_specification_headers(final_spec) if final_spec else None
+    return to_proper_case(clean_name), formatted_spec
+
 
 def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type: str = "") -> dict:
     if not isinstance(record, dict):
@@ -848,33 +1000,12 @@ def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type
         elif re.search(r'(refer to|see page|contained in|as per|figure|table)', part_num, re.I):
             record["part_number"] = None
 
-    # Rule 4: Separate Part Name and Specification for Spares
+    # Rule 4: Separate Part Name and Specification for Spares (Bug-002 Item 4)
     if extraction_type == "spare" or "part_name" in record:
-        raw_part_name = str(record.get("part_name") or "").strip()
-        existing_spec = str(record.get("specification") or "").strip()
-
-        # Check for parenthetical spec e.g. "O-RING (15.5 x 2.4 FKM)" or "HEX BOLT (M12x45)"
-        paren_match = re.search(r'^(.*?)\s*\(([^)]+)\)\s*$', raw_part_name)
-        if paren_match:
-            clean_name = paren_match.group(1).strip()
-            extracted_spec = paren_match.group(2).strip()
-            if clean_name and len(clean_name) >= 2:
-                record["part_name"] = clean_name
-                combined_spec = f"{extracted_spec}; {existing_spec}".strip("; ") if existing_spec else extracted_spec
-                record["specification"] = combined_spec
-        else:
-            # Check for trailing dimension/size pattern e.g. "HEX BOLT M12X45 STAINLESS" or "O-RING 15.5X2.4"
-            dim_match = re.search(r'^(.*?)\s+((?:M\d+|[0-9.]+\s*X\s*[0-9.]+|#[0-9]+|DN\d+|PN\d+).*)$', raw_part_name, re.I)
-            if dim_match:
-                clean_name = dim_match.group(1).strip()
-                extracted_spec = dim_match.group(2).strip()
-                if clean_name and len(clean_name) >= 2:
-                    record["part_name"] = clean_name
-                    combined_spec = f"{extracted_spec}; {existing_spec}".strip("; ") if existing_spec else extracted_spec
-                    record["specification"] = combined_spec
-
-    # Format specification with explicit table column header prefixes (preserving verbatim manual values)
-    if record.get("specification"):
+        c_name, c_spec = separate_spare_name_and_spec(record.get("part_name"), record.get("specification"))
+        record["part_name"] = c_name
+        record["specification"] = c_spec
+    elif record.get("specification"):
         record["specification"] = _format_specification_headers(record["specification"])
 
     # Rule 1: Strip non-English / non-ASCII characters from all string fields
@@ -1541,7 +1672,7 @@ async def _extract_entities_from_page_image_with_openai(
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
                 "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). Do NOT map Item No. or Ref No. to drawing_position."
                 "\n  • part_number → catalog Part Number (PC.NO, CODE NO, etc.), OR table row Item No. if no separate catalog Part Number column is provided. Leave null if not found — NEVER capture PDF filenames, drawing titles, or page references here."
-                "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
+                "\n  • part_name → the SPARE NAME ONLY in Proper Text / Title Case, preserving any abbreviations and misspellings of the name (e.g. 'O-Ring', 'Hex Bolt', 'Ball Bearing', 'Oil Seal', 'Gasket', 'Plug'). CRITICAL: Do NOT include specifications, dimensions, thread sizes, materials, or parenthetical details in part_name (e.g. for 'O-RING (15.5 x 2.4 FKM)' output 'O-Ring'; for 'HEX BOLT M12x45' output 'Hex Bolt'; for 'BALL BEARING 6205' output 'Ball Bearing') — always separate and move those additional details to specification!"
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
@@ -1632,7 +1763,7 @@ async def _extract_entities_from_page_image_with_claude(
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
                 "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). Do NOT map Item No. or Ref No. to drawing_position."
                 "\n  • part_number → catalog Part Number (PC.NO, CODE NO, etc.), OR table row Item No. if no separate catalog Part Number column is provided. Leave null if not found — NEVER capture PDF filenames, drawing titles, or page references here."
-                "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
+                "\n  • part_name → the SPARE NAME ONLY in Proper Text / Title Case, preserving any abbreviations and misspellings of the name (e.g. 'O-Ring', 'Hex Bolt', 'Ball Bearing', 'Oil Seal', 'Gasket', 'Plug'). CRITICAL: Do NOT include specifications, dimensions, thread sizes, materials, or parenthetical details in part_name (e.g. for 'O-RING (15.5 x 2.4 FKM)' output 'O-Ring'; for 'HEX BOLT M12x45' output 'Hex Bolt'; for 'BALL BEARING 6205' output 'Ball Bearing') — always separate and move those additional details to specification!"
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
@@ -3115,7 +3246,10 @@ async def _process_and_save_page_records(
                 _pnum = None
             else:
                 _pnum = str(_raw_pnum).strip()[:200] if _raw_pnum else None
-            _pname = to_proper_case(record.get("part_name")) or "Unknown Part"
+            _raw_pname = record.get("part_name")
+            _raw_spec = record.get("specification")
+            _clean_pname, _clean_spec = separate_spare_name_and_spec(_raw_pname, _raw_spec)
+            _pname = to_proper_case(_clean_pname) or "Unknown Part"
             if _pname:
                 _pname = _pname[:500]
             _dwg_pos = str(record.get("drawing_position")).strip()[:100] if record.get("drawing_position") else None
@@ -3132,7 +3266,7 @@ async def _process_and_save_page_records(
                 part_number=_pnum,
                 drawing_number=_dwg,
                 drawing_position=_dwg_pos,
-                specification=_format_specification_headers(record.get("specification")) or (record.get("specification") or None),
+                specification=_format_specification_headers(_clean_spec) or (_clean_spec or None),
                 spare_assembly=_asm,
                 assembly_description=_asm_desc,
                 spare_maker=_maker,

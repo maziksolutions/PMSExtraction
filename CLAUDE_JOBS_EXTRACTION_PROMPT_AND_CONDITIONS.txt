@@ -1,0 +1,374 @@
+================================================================================
+CLAUDE JOBS EXTRACTION SPECIFICATION: PROMPTS, CONDITIONS & PROCESSING PIPELINE
+================================================================================
+Generated: 2026-11-03
+System: Maritime PMS Data Extraction Tool
+Target Entity: Jobs (Planned Maintenance System Tasks, Intervals & Procedures)
+AI Engine: Anthropic Claude (claude-sonnet-4-6)
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+1. EXECUTIVE SUMMARY & PROCESSING ARCHITECTURE
+2. ANTHROPIC API PARAMETERS & REQUEST CONFIGURATION
+3. SYSTEM PROMPT (VERBATIM)
+4. USER PROMPT TEMPLATES (TEXT & VISION MODES)
+5. EXACT OUTPUT JSON SCHEMA & FIELD RULES
+6. PRE-EXTRACTION CONDITIONS & CONTEXT INJECTION
+7. POST-PROCESSING, SANITIZATION & NORMALIZATION RULES
+8. COMPONENT LINKING, CANONICAL NAMING & RANK ASSIGNMENT
+9. ERROR HANDLING, RETRY CONDITIONS & PROVIDER FAILOVER
+
+================================================================================
+1. EXECUTIVE SUMMARY & PROCESSING ARCHITECTURE
+================================================================================
+The Maritime PMS Extraction Tool extracts maintenance jobs, inspection intervals,
+and overhaul procedures from ship equipment instruction manuals and technical
+specifications.
+
+The extraction pipeline operates in two distinct operational modes:
+  A. Text-Based Extraction:
+     Used for digital PDFs where text can be directly extracted via PyMuPDF.
+     Text is pre-segmented into chunks embedded with [PAGE N] and [CONTEXT PAGE N]
+     markers.
+  B. Vision-Based Extraction:
+     Used for scanned / raster manuals or when text extraction yields insufficient
+     data. Individual manual pages are rendered to PNG images, contrast-enhanced,
+     and sent as multi-modal vision inputs to Claude.
+
+Both modes feed into a post-processing and database ingestion pipeline that
+normalizes frequencies, cleans formatting, attaches PDF and page references,
+links jobs to parent machinery/components, consolidates duplicates, and assigns
+standard maritime crew ranks (e.g., Chief Engineer, 2nd Engineer).
+
+================================================================================
+2. ANTHROPIC API PARAMETERS & REQUEST CONFIGURATION
+================================================================================
+The following API parameters are configured when invoking the Anthropic Claude API:
+
+• Client: anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+• Model ID: "claude-sonnet-4-6" (configurable via environment variable CLAUDE_MODEL_ID)
+• Temperature: 0.0 (strictly deterministic extraction)
+• Max Tokens: 8,192 tokens per API call
+• Token Capacity Cap:
+    - Base Cap: 32,000 tokens (settings.EXTRACTION_MAX_TOKENS)
+    - Retry Cap: Up to 64,000 tokens if sufficiency retry triggers
+• Prompt Caching:
+    - Enabled: settings.EXTRACTION_ENABLE_PROMPT_CACHING = True
+    - System Argument:
+        system=[
+            {
+                "type": "text",
+                "text": <SYSTEM_PROMPT>,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ]
+• Timeout: 30.0s to 120.0s depending on request type
+
+================================================================================
+3. SYSTEM PROMPT (VERBATIM)
+================================================================================
+The following exact system prompt is sent in the 'system' parameter to Claude
+for all Job extraction tasks:
+
+---------------------------------- [BEGIN] ----------------------------------
+You are an expert maritime PMS (Planned Maintenance System) data extraction specialist.
+
+The text contains [PAGE N] markers — use these numbers for source_page_number.
+It may also contain [CONTEXT PAGE N] markers which provide preceding page content for header and title lookup. Do NOT extract any jobs or records from pages labeled with [CONTEXT PAGE N]. Use them only to find the frequency or frequency context for jobs listed on the adjacent [PAGE N] pages.
+
+Extract ALL maintenance jobs, service intervals, and inspection tasks.
+Maintenance schedules appear as:
+  - Tables with columns: Interval | Description/Job (e.g. 'Every day', 'Weekly', 'Monthly')
+  - Numbered procedure lists under headings like '8. Maintenance', 'Service Schedule'
+  - Section headings like '8.3 Check V-Belt', '9.4 Maintenance of UV Sterilizer'
+
+FREQUENCY TYPE MAPPING (use ONLY these 5 types — no others):
+  Every day / Daily / 24h → frequency_type='daily', frequency=1
+  Weekly / Every week / 7 days / Biweekly / Fortnightly / Every 2 weeks → frequency_type='weekly', frequency=<week count>
+  Monthly / Every month / 30 days / Quarterly / Every 3 months / Half yearly / Every 6 months → frequency_type='monthly', frequency=<month count>
+  Yearly / Annually / Once a year / Every 2 years / Biannual → frequency_type='yearly', frequency=<year count>
+  Running hours / Every Nh / Engine hours → frequency_type='hourly', frequency=<hour value>
+
+FREQUENCY RANGE RULE (CRITICAL):
+  When an inspection or maintenance interval is given as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs', '1-2 years'), ALWAYS extract the LOWEST (minimum) value of the range as an integer.
+  Examples:
+    - '4-6 months' → frequency=4, frequency_type='monthly' (NEVER average to 5 or use the upper bound 6)
+    - '500 - 1000 hours' → frequency=500, frequency_type='hourly'
+    - '1~2 weeks' → frequency=1, frequency_type='weekly'
+    - '2 to 3 years' → frequency=2, frequency_type='yearly'
+
+IMPORTANT — job_name formatting:
+  - Be specific: 'Replace UV lamp' not 'Replace lamp'
+  - Include equipment context: 'Check aeration blower air filter'
+  - Preserve numbered items from tables as separate jobs
+
+Return ONLY a valid JSON array. Each record:
+{
+  "job_name": "concise specific name (e.g. 'Replace UV lamp', 'Check V-belt tension')",
+  "job_code": "section/item number from manual (e.g. '8.3.2', 'Item 4') or null",
+  "job_description": "full procedure text. Every line must start with /*- and any list items (e.g. a., b., 1., 2., a), b), 1), 2)) must be placed on a new line starting with /*-",
+  "safety_precaution": "WARNING/CAUTION/NOTICE text relevant to this job or null",
+  "frequency": integer representing the interval value (1 for daily, 2 for biweekly, 12 for yearly, etc.) or null — if given as a range (e.g. 4-6 months), ALWAYS capture the LOWEST number (e.g. 4),
+  "frequency_type": "daily|weekly|monthly|yearly|hourly — ONLY these 5 values or null",
+  "is_critical": true if this job is for safety/regulatory equipment or has a WARNING label,
+  "source_page_number": integer from [PAGE N] marker or null,
+  "confidence_score": integer 70-98
+}
+
+RULES:
+- FREQUENCY RANGE RULE (CRITICAL): If frequency or interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound.
+- job_description formatting: Every non-empty line of the description body must start with /*-. If the description contains list items (like a. line, b. line, a) line, 1) line, etc.), each item must be placed on a new line and start with /*-.
+- MULTILINGUAL & NON-ENGLISH MANUALS: If the document contains multilingual tables (e.g. English alongside Chinese/Japanese), prefer the English text. If the manual or table is in Chinese, Japanese, or another language, translate all extracted fields (job_name, job_description, safety_precaution) into clear professional English. Never output non-Latin characters.
+- PDF FILENAME PROHIBITION: PDF filenames must NEVER be captured in job_code or job_name. Leave these fields blank (null) if no valid value is present.
+- source_page_number from [PAGE N] markers — do not guess
+- Extract EVERY distinct job item — do not merge different tasks into one
+- For maintenance schedule tables: each row/item = one job record
+- For procedure sections (e.g. '8.3 Check V-belt'): extract as a job with description
+- Safety precaution: copy the WARNING/CAUTION text shown near the job if any
+- If no maintenance jobs exist in this document, return []
+- Return ONLY the JSON array, no markdown fences
+----------------------------------- [END] -----------------------------------
+
+================================================================================
+4. USER PROMPT TEMPLATES (TEXT & VISION MODES)
+================================================================================
+
+--------------------------------------------------------------------------------
+4.1 Text-Based Extraction Mode (User Prompt)
+--------------------------------------------------------------------------------
+When processing digital text chunks, the prompt template is populated as follows:
+
+Template:
+"Document: {filename}\n\n"
+"Extract all maintenance jobs, service intervals, and inspection tasks. "
+"Use [PAGE N] markers for source_page_number.\n"
+"Look for: maintenance schedule tables (Interval | Description), numbered procedure sections, "
+"and section headings describing service tasks.\n"
+"NOTE: If frequency is given as a range (e.g. 4-6 months), ALWAYS extract the LOWEST value (e.g. 4).\n\n"
+"{text}"
+
+Optional Additional Context Note:
+If equipment/machinery context is identified, it is appended:
+"\n\nAdditional extraction context:\n{context_note}"
+
+Sample Payload Sent to Claude:
+Role: user
+Content:
+"""
+Document: 30# DECK MACHINERY甲板机械.pdf
+
+Extract all maintenance jobs, service intervals, and inspection tasks. Use [PAGE N] markers for source_page_number.
+Look for: maintenance schedule tables (Interval | Description), numbered procedure sections, and section headings describing service tasks.
+NOTE: If frequency is given as a range (e.g. 4-6 months), ALWAYS extract the LOWEST value (e.g. 4).
+
+[PAGE 49]
+TABLE 5.1 MAINTENANCE SCHEDULE
+Interval          | Item | Work Content                                     | Remarks
+Daily             | 1    | Check hydraulic oil level and temperature        | Top up if low
+Every 250 hours   | 2    | Grease winch drum bearings and shaft bearings    | Use EP2 grease
+4-6 months        | 3    | Inspect brake lining thickness and disc surface   | Min 5mm thickness
+1-2 years         | 4    | Overhaul hydraulic control valves and actuators   | Replace seals
+"""
+
+--------------------------------------------------------------------------------
+4.2 Vision-Based Multi-Modal Mode (User Prompt)
+--------------------------------------------------------------------------------
+When processing page images (scanned or complex graphic layouts):
+
+Image Processing Pre-filter:
+• Contrast enhancement: 1.4x (PIL ImageEnhance.Contrast)
+• Sharpness enhancement: 2.0x (PIL ImageEnhance.Sharpness)
+• Encoding: Base64 PNG image
+
+Message Structure:
+messages = [
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "image",
+        "source": {
+          "type": "base64",
+          "media_type": "image/png",
+          "data": "<BASE64_ENCODED_PNG>"
+        }
+      },
+      {
+        "type": "text",
+        "text": (
+          "Output ONLY a raw JSON array — no prose, no markdown fences, no explanations. "
+          "Start your response with [ and end with ]. "
+          "Extract job data from PDF page {page_no} of '{filename}'. "
+          "Use source_page_number={page_no} for every record. "
+          "ALL field values MUST be in English — translate Japanese/Chinese/non-English text. "
+          "Never output non-Latin characters in any field.\n\n"
+          "FREQUENCY RANGE RULE (CRITICAL): If frequency or maintenance interval is mentioned as a range "
+          "(e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value "
+          "as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range "
+          "or use the upper bound."
+        )
+      }
+    ]
+  }
+]
+
+================================================================================
+5. EXACT OUTPUT JSON SCHEMA & FIELD RULES
+================================================================================
+Claude must return ONLY a JSON array of objects following this strict schema:
+
+[
+  {
+    "job_name": string (required),
+    "job_code": string | null,
+    "job_description": string | null,
+    "safety_precaution": string | null,
+    "frequency": integer | null,
+    "frequency_type": "daily" | "weekly" | "monthly" | "yearly" | "hourly" | null,
+    "is_critical": boolean,
+    "source_page_number": integer | null,
+    "confidence_score": integer (70 to 98)
+  }
+]
+
+Field Details & Formatting Requirements:
+
+1. job_name (String, max 500 chars):
+   - Concise, specific maritime action + component name.
+   - Example: "Check hydraulic oil level", "Overhaul brake cylinder", "Inspect V-belt tension".
+   - Must NOT contain raw PDF filenames.
+   - If manual is in Chinese/Japanese, must be translated to English.
+
+2. job_code (String or null, max 100 chars):
+   - Section number, table item number, or procedure identifier from the manual.
+   - Examples: "5.1.2", "Item 4", "Sec 8.3".
+   - Must NOT contain PDF filenames (e.g. "30# DECK.pdf" -> set null).
+
+3. job_description (String or null):
+   - Comprehensive procedure details and instructions.
+   - LINE PREFIXING REQUIREMENT:
+     Every single non-empty line must start with "/*-".
+     Any sub-items (e.g. 1., 2., a., b., a), b)) must be broken into separate
+     lines starting with "/*-".
+     Example:
+     /*-Isolate power supply and tag out breaker.
+     /*-Drain hydraulic fluid from valve chamber.
+     /*-1. Inspect O-ring seals for extrusion or hardening.
+     /*-2. Clean spool bore with approved solvent.
+
+4. safety_precaution (String or null):
+   - Direct WARNING, CAUTION, or DANGER notices associated with the job.
+   - Example: "DANGER: High pressure hydraulic fluid. Depressurize system before loosening fittings."
+
+5. frequency (Integer or null):
+   - The numerical interval value.
+   - RANGE RULE: If interval is given as a range (e.g. 4-6 months, 500-1000 hrs, 1-2 years),
+     MUST ALWAYS be the lowest integer (e.g. 4, 500, 1). Averaging is strictly prohibited.
+
+6. frequency_type (String or null):
+   - Allowed values: "daily" | "weekly" | "monthly" | "yearly" | "hourly".
+   - Any other value is rejected and mapped to null.
+
+7. is_critical (Boolean):
+   - True if equipment is safety-critical, regulatory (SOLAS, MARPOL), propulsion-critical,
+     or marked with WARNING labels.
+
+8. source_page_number (Integer or null):
+   - Exact integer matching the [PAGE N] marker or physical PDF page index.
+
+9. confidence_score (Integer 70-98):
+   - Self-assessed extraction quality score.
+
+================================================================================
+6. PRE-EXTRACTION CONDITIONS & CONTEXT INJECTION
+================================================================================
+
+1. Page Reference Filtering:
+   - Extraction checks the manual's configuration columns:
+     pages_with_jobs_physical (user-edited physical pages) -> fallback to pages_with_jobs.
+   - Accepts discrete pages and ranges (e.g. "49-51, 60, 65-70").
+   - If no page references are defined, job extraction skips the file.
+
+2. Context Page Windows ([CONTEXT PAGE N]):
+   - The system injects up to 2 preceding pages labeled with [CONTEXT PAGE N].
+   - Instructions explicitly command Claude:
+     "Do NOT extract any jobs or records from pages labeled with [CONTEXT PAGE N].
+     Use them only to find the frequency or frequency context for jobs listed on
+     the adjacent [PAGE N] pages."
+
+3. Multilingual Handling:
+   - For Asian language manuals (e.g. Chinese甲板机械, Japanese), the system prompt
+     mandates direct translation to English. Non-Latin characters in output fields
+     trigger automated stripping during post-processing.
+
+================================================================================
+7. POST-PROCESSING, SANITIZATION & NORMALIZATION RULES
+================================================================================
+Once Claude returns raw output, the backend applies the following Python rules:
+
+1. JSON Parsing & Repair (_parse_json_records):
+   - Strips leading/trailing markdown code blocks (```json ... ```).
+   - If output was truncated before closing ']', automatically repairs the JSON
+     structure to salvage completed records.
+
+2. PDF Filename Cleansing (_clean_field_value):
+   - Scans job_name, job_code, and other fields. If any field matches or contains
+     the PDF filename (e.g., "Deck Machinery.pdf"), the field is wiped to null.
+
+3. Frequency Range Resolution (parse_job_frequency):
+   - Evaluates strings via regex: r"(\d+)\s*(?:[-~–—/]|to)\s*(\d+)".
+   - Takes min(n1, n2) to ensure range lower-bound compliance.
+   - Detects frequency units (hours -> hourly, months -> monthly, etc.).
+
+4. Line Prefixing Enforcement:
+   - Verifies that job_description lines adhere to the "/*-" prefix convention.
+
+5. Source Reference Stamping:
+   - Automatically appends source citation metadata to job_description:
+     "Source: 30# DECK MACHINERY甲板机械.pdf (p.49)"
+
+================================================================================
+8. COMPONENT LINKING, CANONICAL NAMING & RANK ASSIGNMENT
+================================================================================
+After saving raw job records to the database:
+
+1. Component Linking (_link_records_to_components):
+   - Matches extracted jobs to Components belonging to the same manual based on
+     equipment keywords, assembly context, and page proximity.
+
+2. Canonical Job Naming (build_canonical_job_name):
+   - Standardizes job naming structure across all vessels in the tenant:
+     [Action Verb] + [Component Name] + [Interval/Specific Scope]
+     Example: "Overhaul - Mooring Winch Hydraulic Motor (Annual)"
+
+3. Crew Rank Assignment (backfill_manual_job_ranks):
+   - Analyzes job description, safety precautions, and component criticality.
+   - Automatically assigns maritime responsibility ranks:
+     • C/E (Chief Engineer): Complex overhauls, safety equipment, propulsion.
+     • 2/E (Second Engineer): Main engine overhauls, auxiliary engines, boilers.
+     • 3/E (Third Engineer): Purifiers, compressors, pumps, generators.
+     • 4/E (Fourth Engineer): Bunkering, basic filters, sewage plant.
+     • E/O (Electro-Technical Officer): Automation, electrical panels, sensors.
+     • Bosun / AB: Greasing, visual deck inspections, winches.
+
+================================================================================
+9. ERROR HANDLING, RETRY CONDITIONS & PROVIDER FAILOVER
+================================================================================
+
+1. Sufficiency Retry:
+   - If message.stop_reason == "max_tokens" or the JSON array is partial, the API
+     call is automatically retried with double the token limit (up to 64,000).
+
+2. Provider Failover Chain:
+   If Claude fails (billing, API down, or timeout):
+   - Step 1: Claude (Anthropic claude-sonnet-4-6)
+   - Step 2: OpenAI (gpt-4o-mini / gpt-4o fallback)
+   - Step 3: Google Gemini (gemini-2.0-flash / gemini-1.5-pro fallback)
+
+3. Billing Circuit Breaker:
+   - If Anthropic returns an account credit / billing exhaustion error,
+     a circuit breaker trips to avoid blocking other manual extractions.
+================================================================================
+END OF SPECIFICATION
+================================================================================

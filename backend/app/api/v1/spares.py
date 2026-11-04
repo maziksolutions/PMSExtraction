@@ -20,7 +20,12 @@ from app.models.spare import ExtractionMethod, Spare
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.spare import SpareCreate, SpareOut, SpareUpdate
-from app.services.extractor import _format_specification_headers, to_proper_case, is_leaked_filename_or_doc_ref
+from app.services.extractor import (
+    _format_specification_headers,
+    to_proper_case,
+    is_leaked_filename_or_doc_ref,
+    separate_spare_name_and_spec,
+)
 from app.services.feedback_learning import schedule_feedback_learning
 from app.services.review_workflow import (
     broadcast_activity,
@@ -609,7 +614,10 @@ async def create_spare(
     await _get_vessel_or_404(vessel_id, db)
     data = body.model_dump()
     if data.get("part_name"):
-        data["part_name"] = to_proper_case(data["part_name"])
+        c_name, c_spec = separate_spare_name_and_spec(data.get("part_name"), data.get("specification"))
+        data["part_name"] = to_proper_case(c_name)
+        if c_spec:
+            data["specification"] = c_spec
     if data.get("spare_assembly"):
         data["spare_assembly"] = to_proper_case(data["spare_assembly"])
     if data.get("assembly_description"):
@@ -674,7 +682,11 @@ async def update_spare(
     original_qc_status = spare.qc_status
     update_data = body.model_dump(exclude_unset=True)
     if "part_name" in update_data and update_data["part_name"]:
-        update_data["part_name"] = to_proper_case(update_data["part_name"])
+        cur_spec = update_data.get("specification") if "specification" in update_data else spare.specification
+        c_name, c_spec = separate_spare_name_and_spec(update_data["part_name"], cur_spec)
+        update_data["part_name"] = to_proper_case(c_name)
+        if c_spec:
+            update_data["specification"] = c_spec
     if "spare_assembly" in update_data and update_data["spare_assembly"]:
         update_data["spare_assembly"] = to_proper_case(update_data["spare_assembly"])
     if "assembly_description" in update_data and update_data["assembly_description"]:
@@ -1127,7 +1139,10 @@ async def snip_save_spares(
 
     saved_spares: list[Spare] = []
     for record in records:
-        part_name = to_proper_case(str(record.get("part_name") or "").strip())
+        raw_pname = record.get("part_name")
+        raw_spec = record.get("specification")
+        c_name, c_spec = separate_spare_name_and_spec(raw_pname, raw_spec)
+        part_name = to_proper_case(str(c_name or "").strip())
         if not part_name:
             continue
         _asm = to_proper_case(record.get("spare_assembly"))
@@ -1143,7 +1158,7 @@ async def snip_save_spares(
         _raw_pn = record.get("part_number")
         if is_leaked_filename_or_doc_ref(_raw_pn, manual_filename):
             _raw_pn = None
-        _spec = _format_specification_headers(record.get("specification")) or (record.get("specification") or None)
+        _spec = _format_specification_headers(c_spec) or (c_spec or None)
 
         spare = Spare(
             tenant_id=current_user.tenant_id,
@@ -1164,6 +1179,7 @@ async def snip_save_spares(
             qc_status=QCStatus.pending,
             confidence_score=int(record.get("confidence_score") or 75),
         )
+        saved_spares.append(spare)
     if saved_spares:
         pages_to_clear = set()
         if page_number is not None:
