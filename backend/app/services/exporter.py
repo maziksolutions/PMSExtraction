@@ -13,6 +13,7 @@ from app.models.ingestion import Manual
 from app.models.job import Job
 from app.models.spare import Spare
 from app.models.vessel import VesselProject
+from app.services.extractor import is_leaked_filename_or_doc_ref
 
 logger = logging.getLogger(__name__)
 
@@ -447,7 +448,7 @@ class ExportService:
             source_reference = self._source_reference(pdf_reference, spare.page_reference, None)
             # Bug-002 Item 3: Part number must be left blank if not found, never fallback to PDF filename
             raw_pn = (spare.part_number or "").strip()
-            if ".pdf" in raw_pn.lower() or "(p." in raw_pn.lower():
+            if is_leaked_filename_or_doc_ref(raw_pn, pdf_reference):
                 raw_pn = ""
             part_number = raw_pn
             row = {
@@ -857,13 +858,18 @@ class ExportService:
                 None,
             )
             raw_pn = (spare.part_number or "").strip()
-            if ".pdf" in raw_pn.lower() or "(p." in raw_pn.lower():
+            manual_filename = manual.original_filename if manual else None
+            if is_leaked_filename_or_doc_ref(raw_pn, manual_filename):
                 raw_pn = ""
+
+            clean_dwg = spare.drawing_number or ""
+            if is_leaked_filename_or_doc_ref(clean_dwg, manual_filename):
+                clean_dwg = ""
 
             rows.append(
                 {
                     "vesselName": vessel.name,
-                    "inventoryCode": raw_pn or spare.drawing_number or "",
+                    "inventoryCode": raw_pn or clean_dwg or "",
                     "inventoryName": spare.part_name,
                     "minimumLevel": "",
                     "priority": self._priority(spare.is_critical),

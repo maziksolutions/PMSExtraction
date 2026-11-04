@@ -20,7 +20,7 @@ from app.models.spare import ExtractionMethod, Spare
 from app.models.user import User
 from app.models.vessel import VesselProject
 from app.schemas.spare import SpareCreate, SpareOut, SpareUpdate
-from app.services.extractor import _format_specification_headers, to_proper_case
+from app.services.extractor import _format_specification_headers, to_proper_case, is_leaked_filename_or_doc_ref
 from app.services.feedback_learning import schedule_feedback_learning
 from app.services.review_workflow import (
     broadcast_activity,
@@ -61,7 +61,7 @@ def _fallback_spare_part_number(
     # Bug-002 Item 3: Part number must remain blank/null if not found in manual, never fallback to PDF filename
     if part_number:
         p_clean = str(part_number).strip()
-        if p_clean and not (".pdf" in p_clean.lower() or "(p." in p_clean.lower()):
+        if p_clean and not is_leaked_filename_or_doc_ref(p_clean, manual_name):
             return p_clean
     return None
 
@@ -374,7 +374,7 @@ async def list_spares(
         source_reference = _format_spare_source_reference(manual_name, spare.page_reference)
         component_name = component.component_name if component else None
         raw_pn = payload.get("part_number")
-        if raw_pn and (".pdf" in raw_pn.lower() or "(p." in raw_pn.lower()):
+        if is_leaked_filename_or_doc_ref(raw_pn, manual_name):
             raw_pn = None
 
         payload.update(
@@ -554,10 +554,21 @@ async def export_spares(
         ws.cell(row=row_idx, column=4, value=component.component_name if component else "")
         ws.cell(row=row_idx, column=5, value=spare.spare_assembly or "")
         ws.cell(row=row_idx, column=6, value=spare.assembly_description or "")
+        clean_pn = spare.part_number
+        manual_filename = manual.original_filename if manual else None
+        if is_leaked_filename_or_doc_ref(clean_pn, manual_filename):
+            clean_pn = None
+        clean_dwg = spare.drawing_number
+        if is_leaked_filename_or_doc_ref(clean_dwg, manual_filename):
+            clean_dwg = None
+        clean_pos = spare.drawing_position
+        if is_leaked_filename_or_doc_ref(clean_pos, manual_filename):
+            clean_pos = None
+
         ws.cell(row=row_idx, column=7, value=spare.part_name or "")
-        ws.cell(row=row_idx, column=8, value=spare.part_number or "")
-        ws.cell(row=row_idx, column=9, value=spare.drawing_number or "")
-        ws.cell(row=row_idx, column=10, value=spare.drawing_position or "")
+        ws.cell(row=row_idx, column=8, value=clean_pn or "")
+        ws.cell(row=row_idx, column=9, value=clean_dwg or "")
+        ws.cell(row=row_idx, column=10, value=clean_pos or "")
         ws.cell(row=row_idx, column=11, value=spare.specification or "")
         ws.cell(row=row_idx, column=12, value=spare.spare_maker or "")
         ws.cell(row=row_idx, column=13, value=spare.spare_model or "")
@@ -1109,6 +1120,11 @@ async def snip_save_spares(
         except ValueError:
             pass
 
+    manual_filename = None
+    if source_manual_id:
+        m_res = await db.execute(select(Manual.original_filename).where(Manual.id == source_manual_id))
+        manual_filename = m_res.scalar_one_or_none()
+
     saved_spares: list[Spare] = []
     for record in records:
         part_name = to_proper_case(str(record.get("part_name") or "").strip())
@@ -1119,15 +1135,23 @@ async def snip_save_spares(
         _maker = str(record.get("spare_maker")).strip().upper() if record.get("spare_maker") else None
         _model = str(record.get("spare_model")).strip().upper() if record.get("spare_model") else None
         _dwg = str(record.get("drawing_number")).strip().upper() if record.get("drawing_number") else None
+        if is_leaked_filename_or_doc_ref(_dwg, manual_filename):
+            _dwg = None
+        _pos = record.get("drawing_position") or None
+        if is_leaked_filename_or_doc_ref(_pos, manual_filename):
+            _pos = None
+        _raw_pn = record.get("part_number")
+        if is_leaked_filename_or_doc_ref(_raw_pn, manual_filename):
+            _raw_pn = None
         _spec = _format_specification_headers(record.get("specification")) or (record.get("specification") or None)
 
         spare = Spare(
             tenant_id=current_user.tenant_id,
             vessel_id=vessel_id,
             part_name=part_name,
-            part_number=record.get("part_number") or None,
+            part_number=_raw_pn,
             drawing_number=_dwg,
-            drawing_position=record.get("drawing_position") or None,
+            drawing_position=_pos,
             specification=_spec,
             spare_assembly=_asm,
             assembly_description=_asm_desc,
@@ -1440,6 +1464,16 @@ def _qc_review_workbook(
             comp_name = comp.component_name if comp else ""
             manual_name = manual_lookup.get(spare.source_manual_id, "")
             formatted_spec = _format_specification_headers(spare.specification) or ""
+            clean_pn = spare.part_number
+            if is_leaked_filename_or_doc_ref(clean_pn, manual_name):
+                clean_pn = None
+            clean_dwg = spare.drawing_number
+            if is_leaked_filename_or_doc_ref(clean_dwg, manual_name):
+                clean_dwg = None
+            clean_pos = spare.drawing_position
+            if is_leaked_filename_or_doc_ref(clean_pos, manual_name):
+                clean_pos = None
+
             spare_rows.append([
                 str(spare.id),
                 manual_name,
@@ -1448,9 +1482,9 @@ def _qc_review_workbook(
                 spare.spare_assembly or "",
                 spare.assembly_description or "",
                 spare.part_name or "",
-                spare.part_number or "",
-                spare.drawing_number or "",
-                spare.drawing_position or "",
+                clean_pn or "",
+                clean_dwg or "",
+                clean_pos or "",
                 formatted_spec,
                 spare.spare_maker or "",
                 spare.spare_model or "",
