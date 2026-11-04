@@ -355,7 +355,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
             '  "part_name": "part name captured exactly as written in the manual in Proper Text / Title Case, preserving original wording, abbreviations, and misspellings with zero modification (e.g. \'O-Ring\', \'Vlv Stem\', \'Ball Bearing\', \'Fltr Element\', \'Hex Bolt\')",\n'
-            '  "part_number": "catalog/part number exactly as printed, or Item No. / Reference No. / Serial No. / No. if no separate catalog Part Number is provided. Leave null if not found — NEVER capture PDF filenames or page references here",\n'
+            '  "part_number": "catalog part number (e.g. PC.NO, CODE NO, PART NO), or row Item No. from the table grid. Leave null if not found — NEVER capture PDF filenames, drawing titles, or page references here",\n'
             '  "drawing_number": "DWG.NO or drawing reference in ALL CAPS (e.g. \'B3798160-02\', \'FIG.7\', \'DWG-1234\') or null",\n'
             '  "drawing_position": "ONLY capture when clearly identified as Position No., Pos., Pos. No., or Position (e.g. \'1\', \'11\', \'1~58\'). Do NOT treat Item No., Reference No., or No. as Position Numbers — leave null if no explicit Position column exists",\n'
             '  "specification": "material, size, standard, quantity note strictly as formatted in the manual with NO abbreviations or value modifications (e.g. \'QTY: 2 PCS; Material: SUS304; Size: DN50\') or null",\n'
@@ -405,11 +405,11 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "- ASSEMBLY DIAGRAM RULE: If a page has an exploded-view/assembly diagram with numbered callouts AND a parts table below it, extract ONLY from the parts table rows. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them.\n"
             "- DUPLICATE TABLE TEXT RULE: Some pages contain the same table represented twice: once as plain unstructured text (where column values are printed inline) and once as a structured `[TABLE]` pipe-delimited block. Do NOT extract duplicate records from both. Extract ONLY from the structured `[TABLE]` block, and ignore the plain unstructured text of those same table rows to prevent duplicate/repeated records.\n"
             "- REMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly variant tags — store in spare_model (in ALL CAPS), NOT in part_name or drawing_number.\n"
-            "- POSITION NUMBER VS PART NUMBER EXTRACTION RULE (STRICT — BUG-002 & OCT 27 FEEDBACK):\n"
-            "    1. Capture drawing_position ONLY when the table or column is clearly labeled as 'Position No.', 'Pos.', 'Pos. No.', 'Position', or similar explicit position-related labels.\n"
-            "    2. Do NOT treat 'Item No.', 'Reference No.', 'Serial No.', 'No.', or general item numbering fields as Position Numbers.\n"
-            "    3. Treat 'Item No.', 'Reference No.', 'Serial No.', and 'No.' as part_number when used to identify spare parts and no separate catalog Part Number column is provided.\n"
-            "    4. If no part number or item numbering exists, leave part_number as null. PDF filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf') must NEVER be captured in part_number, drawing_number, drawing_position, or spare_model under any circumstances! Leave these fields blank (null).\n"
+            "- POSITION NUMBER VS PART NUMBER EXTRACTION RULE (STRICT — BUG-002):\n"
+            "    1. Capture drawing_position ONLY when the table or column is clearly labeled as 'Position No.', 'Pos.', 'Pos. No.', or 'Position'.\n"
+            "    2. Do NOT treat 'Item No.', 'Reference No.', 'Serial No.', or 'No.' as Position Numbers.\n"
+            "    3. Treat 'Item No.', 'Reference No.', 'Serial No.', and 'No.' as part_number ONLY when they appear as an individual row identifier column inside the parts table grid itself (e.g. Item 1, 2, 3).\n"
+            "    4. NEVER extract document headers, title block references, drawing titles, manual filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf', 'DECK MACHINERY'), or page references into part_number! If the table has no catalog part number or row item number column, part_number MUST be left blank (null).\n"
             "- ASSEMBLY & ASSEMBLY DESCRIPTION UNIQUENESS & CONSISTENCY (CRITICAL):\n"
             "    • Capture spare_assembly and assembly_description as unique, consistent data across all pages of the manual.\n"
             "    • Maintain uniform formatting, casing, and wording across pages to avoid creating duplicate Assembly records.\n"
@@ -786,23 +786,58 @@ def _format_specification_headers(spec: str | None) -> str | None:
     return "; ".join(formatted_parts) if formatted_parts else spec_str
 
 
+def is_leaked_filename_or_doc_ref(val: str | None, filename: str | None = None) -> bool:
+    """Return True if val represents a PDF filename, page reference, document title, or placeholder."""
+    if not val:
+        return False
+    v = str(val).strip()
+    if not v:
+        return False
+    v_lower = v.lower()
+
+    # 1. Any .pdf reference or page reference
+    if ".pdf" in v_lower or "(p." in v_lower or bool(re.search(r'\b(?:pages?|pp?|pg)\b\.?\s*\d+', v_lower)):
+        return True
+
+    # 2. Common placeholder values
+    if v_lower in {"none", "n/a", "null", "unknown", "nil", "-", "--", "na", "/", "not available"}:
+        return True
+
+    # 3. References to other sections or figures
+    if re.search(r'\b(refer to|see page|contained in|as per|figure|fig\.|drawing\s+title|manual\s+title)\b', v_lower):
+        return True
+
+    # 4. Compare with manual filename if provided
+    if filename:
+        fn_lower = filename.lower().strip()
+        fn_base = fn_lower.rsplit(".", 1)[0] if "." in fn_lower else fn_lower
+
+        if v_lower == fn_lower or v_lower == fn_base:
+            return True
+
+        # Strip non-ASCII and leading numbering/symbols: "30# ", "A-10_", etc.
+        fn_ascii = re.sub(r'[^\x00-\x7F]+', ' ', fn_base)
+        fn_clean = re.sub(r'^[0-9a-z]+[#_\s\-.]+', '', fn_ascii.strip(), flags=re.I).strip()
+        fn_clean = re.sub(r'\s+', ' ', fn_clean).strip()
+
+        if len(fn_clean) >= 4:
+            if fn_clean in v_lower:
+                return True
+            v_clean = re.sub(r'^[0-9a-z]+[#_\s\-.]+', '', re.sub(r'[^\x00-\x7F]+', ' ', v_lower).strip(), flags=re.I).strip()
+            v_clean = re.sub(r'\s+', ' ', v_clean).strip()
+            if v_clean and (v_clean == fn_clean or (len(v_clean) >= 4 and v_clean in fn_clean)):
+                return True
+
+    return False
+
 def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type: str = "") -> dict:
     if not isinstance(record, dict):
         return record
 
-    filename_lower = (filename or "").lower().strip()
-    filename_base = filename_lower.rsplit(".", 1)[0] if "." in filename_lower else filename_lower
-    filename_clean = re.sub(r'^[a-z0-9]+[_\s-]+', '', filename_base).strip()
-
     # Rule 3: Prevent PDF Filename Leakage & Placeholders
-    for field in ("part_number", "drawing_number", "drawing_position", "job_code", "serial_number"):
-        val = str(record.get(field) or "").strip()
-        if not val:
-            continue
-        val_lower = val.lower()
-        if (filename_lower and val_lower == filename_lower) or (filename_base and val_lower == filename_base) or (len(filename_clean) > 4 and filename_clean in val_lower):
-            record[field] = None
-        elif val_lower in {"none", "n/a", "null", "unknown", "nil", "-", "--", "na"}:
+    for field in ("part_number", "drawing_number", "drawing_position", "job_code", "serial_number", "spare_model"):
+        val = record.get(field)
+        if is_leaked_filename_or_doc_ref(val, filename):
             record[field] = None
 
     # Rule 2: Validate Part Number
@@ -1505,7 +1540,7 @@ async def _extract_entities_from_page_image_with_openai(
                 "A single page can contain 50-300 parts — extract ALL of them."
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
                 "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). Do NOT map Item No. or Ref No. to drawing_position."
-                "\n  • part_number → catalog Part Number (PC.NO, CODE NO, etc.), OR Item No. / Ref No. / No. if no separate part number column is provided. Leave null if not found — NEVER capture PDF filenames or page references here."
+                "\n  • part_number → catalog Part Number (PC.NO, CODE NO, etc.), OR table row Item No. if no separate catalog Part Number column is provided. Leave null if not found — NEVER capture PDF filenames, drawing titles, or page references here."
                 "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
@@ -1596,7 +1631,7 @@ async def _extract_entities_from_page_image_with_claude(
                 "A single page can contain 50-300 parts — extract ALL of them."
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
                 "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). Do NOT map Item No. or Ref No. to drawing_position."
-                "\n  • part_number → catalog Part Number (PC.NO, CODE NO, etc.), OR Item No. / Ref No. / No. if no separate part number column is provided. Leave null if not found — NEVER capture PDF filenames or page references here."
+                "\n  • part_number → catalog Part Number (PC.NO, CODE NO, etc.), OR table row Item No. if no separate catalog Part Number column is provided. Leave null if not found — NEVER capture PDF filenames, drawing titles, or page references here."
                 "\n  • part_name → DESCRIPTION captured exactly as printed in the manual (in Proper Text / Title Case, preserving any abbreviations and misspellings with zero modification)"
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
@@ -3073,14 +3108,19 @@ async def _process_and_save_page_records(
             if not _model and getattr(manual, "target_model", None):
                 _model = str(manual.target_model).strip().upper()[:200]
             _dwg = str(record.get("drawing_number")).strip().upper()[:200] if record.get("drawing_number") else None
+            if is_leaked_filename_or_doc_ref(_dwg, filename):
+                _dwg = None
             _raw_pnum = record.get("part_number")
-            _pnum = str(_raw_pnum).strip()[:200] if _raw_pnum else None
-            if _pnum and (_pnum.lower() in {"none", "null", "n/a", "nil", "-", "--", "na"} or ".pdf" in _pnum.lower() or "(p." in _pnum.lower()):
+            if is_leaked_filename_or_doc_ref(_raw_pnum, filename):
                 _pnum = None
+            else:
+                _pnum = str(_raw_pnum).strip()[:200] if _raw_pnum else None
             _pname = to_proper_case(record.get("part_name")) or "Unknown Part"
             if _pname:
                 _pname = _pname[:500]
             _dwg_pos = str(record.get("drawing_position")).strip()[:100] if record.get("drawing_position") else None
+            if is_leaked_filename_or_doc_ref(_dwg_pos, filename):
+                _dwg_pos = None
 
             spare = Spare(
                 tenant_id=tenant_id,
