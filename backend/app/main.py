@@ -807,6 +807,42 @@ async def _sanitize_spares_part_numbers_startup() -> None:
         print(f"[STARTUP PART NUMBER CLEANUP ERROR] Failed to clean spares part numbers: {e}", flush=True)
 
 
+async def _separate_spares_part_name_and_spec_startup() -> None:
+    from app.core.database import AsyncSessionLocal
+    from sqlalchemy import text
+    from app.services.extractor import separate_spare_name_and_spec
+    try:
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(text("""
+                SELECT id, part_name, specification
+                FROM spares 
+                WHERE is_deleted = false 
+                  AND part_name IS NOT NULL 
+                  AND part_name != '';
+            """))
+            rows = res.fetchall()
+            updated_count = 0
+            for sid, part_name, orig_spec in rows:
+                clean_name, new_spec = separate_spare_name_and_spec(part_name, orig_spec)
+                if (clean_name and clean_name != part_name) or (new_spec and new_spec != orig_spec):
+                    await db.execute(
+                        text("""
+                            UPDATE spares 
+                            SET part_name = :pname, specification = :spec 
+                            WHERE id = :sid;
+                        """),
+                        {"pname": clean_name or part_name, "spec": new_spec or orig_spec, "sid": sid}
+                    )
+                    updated_count += 1
+            if updated_count > 0:
+                await db.commit()
+                print(f"[STARTUP SPARES SEPARATION] Cleaned and separated specifications from part names for {updated_count} spares!", flush=True)
+            else:
+                print("[STARTUP SPARES SEPARATION] All spare part names and specifications are already properly separated.", flush=True)
+    except Exception as e:
+        print(f"[STARTUP SPARES SEPARATION ERROR] Failed to separate spares part names and specifications: {e}", flush=True)
+
+
 @app.on_event("startup")
 async def _log_ai_config() -> None:
     print(
@@ -851,6 +887,10 @@ async def _log_ai_config() -> None:
         await _sanitize_spares_part_numbers_startup()
     except Exception as e:
         print(f"[STARTUP PART NUMBER CLEANUP ERROR] Failed to run spares part numbers cleanup: {e}", flush=True)
+    try:
+        await _separate_spares_part_name_and_spec_startup()
+    except Exception as e:
+        print(f"[STARTUP SPARES SEPARATION ERROR] Failed to run spares separation: {e}", flush=True)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)
