@@ -24,7 +24,7 @@ def upgrade() -> None:
            OR LOWER(TRIM(part_number)) IN ('none', 'n/a', 'null', 'unknown', 'nil', '-', '--', 'na', 'not available', '/');
     """)
 
-    # 2. Clean up spares where part_number matches the source manual filename or cleaned base name
+    # 2. Clean up spares where part_number matches the source manual filename or base name
     op.execute("""
         UPDATE spares s
         SET part_number = NULL
@@ -33,11 +33,8 @@ def upgrade() -> None:
           AND s.part_number IS NOT NULL
           AND (
             LOWER(TRIM(s.part_number)) = LOWER(TRIM(m.original_filename))
-            OR LOWER(TRIM(s.part_number)) = LOWER(TRIM(REGEXP_REPLACE(m.original_filename, '\\.pdf$', '', 'i')))
-            OR (
-                LENGTH(REGEXP_REPLACE(REGEXP_REPLACE(m.original_filename, '\\.pdf$', '', 'i'), '^[0-9a-zA-Z]+[#_\\s\\-.]+', '')) >= 4
-                AND LOWER(TRIM(s.part_number)) = LOWER(TRIM(REGEXP_REPLACE(REGEXP_REPLACE(m.original_filename, '\\.pdf$', '', 'i'), '^[0-9a-zA-Z]+[#_\\s\\-.]+', '')))
-            )
+            OR LOWER(TRIM(s.part_number)) = LOWER(TRIM(REPLACE(m.original_filename, '.pdf', '')))
+            OR LOWER(TRIM(s.part_number)) = LOWER(TRIM(REPLACE(m.original_filename, '.PDF', '')))
           );
     """)
 

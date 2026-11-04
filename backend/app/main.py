@@ -775,6 +775,38 @@ async def _sanitize_spares_specifications_startup() -> None:
         print(f"[STARTUP SPEC CLEANUP ERROR] Failed to clean spares specifications: {e}", flush=True)
 
 
+async def _sanitize_spares_part_numbers_startup() -> None:
+    from app.core.database import AsyncSessionLocal
+    from sqlalchemy import text
+    from app.services.extractor import is_leaked_filename_or_doc_ref
+    try:
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(text("""
+                SELECT s.id, s.part_number, m.original_filename
+                FROM spares s
+                LEFT JOIN manuals m ON s.source_manual_id = m.id
+                WHERE s.is_deleted = false 
+                  AND s.part_number IS NOT NULL 
+                  AND s.part_number != '';
+            """))
+            rows = res.fetchall()
+            updated_count = 0
+            for sid, part_num, manual_name in rows:
+                if is_leaked_filename_or_doc_ref(part_num, manual_name):
+                    await db.execute(
+                        text("UPDATE spares SET part_number = NULL WHERE id = :sid;"),
+                        {"sid": sid}
+                    )
+                    updated_count += 1
+            if updated_count > 0:
+                await db.commit()
+                print(f"[STARTUP PART NUMBER CLEANUP] Cleaned {updated_count} leaked part numbers!", flush=True)
+            else:
+                print("[STARTUP PART NUMBER CLEANUP] All spare part numbers are already clean.", flush=True)
+    except Exception as e:
+        print(f"[STARTUP PART NUMBER CLEANUP ERROR] Failed to clean spares part numbers: {e}", flush=True)
+
+
 @app.on_event("startup")
 async def _log_ai_config() -> None:
     print(
@@ -815,6 +847,10 @@ async def _log_ai_config() -> None:
         await _sanitize_spares_specifications_startup()
     except Exception as e:
         print(f"[STARTUP SPEC CLEANUP ERROR] Failed to run spares specification cleanup: {e}", flush=True)
+    try:
+        await _sanitize_spares_part_numbers_startup()
+    except Exception as e:
+        print(f"[STARTUP PART NUMBER CLEANUP ERROR] Failed to run spares part numbers cleanup: {e}", flush=True)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)
