@@ -1,13 +1,13 @@
 """comprehensive cleanup of leaked pdf filenames and document titles from spare part_number (Bug-002 Item 3)
 
-Revision ID: 0026_clean_spare_part_numbers_comprehensive
+Revision ID: 0026_clean_spares_part_num
 Revises: 0025_clean_spare_part_numbers
 Create Date: 2026-11-04
 """
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = '0026_clean_spare_part_numbers_comprehensive'
+revision = '0026_clean_spares_part_num'
 down_revision = '0025_clean_spare_part_numbers'
 branch_labels = None
 depends_on = None
