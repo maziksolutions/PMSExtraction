@@ -63,3 +63,26 @@ class ManualUpdate(BaseModel):
     supply_type: Optional[str] = None
     target_model: Optional[str] = None
     classification_confidence: Optional[int] = None
+
+
+class ManualPageRefHistoryOut(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    vessel_id: uuid.UUID
+    manual_id: uuid.UUID
+    changed_by_user_id: Optional[uuid.UUID] = None
+    changed_by_name: Optional[str] = None
+    change_source: str
+    pages_with_components: Optional[str] = None
+    pages_with_jobs: Optional[str] = None
+    pages_with_spares: Optional[str] = None
+    pages_with_components_physical: Optional[str] = None
+    pages_with_jobs_physical: Optional[str] = None
+    pages_with_spares_physical: Optional[str] = None
+    previous_pages_with_components: Optional[str] = None
+    previous_pages_with_jobs: Optional[str] = None
+    previous_pages_with_spares: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
