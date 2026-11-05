@@ -1,5 +1,8 @@
 import pytest
-from app.services.extractor import separate_spare_name_and_spec
+from app.services.extractor import (
+    separate_spare_name_and_spec,
+    normalize_spare_part_number_and_position,
+)
 
 
 def test_parenthetical_spec_separation():
@@ -67,3 +70,65 @@ def test_pure_part_names_untouched():
         pname, spec = separate_spare_name_and_spec(p, None)
         assert pname == p
         assert spec is None
+
+
+def test_rule1_position_number_constraints():
+    # Explicit position is preserved
+    pn, pos, spec = normalize_spare_part_number_and_position("6205-01", "15", "FIG.7", None)
+    assert pos == "15"
+    assert pn == "6205-01"
+
+    # Pos with label cleaned to number
+    pn, pos, spec = normalize_spare_part_number_and_position("6205-01", "Pos. 11", "FIG.7", None)
+    assert pos == "11"
+
+    # Item/Ref/No in pos is cleared from position
+    pn, pos, spec = normalize_spare_part_number_and_position("6205-01", "Ref No. 12", "FIG.7", None)
+    assert pos is None
+    assert "Ref No: 12" in (spec or "")
+
+
+def test_rule2_item_ref_no_as_part_number():
+    # When catalog Part Number is NOT present:
+    # Item No treated as part_number with Prefix
+    pn, pos, spec = normalize_spare_part_number_and_position(None, None, "FIG.4", "Item No: 5; Size: 15.5X2.4")
+    assert pn == "Item No. 5"
+    assert pos is None
+    assert spec == "Size: 15.5X2.4"
+
+    # Ref No treated as part_number with Prefix
+    pn, pos, spec = normalize_spare_part_number_and_position("REF.NO 12", None, "FIG.4", None)
+    assert pn == "Ref No. 12"
+
+    # No. treated as part_number with Prefix
+    pn, pos, spec = normalize_spare_part_number_and_position("NO: 3", None, "FIG.4", None)
+    assert pn == "No. 3"
+
+    # Serial No treated as part_number with Prefix
+    pn, pos, spec = normalize_spare_part_number_and_position("Serial No: 101", None, "FIG.4", None)
+    assert pn == "Serial No. 101"
+
+    # When catalog Part Number IS present:
+    # Item/Ref moved into specification
+    pn, pos, spec = normalize_spare_part_number_and_position("9901-X", "Ref No. 12", "FIG.4", "Material: SUS304")
+    assert pn == "9901-X"
+    assert pos is None
+    assert "Ref No: 12" in spec
+    assert "Material: SUS304" in spec
+
+
+def test_rule3_drawing_no_position_no_combination():
+    # When NO catalog Part Number and NO Item/Ref No, combine Drawing No / Position No
+    pn, pos, spec = normalize_spare_part_number_and_position(None, "15", "FIG.7", "Material: BRONZE")
+    assert pn == "FIG.7/15"
+    assert pos == "15"
+    assert spec == "Material: BRONZE"
+
+    # If Drawing No missing or Position No missing, do NOT combine
+    pn, pos, spec = normalize_spare_part_number_and_position(None, None, "FIG.7", "Material: BRONZE")
+    assert pn is None
+
+    # If Item No was captured as part number, do NOT combine Drawing No
+    pn, pos, spec = normalize_spare_part_number_and_position("Item No. 8", None, "DWG-99", None)
+    assert pn == "Item No. 8"
+    assert "DWG-99" not in pn

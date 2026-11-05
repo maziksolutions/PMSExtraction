@@ -843,6 +843,40 @@ async def _separate_spares_part_name_and_spec_startup() -> None:
         print(f"[STARTUP SPARES SEPARATION ERROR] Failed to separate spares part names and specifications: {e}", flush=True)
 
 
+async def _normalize_spares_part_and_pos_startup() -> None:
+    from app.core.database import AsyncSessionLocal
+    from sqlalchemy import text
+    from app.services.extractor import normalize_spare_part_number_and_position
+    try:
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(text("""
+                SELECT id, part_number, drawing_position, drawing_number, specification
+                FROM spares 
+                WHERE is_deleted = false;
+            """))
+            rows = res.fetchall()
+            updated_count = 0
+            for sid, pnum, pos, dwg, spec in rows:
+                clean_pn, clean_pos, clean_spec = normalize_spare_part_number_and_position(pnum, pos, dwg, spec)
+                if clean_pn != pnum or clean_pos != pos or clean_spec != spec:
+                    await db.execute(
+                        text("""
+                            UPDATE spares 
+                            SET part_number = :pnum, drawing_position = :pos, specification = :spec 
+                            WHERE id = :sid;
+                        """),
+                        {"pnum": clean_pn, "pos": clean_pos, "spec": clean_spec, "sid": sid}
+                    )
+                    updated_count += 1
+            if updated_count > 0:
+                await db.commit()
+                print(f"[STARTUP SPARES NORMALIZATION] Normalized part number and position for {updated_count} spares!", flush=True)
+            else:
+                print("[STARTUP SPARES NORMALIZATION] All spare part numbers and positions are already properly normalized.", flush=True)
+    except Exception as e:
+        print(f"[STARTUP SPARES NORMALIZATION ERROR] Failed to normalize spares part numbers and positions: {e}", flush=True)
+
+
 @app.on_event("startup")
 async def _log_ai_config() -> None:
     print(
@@ -891,6 +925,10 @@ async def _log_ai_config() -> None:
         await _separate_spares_part_name_and_spec_startup()
     except Exception as e:
         print(f"[STARTUP SPARES SEPARATION ERROR] Failed to run spares separation: {e}", flush=True)
+    try:
+        await _normalize_spares_part_and_pos_startup()
+    except Exception as e:
+        print(f"[STARTUP SPARES NORMALIZATION ERROR] Failed to run spares normalization: {e}", flush=True)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)
