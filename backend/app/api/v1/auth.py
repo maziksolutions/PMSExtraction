@@ -25,7 +25,7 @@ from app.services.token_store import is_token_revoked, revoke_token_payload
 router = APIRouter()
 
 @router.get("/debug-test-render/{manual_id}", tags=["Debug"])
-async def debug_test_render(manual_id: str, page: int = 105, db: AsyncSession = Depends(get_db)):
+async def debug_test_render(manual_id: str, page: int = 105, return_image: bool = False, db: AsyncSession = Depends(get_db)):
     from app.services.blob_storage import BlobStorageService
     from sqlalchemy import text
     import traceback
@@ -55,6 +55,9 @@ async def debug_test_render(manual_id: str, page: int = 105, db: AsyncSession = 
         except Exception as e:
             err = traceback.format_exc()
         
+        if return_image and img_bytes:
+            return Response(content=img_bytes, media_type="image/png")
+
         return {
             "pdf_len": len(pdf_bytes),
             "page_count": page_count,
@@ -341,10 +344,12 @@ async def debug_download_manual(manual_id: str, db: AsyncSession = Depends(get_d
         if not pdf_bytes:
             return Response(content="File bytes not found", status_code=404)
             
+        import urllib.parse
+        safe_fn = urllib.parse.quote(filename or "manual.pdf")
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{safe_fn}"}
         )
     except Exception as e:
         return Response(content=f"Error: {e}", status_code=500)
@@ -821,3 +826,42 @@ async def logout(
             pass
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@router.get("/debug-claude-test-page/{manual_id}/{page_no}", tags=["Debug"])
+async def debug_claude_test_page(manual_id: str, page_no: int, db: AsyncSession = Depends(get_db)):
+    from app.services.extractor import _render_single_pdf_page_image, DEFAULT_PROMPTS
+    from app.services.blob_storage import BlobStorageService
+    from sqlalchemy import text
+    import anthropic, base64
+
+    res = await db.execute(text("SELECT id, original_filename, blob_storage_key FROM manuals WHERE id = :mid"), {"mid": manual_id})
+    row = res.fetchone()
+    if not row:
+        return {"error": "manual not found"}
+    blob_svc = BlobStorageService()
+    pdf_bytes = await blob_svc.download_bytes(row[2])
+    img_bytes = _render_single_pdf_page_image(pdf_bytes, page_no, 200)
+    if not img_bytes:
+        return {"error": "failed to render image"}
+
+    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    b64_data = base64.b64encode(img_bytes).decode("ascii")
+    prompt_cfg = DEFAULT_PROMPTS["spare"]
+    user_content = [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64_data}},
+        {"type": "text", "text": "Extract all spare parts table rows from this page image into a raw JSON array. Start with [ and end with ]. Translate to English."},
+    ]
+    message = await client.messages.create(
+        model=getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6",
+        max_tokens=4096,
+        system=prompt_cfg["system"],
+        messages=[{"role": "user", "content": user_content}],
+    )
+    raw_text = message.content[0].text
+    return {
+        "manual": row[1],
+        "page_no": page_no,
+        "img_len": len(img_bytes),
+        "raw_claude_response": raw_text,
+        "tokens": {"input": message.usage.input_tokens, "output": message.usage.output_tokens}
+    }

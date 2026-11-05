@@ -1255,7 +1255,7 @@ const ManualReview: React.FC = () => {
   const screeningProgress = screeningData && screeningData.total > 0
     ? Math.round((screeningData.done / screeningData.total) * 100) : 0
   const extractionProgress = extractionData && extractionData.total > 0
-    ? Math.round((extractionData.done / extractionData.total) * 100) : 0
+    ? Math.min(100, Math.max(0, Math.round((extractionData.done / extractionData.total) * 100))) : 0
 
   const manuals: Manual[] = useMemo(() => {
     const raw: Manual[] = data?.items ?? []
@@ -1622,13 +1622,13 @@ const ManualReview: React.FC = () => {
                       {extractionData.detailed_status || 'Initializing page extraction...'}
                     </span>
                     <span className="font-semibold text-emerald-500">
-                      {Math.round((extractionData.current_manual_pages_done || 0) / extractionData.current_manual_pages_total * 100)}%
+                      {Math.min(100, Math.max(0, Math.round(((extractionData.current_manual_pages_done || 0) / extractionData.current_manual_pages_total) * 100)))}%
                     </span>
                   </div>
                   <div className="h-1 w-full rounded-full bg-slate-800 overflow-hidden">
                     <div 
                       className="h-1 rounded-full bg-emerald-600 transition-all duration-300" 
-                      style={{ width: `${Math.round((extractionData.current_manual_pages_done || 0) / extractionData.current_manual_pages_total * 100)}%` }} 
+                      style={{ width: `${Math.min(100, Math.max(0, Math.round(((extractionData.current_manual_pages_done || 0) / extractionData.current_manual_pages_total) * 100)))}%` }} 
                     />
                   </div>
                 </div>
