@@ -1882,6 +1882,7 @@ async def _run_extract_selected_task(
     target_models: Optional[dict[str, str]] = None,
     global_target_model: Optional[str] = None,
     manual_pages_map: Optional[dict[str, list[int]]] = None,
+    manual_pages_snapshot: Optional[dict[str, dict[str, list[int]]]] = None,
 ) -> None:
 
     """Background task: runs auto_extract_from_manual with bounded parallelism."""
@@ -1939,7 +1940,14 @@ async def _run_extract_selected_task(
 
                     m_target = (target_models or {}).get(manual_id) or global_target_model
                     m_pages = (manual_pages_map or {}).get(manual_id) or page_numbers
-                    await auto_extract_from_manual(manual_id, entity_types=entity_types, page_numbers=m_pages, target_model=m_target)
+                    locked_pages = (manual_pages_snapshot or {}).get(manual_id)
+                    await auto_extract_from_manual(
+                        manual_id,
+                        entity_types=entity_types,
+                        page_numbers=m_pages,
+                        target_model=m_target,
+                        locked_entity_pages=locked_pages,
+                    )
 
                 except Exception as exc:
 
@@ -2124,10 +2132,27 @@ async def extract_selected_manuals(
     vessel_id_str = str(vessel_id)
 
     from app.api.v1.extraction import set_extraction_state
+    from app.services.extractor import _selected_manual_pages
 
+    # Snapshot target pages for runnable manuals so extraction operates strictly on
+    # locked page references until the entire selected batch completes.
+    manual_pages_snapshot: dict[str, dict[str, list[int]]] = {}
+    for manual in manuals:
+        m_id_str = str(manual.id)
+        if m_id_str in runnable_manual_ids:
+            manual_pages_snapshot[m_id_str] = {
+                "component": _selected_manual_pages(manual, "component"),
+                "job": _selected_manual_pages(manual, "job"),
+                "spare": _selected_manual_pages(manual, "spare"),
+            }
 
-
-    set_extraction_state(vessel_id_str, total=len(runnable_manual_ids), done=0, status="running")
+    set_extraction_state(
+        vessel_id_str,
+        total=len(runnable_manual_ids),
+        done=0,
+        status="running",
+        active_manual_ids=runnable_manual_ids,
+    )
 
     # Persist target model on manual records if provided
     for manual in manuals:
@@ -2146,6 +2171,7 @@ async def extract_selected_manuals(
         target_models_map,
         target_model_global,
         manual_pages_map,
+        manual_pages_snapshot,
     )
 
     return {"started": True, "total": len(runnable_manual_ids)}
