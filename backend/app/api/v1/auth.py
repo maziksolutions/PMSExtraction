@@ -520,6 +520,34 @@ async def debug_claude_status(
     }
 
 
+@router.post("/debug-restore-freshwater-pages", tags=["Debug"], summary="Restore freshwater generator spare pages")
+async def debug_restore_freshwater_pages(db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import select
+    from app.models.ingestion import Manual
+    import uuid
+    mid = uuid.UUID("806d403e-8910-4438-ad93-db2129751181")
+    res = await db.execute(select(Manual).where(Manual.id == mid))
+    m = res.scalar_one_or_none()
+    if not m:
+        res = await db.execute(select(Manual).where(Manual.original_filename.ilike("%Freshwater%"), Manual.is_deleted == False))
+        m = res.scalar_one_or_none()
+    if m:
+        old_val = m.pages_with_spares_physical or m.pages_with_spares
+        full_pages = "71-76, 88-90, 98-100, 104-106, 108, 110, 112, 113, 115, 116, 117, 118, 135, 143, 151, 178, 184, 185, 243, 245, 250, 251"
+        m.pages_with_spares = full_pages
+        m.pages_with_spares_physical = full_pages
+        db.add(m)
+        await db.commit()
+        return {
+            "status": "success",
+            "manual_id": str(m.id),
+            "manual": m.original_filename,
+            "old_pages": old_val,
+            "restored_pages": full_pages,
+        }
+    return {"status": "error", "message": "Manual not found"}
+
+
 @router.post("/debug-extract-manual/{manual_id}", tags=["Debug"], summary="Trigger extraction without auth")
 async def debug_extract_manual(
     manual_id: str,
@@ -551,9 +579,6 @@ async def debug_extract_manual(
             m_ext = m.file_extension
             if pages:
                 page_list = [int(p.strip()) for p in pages.split(",") if p.strip().isdigit()]
-                if "spare" in etypes:
-                    m.pages_with_spares = pages
-                    m.pages_with_spares_physical = pages
             if target_model:
                 m.target_model = target_model.strip()
             m.status = ManualStatus.classified
