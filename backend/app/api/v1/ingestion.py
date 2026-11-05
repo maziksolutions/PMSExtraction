@@ -1952,6 +1952,20 @@ async def _run_extract_selected_task(
                 except Exception as exc:
 
                     logger.error("_run_extract_selected_task: extraction failed for manual %s: %s", manual_id, exc)
+                    try:
+                        from app.models.ingestion import Manual, ManualStatus
+                        from app.core.database import AsyncSessionLocal
+                        from sqlalchemy import update
+                        import uuid as _uuid
+                        async with AsyncSessionLocal() as err_db:
+                            await err_db.execute(
+                                update(Manual)
+                                .where(Manual.id == _uuid.UUID(manual_id))
+                                .values(status=ManualStatus.failed, error_message=str(exc)[:500])
+                            )
+                            await err_db.commit()
+                    except Exception as db_err:
+                        logger.error("Failed to mark manual as failed in DB: %s", db_err)
 
                 finally:
 

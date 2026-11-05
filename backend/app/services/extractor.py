@@ -14,6 +14,7 @@ from typing import Any, Optional
 import anthropic
 
 from app.core.config import settings
+from app.services.extraction_counter import record_manual_extraction_run, record_page_extraction_run
 from app.services.job_ranks import backfill_manual_job_ranks
 from app.services.job_naming import (
     append_source_references_to_description,
@@ -3584,7 +3585,11 @@ async def auto_extract_from_manual(
     from sqlalchemy import select, update
 
     manual_id = uuid.UUID(manual_id_str)
-    record_manual_extraction_run(manual_id_str)
+    try:
+        from app.services.extraction_counter import record_manual_extraction_run
+        record_manual_extraction_run(manual_id_str)
+    except Exception as exc:
+        logger.warning("record_manual_extraction_run error: %s", exc)
 
     async with AsyncSessionLocal() as db:
         try:
@@ -4457,13 +4462,15 @@ async def auto_extract_from_manual(
             except Exception as link_exc:
                 logger.warning("auto_extract_from_manual: manual sync failed: %s", link_exc)
 
-            # Clear running state and set status to completed
+            # Clear running state and set status to completed ONLY if standalone manual run
             try:
-                set_extraction_state(
-                    vessel_id_str,
-                    status="completed",
-                    detailed_status="Extraction completed successfully."
-                )
+                curr_state = get_extraction_state(vessel_id_str)
+                if curr_state.get("total", 0) <= 1:
+                    set_extraction_state(
+                        vessel_id_str,
+                        status="completed",
+                        detailed_status="Extraction completed successfully."
+                    )
             except Exception as state_exc:
                 logger.error("Failed to update extraction state to completed: %s", state_exc)
 

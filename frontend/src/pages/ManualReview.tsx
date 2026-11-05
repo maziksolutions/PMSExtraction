@@ -791,6 +791,12 @@ const ManualReview: React.FC = () => {
       if (data.started) {
         setDismissedExtractionBanner(false)
         setExtractionPolling(true)
+        queryClient.setQueryData(['extraction-status', vesselId], (old: any) => ({
+          ...old,
+          status: 'running',
+          done: 0,
+          total: data.total || old?.total || 1,
+        }))
         queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
       }
     },
@@ -826,6 +832,12 @@ const ManualReview: React.FC = () => {
       if (data.started) {
         setDismissedExtractionBanner(false)
         setExtractionPolling(true)
+        queryClient.setQueryData(['extraction-status', vesselId], (old: any) => ({
+          ...old,
+          status: 'running',
+          done: 0,
+          total: data.total || old?.total || 1,
+        }))
         queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
       } else {
         alert(data.message || 'Extraction could not start. Please verify reference page numbers.')
@@ -860,6 +872,12 @@ const ManualReview: React.FC = () => {
       if (data.started) {
         setDismissedExtractionBanner(false)
         setExtractionPolling(true)
+        queryClient.setQueryData(['extraction-status', vesselId], (old: any) => ({
+          ...old,
+          status: 'running',
+          done: 0,
+          total: data.total || old?.total || 1,
+        }))
         queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
       } else {
         alert(data.message || 'Spares extraction could not start. Please check that Spare reference pages are saved.')
@@ -894,6 +912,12 @@ const ManualReview: React.FC = () => {
       if (data.started) {
         setDismissedExtractionBanner(false)
         setExtractionPolling(true)
+        queryClient.setQueryData(['extraction-status', vesselId], (old: any) => ({
+          ...old,
+          status: 'running',
+          done: 0,
+          total: data.total || old?.total || 1,
+        }))
         queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
       } else {
         alert(data.message || 'Job extraction could not start. Please check that Job reference pages are saved for the selected manual.')
