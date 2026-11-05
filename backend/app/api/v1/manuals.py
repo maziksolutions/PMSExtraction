@@ -1320,6 +1320,49 @@ async def get_no_extracted_records_report(
         "total_manuals": len(manuals),
     }
 
+async def _ensure_manual_page_ref_history_table_local(db: AsyncSession) -> None:
+    try:
+        from sqlalchemy import text
+        conn = await db.connection()
+        is_postgres = conn.dialect.name == "postgresql"
+        if is_postgres:
+            await db.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto;"))
+            uuid_default = "gen_random_uuid()"
+        else:
+            uuid_default = "(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-a' || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))"
+
+        await db.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS manual_page_ref_history (
+                id UUID PRIMARY KEY DEFAULT {uuid_default},
+                tenant_id UUID NOT NULL,
+                vessel_id UUID NOT NULL REFERENCES vessel_projects(id) ON DELETE CASCADE,
+                manual_id UUID NOT NULL REFERENCES manuals(id) ON DELETE CASCADE,
+                changed_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                changed_by_name VARCHAR(255),
+                change_source VARCHAR(100) NOT NULL DEFAULT 'user_edit',
+                pages_with_components TEXT,
+                pages_with_jobs TEXT,
+                pages_with_spares TEXT,
+                pages_with_components_physical TEXT,
+                pages_with_jobs_physical TEXT,
+                pages_with_spares_physical TEXT,
+                previous_pages_with_components TEXT,
+                previous_pages_with_jobs TEXT,
+                previous_pages_with_spares TEXT,
+                notes TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                is_deleted BOOLEAN NOT NULL DEFAULT FALSE
+            );
+            CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_manual ON manual_page_ref_history(manual_id);
+            CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_vessel ON manual_page_ref_history(vessel_id);
+            CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_created ON manual_page_ref_history(created_at DESC);
+        """))
+        await db.commit()
+    except Exception as exc:
+        logger.warning(f"Could not auto-create manual_page_ref_history table: {exc}")
+
+
 @router.get(
     "/{vessel_id}/manuals/{manual_id}/page-ref-history",
     response_model=list[ManualPageRefHistoryOut],
@@ -1333,16 +1376,79 @@ async def get_manual_page_ref_history(
 ) -> list[ManualPageRefHistoryOut]:
     await _get_vessel_or_404(vessel_id, db)
 
-    result = await db.execute(
-        select(ManualPageRefHistory)
-        .where(
-            ManualPageRefHistory.vessel_id == vessel_id,
-            ManualPageRefHistory.manual_id == manual_id,
+    m_res = await db.execute(
+        select(Manual).where(
+            Manual.id == manual_id,
+            Manual.vessel_id == vessel_id,
         )
-        .order_by(ManualPageRefHistory.created_at.desc())
     )
-    history_entries = result.scalars().all()
-    return list(history_entries)
+    manual = m_res.scalar_one_or_none()
+    if not manual:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manual not found")
+
+    history_entries: list[ManualPageRefHistory] = []
+    try:
+        result = await db.execute(
+            select(ManualPageRefHistory)
+            .where(
+                ManualPageRefHistory.vessel_id == vessel_id,
+                ManualPageRefHistory.manual_id == manual_id,
+            )
+            .order_by(ManualPageRefHistory.created_at.desc())
+        )
+        history_entries = list(result.scalars().all())
+    except Exception:
+        await _ensure_manual_page_ref_history_table_local(db)
+        try:
+            result = await db.execute(
+                select(ManualPageRefHistory)
+                .where(
+                    ManualPageRefHistory.vessel_id == vessel_id,
+                    ManualPageRefHistory.manual_id == manual_id,
+                )
+                .order_by(ManualPageRefHistory.created_at.desc())
+            )
+            history_entries = list(result.scalars().all())
+        except Exception as e:
+            logger.error(f"Could not query manual_page_ref_history: {e}")
+            return []
+
+    # If no snapshot exists yet for this manual, synthesize and save an initial baseline snapshot!
+    if not history_entries:
+        has_any_ref = bool(
+            (manual.pages_with_components and manual.pages_with_components.strip())
+            or (manual.pages_with_jobs and manual.pages_with_jobs.strip())
+            or (manual.pages_with_spares and manual.pages_with_spares.strip())
+            or (manual.pages_with_components_physical and manual.pages_with_components_physical.strip())
+            or (manual.pages_with_jobs_physical and manual.pages_with_jobs_physical.strip())
+            or (manual.pages_with_spares_physical and manual.pages_with_spares_physical.strip())
+        )
+        if has_any_ref:
+            try:
+                baseline_snap = ManualPageRefHistory(
+                    tenant_id=manual.tenant_id,
+                    vessel_id=manual.vessel_id,
+                    manual_id=manual.id,
+                    changed_by_name="Initial Saved Reference",
+                    change_source="baseline",
+                    pages_with_components=manual.pages_with_components,
+                    pages_with_jobs=manual.pages_with_jobs,
+                    pages_with_spares=manual.pages_with_spares,
+                    pages_with_components_physical=manual.pages_with_components_physical,
+                    pages_with_jobs_physical=manual.pages_with_jobs_physical,
+                    pages_with_spares_physical=manual.pages_with_spares_physical,
+                    notes="Baseline page references snapshot",
+                    created_at=manual.updated_at or datetime.now(timezone.utc),
+                    updated_at=manual.updated_at or datetime.now(timezone.utc),
+                )
+                db.add(baseline_snap)
+                await db.commit()
+                await db.refresh(baseline_snap)
+                history_entries = [baseline_snap]
+            except Exception as e:
+                logger.warning(f"Could not persist baseline snapshot: {e}")
+
+    return history_entries
 
 
 @router.post(

@@ -829,7 +829,11 @@ const ManualReview: React.FC = () => {
   })
 
   const extractSelectedMutation = useMutation({
-    mutationFn: async (manualIds: string[]) => {
+    mutationFn: async (args: string[] | { manualIds: string[]; manualPagesMap?: Record<string, number[]>; scope?: string }) => {
+      const manualIds = Array.isArray(args) ? args : args.manualIds
+      const manualPagesMap = Array.isArray(args) ? undefined : args.manualPagesMap
+      const scope = Array.isArray(args) ? undefined : args.scope
+
       await saveManualEdits(manualIds)
       const targetModels: Record<string, string> = {}
       manualIds.forEach((id) => {
@@ -841,7 +845,12 @@ const ManualReview: React.FC = () => {
         }
       })
       return apiClient
-        .post(`/vessels/${vesselId}/manuals/extract-selected`, { manual_ids: manualIds, target_models: targetModels })
+        .post(`/vessels/${vesselId}/manuals/extract-selected`, {
+          manual_ids: manualIds,
+          target_models: targetModels,
+          manual_pages_map: manualPagesMap,
+          scope: scope,
+        })
         .then((r) => r.data)
     },
     onSuccess: (data) => {
@@ -865,7 +874,11 @@ const ManualReview: React.FC = () => {
   })
 
   const extractSelectedSparesOnlyMutation = useMutation({
-    mutationFn: async (manualIds: string[]) => {
+    mutationFn: async (args: string[] | { manualIds: string[]; manualPagesMap?: Record<string, number[]>; scope?: string }) => {
+      const manualIds = Array.isArray(args) ? args : args.manualIds
+      const manualPagesMap = Array.isArray(args) ? undefined : args.manualPagesMap
+      const scope = Array.isArray(args) ? undefined : args.scope
+
       await saveManualEdits(manualIds)
       const targetModels: Record<string, string> = {}
       manualIds.forEach((id) => {
@@ -881,6 +894,8 @@ const ManualReview: React.FC = () => {
           manual_ids: manualIds,
           entity_types: ['spare'],
           target_models: targetModels,
+          manual_pages_map: manualPagesMap,
+          scope: scope,
         })
         .then((r) => r.data)
     },
@@ -905,7 +920,11 @@ const ManualReview: React.FC = () => {
   })
 
   const extractSelectedJobsOnlyMutation = useMutation({
-    mutationFn: async (manualIds: string[]) => {
+    mutationFn: async (args: string[] | { manualIds: string[]; manualPagesMap?: Record<string, number[]>; scope?: string }) => {
+      const manualIds = Array.isArray(args) ? args : args.manualIds
+      const manualPagesMap = Array.isArray(args) ? undefined : args.manualPagesMap
+      const scope = Array.isArray(args) ? undefined : args.scope
+
       await saveManualEdits(manualIds)
       const targetModels: Record<string, string> = {}
       manualIds.forEach((id) => {
@@ -921,6 +940,8 @@ const ManualReview: React.FC = () => {
           manual_ids: manualIds,
           entity_types: ['job'],
           target_models: targetModels,
+          manual_pages_map: manualPagesMap,
+          scope: scope,
         })
         .then((r) => r.data)
     },
@@ -973,14 +994,24 @@ const ManualReview: React.FC = () => {
   }, [selectedIds])
 
   const handleConfirmExtraction = useCallback(
-    async (finalIds: string[], type: 'general' | 'jobs' | 'spares') => {
+    async (
+      finalIds: string[],
+      type: 'general' | 'jobs' | 'spares',
+      scope: 'pending' | 'full' = 'pending',
+      manualPagesMap?: Record<string, number[]>
+    ) => {
       setShowConfirmModal(false)
+      const payload = {
+        manualIds: finalIds,
+        manualPagesMap: manualPagesMap,
+        scope: scope,
+      }
       if (type === 'general') {
-        extractSelectedMutation.mutate(finalIds)
+        extractSelectedMutation.mutate(payload)
       } else if (type === 'jobs') {
-        extractSelectedJobsOnlyMutation.mutate(finalIds)
+        extractSelectedJobsOnlyMutation.mutate(payload)
       } else if (type === 'spares') {
-        extractSelectedSparesOnlyMutation.mutate(finalIds)
+        extractSelectedSparesOnlyMutation.mutate(payload)
       }
     },
     [extractSelectedMutation, extractSelectedJobsOnlyMutation, extractSelectedSparesOnlyMutation]
@@ -2233,6 +2264,7 @@ const ManualReview: React.FC = () => {
             extractSelectedJobsOnlyMutation.isPending ||
             extractSelectedSparesOnlyMutation.isPending
           }
+          noExtractedSummary={noExtractedData?.all_manuals_summary}
         />
       )}
     </div>
