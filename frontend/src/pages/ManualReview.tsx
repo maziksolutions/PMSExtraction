@@ -26,6 +26,7 @@ import {
   Activity,
   BarChart3,
   ExternalLink,
+  Lock,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
@@ -100,6 +101,7 @@ interface ExtractionStatus {
   current_manual_pages_total?: number
   current_manual_pages_done?: number
   detailed_status?: string | null
+  active_manual_ids?: string[]
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -257,6 +259,8 @@ interface PageReferenceEditorProps {
   onPhysicalChange: (value: string) => void
   explanationRows: Array<{ physicalPage: number; printedPage: number | null; reasons: string[] }>
   physicalPlaceholder: string
+  disabled?: boolean
+  lockedTooltip?: string
 }
 
 const PageReferenceEditor: React.FC<PageReferenceEditorProps> = ({
@@ -264,15 +268,33 @@ const PageReferenceEditor: React.FC<PageReferenceEditorProps> = ({
   onPhysicalChange,
   explanationRows,
   physicalPlaceholder,
+  disabled = false,
+  lockedTooltip,
 }) => (
   <div className="min-w-[120px] space-y-1">
-    <input
-      type="text"
-      value={physicalValue ?? ''}
-      onChange={(e) => onPhysicalChange(e.target.value)}
-      className="w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
-      placeholder={physicalPlaceholder || "e.g. 20-25"}
-    />
+    <div className="relative flex items-center">
+      <input
+        type="text"
+        value={physicalValue ?? ''}
+        disabled={disabled}
+        onChange={(e) => onPhysicalChange(e.target.value)}
+        className={`w-full rounded border px-2 py-1 text-xs focus:outline-none transition-colors ${
+          disabled
+            ? 'border-amber-500/30 bg-slate-900/80 text-slate-400 cursor-not-allowed pr-6'
+            : 'border-slate-700 bg-slate-800 text-slate-200 focus:border-sky-500'
+        }`}
+        placeholder={physicalPlaceholder || "e.g. 20-25"}
+        title={disabled ? (lockedTooltip || 'Page references are locked while extraction is in progress') : undefined}
+      />
+      {disabled && (
+        <span
+          className="absolute right-1.5 text-amber-400/80 pointer-events-none"
+          title={lockedTooltip || 'Locked during extraction'}
+        >
+          <Lock className="h-3 w-3" />
+        </span>
+      )}
+    </div>
     {explanationRows.length > 0 && (
       <details className="rounded border border-slate-800 bg-slate-950/60 px-2 py-1.5 text-xs text-slate-300">
         <summary className="cursor-pointer select-none text-sky-400">Why selected?</summary>
@@ -981,10 +1003,33 @@ const ManualReview: React.FC = () => {
     },
   })
 
+  const lockedManualIds = useMemo(() => {
+    if (!extractionData || (extractionData.status !== 'running' && extractionData.status !== 'paused')) {
+      return new Set<string>()
+    }
+    if (Array.isArray(extractionData.active_manual_ids) && extractionData.active_manual_ids.length > 0) {
+      return new Set<string>(extractionData.active_manual_ids)
+    }
+    return new Set<string>()
+  }, [extractionData])
+
   const saveManualEdits = useCallback(async (manualIds?: string[]) => {
     const targetIds = manualIds ?? Object.keys(edits)
     const pending = targetIds
-      .map((manualId) => ({ manualId, data: edits[manualId] }))
+      .map((manualId) => {
+        let data = edits[manualId]
+        if (data && lockedManualIds.has(manualId) && !manualIds) {
+          const clean = { ...data }
+          delete clean.pages_with_components_physical
+          delete clean.pages_with_jobs_physical
+          delete clean.pages_with_spares_physical
+          delete clean.pages_with_components
+          delete clean.pages_with_jobs
+          delete clean.pages_with_spares
+          data = clean
+        }
+        return { manualId, data }
+      })
       .filter((entry): entry is { manualId: string; data: Partial<Manual> } => !!entry.data && Object.keys(entry.data).length > 0)
 
     if (pending.length === 0) return
@@ -992,7 +1037,7 @@ const ManualReview: React.FC = () => {
     for (const entry of pending) {
       await saveMutation.mutateAsync(entry)
     }
-  }, [edits, saveMutation])
+  }, [edits, lockedManualIds, saveMutation])
 
   const exportScreeningMutation = useMutation({
     mutationFn: () =>
@@ -1087,14 +1132,38 @@ const ManualReview: React.FC = () => {
   // ── Edit helpers ──────────────────────────────────────────────────────────
 
   const handleEdit = useCallback((manualId: string, field: keyof Manual, value: string) => {
+    if (
+      lockedManualIds.has(manualId) &&
+      (field === 'pages_with_components_physical' ||
+        field === 'pages_with_jobs_physical' ||
+        field === 'pages_with_spares_physical' ||
+        field === 'pages_with_components' ||
+        field === 'pages_with_jobs' ||
+        field === 'pages_with_spares')
+    ) {
+      return
+    }
     setEdits((prev) => ({ ...prev, [manualId]: { ...prev[manualId], [field]: value } }))
-  }, [])
+  }, [lockedManualIds])
 
   const handleSaveAll = useCallback(() => {
     Object.entries(edits).forEach(([manualId, changes]) => {
-      saveMutation.mutate({ manualId, data: changes })
+      let data = changes
+      if (lockedManualIds.has(manualId)) {
+        const clean = { ...changes }
+        delete clean.pages_with_components_physical
+        delete clean.pages_with_jobs_physical
+        delete clean.pages_with_spares_physical
+        delete clean.pages_with_components
+        delete clean.pages_with_jobs
+        delete clean.pages_with_spares
+        data = clean
+      }
+      if (Object.keys(data).length > 0) {
+        saveMutation.mutate({ manualId, data })
+      }
     })
-  }, [edits, saveMutation])
+  }, [edits, lockedManualIds, saveMutation])
 
   const handleImportExcel = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -1452,6 +1521,12 @@ const ManualReview: React.FC = () => {
               <span className="font-medium text-emerald-300 flex items-center gap-1.5">
                 <span className={`h-2.5 w-2.5 rounded-full ${extractionData.status === 'paused' ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500 animate-ping'}`} />
                 {extractionData.status === 'paused' ? 'Extraction Paused' : 'Extracting manuals...'} {extractionData.done} / {extractionData.total} manuals
+                {extractionData.active_manual_ids && extractionData.active_manual_ids.length > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 text-xs text-amber-300 ml-2" title="Page references are locked until all selected manuals finish extracting">
+                    <Lock className="h-3 w-3" />
+                    {extractionData.active_manual_ids.length} manual{extractionData.active_manual_ids.length !== 1 ? 's' : ''} locked
+                  </span>
+                )}
               </span>
               <div className="flex items-center gap-2">
                 {extractionData.status === 'paused' ? (
@@ -1777,6 +1852,15 @@ const ManualReview: React.FC = () => {
                           {m.original_filename}
                         </span>
                       </button>
+                      {lockedManualIds.has(m.id) && (
+                        <span
+                          className="inline-flex items-center gap-1 mt-0.5 rounded bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 text-[10px] font-medium text-amber-400"
+                          title="Page references are locked while extraction runs"
+                        >
+                          <Lock className="h-2.5 w-2.5" />
+                          Page Ref Locked
+                        </span>
+                      )}
                       {m.is_duplicate && (
                         <span className="inline-flex items-center gap-1 mt-0.5 rounded-full bg-amber-800/50 px-2 py-0.5 text-xs text-amber-300">
                           <Copy className="h-3 w-3" />
@@ -1825,6 +1909,8 @@ const ManualReview: React.FC = () => {
                         onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_components_physical', value)}
                         explanationRows={componentExplanationRows}
                         physicalPlaceholder=""
+                        disabled={lockedManualIds.has(m.id)}
+                        lockedTooltip="Page references are locked while extraction is in progress"
                       />
                     </td>
                     <td className="px-3 py-3">
@@ -1833,6 +1919,8 @@ const ManualReview: React.FC = () => {
                         onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_jobs_physical', value)}
                         explanationRows={jobExplanationRows}
                         physicalPlaceholder=""
+                        disabled={lockedManualIds.has(m.id)}
+                        lockedTooltip="Page references are locked while extraction is in progress"
                       />
                     </td>
                     <td className="px-3 py-3">
@@ -1841,6 +1929,8 @@ const ManualReview: React.FC = () => {
                         onPhysicalChange={(value) => handleEdit(m.id, 'pages_with_spares_physical', value)}
                         explanationRows={spareExplanationRows}
                         physicalPlaceholder=""
+                        disabled={lockedManualIds.has(m.id)}
+                        lockedTooltip="Page references are locked while extraction is in progress"
                       />
                     </td>
                     <td className="px-3 py-3">

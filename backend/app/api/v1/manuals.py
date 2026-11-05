@@ -753,6 +753,17 @@ async def update_manual(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manual not found")
 
     update_data = body.model_dump(exclude_unset=True)
+
+    # If manual is currently part of an active extraction batch, prevent changing page references
+    from app.services.extractor import is_manual_locked_for_extraction
+    if is_manual_locked_for_extraction(str(manual_id), str(vessel_id)):
+        _, page_fields_changed = _prepare_manual_update_data(manual, update_data)
+        if page_fields_changed:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Page references for manual '{manual.original_filename}' are locked while extraction is in progress. Please wait until extraction completes.",
+            )
+
     prepared, feedback_id = await _apply_manual_updates(
         manual=manual,
         update_data=update_data,
@@ -951,6 +962,23 @@ async def import_manual_screening(
             if not update_data:
                 skipped += 1
                 continue
+
+            from app.services.extractor import is_manual_locked_for_extraction
+            if is_manual_locked_for_extraction(str(manual.id), str(vessel_id)):
+                page_fields = {
+                    "pages_with_components_printed", "pages_with_components_physical",
+                    "pages_with_jobs_printed", "pages_with_jobs_physical",
+                    "pages_with_spares_printed", "pages_with_spares_physical",
+                    "pages_with_components", "pages_with_jobs", "pages_with_spares",
+                }
+                removed_page_fields = [f for f in page_fields if f in update_data]
+                for f in removed_page_fields:
+                    update_data.pop(f, None)
+                if removed_page_fields:
+                    errors.append(f"Row {row_number}: Page references for '{manual.original_filename}' were locked and skipped because extraction is actively running.")
+                if not update_data:
+                    skipped += 1
+                    continue
 
             prepared, feedback_id = await _apply_manual_updates(
                 manual=manual,

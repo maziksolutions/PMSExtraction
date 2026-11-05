@@ -91,6 +91,7 @@ def set_extraction_state(
     current_manual_pages_total: int | None = None,
     current_manual_pages_done: int | None = None,
     detailed_status: str | None = None,
+    active_manual_ids: list[str] | None = None,
 ) -> None:
     key = f"extraction_state:{vessel_id_str}"
     state = {}
@@ -115,6 +116,7 @@ def set_extraction_state(
             "current_manual_pages_total": 0,
             "current_manual_pages_done": 0,
             "detailed_status": None,
+            "active_manual_ids": [],
         }
 
     if total is not None:
@@ -128,6 +130,7 @@ def set_extraction_state(
             state["current_manual_pages_total"] = 0
             state["current_manual_pages_done"] = 0
             state["detailed_status"] = None
+            state["active_manual_ids"] = []
     if current_manual_name is not None:
         state["current_manual_name"] = current_manual_name
     if current_manual_pages_total is not None:
@@ -136,6 +139,8 @@ def set_extraction_state(
         state["current_manual_pages_done"] = current_manual_pages_done
     if detailed_status is not None:
         state["detailed_status"] = detailed_status
+    if active_manual_ids is not None:
+        state["active_manual_ids"] = list(active_manual_ids)
 
     # Save to local cache
     _extract_state[vessel_id_str] = state
@@ -170,8 +175,27 @@ def get_extraction_state(vessel_id_str: str) -> dict[str, Any]:
             "current_manual_pages_total": 0,
             "current_manual_pages_done": 0,
             "detailed_status": None,
+            "active_manual_ids": [],
         },
     )
+
+
+def get_locked_manual_ids(vessel_id_str: str) -> set[str]:
+    """Return set of manual IDs currently locked for extraction in this vessel."""
+    st = get_extraction_state(vessel_id_str)
+    if st.get("status") in ("running", "paused"):
+        return set(str(mid) for mid in (st.get("active_manual_ids") or []))
+    return set()
+
+
+def is_manual_locked_for_extraction(manual_id_str: str, vessel_id_str: str | None = None) -> bool:
+    """Return True if manual is part of an ongoing/paused extraction run."""
+    if vessel_id_str:
+        return manual_id_str in get_locked_manual_ids(vessel_id_str)
+    for vid, st in _extract_state.items():
+        if st.get("status") in ("running", "paused") and manual_id_str in (st.get("active_manual_ids") or []):
+            return True
+    return False
 
 
 class ExtractionProvidersFailed(RuntimeError):
@@ -3543,6 +3567,7 @@ async def auto_extract_from_manual(
     page_numbers: Optional[list[int]] = None,
     target_model: Optional[str] = None,
     debug_log: Optional[list[str]] = None,
+    locked_entity_pages: Optional[dict[str, list[int]]] = None,
 ) -> None:
     """
     Background task: extract Components, Jobs, and Spares from a Manual.
@@ -3628,7 +3653,10 @@ async def auto_extract_from_manual(
 
             entity_pages = {}
             for entity_type in ("component", "job", "spare"):
-                pages = _selected_manual_pages(manual, entity_type)
+                if locked_entity_pages and entity_type in locked_entity_pages and locked_entity_pages[entity_type]:
+                    pages = locked_entity_pages[entity_type]
+                else:
+                    pages = _selected_manual_pages(manual, entity_type)
                 if not pages and page_numbers and (entity_types is None or entity_type in entity_types):
                     pages = page_numbers
                 entity_pages[entity_type] = pages

@@ -75,6 +75,7 @@ async def _run_extract_all(
     vessel_id_str: str,
     tenant_id_str: str,
     manual_ids: list[str],
+    manual_pages_snapshot: Optional[dict[str, dict[str, list[int]]]] = None,
 ) -> None:
     """Run auto_extract_from_manual for each manual with bounded parallelism."""
     from app.services.extractor import _active_extraction_tasks, _extraction_paused_flags
@@ -83,7 +84,13 @@ async def _run_extract_all(
     import app.services.extractor as extractor_module
     extractor_module._claude_vision_billing_failed = False
 
-    set_extraction_state(vessel_id_str, total=len(manual_ids), done=0, status="running")
+    set_extraction_state(
+        vessel_id_str,
+        total=len(manual_ids),
+        done=0,
+        status="running",
+        active_manual_ids=manual_ids,
+    )
     semaphore = asyncio.Semaphore(max(1, int(getattr(settings, "MANUAL_EXTRACTION_CONCURRENCY", 4) or 4)))
     state_lock = asyncio.Lock()
 
@@ -92,7 +99,8 @@ async def _run_extract_all(
             while _extraction_paused_flags.get(vessel_id_str):
                 await asyncio.sleep(1)
             try:
-                await auto_extract_from_manual(mid)
+                locked_pages = (manual_pages_snapshot or {}).get(mid)
+                await auto_extract_from_manual(mid, locked_entity_pages=locked_pages)
             except Exception as exc:
                 logger.error("_run_extract_all: extraction failed for manual %s: %s", mid, exc)
             finally:
@@ -150,13 +158,30 @@ async def extract_all(
     tenant_id_str = str(current_user.tenant_id)
     manual_ids = [str(m.id) for m in manuals]
 
-    set_extraction_state(vessel_id_str, total=total, done=0, status="running")
+    from app.services.extractor import _selected_manual_pages
+    manual_pages_snapshot: dict[str, dict[str, list[int]]] = {
+        str(m.id): {
+            "component": _selected_manual_pages(m, "component"),
+            "job": _selected_manual_pages(m, "job"),
+            "spare": _selected_manual_pages(m, "spare"),
+        }
+        for m in manuals
+    }
+
+    set_extraction_state(
+        vessel_id_str,
+        total=total,
+        done=0,
+        status="running",
+        active_manual_ids=manual_ids,
+    )
 
     background_tasks.add_task(
         _run_extract_all,
         vessel_id_str,
         tenant_id_str,
         manual_ids,
+        manual_pages_snapshot,
     )
 
     return {"started": True, "total": total}
