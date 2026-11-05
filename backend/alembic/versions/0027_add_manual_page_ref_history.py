@@ -54,37 +54,23 @@ def upgrade() -> None:
         op.execute("CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_vessel ON manual_page_ref_history(vessel_id);")
         op.execute("CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_created ON manual_page_ref_history(created_at DESC);")
 
-        # 2. manual_extraction_runs table
-        op.execute(f"""
+        # 2. manual_extraction_runs table (align with extraction_counter.py schema)
+        op.execute("""
             CREATE TABLE IF NOT EXISTS manual_extraction_runs (
-                id UUID PRIMARY KEY DEFAULT {uuid_default},
-                tenant_id UUID NOT NULL,
-                vessel_id UUID NOT NULL REFERENCES vessel_projects(id) ON DELETE CASCADE,
-                manual_id UUID NOT NULL REFERENCES manuals(id) ON DELETE CASCADE,
-                run_count INTEGER NOT NULL DEFAULT 0,
-                last_run_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-                CONSTRAINT uq_manual_extraction_runs_manual UNIQUE(manual_id)
+                manual_id UUID PRIMARY KEY,
+                run_count INTEGER NOT NULL DEFAULT 1,
+                last_run_at TIMESTAMPTZ DEFAULT NOW()
             );
         """)
-        op.execute("CREATE INDEX IF NOT EXISTS idx_manual_extraction_runs_vessel ON manual_extraction_runs(vessel_id);")
 
-        # 3. manual_page_extractions table
-        op.execute(f"""
+        # 3. manual_page_extractions table (align with extraction_counter.py schema)
+        op.execute("""
             CREATE TABLE IF NOT EXISTS manual_page_extractions (
-                id UUID PRIMARY KEY DEFAULT {uuid_default},
-                tenant_id UUID NOT NULL,
-                vessel_id UUID NOT NULL REFERENCES vessel_projects(id) ON DELETE CASCADE,
-                manual_id UUID NOT NULL REFERENCES manuals(id) ON DELETE CASCADE,
+                manual_id UUID NOT NULL,
                 page_number INTEGER NOT NULL,
-                run_count INTEGER NOT NULL DEFAULT 0,
-                last_run_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-                CONSTRAINT uq_manual_page_extractions_page UNIQUE(manual_id, page_number)
+                run_count INTEGER NOT NULL DEFAULT 1,
+                last_extracted_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (manual_id, page_number)
             );
         """)
         op.execute("CREATE INDEX IF NOT EXISTS idx_manual_page_extractions_manual ON manual_page_extractions(manual_id);")
