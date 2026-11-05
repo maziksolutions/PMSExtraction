@@ -877,6 +877,26 @@ async def _normalize_spares_part_and_pos_startup() -> None:
         print(f"[STARTUP SPARES NORMALIZATION ERROR] Failed to normalize spares part numbers and positions: {e}", flush=True)
 
 
+async def _restore_freshwater_generator_pages_startup() -> None:
+    from app.core.database import AsyncSessionLocal
+    from sqlalchemy import text
+    try:
+        async with AsyncSessionLocal() as db:
+            full_pages = "71-76, 88-90, 98-100, 104-106, 108, 110, 112, 113, 115, 116, 117, 118, 135, 143, 151, 178, 184, 185, 243, 245, 250, 251"
+            res = await db.execute(text("""
+                UPDATE manuals
+                SET pages_with_spares = :pages,
+                    pages_with_spares_physical = :pages
+                WHERE (id = '806d403e-8910-4438-ad93-db2129751181' OR original_filename ILIKE '%Freshwater%')
+                  AND (pages_with_spares = '71' OR pages_with_spares IS NULL OR pages_with_spares = '');
+            """), {"pages": full_pages})
+            if res.rowcount and res.rowcount > 0:
+                await db.commit()
+                print(f"[STARTUP RESTORE] Restored freshwater generator spare pages ({res.rowcount} rows) to: {full_pages}", flush=True)
+    except Exception as e:
+        print(f"[STARTUP RESTORE ERROR] Failed to restore freshwater pages: {e}", flush=True)
+
+
 @app.on_event("startup")
 async def _log_ai_config() -> None:
     print(
@@ -934,6 +954,10 @@ async def _log_ai_config() -> None:
         await seed_historical_claude_costs_startup()
     except Exception as e:
         print(f"[STARTUP TOKEN TRACKER ERROR] Failed to seed historical claude costs: {e}", flush=True)
+    try:
+        await _restore_freshwater_generator_pages_startup()
+    except Exception as e:
+        print(f"[STARTUP RESTORE ERROR] Failed to restore freshwater pages: {e}", flush=True)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)
