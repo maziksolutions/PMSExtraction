@@ -427,9 +427,11 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "       • Multi-model tables often list parts with specific model codes in the 'Remarks' or 'Description' column (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)').\n"
             "       • When a target equipment model is specified in context (e.g. 'LT-55'): extract ONLY rows applicable to this model — including rows designated for this model (e.g. 'LT55', 'LT-55', 'LT55, -75/50Hz', 'LT-55(RH)') and common rows with no model restriction in Remarks. Ignore rows strictly designated for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS (e.g. 'LT-55').\n"
             "       • When NO target model is specified in context: extract each row, storing the specific model tag in spare_model (e.g. 'LT-55', 'LT22') and keeping the notes under 'Remarks:'.\n"
-            "- COUNT FIRST: count only structured table rows (grid rows with Part No/Name/Qty columns — NOT numbers in assembly diagram callouts). Output exactly that many records.\n"
-            "- Extract EVERY row from parts tables — never skip rows\n"
-            "- ASSEMBLY DIAGRAM RULE: If a page has an exploded-view/assembly diagram with numbered callouts AND a parts table below it, extract ONLY from the parts table rows. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them.\n"
+            "- PARTS LISTS, EXPLODED DIAGRAMS AND COMPONENT TABLES:\n"
+            "    1. If a page has an exploded-view diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser...'), extract EVERY item in that list as a spare part (e.g. part_number='No. 1', 'No. 2').\n"
+            "    2. If a page has BOTH an exploded-view diagram AND a separate parts table for the same parts, extract from the parts table to avoid duplication.\n"
+            "    3. If a page has an equipment component settings/calibration table (e.g. 'COMPONENT | SETTING | NOTES'), extract each listed component as a spare part, capturing their calibration/setting values into specification.\n"
+            "- Extract EVERY spare part row, callout list item, and component row — never skip items\n"
             "- DUPLICATE TABLE TEXT RULE: Some pages contain the same table represented twice: once as plain unstructured text (where column values are printed inline) and once as a structured `[TABLE]` pipe-delimited block. Do NOT extract duplicate records from both. Extract ONLY from the structured `[TABLE]` block, and ignore the plain unstructured text of those same table rows to prevent duplicate/repeated records.\n"
             "- REMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly variant tags — store in spare_model (in ALL CAPS), NOT in part_name or drawing_number.\n"
             "- POSITION NUMBER EXTRACTION RULE (STRICT):\n"
@@ -1884,10 +1886,11 @@ async def _extract_spare_parts_from_image_split(
         on_strip_start(0, 1)
 
     full_note = (
-        "This page contains a spare parts table. "
-        "Scan the entire table from left-to-right. "
+        "This page contains spare parts, equipment components, or an exploded drawing parts list/legend. "
+        "Extract ALL spare parts, callout list items, and listed components. "
+        "Scan the entire page from left-to-right and top-to-bottom. "
         "Translate any Japanese/non-English descriptions to English. "
-        "Return a JSON array with EVERY row — never return prose."
+        "Return a JSON array with EVERY item — never return prose."
     )
     if context_note:
         full_note += f" {context_note}"
@@ -1936,7 +1939,10 @@ async def _extract_entities_from_page_image_with_openai(
         )
         if extraction_type == "spare":
             text_instructions += (
-                "\n\nASSEMBLY DIAGRAM RULE (CRITICAL): If the page has an exploded-view/assembly diagram with numbered callouts AND a parts table, extract ONLY from the parts table. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them. Count only table rows (not diagram callout labels)."
+                "\n\nPARTS LISTS AND EXPLODED DIAGRAM RULES (CRITICAL):"
+                "\n1. If the page has an exploded-view/assembly diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser' or 'Item No. 1: Fan Motor'): extract EVERY item from the list/legend as a spare part. Use 'No. 1', 'No. 2', etc. as part_number, the component name as part_name, and the diagram title or figure number as drawing_number/spare_assembly."
+                "\n2. If the page has BOTH an exploded-view diagram AND a separate full catalog parts table for the same parts on the SAME page, extract from the parts table to avoid duplication."
+                "\n3. If the page contains equipment components listed with settings, calibration values, or technical specifications (e.g. 'COMPONENT | SETTING | NOTES' or 'Fig.8 Calibration'): extract the listed components as spare parts, capturing their settings/parameters in the specification field."
                 "\n\nREMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly tags — put in spare_model, NOT part_name or drawing_number."
                 "\n\nCount every TABLE data row (excluding column headers), then output exactly that many JSON records. "
                 "Do not stop early. "
@@ -2027,7 +2033,10 @@ async def _extract_entities_from_page_image_with_claude(
         )
         if extraction_type == "spare":
             text_instructions += (
-                "\n\nASSEMBLY DIAGRAM RULE (CRITICAL): If the page has an exploded-view/assembly diagram with numbered callouts AND a parts table, extract ONLY from the parts table. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them. Count only table rows (not diagram callout labels)."
+                "\n\nPARTS LISTS AND EXPLODED DIAGRAM RULES (CRITICAL):"
+                "\n1. If the page has an exploded-view/assembly diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser' or 'Item No. 1: Fan Motor'): extract EVERY item from the list/legend as a spare part. Use 'No. 1', 'No. 2', etc. as part_number, the component name as part_name, and the diagram title or figure number as drawing_number/spare_assembly."
+                "\n2. If the page has BOTH an exploded-view diagram AND a separate full catalog parts table for the same parts on the SAME page, extract from the parts table to avoid duplication."
+                "\n3. If the page contains equipment components listed with settings, calibration values, or technical specifications (e.g. 'COMPONENT | SETTING | NOTES' or 'Fig.8 Calibration'): extract the listed components as spare parts, capturing their settings/parameters in the specification field."
                 "\n\nREMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly tags — put in spare_model, NOT part_name or drawing_number."
                 "\n\nCount every TABLE data row (excluding column headers), then output exactly that many JSON records. "
                 "Do not stop early. "
