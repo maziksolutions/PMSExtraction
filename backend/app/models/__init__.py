@@ -3,7 +3,7 @@ from app.models.user import User
 from app.models.vessel import VesselProject, VesselProjectUser
 
 # Sprint 2
-from app.models.ingestion import Manual, IngestionSession
+from app.models.ingestion import Manual, IngestionSession, ManualPageRefHistory
 
 # Sprint 3
 from app.models.feedback import FeedbackEntry
@@ -47,6 +47,7 @@ __all__ = [
     "VesselProjectUser",
     "Manual",
     "IngestionSession",
+    "ManualPageRefHistory",
     "FeedbackEntry",
     "Component",
     "ComponentTemplate",

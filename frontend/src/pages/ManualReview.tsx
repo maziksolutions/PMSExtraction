@@ -24,6 +24,7 @@ import {
   ArrowUp,
   ArrowDown,
   Activity,
+  History,
   BarChart3,
   ExternalLink,
   Lock,
@@ -31,6 +32,7 @@ import {
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
 import { ManualPageStatusModal } from '@/components/manuals/ManualPageStatusModal'
+import { PageRefHistoryModal } from '@/components/manuals/PageRefHistoryModal'
 import { ManualsStatsModal } from '@/components/manuals/ManualsStatsModal'
 import { NoExtractedRecordsModal, QueuedPageItem } from '@/components/manuals/NoExtractedRecordsModal'
 import { ExtractionConfirmationModal } from '@/components/manuals/ExtractionConfirmationModal'
@@ -548,6 +550,7 @@ const ManualReview: React.FC = () => {
   const [importError, setImportError] = useState<string | null>(null)
   const [loadingManualId, setLoadingManualId] = useState<string | null>(null)
   const [selectedManualForStatus, setSelectedManualForStatus] = useState<Manual | null>(null)
+  const [selectedManualForHistory, setSelectedManualForHistory] = useState<Manual | null>(null)
   const [showStatsModal, setShowStatsModal] = useState(false)
   const [showNoExtractedModal, setShowNoExtractedModal] = useState(false)
   const [modalActiveTab, setModalActiveTab] = useState<'extracted' | 'pending'>('extracted')
@@ -1990,14 +1993,25 @@ const ManualReview: React.FC = () => {
                       />
                     </td>
                     <td className="px-3 py-3">
-                      <button
-                        onClick={() => setSelectedManualForStatus(m)}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 border border-slate-700 px-2 py-1 text-xs text-sky-400 hover:bg-slate-700 hover:text-sky-300 transition-colors"
-                        title="View page-by-page processing and extraction status"
-                      >
-                        <Activity className="h-3.5 w-3.5" />
-                        <span>Status</span>
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => setSelectedManualForStatus(m)}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 border border-slate-700 px-2 py-1 text-xs text-sky-400 hover:bg-slate-700 hover:text-sky-300 transition-colors"
+                          title="View page-by-page processing and extraction status"
+                        >
+                          <Activity className="h-3.5 w-3.5" />
+                          <span>Status</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedManualForHistory(m)}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 border border-slate-700 px-2 py-1 text-xs text-amber-400 hover:bg-slate-700 hover:text-amber-300 transition-colors"
+                          title="View page references change history snapshots"
+                        >
+                          <History className="h-3.5 w-3.5" />
+                          <span>History</span>
+                        </button>
+                      </div>
                     </td>
                     <td className="px-3 py-3">
                       {(() => {
@@ -2119,6 +2133,29 @@ const ManualReview: React.FC = () => {
             selectedManualForStatus.pages_with_spares_physical
           }
           onClose={() => setSelectedManualForStatus(null)}
+        />
+      )}
+      {selectedManualForHistory && (
+        <PageRefHistoryModal
+          vesselId={vesselId ?? ''}
+          manualId={selectedManualForHistory.id}
+          manualTitle={selectedManualForHistory.original_filename}
+          currentComponents={
+            (edits[selectedManualForHistory.id]?.pages_with_components as string | undefined) ??
+            selectedManualForHistory.pages_with_components
+          }
+          currentJobs={
+            (edits[selectedManualForHistory.id]?.pages_with_jobs as string | undefined) ??
+            selectedManualForHistory.pages_with_jobs
+          }
+          currentSpares={
+            (edits[selectedManualForHistory.id]?.pages_with_spares as string | undefined) ??
+            selectedManualForHistory.pages_with_spares
+          }
+          onClose={() => setSelectedManualForHistory(null)}
+          onRestored={() => {
+            refetch()
+          }}
         />
       )}
       {showStatsModal && (
