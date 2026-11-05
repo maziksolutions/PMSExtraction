@@ -542,6 +542,7 @@ const ManualReview: React.FC = () => {
   const [edits, setEdits] = useState<Record<string, Partial<Manual>>>({})
   const [screeningPolling, setScreeningPolling] = useState(false)
   const [extractionPolling, setExtractionPolling] = useState(false)
+  const [dismissedExtractionBanner, setDismissedExtractionBanner] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [importMessage, setImportMessage] = useState<string | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
@@ -570,6 +571,7 @@ const ManualReview: React.FC = () => {
         entity_types: entityTypes,
         manual_pages_map: manualPagesMap,
       })
+      setDismissedExtractionBanner(false)
       setExtractionPolling(true)
       queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
     } catch (err: any) {
@@ -760,19 +762,20 @@ const ManualReview: React.FC = () => {
     enabled: !!vesselId,
     refetchInterval: (query) => {
       const state = query?.state?.data as ExtractionStatus | undefined
-      return (state?.status === 'running' || state?.status === 'paused') ? 2000 : false
+      return (extractionPolling || state?.status === 'running' || state?.status === 'paused') ? 2000 : false
     },
   })
 
   const prevExtractionStatusRef = useRef(extractionData?.status)
 
   useEffect(() => {
-    if (extractionData?.status === 'completed' || extractionData?.status === 'failed') {
+    if (extractionData?.status === 'completed' || extractionData?.status === 'failed' || extractionData?.status === 'idle') {
       setExtractionPolling(false)
       queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
     }
 
     if (prevExtractionStatusRef.current === 'running' && extractionData?.status === 'completed') {
+      setDismissedExtractionBanner(false)
       queryClient.invalidateQueries({ queryKey: ['no-extracted-records', vesselId] })
       // Auto-refresh without popping up uninvited modals
     }
@@ -786,6 +789,7 @@ const ManualReview: React.FC = () => {
     },
     onSuccess: (data) => {
       if (data.started) {
+        setDismissedExtractionBanner(false)
         setExtractionPolling(true)
         queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
       }
@@ -820,6 +824,7 @@ const ManualReview: React.FC = () => {
     },
     onSuccess: (data) => {
       if (data.started) {
+        setDismissedExtractionBanner(false)
         setExtractionPolling(true)
         queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
       } else {
@@ -853,6 +858,7 @@ const ManualReview: React.FC = () => {
     },
     onSuccess: (data) => {
       if (data.started) {
+        setDismissedExtractionBanner(false)
         setExtractionPolling(true)
         queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
       } else {
@@ -886,6 +892,7 @@ const ManualReview: React.FC = () => {
     },
     onSuccess: (data) => {
       if (data.started) {
+        setDismissedExtractionBanner(false)
         setExtractionPolling(true)
         queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
       } else {
@@ -986,6 +993,7 @@ const ManualReview: React.FC = () => {
       apiClient.post(`/vessels/${vesselId}/extract-stop`).then((r) => r.data),
     onSuccess: () => {
       setExtractionPolling(false)
+      setDismissedExtractionBanner(true)
       queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
       queryClient.invalidateQueries({ queryKey: ['manuals', vesselId] })
     },
@@ -1207,10 +1215,15 @@ const ManualReview: React.FC = () => {
 
   // ── Derived state ─────────────────────────────────────────────────────────
 
-  const isScreening = screeningPolling || screenAllMutation.isPending
+  const isBackendScreening = screeningData?.status === 'running' || screeningData?.status === 'paused'
+  const isScreening =
+    isBackendScreening ||
+    screenAllMutation.isPending ||
+    screenSelectedMutation.isPending
+
+  const isBackendExtracting = extractionData?.status === 'running' || extractionData?.status === 'paused'
   const isExtracting =
-    extractionPolling ||
-    (extractionData && (extractionData.status === 'running' || extractionData.status === 'paused')) ||
+    isBackendExtracting ||
     extractAllMutation.isPending ||
     extractSelectedMutation.isPending ||
     extractSelectedSparesOnlyMutation.isPending ||
@@ -1450,15 +1463,24 @@ const ManualReview: React.FC = () => {
       )}
 
       {/* Extraction complete banner */}
-      {!isExtracting && extractionData?.status === 'completed' && (
-        <div className="flex items-center gap-2 rounded-xl border border-emerald-700 bg-emerald-900/20 px-4 py-3 text-sm text-emerald-400">
-          <CheckCircle2 className="h-5 w-5 shrink-0" />
-          Extraction complete — {extractionData.total} manual{extractionData.total !== 1 ? 's' : ''} processed. Check Components, Jobs &amp; Spares pages.
+      {!isExtracting && !dismissedExtractionBanner && extractionData?.status === 'completed' && (
+        <div className="flex items-center justify-between rounded-xl border border-emerald-700 bg-emerald-900/20 px-4 py-3 text-sm text-emerald-400">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 shrink-0" />
+            <span>Extraction complete — {extractionData.total} manual{extractionData.total !== 1 ? 's' : ''} processed. Check Components, Jobs &amp; Spares pages.</span>
+          </div>
+          <button
+            onClick={() => setDismissedExtractionBanner(true)}
+            className="text-xs text-emerald-300 hover:text-white px-2.5 py-1 rounded bg-emerald-800/40 hover:bg-emerald-700/50 transition-colors"
+            title="Dismiss notification"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
       {/* Screening progress bar */}
-      {isScreening && screeningData && screeningData.total > 0 && (
+      {isBackendScreening && screeningData && screeningData.total > 0 && (
         <div className="rounded-xl border border-violet-700 bg-violet-900/20 p-4 space-y-3">
             <div className="flex items-center justify-between text-sm">
               <span className="font-medium text-violet-300 flex items-center gap-1.5">
@@ -1514,7 +1536,7 @@ const ManualReview: React.FC = () => {
       )}
 
       {/* Extraction progress bar */}
-      {isExtracting && extractionData && extractionData.total > 0 && (
+      {isBackendExtracting && extractionData && extractionData.total > 0 && (
         <div className="rounded-xl border border-emerald-700 bg-emerald-900/20 p-4 space-y-3">
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
@@ -2087,7 +2109,7 @@ const ManualReview: React.FC = () => {
           onClose={() => setShowNoExtractedModal(false)}
           data={noExtractedData || null}
           vesselId={vesselId ?? ''}
-          isExtracting={extractionPolling || extractionData?.status === 'running'}
+          isExtracting={isExtracting}
           onExtractQueued={handleExtractQueuedPages}
           queuedPages={queuedExtractionPages}
           setQueuedPages={setQueuedExtractionPages}
