@@ -86,3 +86,32 @@ class ManualPageRefHistoryOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class DeletedManualOut(BaseModel):
+    id: uuid.UUID
+    vessel_id: uuid.UUID
+    original_filename: str
+    file_extension: str
+    file_size_bytes: int
+    category: Optional[str] = None
+    classification_confidence: Optional[int] = None
+    useful_for_extraction: Optional[str] = None
+    pages_with_components: Optional[str] = None
+    pages_with_jobs: Optional[str] = None
+    pages_with_spares: Optional[str] = None
+    pages_with_components_physical: Optional[str] = None
+    pages_with_jobs_physical: Optional[str] = None
+    pages_with_spares_physical: Optional[str] = None
+    page_count: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+    manual_extraction_run_count: int = 0
+    page_extraction_counts: dict[int, int] = {}
+    last_extraction_at: Optional[datetime] = None
+    extracted_components_count: int = 0
+    extracted_jobs_count: int = 0
+    extracted_spares_count: int = 0
+    history_snapshot_count: int = 0
+
+    model_config = {"from_attributes": True}
