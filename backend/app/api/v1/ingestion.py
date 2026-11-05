@@ -1985,7 +1985,10 @@ async def _run_extract_selected_task(
 
                         )
 
-        await asyncio.gather(*[_run_one(manual_id) for manual_id in manual_ids])
+        for manual_id in manual_ids:
+            while _extraction_paused_flags.get(vessel_id_str):
+                await asyncio.sleep(1)
+            await _run_one(manual_id)
 
         state = get_extraction_state(vessel_id_str)
 

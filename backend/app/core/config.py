@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     EXTRACTION_ENABLE_PROMPT_CACHING: bool = True  # wrap system prompt in cache_control (requires anthropic>=0.40)
     EXTRACTION_CHUNK_CHARS: int = 14000
     EXTRACTION_CHUNK_OVERLAP_CHARS: int = 500
-    MANUAL_EXTRACTION_CONCURRENCY: int = 4
+    MANUAL_EXTRACTION_CONCURRENCY: int = 1
     MANUAL_SCREENING_CONCURRENCY: int = 2
     MANUAL_SCREENING_DELAY_SECONDS: float = 2.0
     HOT_PATH_MAINTENANCE_TTL_SECONDS: float = 300.0
