@@ -1023,13 +1023,13 @@ async def _log_ai_config() -> None:
         print(f"[STARTUP TOKEN TRACKER ERROR] Failed to seed historical claude costs: {e}", flush=True)
     try:
         await _restore_freshwater_generator_pages_startup()
+    except Exception as e:
+        print(f"[STARTUP RESTORE ERROR] Failed to restore freshwater pages: {e}", flush=True)
+
     try:
         await _ensure_manual_page_ref_history_table()
     except Exception as e:
         print(f"[STARTUP PAGE REF HISTORY ERROR] {e}", flush=True)
-
-    except Exception as e:
-        print(f"[STARTUP RESTORE ERROR] Failed to restore freshwater pages: {e}", flush=True)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)
