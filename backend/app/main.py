@@ -926,10 +926,10 @@ async def _ensure_manual_page_ref_history_table() -> None:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     is_deleted BOOLEAN NOT NULL DEFAULT FALSE
                 );
-                CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_manual ON manual_page_ref_history(manual_id);
-                CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_vessel ON manual_page_ref_history(vessel_id);
-                CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_created ON manual_page_ref_history(created_at DESC);
             """))
+            await db.execute(text("CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_manual ON manual_page_ref_history(manual_id);"))
+            await db.execute(text("CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_vessel ON manual_page_ref_history(vessel_id);"))
+            await db.execute(text("CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_created ON manual_page_ref_history(created_at DESC);"))
             await db.commit()
 
             # Seed baseline snapshot for existing manuals with page references

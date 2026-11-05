@@ -24,8 +24,8 @@ def upgrade() -> None:
     else:
         uuid_default = "(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-a' || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))"
 
-    # 1. manual_page_ref_history table
     if is_postgres:
+        # 1. manual_page_ref_history table
         op.execute(f"""
             CREATE TABLE IF NOT EXISTS manual_page_ref_history (
                 id UUID PRIMARY KEY DEFAULT {uuid_default},
@@ -49,10 +49,10 @@ def upgrade() -> None:
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 is_deleted BOOLEAN NOT NULL DEFAULT FALSE
             );
-            CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_manual ON manual_page_ref_history(manual_id);
-            CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_vessel ON manual_page_ref_history(vessel_id);
-            CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_created ON manual_page_ref_history(created_at DESC);
         """)
+        op.execute("CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_manual ON manual_page_ref_history(manual_id);")
+        op.execute("CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_vessel ON manual_page_ref_history(vessel_id);")
+        op.execute("CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_created ON manual_page_ref_history(created_at DESC);")
 
         # 2. manual_extraction_runs table
         op.execute(f"""
@@ -68,8 +68,8 @@ def upgrade() -> None:
                 is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
                 CONSTRAINT uq_manual_extraction_runs_manual UNIQUE(manual_id)
             );
-            CREATE INDEX IF NOT EXISTS idx_manual_extraction_runs_vessel ON manual_extraction_runs(vessel_id);
         """)
+        op.execute("CREATE INDEX IF NOT EXISTS idx_manual_extraction_runs_vessel ON manual_extraction_runs(vessel_id);")
 
         # 3. manual_page_extractions table
         op.execute(f"""
@@ -86,8 +86,8 @@ def upgrade() -> None:
                 is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
                 CONSTRAINT uq_manual_page_extractions_page UNIQUE(manual_id, page_number)
             );
-            CREATE INDEX IF NOT EXISTS idx_manual_page_extractions_manual ON manual_page_extractions(manual_id);
         """)
+        op.execute("CREATE INDEX IF NOT EXISTS idx_manual_page_extractions_manual ON manual_page_extractions(manual_id);")
 
         # 4. Seed baseline snapshots for manuals with page references if missing
         op.execute(f"""
