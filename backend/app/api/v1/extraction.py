@@ -103,6 +103,20 @@ async def _run_extract_all(
                 await auto_extract_from_manual(mid, locked_entity_pages=locked_pages)
             except Exception as exc:
                 logger.error("_run_extract_all: extraction failed for manual %s: %s", mid, exc)
+                try:
+                    from app.models.ingestion import Manual, ManualStatus
+                    from app.core.database import AsyncSessionLocal
+                    from sqlalchemy import update
+                    import uuid as _uuid
+                    async with AsyncSessionLocal() as err_db:
+                        await err_db.execute(
+                            update(Manual)
+                            .where(Manual.id == _uuid.UUID(mid))
+                            .values(status=ManualStatus.failed, error_message=str(exc)[:500])
+                        )
+                        await err_db.commit()
+                except Exception as db_err:
+                    logger.error("Failed to mark manual as failed in DB: %s", db_err)
             finally:
                 async with state_lock:
                     st = get_extraction_state(vessel_id_str)
