@@ -2724,7 +2724,8 @@ async def get_vessel_manual_statistics(
             "date": c.date.isoformat(),
             "input_tokens": c.input_tokens,
             "output_tokens": c.output_tokens,
-            "cost": c.cost
+            "cost": round(c.cost, 4),
+            "model": "claude-sonnet-4-6",
         } for c in db_costs
     ]
 

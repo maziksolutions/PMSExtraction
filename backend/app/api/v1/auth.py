@@ -428,6 +428,11 @@ async def debug_claude_status(
                 max_tokens=20,
                 messages=[{"role": "user", "content": "Respond with OK"}]
             )
+            try:
+                from app.services.token_tracker import record_claude_usage
+                record_claude_usage(msg.usage, model=model_id)
+            except Exception:
+                pass
             test_result = {
                 "success": True,
                 "model": msg.model,

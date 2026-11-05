@@ -1414,6 +1414,11 @@ async def _extract_with_claude(
             system=system_arg,
             messages=[{"role": "user", "content": user_message}],
         )
+        try:
+            from app.services.token_tracker import record_claude_usage
+            record_claude_usage(message.usage, model=model_id)
+        except Exception:
+            pass
         raw_text: str = message.content[0].text.strip()
         rows = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
         # Only retry if the model was genuinely cut off (hit the token limit) or if we
@@ -1720,6 +1725,11 @@ async def _ocr_page_with_claude(image_bytes: bytes, filename: str, page_no: int)
             ),
             messages=[{"role": "user", "content": user_content}],
         )
+        try:
+            from app.services.token_tracker import record_claude_usage
+            record_claude_usage(message.usage, model=model_id)
+        except Exception:
+            pass
         return message.content[0].text.strip()
     except Exception as exc:
         logger.warning(
@@ -2036,6 +2046,11 @@ async def _extract_entities_from_page_image_with_claude(
                 system=prompt_cfg["system"],
                 messages=[{"role": "user", "content": user_content}],
             )
+            try:
+                from app.services.token_tracker import record_claude_usage
+                record_claude_usage(message.usage, model=model_id)
+            except Exception:
+                pass
             raw_text = message.content[0].text.strip()
             records = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
             hard_cutoff = message.stop_reason == "max_tokens"
