@@ -380,16 +380,14 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "    • spare_model: Put ONLY the equipment model number / machinery type code here in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125', '6L28/32H'). NEVER put assembly titles, table titles, or parts list names into spare_model. If no specific equipment model number is on the page, leave spare_model as null.\n"
             "- ENGLISH-ONLY & MULTILINGUAL TABLES: Spare parts should be extracted ONLY from the English-language column or English text. All other language columns (Japanese, Chinese, Korean, etc.) MUST be ignored completely.\n"
             "- SPECIFICATION COLUMN HEADER REFERENCES (CRITICAL): Every piece of detail in specification MUST explicitly include its table column header label as a prefix. For example:\n"
-            "    • Quantity: 'QTY: 2 PCS' or 'QTY: 1 SET'. If the column has only a unit string like 'PCS' or 'SET' without a number, format as 'QTY: 1 PCS' or 'QTY: 1 SET'.\n"
-            "    • Material: 'Material: STEEL', 'Material: SUS304', 'Material: GRAPHITE'\n"
-            "    • Size/Dimensions: 'Size: DN50', 'Dimensions: 15.5 x 2.4 FKM'\n"
-            "    • Remarks: 'Remarks: Items 7, 8 for blinding'\n"
-            "  Combine multiple column header details with semicolons: 'QTY: 2 PCS; Material: STEEL; Remarks: Items 7, 8 for blinding'. NEVER output raw unlabelled values like 'PCS', 'PCS, NS12132', or 'STEEL' without header labels!\n"
-            "- QTY AND REMARKS SEPARATION (CRITICAL):\n"
-            "    • Under specification, 'QTY:' MUST strictly contain ONLY the numeric quantity and its unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS', 'QTY: 4 EA', 'QTY: 6 EA/ST').\n"
-            "    • NEVER merge remarks, comments, notes, model variants, applicability notes, parentheses, or materials into the QTY field!\n"
-            "    • If a table has a REMARKS or NOTE column (or parenthetical remarks next to quantity like '(USH-20)' or 'For pump outlet'), ALWAYS place that text under 'Remarks:' with a semicolon separator (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet', NOT 'QTY: 1 SET (USH-20) For pump outlet').\n"
-            "    • If material information is present (e.g. SUS304, Steel, Rubber), place it under 'Material:' (e.g. 'QTY: 1 PCS; Material: SUS304; Remarks: For pump outlet').\n"
+            "    \u2022 Quantity: 'QTY: 2 PCS' or 'QTY: 1 SET'. If the column has only a unit string like 'PCS' or 'SET' without a number, format as 'QTY: 1 PCS' or 'QTY: 1 SET'.\n"
+            "    \u2022 Material: 'Material: STEEL', 'Material: SUS304', 'Material: GRAPHITE'\n"
+            "    \u2022 Size/Dimensions: 'Size: DN50', 'Dimensions: 15.5 x 2.4 FKM'\n"
+            "  Combine multiple column header details with semicolons: 'QTY: 2 PCS; Material: STEEL; Size: DN50'. NEVER output the keyword 'Remarks:' or include remarks notes in specification — remarks are not requested.\n"
+            "- QTY AND SPECIFICATION CONSTRAINTS (CRITICAL):\n"
+            "    \u2022 Under specification, 'QTY:' MUST strictly contain ONLY the numeric quantity and its unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS', 'QTY: 4 EA', 'QTY: 6 EA/ST').\n"
+            "    \u2022 NEVER merge remarks, comments, notes, model variants, applicability notes, parentheses, or materials into the QTY field!\n"
+            "    \u2022 Do NOT add a 'Remarks:' field in specification. If material information is present (e.g. SUS304, Steel, Rubber), place it under 'Material:' (e.g. 'QTY: 1 PCS; Material: SUS304').\n"
             "- PART NUMBERS VALIDATION: Validate part numbers carefully. Do NOT extract serial numbers, prose/phrases ('refer to page...', 'see drawing'), or full page text into part_number. If no valid catalog part number is found in the manual, leave part_number as null.\n"
             "- PDF FILENAME PROHIBITION: PDF filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf') must NEVER be captured in part_number, drawing_number, drawing_position, or spare_model. Leave these fields blank (null) if the information is not found in the manual.\n"
             "- PART NAME & SPECIFICATION SEPARATION: If a spare name contains specifications, dimensions, or materials (e.g. 'O-RING (15.5 x 2.4 FKM)' or 'HEX BOLT M12 x 45 STAINLESS'), separate them. Capture the spare name (preserving abbreviations/spelling as printed, e.g. 'O-Ring', 'Hex Bolt') in part_name, and capture the additional details (e.g. '15.5 x 2.4 FKM', 'M12 x 45 STAINLESS') in specification with header labels. Do NOT modify, replace, or normalize the part name wording.\n"
@@ -412,16 +410,16 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "    2. NEVER treat 'Item No.', 'Reference No.', 'Ref No.', 'Serial No.', 'No.', or other general numbering fields as Position Numbers.\n"
             "- PART NUMBER EXTRACTION RULE (STRICT):\n"
             "    1. If an explicit catalog Part Number column is present (e.g. PC.NO, CODE NO, PART NO):\n"
-            "       • Capture that catalog number in part_number.\n"
-            "       • If an Item No., Reference No., Serial No., or No. column is also present in the table, put that item reference into the specification column with its header label (e.g. 'Ref No: 12; ...' or 'Item No: 5; ...').\n"
+            "       \u2022 Capture that catalog number in part_number cleanly WITHOUT prefixing column header labels like 'Part Number', 'Part No.', 'Code No.', or 'PC. NO.'.\n"
+            "       \u2022 If an Item No., Reference No., Serial No., or No. column is also present in the table, put that item reference into the specification column with its header label (e.g. 'Ref No: 12; ...' or 'Item No: 5; ...').\n"
             "    2. If NO catalog Part Number column is present:\n"
-            "       • Treat the Item No., Reference No., Serial No., or No. column as the part_number along with its Prefix header from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3').\n"
-            "       • In this case, do NOT combine Drawing No into part_number.\n"
-            "    3. When NEITHER a catalog Part Number NOR an Item No./Reference No./Serial No./No. is present:\n"
-            "       • If BOTH Drawing No. and Position No. are present, combine them and populate part_number as:\n"
+            "       \u2022 Treat the Item No., Reference No., Serial No., No., or PID Item column as the part_number along with its Prefix header from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005', 'PID Item BO 002').\n"
+            "       \u2022 In this case, do NOT combine Drawing No into part_number.\n"
+            "    3. When NEITHER a catalog Part Number NOR an Item No./Reference No./Serial No./No./PID Item is present:\n"
+            "       \u2022 If BOTH Drawing No. and Position No. are present, combine them and populate part_number as:\n"
             "         '<Drawing No.>/<Position No.>' (e.g. 'FIG.7/15', 'B3798160-02/12').\n"
-            "       • If Item No./Reference No. was captured as part_number, do NOT combine Drawing No.\n"
-            "       • If Drawing No. or Position No. is missing, leave part_number blank (null).\n"
+            "       \u2022 If Item No./Reference No./PID Item was captured as part_number, do NOT combine Drawing No.\n"
+            "       \u2022 If Drawing No. or Position No. is missing, leave part_number blank (null).\n"
             "    4. NEVER extract document headers, title block references, drawing titles, manual filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf', 'DECK MACHINERY'), or page references into part_number!\n"
             "- ASSEMBLY & ASSEMBLY DESCRIPTION UNIQUENESS & CONSISTENCY (CRITICAL):\n"
             "    • Capture spare_assembly and assembly_description as unique, consistent data across all pages of the manual.\n"
@@ -446,7 +444,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "Look for: parts tables (NO./NAME/MATERIAL/QTY), drawing parts lists, "
             "sections titled 'Spare Parts', 'Parts List', 'Recommended Spares'.\n"
             "IMPORTANT: All extracted data must be in English only. Translate any non-English text (Japanese, Chinese, etc.) to English.\n"
-            "CRITICAL: Keep QTY strictly limited to quantity and unit (e.g. 'QTY: 1 SET'). Never merge remarks, applicability, or notes into QTY; put them under 'Remarks:' separated by semicolons.\n"
+            "CRITICAL: Keep QTY strictly limited to quantity and unit (e.g. 'QTY: 1 SET'). Never merge remarks, applicability, or notes into QTY. Do NOT include 'Remarks:' in specification.\n"
             "MULTI-MODEL TABLES: When extracting for a target equipment model, extract only rows/columns applicable to that model (e.g. Variant 2 for L3.139, or LT55 parts for LT-55) and ignore parts strictly for other models.\n\n{text}"
         ),
     },
@@ -719,7 +717,7 @@ def decompose_qty_value(raw_val: str) -> tuple[str | None, list[tuple[str, str]]
         elif re.match(_SIZE_PATTERN, inner_content, re.I):
             extra_items.append(("Size", inner_content))
         else:
-            extra_items.append(("Remarks", remaining_text))
+            pass
 
     return clean_qty, extra_items
 
@@ -728,6 +726,11 @@ def _format_specification_headers(spec: str | None) -> str | None:
     if not spec or not str(spec).strip():
         return None
     spec_str = str(spec).strip()
+
+    # First, strip any Remarks clauses completely
+    spec_str = re.sub(r"(?:;\s*)?\bRemarks?:\s*[^;]*", "", spec_str, flags=re.I).strip("; ")
+    if not spec_str:
+        return None
 
     if ";" in spec_str:
         raw_parts = [p.strip() for p in spec_str.split(";") if p.strip()]
@@ -741,8 +744,20 @@ def _format_specification_headers(spec: str | None) -> str | None:
         if not part:
             continue
 
+        # Check for Item No / Ref No / PID Item tag
+        item_m = re.match(
+            r"^(item(?:\.?\s*no\.?)?|ref(?:\.?\s*no\.?)?|reference(?:\.?\s*no\.?)?|serial(?:\.?\s*no\.?)?|no\.?|pid[\s-]*(?:item|tag)?(?:\.?\s*no\.?)?|tag\s*no\.?)\s*[:#-]?\s*(.*)$",
+            part,
+            re.I,
+        )
+        if item_m:
+            formatted = _format_item_tag(part)
+            if ":" in formatted:
+                items.append((formatted.split(":", 1)[0].strip(), formatted.split(":", 1)[1].strip()))
+            continue
+
         prefix_match = re.match(
-            r"^(QTY|Quantity|Material|Mat|Size|Dimensions?|Remarks?|Spec|Specification|Notes?):\s*(.*)$",
+            r"^(QTY|Quantity|Material|Mat|Size|Dimensions?|Spec|Specification):\s*(.*)$",
             part,
             re.I,
         )
@@ -755,7 +770,7 @@ def _format_specification_headers(spec: str | None) -> str | None:
             elif lbl.lower() in ("dimension", "dimensions", "size"):
                 lbl = "Size"
             else:
-                lbl = "Remarks"
+                continue  # Skip generic spec or notes
             val = prefix_match.group(2).strip()
 
             if lbl == "QTY":
@@ -765,7 +780,8 @@ def _format_specification_headers(spec: str | None) -> str | None:
                 elif val:
                     items.append(("QTY", val))
                 for ex_lbl, ex_val in extras:
-                    items.append((ex_lbl, ex_val))
+                    if ex_lbl != "Remarks":
+                        items.append((ex_lbl, ex_val))
             else:
                 if val:
                     items.append((lbl, val))
@@ -783,7 +799,8 @@ def _format_specification_headers(spec: str | None) -> str | None:
         if cq:
             items.append(("QTY", cq))
             for ex_lbl, ex_val in extras:
-                items.append((ex_lbl, ex_val))
+                if ex_lbl != "Remarks":
+                    items.append((ex_lbl, ex_val))
             continue
 
         if re.match(r"^\d+$", part):
@@ -800,13 +817,11 @@ def _format_specification_headers(spec: str | None) -> str | None:
             items.append(("Size", part))
             continue
 
-        items.append(("Remarks", part))
-
     formatted_parts: list[str] = []
     seen_qty: str | None = None
     materials: list[str] = []
     sizes: list[str] = []
-    remarks: list[str] = []
+    other_tags: list[str] = []
 
     for lbl, val in items:
         clean_val = re.sub(rf"^(?:{lbl}|Quantity|Remarks?|Material|Size):\s*", "", val, flags=re.I).strip()
@@ -822,19 +837,20 @@ def _format_specification_headers(spec: str | None) -> str | None:
             if clean_val not in sizes:
                 sizes.append(clean_val)
         else:
-            if clean_val not in remarks:
-                remarks.append(clean_val)
+            tag_str = f"{lbl}: {clean_val}"
+            if tag_str not in other_tags:
+                other_tags.append(tag_str)
 
+    for ot in other_tags:
+        formatted_parts.append(ot)
     if seen_qty:
         formatted_parts.append(f"QTY: {seen_qty}")
     if materials:
         formatted_parts.append(f"Material: {', '.join(materials)}")
     if sizes:
         formatted_parts.append(f"Size: {', '.join(sizes)}")
-    if remarks:
-        formatted_parts.append(f"Remarks: {'; '.join(remarks)}")
 
-    return "; ".join(formatted_parts) if formatted_parts else spec_str
+    return "; ".join(formatted_parts) if formatted_parts else None
 
 
 def is_leaked_filename_or_doc_ref(val: str | None, filename: str | None = None) -> bool:
@@ -968,8 +984,6 @@ def separate_spare_name_and_spec(part_name: str | None, existing_spec: str | Non
             if rem_val:
                 if is_spec_size(rem_val):
                     tagged_extracted.append(f"Size: {rem_val}")
-                else:
-                    tagged_extracted.append(f"Remarks: {rem_val}")
                 tagged_extracted.append(f"Material: {mat_val}")
                 continue
             else:
@@ -978,8 +992,6 @@ def separate_spare_name_and_spec(part_name: str | None, existing_spec: str | Non
 
         if is_spec_size(es_clean):
             tagged_extracted.append(f"Size: {es_clean}")
-        else:
-            tagged_extracted.append(f"Remarks: {es_clean}")
 
     # Build final combined specification
     final_spec = existing_spec or ""
@@ -995,10 +1007,17 @@ def separate_spare_name_and_spec(part_name: str | None, existing_spec: str | Non
     return to_proper_case(clean_name), formatted_spec
 
 
-_ITEM_PREFIX_RE = re.compile(
-    r"^(?:item(?:\.?\s*no\.?)?|ref(?:\.?\s*no\.?)?|reference(?:\.?\s*no\.?)?|serial(?:\.?\s*no\.?)?|no\.?)(?:\s+|[:#-]|$)",
+_CATALOG_PN_PREFIX_RE = re.compile(
+    r"^(?:part\s*(?:no\.?|number|#)?|code\s*(?:no\.?|number)?|pc\.?\s*no\.?)\s*[:#-]?\s*",
     re.I,
 )
+
+_ITEM_PREFIX_RE = re.compile(
+    r"^(?:item(?:\.?\s*no\.?)?|ref(?:\.?\s*no\.?)?|reference(?:\.?\s*no\.?)?|serial(?:\.?\s*no\.?)?|no\.?|pid[\s-]*(?:item|tag)?(?:\.?\s*no\.?)?|tag\s*no\.?)(?:\s+|[:#-]|$|(?<=\w)\b)",
+    re.I,
+)
+
+_PID_BARE_RE = re.compile(r"^(?:BM|BO)\s*\d{2,4}[A-Z]?$", re.I)
 
 _EXPLICIT_POS_LABEL_RE = re.compile(
     r"^(?:pos(?:ition)?\.?(?:\s*no\.?)?)\s*[:#-]?\s*(.*)$",
@@ -1006,10 +1025,24 @@ _EXPLICIT_POS_LABEL_RE = re.compile(
 )
 
 
+def _is_fallback_item_id(val: str | None) -> bool:
+    if not val:
+        return False
+    v = str(val).strip()
+    return bool(_ITEM_PREFIX_RE.match(v) or _PID_BARE_RE.match(v))
+
+
+def _clean_catalog_pn(val: str | None) -> str:
+    if not val:
+        return ""
+    v = str(val).strip()
+    return _CATALOG_PN_PREFIX_RE.sub("", v).strip()
+
+
 def _format_item_tag(raw: str) -> str:
-    """Formats an item string into a clean spec tag, e.g. 'Ref No: 12' or 'Item No: 5'."""
+    """Formats an item string into a clean spec tag, e.g. 'Ref No: 12' or 'Item No: 5' or 'PID Item: BM 005'."""
     s = raw.strip()
-    m = re.match(r"^(item|ref(?:erence)?|serial|no)\.?(?:\s*no\.?)?\s*[:#-]?\s*(.*)$", s, re.I)
+    m = re.match(r"^(item|ref(?:erence)?|serial|no|pid[\s-]*(?:item|tag)?|tag)\.?(?:\s*no\.?)?\s*[:#-]?\s*(.*)$", s, re.I)
     if m:
         kind = m.group(1).lower()
         val = m.group(2).strip()
@@ -1021,13 +1054,17 @@ def _format_item_tag(raw: str) -> str:
             return f"Serial No: {val}"
         elif kind == "no":
             return f"No: {val}"
+        elif "pid" in kind or kind == "tag":
+            return f"PID Item: {val.upper()}"
+    if _PID_BARE_RE.match(s):
+        return f"PID Item: {s.upper()}"
     return s
 
 
 def _standardize_item_prefix(raw: str) -> str:
-    """Standardizes prefix for part_number, e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3'."""
+    """Standardizes prefix for part_number, e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005'."""
     s = raw.strip()
-    m = re.match(r"^(item|ref(?:erence)?|serial|no)\.?(?:\s*no\.?)?\s*[:#-]?\s*(.*)$", s, re.I)
+    m = re.match(r"^(item|ref(?:erence)?|serial|no|pid[\s-]*(?:item|tag)?|tag)\.?(?:\s*no\.?)?\s*[:#-]?\s*(.*)$", s, re.I)
     if m:
         kind = m.group(1).lower()
         val = m.group(2).strip()
@@ -1039,7 +1076,19 @@ def _standardize_item_prefix(raw: str) -> str:
             return f"Serial No. {val}"
         elif kind == "no":
             return f"No. {val}"
+        elif "pid" in kind or kind == "tag":
+            return f"PID Item {val.upper()}"
+    if _PID_BARE_RE.match(s):
+        return f"PID Item {s.upper()}"
     return s
+
+
+def _strip_remarks_from_spec(spec: str) -> str:
+    if not spec:
+        return ""
+    # Strip any Remarks:... clause (including dangling 'Remarks:' or 'Remarks: something')
+    cleaned = re.sub(r"(?:;\s*)?\bRemarks?:\s*[^;]*", "", spec, flags=re.I).strip("; ")
+    return cleaned
 
 
 def normalize_spare_part_number_and_position(
@@ -1049,12 +1098,13 @@ def normalize_spare_part_number_and_position(
     specification: str | None,
 ) -> tuple[str | None, str | None, str | None]:
     """
-    Applies the 3-rule logic for spare part_number, drawing_position, and specification:
+    Applies the logic for spare part_number, drawing_position, and specification:
     1. Capture Position No. only when clearly identified as Position No., Pos., Pos. No., Position. If not, keep empty.
-    2. Item No., Reference No., Serial No., and No. treated as Part Number with Prefix only if part number not present.
-       If part number is present, item/ref capture is moved into specification.
-    3. When no Part Number or Item No./Ref No., combine Drawing No/Position No as: Drawing No./Position No.
-       If Item No./Ref No. is captured as part number, no need to combine Drawing No.
+    2. Item No., Reference No., Serial No., No., and PID Item treated as Part Number with Prefix only if catalog part number not present.
+       If catalog part number is present, item/ref capture is moved into specification. Catalog part numbers must NEVER include header prefixes.
+    3. When no Part Number or Item No./Ref No./PID Item, combine Drawing No/Position No as: Drawing No./Position No.
+       If Item No./Ref No./PID Item is captured as part number, no need to combine Drawing No.
+    4. Specification must never contain the keyword 'Remarks:'.
 
     Returns: (clean_part_number, clean_drawing_position, clean_specification)
     """
@@ -1070,9 +1120,9 @@ def normalize_spare_part_number_and_position(
     if dwg.lower() in ("none", "null", "n/a", "-"):
         dwg = ""
 
-    # Check if pos actually contains an Item No / Ref No / Serial No / No prefix
+    # Check if pos actually contains an Item No / Ref No / PID Item / No prefix
     item_ref_from_pos: str | None = None
-    if pos and _ITEM_PREFIX_RE.match(pos):
+    if pos and _is_fallback_item_id(pos):
         item_ref_from_pos = pos
         pos = ""  # Rule 1 & 2: Do NOT treat Item No., Ref No., etc. as Position Numbers
 
@@ -1082,27 +1132,34 @@ def normalize_spare_part_number_and_position(
         if m_pos and m_pos.group(1).strip():
             pos = m_pos.group(1).strip()
 
-    # Rule 2:
-    # Does part_number exist as a catalog number?
-    has_item_prefix = bool(pn and _ITEM_PREFIX_RE.match(pn))
-    has_catalog_pn = bool(pn and not has_item_prefix)
+    # Determine if pn is a fallback item ID vs catalog part number
+    is_fallback_pn = _is_fallback_item_id(pn)
 
-    # If catalog part number IS present:
-    if has_catalog_pn:
-        # If an item/ref number was also found (e.g. from pos), put it into specification
-        if item_ref_from_pos:
-            item_tag = _format_item_tag(item_ref_from_pos)
-            if item_tag and item_tag.lower() not in spec.lower():
-                spec = f"{item_tag}; {spec}".strip("; ") if spec else item_tag
-    else:
-        # No catalog part number is present!
-        # Check if we have an item/ref number to treat as part_number along with Prefix
-        if pn and has_item_prefix:
-            pn = _standardize_item_prefix(pn)
-        elif item_ref_from_pos:
-            pn = _standardize_item_prefix(item_ref_from_pos)
+    if not is_fallback_pn and pn:
+        # It's a catalog part number: clean any accidental "Part No:", "Code No:" header prefixes
+        pn = _clean_catalog_pn(pn)
+        if not pn:
+            is_fallback_pn = False
+        elif _is_fallback_item_id(pn):
+            is_fallback_pn = True
+
+    has_catalog_pn = bool(pn and not is_fallback_pn)
+
+    # First, if spec contains an embedded PID Item or Item/Ref tag, check if we need it for pn
+    if not has_catalog_pn and not pn:
+        # Check if specification has a PID item (e.g. "Remarks: PID Item BM 090" or "PID Item: BM 090")
+        m_pid_spec = re.search(r"\bPID[\s-]*(?:Item|Tag)?\s*[:#-]?\s*([A-Za-z0-9_-]+(?:\s+[A-Za-z0-9_-]+)*)", spec, re.I)
+        if m_pid_spec:
+            raw_tag = f"PID Item {m_pid_spec.group(1).strip()}"
+            pn = _standardize_item_prefix(raw_tag)
+            spec = re.sub(
+                r"(?:;\s*)?\b" + re.escape(m_pid_spec.group(0)) + r"\b(?:\s*;)?",
+                "",
+                spec,
+                flags=re.I,
+            ).strip("; ")
         else:
-            # Check if specification has an item/ref tag that was put there (e.g. "Ref No: 12" or "Item No: 5")
+            # Check if specification has an item/ref/serial tag (e.g. "Item No: 5" or "Ref No. 12")
             m_spec_item = re.search(
                 r"\b(Item\s*No|Ref\s*No|Reference\s*No|Serial\s*No|No)\s*[:.]\s*([A-Za-z0-9_-]+)",
                 spec,
@@ -1118,13 +1175,31 @@ def normalize_spare_part_number_and_position(
                     flags=re.I,
                 ).strip("; ")
 
+    # Rule 2:
+    if has_catalog_pn:
+        # If an item/ref number was also found (e.g. from pos), put it into specification
+        if item_ref_from_pos:
+            item_tag = _format_item_tag(item_ref_from_pos)
+            if item_tag and item_tag.lower() not in spec.lower():
+                spec = f"{item_tag}; {spec}".strip("; ") if spec else item_tag
+    else:
+        # No catalog part number is present!
+        # Check if we have an item/ref number to treat as part_number along with Prefix
+        if pn and _is_fallback_item_id(pn):
+            pn = _standardize_item_prefix(pn)
+        elif item_ref_from_pos:
+            pn = _standardize_item_prefix(item_ref_from_pos)
+
     # Rule 3:
-    # When no Part Number or Item No./Reference No., combine the Drawing No/Position No value:
+    # When no Part Number or Item No./Reference No./PID Item, combine the Drawing No/Position No value:
     # "Drawing No./Position No."
-    # If Item No./Reference No. is captured as part number, no need to combine Drawing No.
+    # If Item No./Reference No./PID Item is captured as part number, no need to combine Drawing No.
     if not pn:
         if dwg and pos:
             pn = f"{dwg}/{pos}"
+
+    # Strip any remarks completely from specification
+    spec = _strip_remarks_from_spec(spec)
 
     final_pn = pn if pn else None
     final_pos = pos if pos else None
@@ -1833,9 +1908,9 @@ async def _extract_entities_from_page_image_with_openai(
                 "A single page can contain 50-300 parts — extract ALL of them."
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
                 "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). If not clearly a position label, keep it empty (null). NEVER map Item No., Reference No., Ref No., Serial No., or No. to drawing_position!"
-                "\n  • part_number → Catalog Part Number (PC.NO, CODE NO, etc.). If a catalog Part Number is present AND an Item No./Ref No./Serial No./No. is also present, put the item reference in specification (e.g. 'Ref No: 12'). If NO catalog Part Number exists in the manual, capture Item No., Reference No., Serial No., or No. as part_number WITH its header prefix (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). Leave null if none of these exist — NEVER capture PDF filenames, drawing titles, or page references here."
+                "\n  • part_number → Catalog Part Number (PC.NO, CODE NO, etc.). If a catalog Part Number is present, capture it cleanly WITHOUT column header prefixes like 'Part No' or 'Part Number' (e.g. '00621141'). If an Item No./Ref No./Serial No./No. is also present, put that item reference in specification (e.g. 'Ref No: 12'). If NO catalog Part Number exists in the manual, capture Item No., Reference No., Serial No., No., or PID Item as part_number WITH its header prefix from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005', 'PID Item BO 002'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). Leave null if none of these exist — NEVER capture PDF filenames, drawing titles, or page references here."
                 "\n  • part_name → the SPARE NAME ONLY in Proper Text / Title Case, preserving any abbreviations and misspellings of the name (e.g. 'O-Ring', 'Hex Bolt', 'Ball Bearing', 'Oil Seal', 'Gasket', 'Plug'). CRITICAL: Do NOT include specifications, dimensions, thread sizes, materials, or parenthetical details in part_name (e.g. for 'O-RING (15.5 x 2.4 FKM)' output 'O-Ring'; for 'HEX BOLT M12x45' output 'Hex Bolt'; for 'BALL BEARING 6205' output 'Ball Bearing') — always separate and move those additional details to specification!"
-                "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
+                "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER output the keyword 'Remarks:' or include remarks notes in specification — remarks are not requested."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
                 "\n\nMULTI-MODEL & VARIANT TABLES RULE (CRITICAL):"
@@ -1924,9 +1999,9 @@ async def _extract_entities_from_page_image_with_claude(
                 "A single page can contain 50-300 parts — extract ALL of them."
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
                 "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). If not clearly a position label, keep it empty (null). NEVER map Item No., Reference No., Ref No., Serial No., or No. to drawing_position!"
-                "\n  • part_number → Catalog Part Number (PC.NO, CODE NO, etc.). If a catalog Part Number is present AND an Item No./Ref No./Serial No./No. is also present, put the item reference in specification (e.g. 'Ref No: 12'). If NO catalog Part Number exists in the manual, capture Item No., Reference No., Serial No., or No. as part_number WITH its header prefix (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). Leave null if none of these exist — NEVER capture PDF filenames, drawing titles, or page references here."
+                "\n  • part_number → Catalog Part Number (PC.NO, CODE NO, etc.). If a catalog Part Number is present, capture it cleanly WITHOUT column header prefixes like 'Part No' or 'Part Number' (e.g. '00621141'). If an Item No./Ref No./Serial No./No. is also present, put that item reference in specification (e.g. 'Ref No: 12'). If NO catalog Part Number exists in the manual, capture Item No., Reference No., Serial No., No., or PID Item as part_number WITH its header prefix from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005', 'PID Item BO 002'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). Leave null if none of these exist — NEVER capture PDF filenames, drawing titles, or page references here."
                 "\n  • part_name → the SPARE NAME ONLY in Proper Text / Title Case, preserving any abbreviations and misspellings of the name (e.g. 'O-Ring', 'Hex Bolt', 'Ball Bearing', 'Oil Seal', 'Gasket', 'Plug'). CRITICAL: Do NOT include specifications, dimensions, thread sizes, materials, or parenthetical details in part_name (e.g. for 'O-RING (15.5 x 2.4 FKM)' output 'O-Ring'; for 'HEX BOLT M12x45' output 'Hex Bolt'; for 'BALL BEARING 6205' output 'Ball Bearing') — always separate and move those additional details to specification!"
-                "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
+                "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER output the keyword 'Remarks:' or include remarks notes in specification — remarks are not requested."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
                 "\n\nMULTI-MODEL & VARIANT TABLES RULE (CRITICAL):"

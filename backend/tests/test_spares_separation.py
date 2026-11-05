@@ -2,6 +2,7 @@ import pytest
 from app.services.extractor import (
     separate_spare_name_and_spec,
     normalize_spare_part_number_and_position,
+    _format_specification_headers,
 )
 
 
@@ -132,3 +133,60 @@ def test_rule3_drawing_no_position_no_combination():
     pn, pos, spec = normalize_spare_part_number_and_position("Item No. 8", None, "DWG-99", None)
     assert pn == "Item No. 8"
     assert "DWG-99" not in pn
+
+
+def test_catalog_part_number_prefix_removal():
+    # Normal catalog part numbers must NOT be prefixed with column headers
+    cases = [
+        ("Part No: 00621141", "00621141"),
+        ("Part Number: 00617736", "00617736"),
+        ("Part No. 6205-01", "6205-01"),
+        ("PC. NO. 6205-01", "6205-01"),
+        ("PC NO: 4455", "4455"),
+        ("Code No: 12345", "12345"),
+        ("Code: 9901-X", "9901-X"),
+        ("00621141", "00621141"),
+    ]
+    for raw_pn, expected_pn in cases:
+        pn, pos, spec = normalize_spare_part_number_and_position(raw_pn, "15", "FIG.7", None)
+        assert pn == expected_pn, f"Failed for {raw_pn}: got {pn}, expected {expected_pn}"
+        assert pos == "15"
+
+
+def test_pid_item_prefixing_and_cleanup():
+    # Fallback P&ID items like BM 005, BO 002 must have header title prefixed
+    cases = [
+        ("BM 005", "PID Item BM 005"),
+        ("BO 002", "PID Item BO 002"),
+        ("PID Item BM 090", "PID Item BM 090"),
+        ("PID-Item: BM 090", "PID Item BM 090"),
+        ("PID Item: BO 007", "PID Item BO 007"),
+    ]
+    for raw_pn, expected_pn in cases:
+        pn, pos, spec = normalize_spare_part_number_and_position(raw_pn, None, None, None)
+        assert pn == expected_pn, f"Failed for {raw_pn}: got {pn}, expected {expected_pn}"
+
+    # When part_number was empty and PID Item was leaked into specification with Remarks
+    pn, pos, spec = normalize_spare_part_number_and_position(
+        None, None, None, "QTY: 2 PCS; Remarks: PID Item BM 090"
+    )
+    assert pn == "PID Item BM 090"
+    assert spec == "QTY: 2 PCS"
+    assert "Remarks" not in (spec or "")
+
+
+def test_specification_remarks_complete_removal():
+    # Specification must NEVER contain the keyword 'Remarks:' or remarks notes
+    assert _format_specification_headers("QTY: 2 PCS; Remarks: PID Item BM 090") == "QTY: 2 PCS"
+    assert _format_specification_headers("Remarks: PID Item BM 090") is None
+    assert _format_specification_headers("QTY: 1 SET; Remarks: (USH-20) For pump outlet") == "QTY: 1 SET"
+    assert _format_specification_headers("Remarks: Items 7, 8 for blinding") is None
+    assert _format_specification_headers("QTY: 2 PCS; Material: STEEL; Remarks: Items 7, 8 for blinding") == "QTY: 2 PCS; Material: STEEL"
+
+    # In normalization
+    pn, pos, spec = normalize_spare_part_number_and_position(
+        "00621141", "15", "FIG.7", "QTY: 2 PCS; Remarks: Items 7, 8 for blinding"
+    )
+    assert pn == "00621141"
+    assert spec == "QTY: 2 PCS"
+    assert "Remarks" not in (spec or "")
