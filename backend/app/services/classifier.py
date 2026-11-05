@@ -860,6 +860,11 @@ def _classify_with_claude(
             max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
+        try:
+            from app.services.token_tracker import record_claude_usage
+            record_claude_usage(message.usage, model=model_id)
+        except Exception:
+            pass
 
         raw = message.content[0].text.strip()
         _log.info("classifier[claude]: raw response for %s: %s", filename, raw[:300])
