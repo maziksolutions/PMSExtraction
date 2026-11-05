@@ -67,6 +67,7 @@ interface PageStatusRow {
   is_targeted: boolean
   status: 'success' | 'failed' | 'pending' | 'skipped'
   extracted_count: number
+  extraction_run_count?: number
   targeted_types: {
     component: boolean
     job: boolean
@@ -81,6 +82,7 @@ interface PageStatusResponse {
   page_count: number | null
   status: string
   target_model?: string | null
+  manual_extraction_count?: number
   pages: PageStatusRow[]
 }
 
@@ -304,11 +306,16 @@ export function ManualPageStatusModal({
               </h2>
             </div>
             {data && (
-              <p className="text-xs text-slate-400 flex items-center gap-2">
+              <p className="text-xs text-slate-400 flex items-center gap-2 flex-wrap">
                 <span>Extraction Status Details</span>
                 <span className="text-slate-600">&bull;</span>
                 <span>Manual Status:</span>
                 <span className="capitalize font-semibold text-slate-300">{data.status}</span>
+                <span className="text-slate-600">&bull;</span>
+                <span className="inline-flex items-center gap-1 text-indigo-300 font-semibold bg-indigo-950/40 border border-indigo-800/50 px-2 py-0.5 rounded-full text-[11px]">
+                  <RefreshCw className="h-2.5 w-2.5" />
+                  Manual Run Count: {data.manual_extraction_count ?? (summary.components + summary.jobs + summary.spares > 0 ? 1 : 0)} time(s)
+                </span>
               </p>
             )}
           </div>
@@ -349,7 +356,7 @@ export function ManualPageStatusModal({
         ) : (
           <>
             {/* Top Summary Stats Cards */}
-            <div className="grid grid-cols-4 gap-3 px-6 pt-4 shrink-0">
+            <div className="grid grid-cols-5 gap-3 px-6 pt-4 shrink-0">
               <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
                 <span className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">Pages Status</span>
                 <span className="text-lg font-bold text-white mt-1">
@@ -367,6 +374,13 @@ export function ManualPageStatusModal({
               <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
                 <span className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">Extracted Spares</span>
                 <span className="text-lg font-bold text-amber-400 mt-1">{summary.spares}</span>
+              </div>
+              <div className="bg-slate-950/40 border border-slate-800 rounded-xl p-3 flex flex-col justify-between">
+                <span className="text-[10px] uppercase font-semibold text-slate-500 tracking-wider">Manual Run Count</span>
+                <span className="text-lg font-bold text-indigo-400 mt-1 flex items-center gap-1.5">
+                  <RefreshCw className="h-4 w-4 text-indigo-400 shrink-0" />
+                  {data?.manual_extraction_count ?? (summary.components + summary.jobs + summary.spares > 0 ? 1 : 0)} <span className="text-xs font-normal text-slate-400">time(s)</span>
+                </span>
               </div>
             </div>
 
@@ -462,8 +476,9 @@ export function ManualPageStatusModal({
                   <thead>
                     <tr className="border-b border-slate-800 text-slate-500 font-semibold uppercase tracking-wider">
                       <th className="py-2.5 px-3 w-[15%]">Page Number</th>
-                      <th className="py-2.5 px-3 w-[25%]">Extraction Status</th>
-                      <th className="py-2.5 px-3 w-[45%]">Extracted Items</th>
+                      <th className="py-2.5 px-3 w-[20%]">Extraction Status</th>
+                      <th className="py-2.5 px-3 w-[15%]">Page Runs</th>
+                      <th className="py-2.5 px-3 w-[35%]">Extracted Items</th>
                       <th className="py-2.5 px-3 w-[15%] text-right">Actions</th>
                     </tr>
                   </thead>
@@ -523,6 +538,14 @@ export function ManualPageStatusModal({
                                   </div>
                                 )}
                               </div>
+                            </td>
+
+                            {/* Page Runs */}
+                            <td className="py-3.5 px-3">
+                              <span className="inline-flex items-center gap-1 rounded-md bg-slate-800/90 border border-slate-700 px-2 py-0.5 text-[11px] font-semibold text-slate-300">
+                                <RefreshCw className="h-2.5 w-2.5 text-indigo-400" />
+                                {page.extraction_run_count ?? (page.extracted_count > 0 ? 1 : 0)} {page.extraction_run_count === 1 || (!page.extraction_run_count && page.extracted_count > 0) ? 'run' : 'runs'}
+                              </span>
                             </td>
 
                             {/* Extracted Items */}

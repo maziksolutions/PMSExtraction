@@ -2506,6 +2506,12 @@ async def get_manual_page_status(
                 "detail": spare.part_number or "",
             })
 
+    from app.services.extraction_counter import get_extraction_counts
+    manual_run_count, page_run_counts = await get_extraction_counts(manual_id)
+    total_items = len(components) + len(jobs) + len(spares)
+    if manual_run_count == 0 and total_items > 0:
+        manual_run_count = 1
+
     pages_data = []
     for p in range(1, total_pages + 1):
         is_targeted = (p in component_pages) or (p in job_pages) or (p in spare_pages)
@@ -2526,11 +2532,13 @@ async def get_manual_page_status(
             else:
                 page_status = "success"
 
+        page_run_count = page_run_counts.get(p, 1 if extracted_count > 0 else 0)
         pages_data.append({
             "page_number": p,
             "is_targeted": is_targeted,
             "status": page_status,
             "extracted_count": extracted_count,
+            "extraction_run_count": page_run_count,
             "targeted_types": {
                 "component": p in component_pages,
                 "job": p in job_pages,
@@ -2545,6 +2553,7 @@ async def get_manual_page_status(
         "page_count": manual.page_count,
         "status": manual.status,
         "target_model": getattr(manual, "target_model", None),
+        "manual_extraction_count": manual_run_count,
         "pages": pages_data,
     }
 

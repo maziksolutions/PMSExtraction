@@ -1179,6 +1179,22 @@ const ManualReview: React.FC = () => {
   const total: number = data?.total ?? 0
   const gaps: Gap[] = missingReport?.gaps ?? []
 
+  const completedManualsCount = useMemo(() => {
+    if (noExtractedData?.total_completed_manuals !== undefined) {
+      return noExtractedData.total_completed_manuals
+    }
+    if (!noExtractedData?.all_manuals_summary) return 0
+    return Object.values(noExtractedData.all_manuals_summary).filter((s: any) => s.is_complete).length
+  }, [noExtractedData])
+
+  const targetedManualsCount = useMemo(() => {
+    if (noExtractedData?.total_targeted_manuals !== undefined) {
+      return noExtractedData.total_targeted_manuals
+    }
+    if (!noExtractedData?.all_manuals_summary) return 0
+    return Object.values(noExtractedData.all_manuals_summary).filter((s: any) => s.has_target_pages).length
+  }, [noExtractedData])
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -1594,6 +1610,26 @@ const ManualReview: React.FC = () => {
             Clear filters
           </button>
         )}
+        {/* Completed Manuals Counter Badge */}
+        <div
+          className="flex items-center gap-2 rounded-lg border border-emerald-600/50 bg-emerald-950/60 px-3 py-1.5 text-xs font-semibold text-emerald-300 shadow-sm"
+          title="Manuals where all targeted extraction pages have been successfully extracted"
+        >
+          <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+          <span>Completed Manuals:</span>
+          <span
+            style={{ backgroundColor: '#065f46', color: '#ecfdf5', borderColor: '#059669' }}
+            className="border text-[11px] font-extrabold px-2 py-0.5 rounded-full"
+          >
+            {completedManualsCount} / {targetedManualsCount || total || 0}
+          </span>
+          {targetedManualsCount > 0 && (
+            <span className="text-[10px] text-emerald-400/80 font-normal">
+              ({Math.round((completedManualsCount / targetedManualsCount) * 100)}%)
+            </span>
+          )}
+        </div>
+
         <button
           onClick={() => {
             setModalActiveTab('extracted')
