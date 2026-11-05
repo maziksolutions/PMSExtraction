@@ -75,7 +75,7 @@ def stop_extraction(vessel_id_str: str) -> bool:
         set_extraction_state(vessel_id_str, status="idle")
         return True
     state = get_extraction_state(vessel_id_str)
-    if state and state.get("status") in ("running", "paused"):
+    if state:
         set_extraction_state(vessel_id_str, status="idle")
         return True
     return False
