@@ -151,6 +151,66 @@ async def debug_check_p42(db: AsyncSession = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 
+@router.get("/debug-extraction-status", tags=["Debug"], summary="Diagnostic endpoint to check live extraction status and stuck manuals")
+async def debug_extraction_status(
+    vessel_id: str | None = None,
+    action: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.services.extractor import get_extraction_state, set_extraction_state, _active_extraction_tasks, _extraction_paused_flags
+    from sqlalchemy import text
+    try:
+        candidates = ["607e4783-4f0f-433e-a010-609bd93250cd", "4acf710a-2816-445c-8bb3-72e8373600d1"]
+        if vessel_id and vessel_id not in candidates:
+            candidates.insert(0, vessel_id)
+        elif vessel_id:
+            candidates.remove(vessel_id)
+            candidates.insert(0, vessel_id)
+
+        vessels_data = {}
+        for vid in candidates:
+            st = get_extraction_state(vid)
+            if action == "reset_completed":
+                set_extraction_state(vid, status="completed")
+                st = get_extraction_state(vid)
+            elif action == "reset_idle":
+                set_extraction_state(vid, status="idle")
+                st = get_extraction_state(vid)
+
+            res = await db.execute(text("""
+                SELECT id, original_filename, status, error_message, updated_at, pages_with_spares,
+                       (SELECT COUNT(*) FROM spares s WHERE s.source_manual_id = manuals.id AND s.is_deleted = false) as spares_count
+                FROM manuals
+                WHERE vessel_id = :vid AND is_deleted = false
+                ORDER BY updated_at DESC
+                LIMIT 45;
+            """), {"vid": vid})
+            rows = res.fetchall()
+            manuals_list = []
+            for r in rows:
+                manuals_list.append({
+                    "id": str(r[0]),
+                    "filename": r[1],
+                    "status": r[2],
+                    "error": r[3],
+                    "updated_at": r[4].isoformat() if r[4] else None,
+                    "pages_with_spares": r[5],
+                    "spares_count": r[6],
+                })
+
+            vessels_data[vid] = {
+                "extraction_state": st,
+                "has_async_task": vid in _active_extraction_tasks,
+                "is_paused": _extraction_paused_flags.get(vid, False),
+                "recent_manuals": manuals_list,
+            }
+
+        return {"status": "success", "vessels": vessels_data}
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
+
+
 
 
 
