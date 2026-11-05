@@ -12,7 +12,7 @@ from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -22,7 +22,7 @@ from app.models.feedback import CorrectionType, FeedbackEntry
 from app.models.ingestion import Manual, ManualPageRefHistory, ManualStatus
 from app.models.user import User
 from app.models.vessel import VesselProject
-from app.schemas.manual import ManualOut, ManualPageRefHistoryOut, ManualUpdate
+from app.schemas.manual import DeletedManualOut, ManualOut, ManualPageRefHistoryOut, ManualUpdate
 from app.services.feedback_learning import schedule_feedback_learning
 from app.services.review_workflow import broadcast_activity, log_activity
 from app.services.upload_security import validate_uploaded_file_bytes
@@ -1424,6 +1424,204 @@ async def restore_manual_page_ref_snapshot(
         notes=f"Restored to snapshot from {snapshot.created_at.strftime('%Y-%m-%d %H:%M UTC')}",
     )
     db.add(restored_entry)
+    await db.commit()
+    await db.refresh(manual)
+
+    return ManualOut.model_validate(manual)
+
+@router.get(
+    "/{vessel_id}/manuals/deleted",
+    response_model=list[DeletedManualOut],
+    summary="Get all deleted manuals for a vessel with extraction run counts and history",
+)
+async def get_deleted_manuals(
+    vessel_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[DeletedManualOut]:
+    await _get_vessel_or_404(vessel_id, db)
+
+    result = await db.execute(
+        select(Manual)
+        .where(
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == True,
+        )
+        .order_by(Manual.updated_at.desc())
+    )
+    deleted_manuals = result.scalars().all()
+    if not deleted_manuals:
+        return []
+
+    manual_ids = [m.id for m in deleted_manuals]
+
+    from app.services.extraction_counter import ensure_extraction_counter_tables
+    await ensure_extraction_counter_tables()
+
+    # 1. Fetch manual extraction runs
+    run_counts: dict[uuid.UUID, tuple[int, Optional[datetime]]] = {}
+    for mid in manual_ids:
+        try:
+            r_res = await db.execute(
+                text("SELECT run_count, last_run_at FROM manual_extraction_runs WHERE manual_id = :mid"),
+                {"mid": mid}
+            )
+            row = r_res.fetchone()
+            if row:
+                run_counts[mid] = (int(row[0] or 0), row[1])
+        except Exception:
+            pass
+
+    # 2. Fetch page extraction run counts
+    page_runs: dict[uuid.UUID, dict[int, int]] = {mid: {} for mid in manual_ids}
+    for mid in manual_ids:
+        try:
+            p_res = await db.execute(
+                text("SELECT page_number, run_count FROM manual_page_extractions WHERE manual_id = :mid"),
+                {"mid": mid}
+            )
+            for pr in p_res.fetchall():
+                page_runs[mid][int(pr[0])] = int(pr[1] or 0)
+        except Exception:
+            pass
+
+    # 3. Fetch extracted records counts
+    comp_counts: dict[uuid.UUID, int] = {}
+    job_counts: dict[uuid.UUID, int] = {}
+    spare_counts: dict[uuid.UUID, int] = {}
+    history_counts: dict[uuid.UUID, int] = {}
+
+    for mid in manual_ids:
+        try:
+            c_res = await db.execute(text("SELECT COUNT(*) FROM components WHERE source_manual_id = :mid"), {"mid": mid})
+            comp_counts[mid] = int(c_res.scalar() or 0)
+        except Exception:
+            comp_counts[mid] = 0
+
+        try:
+            j_res = await db.execute(text("SELECT COUNT(*) FROM jobs WHERE source_manual_id = :mid"), {"mid": mid})
+            job_counts[mid] = int(j_res.scalar() or 0)
+        except Exception:
+            job_counts[mid] = 0
+
+        try:
+            s_res = await db.execute(text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid"), {"mid": mid})
+            spare_counts[mid] = int(s_res.scalar() or 0)
+        except Exception:
+            spare_counts[mid] = 0
+
+        try:
+            h_res = await db.execute(text("SELECT COUNT(*) FROM manual_page_ref_history WHERE manual_id = :mid"), {"mid": mid})
+            history_counts[mid] = int(h_res.scalar() or 0)
+        except Exception:
+            history_counts[mid] = 0
+
+    output = []
+    for m in deleted_manuals:
+        m_runs, last_run = run_counts.get(m.id, (0, None))
+        output.append(
+            DeletedManualOut(
+                id=m.id,
+                vessel_id=m.vessel_id,
+                original_filename=m.original_filename,
+                file_extension=m.file_extension,
+                file_size_bytes=m.file_size_bytes,
+                category=m.category,
+                classification_confidence=m.classification_confidence,
+                useful_for_extraction=m.useful_for_extraction,
+                pages_with_components=m.pages_with_components,
+                pages_with_jobs=m.pages_with_jobs,
+                pages_with_spares=m.pages_with_spares,
+                pages_with_components_physical=m.pages_with_components_physical,
+                pages_with_jobs_physical=m.pages_with_jobs_physical,
+                pages_with_spares_physical=m.pages_with_spares_physical,
+                page_count=m.page_count,
+                created_at=m.created_at,
+                updated_at=m.updated_at,
+                manual_extraction_run_count=m_runs,
+                page_extraction_counts=page_runs.get(m.id, {}),
+                last_extraction_at=last_run,
+                extracted_components_count=comp_counts.get(m.id, 0),
+                extracted_jobs_count=job_counts.get(m.id, 0),
+                extracted_spares_count=spare_counts.get(m.id, 0),
+                history_snapshot_count=history_counts.get(m.id, 0),
+            )
+        )
+
+    return output
+
+
+@router.post(
+    "/{vessel_id}/manuals/{manual_id}/restore-deleted",
+    response_model=ManualOut,
+    summary="Restore a soft-deleted manual and its extracted entities",
+)
+async def restore_deleted_manual(
+    vessel_id: uuid.UUID,
+    manual_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ManualOut:
+    await _get_vessel_or_404(vessel_id, db)
+
+    result = await db.execute(
+        select(Manual).where(
+            Manual.id == manual_id,
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == True,
+        )
+    )
+    manual: Manual | None = result.scalar_one_or_none()
+    if manual is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deleted manual not found")
+
+    manual.is_deleted = False
+    db.add(manual)
+
+    # Restore associated components, jobs, spares
+    from app.models.component import Component
+    from app.models.job import Job
+    from app.models.spare import Spare
+
+    await db.execute(
+        update(Component)
+        .where(Component.source_manual_id == manual.id)
+        .values(is_deleted=False)
+    )
+    await db.execute(
+        update(Job)
+        .where(Job.source_manual_id == manual.id)
+        .values(is_deleted=False)
+    )
+    await db.execute(
+        update(Spare)
+        .where(Spare.source_manual_id == manual.id)
+        .values(is_deleted=False)
+    )
+
+    user_name = getattr(current_user, "full_name", None) or getattr(current_user, "email", None) or "User"
+    restored_snap = ManualPageRefHistory(
+        tenant_id=manual.tenant_id,
+        vessel_id=manual.vessel_id,
+        manual_id=manual.id,
+        changed_by_user_id=getattr(current_user, "id", None),
+        changed_by_name=user_name,
+        change_source="manual_restored",
+        pages_with_components=manual.pages_with_components,
+        pages_with_jobs=manual.pages_with_jobs,
+        pages_with_spares=manual.pages_with_spares,
+        pages_with_components_physical=manual.pages_with_components_physical,
+        pages_with_jobs_physical=manual.pages_with_jobs_physical,
+        pages_with_spares_physical=manual.pages_with_spares_physical,
+        previous_pages_with_components=manual.pages_with_components,
+        previous_pages_with_jobs=manual.pages_with_jobs,
+        previous_pages_with_spares=manual.pages_with_spares,
+        notes="Manual undeleted and restored to active review list",
+    )
+    db.add(restored_snap)
+
     await db.commit()
     await db.refresh(manual)
 
