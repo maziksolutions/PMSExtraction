@@ -4188,6 +4188,8 @@ async def extract_selected_manuals(
     page_numbers: Optional[list[int]] = body.get("page_numbers", None)
 
     manual_pages_map: Optional[dict[str, list[int]]] = body.get("manual_pages_map", None)
+    scope: Optional[str] = body.get("scope", None)
+
 
     target_model_global: Optional[str] = body.get("target_model")
 
@@ -4339,13 +4341,15 @@ async def extract_selected_manuals(
 
         if m_id_str in runnable_manual_ids:
 
+            allowed_pages = set(manual_pages_map[m_id_str]) if (manual_pages_map and m_id_str in manual_pages_map) else (set(page_numbers) if page_numbers else None)
+
             manual_pages_snapshot[m_id_str] = {
 
-                "component": _selected_manual_pages(manual, "component"),
+                "component": [p for p in _selected_manual_pages(manual, "component") if allowed_pages is None or p in allowed_pages],
 
-                "job": _selected_manual_pages(manual, "job"),
+                "job": [p for p in _selected_manual_pages(manual, "job") if allowed_pages is None or p in allowed_pages],
 
-                "spare": _selected_manual_pages(manual, "spare"),
+                "spare": [p for p in _selected_manual_pages(manual, "spare") if allowed_pages is None or p in allowed_pages],
 
             }
 
