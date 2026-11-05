@@ -123,7 +123,10 @@ async def _run_extract_all(
                     set_extraction_state(vessel_id_str, done=st.get("done", 0) + 1)
 
     try:
-        await asyncio.gather(*[_run_one(mid) for mid in manual_ids])
+        for mid in manual_ids:
+            while _extraction_paused_flags.get(vessel_id_str):
+                await asyncio.sleep(1)
+            await _run_one(mid)
         set_extraction_state(vessel_id_str, status="completed")
     except asyncio.CancelledError:
         logger.info("_run_extract_all: task cancelled")
