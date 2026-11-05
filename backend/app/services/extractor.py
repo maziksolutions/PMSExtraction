@@ -4198,6 +4198,7 @@ async def auto_extract_from_manual(
                             page_desc = f"chunk {chunk_idx + 1}/{len(text_chunks)}"
                         set_extraction_state(
                             vessel_id_str,
+                            current_manual_name=filename,
                             current_manual_pages_done=done_sub_steps,
                             detailed_status=f"Extracting {etype}s from text ({page_desc})..."
                         )
@@ -4311,6 +4312,7 @@ async def auto_extract_from_manual(
                                         done_sub_steps += 1
                                     set_extraction_state(
                                         vessel_id_str,
+                                        current_manual_name=filename,
                                         current_manual_pages_done=done_sub_steps,
                                         detailed_status=f"Extracting spares from image page {page_no} (strip {strip_idx + 1}/{total_strips})..."
                                     )
@@ -4318,6 +4320,7 @@ async def auto_extract_from_manual(
                                 done_sub_steps += 1
                                 set_extraction_state(
                                     vessel_id_str,
+                                    current_manual_name=filename,
                                     current_manual_pages_done=done_sub_steps,
                                     detailed_status=f"Extracting spares from image page {page_no} (starting)..."
                                 )
@@ -4348,6 +4351,7 @@ async def auto_extract_from_manual(
                                 done_sub_steps += 1
                                 set_extraction_state(
                                     vessel_id_str,
+                                    current_manual_name=filename,
                                     current_manual_pages_done=done_sub_steps,
                                     detailed_status=f"Extracting {etype}s from image page {page_no} of {manual.page_count or 'N/A'}..."
                                 )
