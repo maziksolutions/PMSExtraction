@@ -19,10 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.deps import get_current_user
 from app.models.feedback import CorrectionType, FeedbackEntry
-from app.models.ingestion import Manual, ManualStatus
+from app.models.ingestion import Manual, ManualPageRefHistory, ManualStatus
 from app.models.user import User
 from app.models.vessel import VesselProject
-from app.schemas.manual import ManualOut, ManualUpdate
+from app.schemas.manual import ManualOut, ManualPageRefHistoryOut, ManualUpdate
 from app.services.feedback_learning import schedule_feedback_learning
 from app.services.review_workflow import broadcast_activity, log_activity
 from app.services.upload_security import validate_uploaded_file_bytes
@@ -177,7 +177,15 @@ async def _apply_manual_updates(
     update_data: dict[str, Any],
     current_user: User,
     db: AsyncSession,
+    change_source: str = "user_edit",
+    notes: Optional[str] = None,
 ) -> tuple[dict[str, Any], uuid.UUID | None]:
+    orig_comp = manual.pages_with_components
+    orig_jobs = manual.pages_with_jobs
+    orig_spares = manual.pages_with_spares
+    orig_comp_phys = manual.pages_with_components_physical
+    orig_jobs_phys = manual.pages_with_jobs_physical
+    orig_spares_phys = manual.pages_with_spares_physical
     prepared, page_fields_changed = _prepare_manual_update_data(manual, update_data)
     original = _original_manual_snapshot(manual)
 
@@ -189,6 +197,44 @@ async def _apply_manual_updates(
         setattr(manual, field, value)
 
     db.add(manual)
+
+    new_comp = manual.pages_with_components
+    new_jobs = manual.pages_with_jobs
+    new_spares = manual.pages_with_spares
+    new_comp_phys = manual.pages_with_components_physical
+    new_jobs_phys = manual.pages_with_jobs_physical
+    new_spares_phys = manual.pages_with_spares_physical
+
+    has_page_diff = (
+        orig_comp != new_comp
+        or orig_jobs != new_jobs
+        or orig_spares != new_spares
+        or orig_comp_phys != new_comp_phys
+        or orig_jobs_phys != new_jobs_phys
+        or orig_spares_phys != new_spares_phys
+    )
+
+    if page_fields_changed or has_page_diff:
+        user_name = getattr(current_user, "full_name", None) or getattr(current_user, "email", None) or "User"
+        history_entry = ManualPageRefHistory(
+            tenant_id=manual.tenant_id,
+            vessel_id=manual.vessel_id,
+            manual_id=manual.id,
+            changed_by_user_id=getattr(current_user, "id", None),
+            changed_by_name=user_name,
+            change_source=change_source,
+            pages_with_components=new_comp,
+            pages_with_jobs=new_jobs,
+            pages_with_spares=new_spares,
+            pages_with_components_physical=new_comp_phys,
+            pages_with_jobs_physical=new_jobs_phys,
+            pages_with_spares_physical=new_spares_phys,
+            previous_pages_with_components=orig_comp,
+            previous_pages_with_jobs=orig_jobs,
+            previous_pages_with_spares=orig_spares,
+            notes=notes,
+        )
+        db.add(history_entry)
 
     feedback_id: uuid.UUID | None = None
     corrected = {k: v for k, v in prepared.items()}
@@ -769,6 +815,7 @@ async def update_manual(
         update_data=update_data,
         current_user=current_user,
         db=db,
+        change_source="user_edit",
     )
     activity = None
     if prepared:
@@ -985,6 +1032,8 @@ async def import_manual_screening(
                 update_data=update_data,
                 current_user=current_user,
                 db=db,
+                change_source="excel_import",
+                notes="Updated via screening import",
             )
             if feedback_id:
                 feedback_ids.append(feedback_id)
@@ -1270,3 +1319,113 @@ async def get_no_extracted_records_report(
         "total_targeted_manuals": total_targeted_manuals,
         "total_manuals": len(manuals),
     }
+
+@router.get(
+    "/{vessel_id}/manuals/{manual_id}/page-ref-history",
+    response_model=list[ManualPageRefHistoryOut],
+    summary="Get page references change history snapshots for a manual",
+)
+async def get_manual_page_ref_history(
+    vessel_id: uuid.UUID,
+    manual_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[ManualPageRefHistoryOut]:
+    await _get_vessel_or_404(vessel_id, db)
+
+    result = await db.execute(
+        select(ManualPageRefHistory)
+        .where(
+            ManualPageRefHistory.vessel_id == vessel_id,
+            ManualPageRefHistory.manual_id == manual_id,
+        )
+        .order_by(ManualPageRefHistory.created_at.desc())
+    )
+    history_entries = result.scalars().all()
+    return list(history_entries)
+
+
+@router.post(
+    "/{vessel_id}/manuals/{manual_id}/restore-page-ref-snapshot/{history_id}",
+    response_model=ManualOut,
+    summary="Restore a manual's page references to a previous snapshot",
+)
+async def restore_manual_page_ref_snapshot(
+    vessel_id: uuid.UUID,
+    manual_id: uuid.UUID,
+    history_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ManualOut:
+    await _get_vessel_or_404(vessel_id, db)
+
+    result = await db.execute(
+        select(Manual).where(
+            Manual.id == manual_id,
+            Manual.vessel_id == vessel_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manual: Manual | None = result.scalar_one_or_none()
+    if manual is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manual not found")
+
+    from app.services.extractor import is_manual_locked_for_extraction
+    if is_manual_locked_for_extraction(str(manual_id), str(vessel_id)):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Page references for manual '{manual.original_filename}' are locked while batch extraction is in progress."
+        )
+
+    snap_result = await db.execute(
+        select(ManualPageRefHistory).where(
+            ManualPageRefHistory.id == history_id,
+            ManualPageRefHistory.manual_id == manual_id,
+            ManualPageRefHistory.vessel_id == vessel_id,
+        )
+    )
+    snapshot: ManualPageRefHistory | None = snap_result.scalar_one_or_none()
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="History snapshot not found")
+
+    orig_comp = manual.pages_with_components
+    orig_jobs = manual.pages_with_jobs
+    orig_spares = manual.pages_with_spares
+
+    manual.pages_with_components = snapshot.pages_with_components
+    manual.pages_with_jobs = snapshot.pages_with_jobs
+    manual.pages_with_spares = snapshot.pages_with_spares
+    manual.pages_with_components_physical = snapshot.pages_with_components_physical
+    manual.pages_with_jobs_physical = snapshot.pages_with_jobs_physical
+    manual.pages_with_spares_physical = snapshot.pages_with_spares_physical
+    manual.pages_with_components_printed = snapshot.pages_with_components
+    manual.pages_with_jobs_printed = snapshot.pages_with_jobs
+    manual.pages_with_spares_printed = snapshot.pages_with_spares
+
+    db.add(manual)
+
+    user_name = getattr(current_user, "full_name", None) or getattr(current_user, "email", None) or "User"
+    restored_entry = ManualPageRefHistory(
+        tenant_id=manual.tenant_id,
+        vessel_id=manual.vessel_id,
+        manual_id=manual.id,
+        changed_by_user_id=getattr(current_user, "id", None),
+        changed_by_name=user_name,
+        change_source="restored",
+        pages_with_components=manual.pages_with_components,
+        pages_with_jobs=manual.pages_with_jobs,
+        pages_with_spares=manual.pages_with_spares,
+        pages_with_components_physical=manual.pages_with_components_physical,
+        pages_with_jobs_physical=manual.pages_with_jobs_physical,
+        pages_with_spares_physical=manual.pages_with_spares_physical,
+        previous_pages_with_components=orig_comp,
+        previous_pages_with_jobs=orig_jobs,
+        previous_pages_with_spares=orig_spares,
+        notes=f"Restored to snapshot from {snapshot.created_at.strftime('%Y-%m-%d %H:%M UTC')}",
+    )
+    db.add(restored_entry)
+    await db.commit()
+    await db.refresh(manual)
+
+    return ManualOut.model_validate(manual)
+

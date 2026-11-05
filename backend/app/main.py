@@ -897,6 +897,73 @@ async def _restore_freshwater_generator_pages_startup() -> None:
         print(f"[STARTUP RESTORE ERROR] Failed to restore freshwater pages: {e}", flush=True)
 
 
+
+async def _ensure_manual_page_ref_history_table() -> None:
+    try:
+        from app.core.database import AsyncSessionLocal
+        from sqlalchemy import text
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("""
+                CREATE TABLE IF NOT EXISTS manual_page_ref_history (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id UUID NOT NULL,
+                    vessel_id UUID NOT NULL,
+                    manual_id UUID NOT NULL REFERENCES manuals(id) ON DELETE CASCADE,
+                    changed_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                    changed_by_name VARCHAR(255),
+                    change_source VARCHAR(100) NOT NULL DEFAULT 'user_edit',
+                    pages_with_components TEXT,
+                    pages_with_jobs TEXT,
+                    pages_with_spares TEXT,
+                    pages_with_components_physical TEXT,
+                    pages_with_jobs_physical TEXT,
+                    pages_with_spares_physical TEXT,
+                    previous_pages_with_components TEXT,
+                    previous_pages_with_jobs TEXT,
+                    previous_pages_with_spares TEXT,
+                    notes TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    is_deleted BOOLEAN NOT NULL DEFAULT FALSE
+                );
+                CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_manual ON manual_page_ref_history(manual_id);
+                CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_vessel ON manual_page_ref_history(vessel_id);
+                CREATE INDEX IF NOT EXISTS idx_manual_page_ref_history_created ON manual_page_ref_history(created_at DESC);
+            """))
+            await db.commit()
+
+            # Seed baseline snapshot for existing manuals with page references
+            await db.execute(text("""
+                INSERT INTO manual_page_ref_history (
+                    id, tenant_id, vessel_id, manual_id, change_source, changed_by_name,
+                    pages_with_components, pages_with_jobs, pages_with_spares,
+                    pages_with_components_physical, pages_with_jobs_physical, pages_with_spares_physical,
+                    notes, created_at, updated_at
+                )
+                SELECT 
+                    gen_random_uuid(), m.tenant_id, m.vessel_id, m.id, 'baseline', 'Initial Saved Reference',
+                    m.pages_with_components, m.pages_with_jobs, m.pages_with_spares,
+                    m.pages_with_components_physical, m.pages_with_jobs_physical, m.pages_with_spares_physical,
+                    'Baseline page references snapshot', m.updated_at, m.updated_at
+                FROM manuals m
+                WHERE (
+                    (m.pages_with_components IS NOT NULL AND m.pages_with_components != '') OR
+                    (m.pages_with_jobs IS NOT NULL AND m.pages_with_jobs != '') OR
+                    (m.pages_with_spares IS NOT NULL AND m.pages_with_spares != '') OR
+                    (m.pages_with_components_physical IS NOT NULL AND m.pages_with_components_physical != '') OR
+                    (m.pages_with_jobs_physical IS NOT NULL AND m.pages_with_jobs_physical != '') OR
+                    (m.pages_with_spares_physical IS NOT NULL AND m.pages_with_spares_physical != '')
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM manual_page_ref_history h WHERE h.manual_id = m.id
+                );
+            """))
+            await db.commit()
+            print("[STARTUP PAGE REF HISTORY] Ensured manual_page_ref_history table and seeded baselines", flush=True)
+    except Exception as exc:
+        print(f"[STARTUP PAGE REF HISTORY ERROR] {exc}", flush=True)
+
+
 @app.on_event("startup")
 async def _log_ai_config() -> None:
     print(
@@ -956,6 +1023,11 @@ async def _log_ai_config() -> None:
         print(f"[STARTUP TOKEN TRACKER ERROR] Failed to seed historical claude costs: {e}", flush=True)
     try:
         await _restore_freshwater_generator_pages_startup()
+    try:
+        await _ensure_manual_page_ref_history_table()
+    except Exception as e:
+        print(f"[STARTUP PAGE REF HISTORY ERROR] {e}", flush=True)
+
     except Exception as e:
         print(f"[STARTUP RESTORE ERROR] Failed to restore freshwater pages: {e}", flush=True)
 

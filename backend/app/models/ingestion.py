@@ -308,3 +308,44 @@ class IngestionSession(TenantBase):
         return (
             f"<IngestionSession id={self.id} vessel={self.vessel_id} status={self.status}>"
         )
+
+
+class ManualPageRefHistory(TenantBase):
+    __tablename__ = "manual_page_ref_history"
+
+    vessel_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("vessel_projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    manual_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("manuals.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    changed_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    changed_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    change_source: Mapped[str] = mapped_column(String(100), nullable=False, default="user_edit")
+    pages_with_components: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pages_with_jobs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pages_with_spares: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pages_with_components_physical: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pages_with_jobs_physical: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pages_with_spares_physical: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    previous_pages_with_components: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    previous_pages_with_jobs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    previous_pages_with_spares: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Relationships
+    manual: Mapped["Manual"] = relationship("Manual", foreign_keys=[manual_id], lazy="select")
+    changed_by: Mapped[Optional["User"]] = relationship("User", foreign_keys=[changed_by_user_id], lazy="select")
+
+    def __repr__(self) -> str:
+        return f"<ManualPageRefHistory id={self.id} manual={self.manual_id} source={self.change_source}>"
