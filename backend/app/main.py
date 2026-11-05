@@ -760,7 +760,7 @@ async def _sanitize_spares_specifications_startup() -> None:
                 if not orig_spec:
                     continue
                 new_spec = _format_specification_headers(orig_spec)
-                if new_spec and new_spec != orig_spec:
+                if new_spec != orig_spec:
                     await db.execute(
                         text("UPDATE spares SET specification = :new_spec WHERE id = :sid;"),
                         {"new_spec": new_spec, "sid": sid}
