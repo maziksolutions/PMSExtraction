@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react'
-import { X, Search, Zap, Layers, FileText, Filter, CheckSquare, Square } from 'lucide-react'
+import { X, Search, Zap, Layers, FileText, Filter, CheckSquare, Square, CheckCircle2, Clock, RotateCcw } from 'lucide-react'
 
 export interface ManualItem {
   id: string
@@ -14,15 +14,41 @@ export interface ManualItem {
   pages_with_spares_physical?: string | null
 }
 
+export interface ManualSummaryItem {
+  has_target_pages?: boolean
+  total_target_pages?: number
+  is_complete?: boolean
+  total_missing_pages_count?: number
+  missing_components_count?: number
+  missing_jobs_count?: number
+  missing_spares_count?: number
+  missing_components_pages?: number[]
+  missing_jobs_pages?: number[]
+  missing_spares_pages?: number[]
+  extracted_components_pages?: number[]
+  extracted_jobs_pages?: number[]
+  extracted_spares_pages?: number[]
+  extracted_components_count?: number
+  extracted_jobs_count?: number
+  extracted_spares_count?: number
+  total_extracted_pages_count?: number
+}
+
 interface ExtractionConfirmationModalProps {
   isOpen: boolean
   onClose: () => void
   manuals: ManualItem[]
   initialSelectedIds: Set<string> | string[]
   initialExtractionType: 'general' | 'jobs' | 'spares'
-  onConfirm: (finalSelectedIds: string[], extractionType: 'general' | 'jobs' | 'spares') => void
+  onConfirm: (
+    finalSelectedIds: string[],
+    extractionType: 'general' | 'jobs' | 'spares',
+    scope: 'pending' | 'full',
+    manualPagesMap?: Record<string, number[]>
+  ) => void
   isExtractAll?: boolean
   isPending?: boolean
+  noExtractedSummary?: Record<string, ManualSummaryItem>
 }
 
 export function ExtractionConfirmationModal({
@@ -34,12 +60,33 @@ export function ExtractionConfirmationModal({
   onConfirm,
   isExtractAll = false,
   isPending = false,
+  noExtractedSummary,
 }: ExtractionConfirmationModalProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [extractionType, setExtractionType] = useState<'general' | 'jobs' | 'spares'>('general')
+  const [scope, setScope] = useState<'pending' | 'full'>('pending')
   const [searchQuery, setSearchQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [selectionFilter, setSelectionFilter] = useState<'all' | 'selected' | 'unselected'>('all')
+
+  // Helper to extract pending pages for a manual given the extraction type
+  const getPendingPagesForManual = (manualId: string, type: 'general' | 'jobs' | 'spares'): number[] => {
+    const summary = noExtractedSummary?.[manualId]
+    if (!summary) return []
+    if (type === 'spares') {
+      return summary.missing_spares_pages || []
+    }
+    if (type === 'jobs') {
+      return summary.missing_jobs_pages || []
+    }
+    // general: union of missing components, jobs, spares
+    const set = new Set<number>([
+      ...(summary.missing_components_pages || []),
+      ...(summary.missing_jobs_pages || []),
+      ...(summary.missing_spares_pages || []),
+    ])
+    return Array.from(set).sort((a, b) => a - b)
+  }
 
   // Reset state when modal opens or manuals load
   useEffect(() => {
@@ -60,6 +107,7 @@ export function ExtractionConfirmationModal({
       }
       setSelectedIds(initialSet)
       setExtractionType(initialExtractionType)
+      setScope('pending') // Default to pending pages as requested
       setSearchQuery('')
       setCategoryFilter('all')
       setSelectionFilter('all')
@@ -74,6 +122,45 @@ export function ExtractionConfirmationModal({
     })
     return Array.from(set).sort()
   }, [manuals])
+
+  // Aggregate pending pages count across currently selected manuals
+  const totalPendingPages = useMemo(() => {
+    let count = 0
+    selectedIds.forEach((id) => {
+      const pgs = getPendingPagesForManual(id, extractionType)
+      count += pgs.length
+    })
+    return count
+  }, [selectedIds, extractionType, noExtractedSummary])
+
+  // Aggregate total configured reference pages across selected manuals
+  const totalConfiguredPages = useMemo(() => {
+    let count = 0
+    selectedIds.forEach((id) => {
+      const summary = noExtractedSummary?.[id]
+      if (summary) {
+        if (extractionType === 'spares') {
+          count += (summary.missing_spares_pages?.length || 0) + (summary.extracted_spares_pages?.length || 0)
+        } else if (extractionType === 'jobs') {
+          count += (summary.missing_jobs_pages?.length || 0) + (summary.extracted_jobs_pages?.length || 0)
+        } else {
+          count += summary.total_target_pages || 0
+        }
+      }
+    })
+    return count
+  }, [selectedIds, extractionType, noExtractedSummary])
+
+  // Count how many selected manuals actually have pending pages
+  const manualsWithPendingCount = useMemo(() => {
+    let count = 0
+    selectedIds.forEach((id) => {
+      if (getPendingPagesForManual(id, extractionType).length > 0) {
+        count += 1
+      }
+    })
+    return count
+  }, [selectedIds, extractionType, noExtractedSummary])
 
   // Filter and sort manuals: Selected manuals are pinned to the TOP
   const filteredAndSortedManuals = useMemo(() => {
@@ -149,7 +236,33 @@ export function ExtractionConfirmationModal({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (selectedIds.size === 0) return
-    onConfirm(Array.from(selectedIds), extractionType)
+
+    let manualPagesMap: Record<string, number[]> | undefined = undefined
+    let targetIds = Array.from(selectedIds)
+
+    if (scope === 'pending') {
+      manualPagesMap = {}
+      targetIds.forEach((id) => {
+        const pgs = getPendingPagesForManual(id, extractionType)
+        if (pgs.length > 0) {
+          manualPagesMap![id] = pgs
+        }
+      })
+
+      const withPending = Object.keys(manualPagesMap)
+      if (withPending.length > 0) {
+        targetIds = withPending
+      } else {
+        alert(
+          `None of the ${selectedIds.size} selected manual(s) have pending un-extracted pages for ${
+            extractionType === 'spares' ? 'Spares' : extractionType === 'jobs' ? 'Jobs' : 'General'
+          }.\n\nPlease switch Page Scope to "Complete Selected Pages" to re-extract all reference pages.`
+        )
+        return
+      }
+    }
+
+    onConfirm(targetIds, extractionType, scope, manualPagesMap)
   }
 
   return (
@@ -162,7 +275,7 @@ export function ExtractionConfirmationModal({
             <div>
               <h2 className="text-lg font-bold text-slate-100">Confirm Extraction Batch</h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Review and refine the selection of manuals. Selected manuals are pinned at the top.
+                Choose extraction mode and whether to extract pending pages only or rerun complete selected pages.
               </p>
             </div>
           </div>
@@ -283,10 +396,12 @@ export function ExtractionConfirmationModal({
               ) : (
                 filteredAndSortedManuals.map((m) => {
                   const isChecked = selectedIds.has(m.id)
-                  // Page references preview text (fallback to canonical if physical not yet populated)
                   const compPages = m.pages_with_components_physical || m.pages_with_components
                   const jobPages = m.pages_with_jobs_physical || m.pages_with_jobs
                   const sparePages = m.pages_with_spares_physical || m.pages_with_spares
+
+                  const pendingPages = getPendingPagesForManual(m.id, extractionType)
+                  const hasPending = pendingPages.length > 0
 
                   return (
                     <div
@@ -301,7 +416,7 @@ export function ExtractionConfirmationModal({
                       <input
                         type="checkbox"
                         checked={isChecked}
-                        onChange={() => {}} // Handle on click container
+                        onChange={() => {}}
                         className="mt-1 h-3.5 w-3.5 rounded border-slate-800 bg-slate-950 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-900"
                       />
                       <div className="flex-1 min-w-0">
@@ -322,23 +437,43 @@ export function ExtractionConfirmationModal({
                             </span>
                           )}
                         </div>
-                        
-                        {/* Page reference ranges overview */}
-                        <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1 text-[10px] text-slate-500 break-words">
-                          {compPages && <span className="break-all">Comp Pages: <span className="text-slate-400 font-medium">{compPages}</span></span>}
-                          {jobPages && <span className="break-all">Job Pages: <span className="text-slate-400 font-medium">{jobPages}</span></span>}
-                          {sparePages && <span className="break-all">Spare Pages: <span className="text-slate-400 font-medium">{sparePages}</span></span>}
+
+                        {/* Page reference ranges / Pending pages badge */}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-[10px]">
+                          {scope === 'pending' ? (
+                            hasPending ? (
+                              <span className="inline-flex items-center gap-1 text-amber-300 bg-amber-950/60 border border-amber-800/80 px-2 py-0.5 rounded text-[10px] font-bold">
+                                <Clock className="h-3 w-3 text-amber-400 shrink-0" />
+                                <span>
+                                  Pending {extractionType === 'spares' ? 'Spares' : extractionType === 'jobs' ? 'Jobs' : 'Pages'}:{' '}
+                                  <span className="font-extrabold text-amber-200">{pendingPages.join(', ')}</span> ({pendingPages.length} pgs)
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-emerald-400 bg-emerald-950/60 border border-emerald-800/80 px-2 py-0.5 rounded text-[10px] font-semibold">
+                                <CheckCircle2 className="h-3 w-3 text-emerald-400 shrink-0" />
+                                <span>All {extractionType} pages extracted (0 pending)</span>
+                              </span>
+                            )
+                          ) : (
+                            <div className="flex flex-wrap gap-x-3 gap-y-1 text-slate-500 break-words">
+                              {compPages && <span className="break-all">Comp Pages: <span className="text-slate-400 font-medium">{compPages}</span></span>}
+                              {jobPages && <span className="break-all">Job Pages: <span className="text-slate-400 font-medium">{jobPages}</span></span>}
+                              {sparePages && <span className="break-all">Spare Pages: <span className="text-slate-400 font-medium">{sparePages}</span></span>}
+                              {!compPages && !jobPages && !sparePages && <span className="italic text-slate-500">No page references defined</span>}
+                            </div>
+                          )}
+
                           {extractionType === 'jobs' && !jobPages && !m.pages_with_jobs && (
                             <span className="text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded text-[10px] font-bold">
-                              ⚠️ No Job pages defined in Job Ref column
+                              ⚠️ No Job pages defined
                             </span>
                           )}
                           {extractionType === 'spares' && !sparePages && !m.pages_with_spares && (
                             <span className="text-amber-800 bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded text-[10px] font-bold">
-                              ⚠️ No Spare pages defined in Spare Ref column
+                              ⚠️ No Spare pages defined
                             </span>
                           )}
-                          {!compPages && !jobPages && !sparePages && <span className="italic text-slate-500">No page references defined</span>}
                         </div>
                       </div>
                     </div>
@@ -349,74 +484,153 @@ export function ExtractionConfirmationModal({
           </div>
 
           {/* Right: Sidebar Panel */}
-          <div className="w-full md:w-80 bg-slate-950/40 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between shrink-0">
-            <div>
-              <h3 className="text-xs uppercase font-bold text-slate-400 tracking-wider mb-3">Extraction Mode</h3>
-              
-              {/* Option cards */}
-              <div className="flex flex-col gap-2.5">
-                {/* General Mode */}
-                <label className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-all ${
-                  extractionType === 'general'
-                    ? 'border-sky-500 bg-sky-950/15'
-                    : 'border-slate-800 bg-slate-900/40 hover:bg-slate-900/60'
-                }`}>
-                  <input
-                    type="radio"
-                    name="extraction_type"
-                    checked={extractionType === 'general'}
-                    onChange={() => setExtractionType('general')}
-                    className="mt-0.5 h-3.5 w-3.5 border-slate-700 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-950"
-                  />
-                  <div>
-                    <span className="text-xs font-bold text-slate-200">General Extraction</span>
-                    <p className="text-[10px] text-slate-400 mt-0.5">Extracts all categories (components, jobs, and spares).</p>
-                  </div>
-                </label>
+          <div className="w-full md:w-88 bg-slate-950/40 border border-slate-800/80 rounded-xl p-4 flex flex-col justify-between shrink-0 overflow-y-auto">
+            <div className="space-y-4">
+              {/* Scope Selection: Pending Pages vs Complete Selected Pages */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs uppercase font-bold text-slate-300 tracking-wider">Pages to Extract</h3>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-emerald-950 border border-emerald-700/60 text-emerald-400">
+                    Smart Scope
+                  </span>
+                </div>
 
-                {/* Jobs Only Mode */}
-                <label className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-all ${
-                  extractionType === 'jobs'
-                    ? 'border-sky-500 bg-sky-950/15'
-                    : 'border-slate-800 bg-slate-900/40 hover:bg-slate-900/60'
-                }`}>
-                  <input
-                    type="radio"
-                    name="extraction_type"
-                    checked={extractionType === 'jobs'}
-                    onChange={() => setExtractionType('jobs')}
-                    className="mt-0.5 h-3.5 w-3.5 border-slate-700 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-950"
-                  />
-                  <div>
-                    <span className="text-xs font-bold text-slate-200">Jobs Only</span>
-                    <p className="text-[10px] text-slate-400 mt-0.5">Extracts maintenance jobs and procedures only.</p>
-                  </div>
-                </label>
+                <div className="flex flex-col gap-2">
+                  {/* Option 1: Pending Pages Only */}
+                  <label
+                    className={`flex items-start gap-2.5 rounded-lg border p-2.5 cursor-pointer transition-all ${
+                      scope === 'pending'
+                        ? 'border-emerald-500 bg-emerald-950/20'
+                        : 'border-slate-800 bg-slate-900/40 hover:bg-slate-900/60'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="extraction_scope"
+                      checked={scope === 'pending'}
+                      onChange={() => setScope('pending')}
+                      className="mt-0.5 h-3.5 w-3.5 border-slate-700 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-slate-950"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-slate-200">Pending Pages Only</span>
+                        <span className="text-[9px] uppercase px-1.5 py-0.2 rounded font-bold bg-emerald-900/60 text-emerald-300 border border-emerald-700/50">
+                          Recommended
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        Extracts only pages that do not yet have extracted items for the chosen mode.
+                      </p>
+                      <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-amber-400 font-semibold bg-amber-950/40 border border-amber-800/40 px-2 py-0.5 rounded">
+                        <Clock className="h-3 w-3 shrink-0" />
+                        <span>
+                          {totalPendingPages} pending pages across {manualsWithPendingCount} manual(s)
+                        </span>
+                      </div>
+                    </div>
+                  </label>
 
-                {/* Spares Only Mode */}
-                <label className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-all ${
-                  extractionType === 'spares'
-                    ? 'border-sky-500 bg-sky-950/15'
-                    : 'border-slate-800 bg-slate-900/40 hover:bg-slate-900/60'
-                }`}>
-                  <input
-                    type="radio"
-                    name="extraction_type"
-                    checked={extractionType === 'spares'}
-                    onChange={() => setExtractionType('spares')}
-                    className="mt-0.5 h-3.5 w-3.5 border-slate-700 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-950"
-                  />
-                  <div>
-                    <span className="text-xs font-bold text-slate-200">Spares Only</span>
-                    <p className="text-[10px] text-slate-400 mt-0.5">Extracts replacement spare parts and tables only.</p>
-                  </div>
-                </label>
+                  {/* Option 2: Complete Selected Pages */}
+                  <label
+                    className={`flex items-start gap-2.5 rounded-lg border p-2.5 cursor-pointer transition-all ${
+                      scope === 'full'
+                        ? 'border-sky-500 bg-sky-950/20'
+                        : 'border-slate-800 bg-slate-900/40 hover:bg-slate-900/60'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="extraction_scope"
+                      checked={scope === 'full'}
+                      onChange={() => setScope('full')}
+                      className="mt-0.5 h-3.5 w-3.5 border-slate-700 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-950"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-slate-200">Complete Selected Pages</span>
+                        <RotateCcw className="h-3 w-3 text-slate-400" />
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        Re-extracts all reference page ranges configured on selected manuals from scratch.
+                      </p>
+                      {totalConfiguredPages > 0 && (
+                        <div className="mt-1.5 text-[10px] text-slate-400 bg-slate-900 border border-slate-800 px-2 py-0.5 rounded">
+                          {totalConfiguredPages} total reference pages configured
+                        </div>
+                      )}
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Extraction Mode */}
+              <div>
+                <h3 className="text-xs uppercase font-bold text-slate-400 tracking-wider mb-2">Extraction Mode</h3>
+                
+                <div className="flex flex-col gap-2">
+                  {/* General Mode */}
+                  <label className={`flex items-start gap-2.5 rounded-lg border p-2.5 cursor-pointer transition-all ${
+                    extractionType === 'general'
+                      ? 'border-sky-500 bg-sky-950/15'
+                      : 'border-slate-800 bg-slate-900/40 hover:bg-slate-900/60'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="extraction_type"
+                      checked={extractionType === 'general'}
+                      onChange={() => setExtractionType('general')}
+                      className="mt-0.5 h-3.5 w-3.5 border-slate-700 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-950"
+                    />
+                    <div>
+                      <span className="text-xs font-bold text-slate-200">General Extraction</span>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Extracts components, jobs, and spares.</p>
+                    </div>
+                  </label>
+
+                  {/* Jobs Only Mode */}
+                  <label className={`flex items-start gap-2.5 rounded-lg border p-2.5 cursor-pointer transition-all ${
+                    extractionType === 'jobs'
+                      ? 'border-sky-500 bg-sky-950/15'
+                      : 'border-slate-800 bg-slate-900/40 hover:bg-slate-900/60'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="extraction_type"
+                      checked={extractionType === 'jobs'}
+                      onChange={() => setExtractionType('jobs')}
+                      className="mt-0.5 h-3.5 w-3.5 border-slate-700 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-950"
+                    />
+                    <div>
+                      <span className="text-xs font-bold text-slate-200">Jobs Only</span>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Extracts maintenance jobs and procedures only.</p>
+                    </div>
+                  </label>
+
+                  {/* Spares Only Mode */}
+                  <label className={`flex items-start gap-2.5 rounded-lg border p-2.5 cursor-pointer transition-all ${
+                    extractionType === 'spares'
+                      ? 'border-sky-500 bg-sky-950/15'
+                      : 'border-slate-800 bg-slate-900/40 hover:bg-slate-900/60'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="extraction_type"
+                      checked={extractionType === 'spares'}
+                      onChange={() => setExtractionType('spares')}
+                      className="mt-0.5 h-3.5 w-3.5 border-slate-700 text-sky-500 focus:ring-sky-500 focus:ring-offset-slate-950"
+                    />
+                    <div>
+                      <span className="text-xs font-bold text-slate-200">Spares Only</span>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Extracts replacement spare parts and tables only.</p>
+                    </div>
+                  </label>
+                </div>
               </div>
             </div>
 
             {/* Summary & Trigger */}
-            <div className="mt-6 pt-4 border-t border-slate-850">
-              <div className="flex justify-between items-center text-xs mb-4">
+            <div className="mt-4 pt-3 border-t border-slate-850">
+              <div className="flex justify-between items-center text-xs mb-3">
                 <span className="text-slate-400">Selected Manuals:</span>
                 <span className="font-bold text-white bg-slate-800 px-2 py-0.5 rounded-full">
                   {selectedIds.size} / {manuals.length}
@@ -426,11 +640,19 @@ export function ExtractionConfirmationModal({
               <div className="flex flex-col gap-2">
                 <button
                   type="submit"
-                  disabled={selectedIds.size === 0 || isPending}
+                  disabled={selectedIds.size === 0 || isPending || (scope === 'pending' && totalPendingPages === 0)}
                   className="w-full flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-xs font-bold text-white px-4 py-2.5 transition-colors shadow-sm cursor-pointer disabled:cursor-not-allowed"
                 >
                   <Zap className="h-4 w-4" />
-                  <span>{isPending ? 'Starting...' : 'Begin Extraction'}</span>
+                  <span>
+                    {isPending
+                      ? 'Starting...'
+                      : scope === 'pending' && totalPendingPages === 0
+                      ? '0 Pending Pages Found'
+                      : scope === 'pending'
+                      ? `Extract ${totalPendingPages} Pending Page${totalPendingPages === 1 ? '' : 's'}`
+                      : 'Begin Full Extraction'}
+                  </span>
                 </button>
                 <button
                   type="button"
