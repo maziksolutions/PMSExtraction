@@ -26,6 +26,7 @@ import {
   Activity,
   History,
   BarChart3,
+  Archive,
   ExternalLink,
   Lock,
 } from 'lucide-react'
@@ -34,6 +35,7 @@ import { useAuthStore } from '@/store/authStore'
 import { ManualPageStatusModal } from '@/components/manuals/ManualPageStatusModal'
 import { PageRefHistoryModal } from '@/components/manuals/PageRefHistoryModal'
 import { ManualsStatsModal } from '@/components/manuals/ManualsStatsModal'
+import { DeletedManualsModal } from '@/components/manuals/DeletedManualsModal'
 import { NoExtractedRecordsModal, QueuedPageItem } from '@/components/manuals/NoExtractedRecordsModal'
 import { ExtractionConfirmationModal } from '@/components/manuals/ExtractionConfirmationModal'
 
@@ -552,6 +554,17 @@ const ManualReview: React.FC = () => {
   const [selectedManualForStatus, setSelectedManualForStatus] = useState<Manual | null>(null)
   const [selectedManualForHistory, setSelectedManualForHistory] = useState<Manual | null>(null)
   const [showStatsModal, setShowStatsModal] = useState(false)
+  const [showDeletedManualsModal, setShowDeletedManualsModal] = useState(false)
+
+  const { data: deletedManualsList = [] } = useQuery<any[]>({
+    queryKey: ['deleted-manuals', vesselId],
+    queryFn: async () => {
+      const res = await apiClient.get(`/vessels/${vesselId}/manuals/deleted`)
+      return res.data
+    },
+    enabled: !!vesselId,
+    staleTime: 10000,
+  })
   const [showNoExtractedModal, setShowNoExtractedModal] = useState(false)
   const [modalActiveTab, setModalActiveTab] = useState<'extracted' | 'pending'>('extracted')
   const [queuedExtractionPages, setQueuedExtractionPages] = useState<QueuedPageItem[]>([])
@@ -1334,6 +1347,19 @@ const ManualReview: React.FC = () => {
             <BarChart3 className="h-4 w-4 text-sky-400" />
             <span>Statistics</span>
           </button>
+          <button
+            onClick={() => setShowDeletedManualsModal(true)}
+            className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700 hover:text-white transition-colors shadow"
+            title="View deleted manuals archive, extraction history, and restore"
+          >
+            <Archive className="h-4 w-4 text-rose-400" />
+            <span>Deleted Manuals</span>
+            {deletedManualsList.length > 0 && (
+              <span className="px-1.5 py-0.5 text-xs rounded-full bg-rose-950/80 border border-rose-700 text-rose-300 font-bold">
+                {deletedManualsList.length}
+              </span>
+            )}
+          </button>
         </div>
       </div>
 
@@ -1437,6 +1463,14 @@ const ManualReview: React.FC = () => {
             >
               <FileText className="h-3.5 w-3.5" />
               <span>{downloadTemplateMutation.isPending ? 'Preparing...' : 'Template'}</span>
+            </button>
+            <button
+              onClick={() => setShowDeletedManualsModal(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700 text-xs font-medium px-3 py-1.5 transition-colors"
+              title="View deleted manuals archive and extraction history"
+            >
+              <Archive className="h-3.5 w-3.5 text-rose-400" />
+              <span>Deleted ({deletedManualsList.length})</span>
             </button>
             {selectedIds.size > 0 && (
               <button
@@ -2164,6 +2198,14 @@ const ManualReview: React.FC = () => {
           onClose={() => setShowStatsModal(false)}
         />
       )}
+      <DeletedManualsModal
+        vesselId={vesselId ?? ''}
+        isOpen={showDeletedManualsModal}
+        onClose={() => setShowDeletedManualsModal(false)}
+        onManualRestored={() => {
+          refetch()
+        }}
+      />
       {showNoExtractedModal && (
         <NoExtractedRecordsModal
           isOpen={showNoExtractedModal}
