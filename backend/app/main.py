@@ -929,6 +929,11 @@ async def _log_ai_config() -> None:
         await _normalize_spares_part_and_pos_startup()
     except Exception as e:
         print(f"[STARTUP SPARES NORMALIZATION ERROR] Failed to run spares normalization: {e}", flush=True)
+    try:
+        from app.services.token_tracker import seed_historical_claude_costs_startup
+        await seed_historical_claude_costs_startup()
+    except Exception as e:
+        print(f"[STARTUP TOKEN TRACKER ERROR] Failed to seed historical claude costs: {e}", flush=True)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoint (Sprint 8)

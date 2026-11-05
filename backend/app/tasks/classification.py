@@ -106,6 +106,11 @@ Respond with JSON only:
                 system="You are a helpful classification assistant. Return ONLY a JSON object.",
                 messages=[{"role": "user", "content": prompt}],
             )
+            try:
+                from app.services.token_tracker import record_claude_usage
+                record_claude_usage(response.usage, model=model_id)
+            except Exception:
+                pass
             raw_text = response.content[0].text
             clean = _strip_code_fences(raw_text).strip()
             return json.loads(clean)

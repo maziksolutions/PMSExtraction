@@ -282,10 +282,14 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
   const isConsoleLive = data?.console_data?.status === 'success'
   const consoleStatus = data?.console_data?.status ?? 'not_configured'
   const consoleMessage = data?.console_data?.message ?? ''
+  const hasSavedUsage = Boolean(data?.console_data?.saved_usage && data.console_data.saved_usage.length > 0)
 
   const consoleUsageList = useMemo(() => {
-    if (isConsoleLive && data?.console_data?.usage_report?.usage) {
+    if (isConsoleLive && data?.console_data?.usage_report?.usage && data.console_data.usage_report.usage.length > 0) {
       return data.console_data.usage_report.usage
+    }
+    if (data?.console_data?.saved_usage && data.console_data.saved_usage.length > 0) {
+      return data.console_data.saved_usage
     }
     return simulatedConsoleData.usage
   }, [isConsoleLive, data?.console_data, simulatedConsoleData])
@@ -481,7 +485,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                         ${totalConsoleCost.toFixed(2)}
                       </span>
                       <span className="text-[10px] text-slate-400 mt-1">
-                        {isConsoleLive ? 'Billed Spend (Live)' : 'Billed Spend (Demo)'}
+                        {isConsoleLive ? 'Billed Spend (Live)' : hasSavedUsage ? 'Billed Spend (Measured)' : 'Billed Spend (Demo)'}
                       </span>
                     </div>
                   </div>
@@ -870,7 +874,22 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
               {activeTab === 'claude' && (
                 <div className="space-y-6 animate-fade-in">
                   {/* API Key Status Notice */}
-                  {consoleStatus !== 'success' ? (
+                  {isConsoleLive ? (
+                    <div className="rounded-xl border border-emerald-800 bg-emerald-950/20 p-4 flex items-center gap-2 text-xs text-emerald-400 font-medium">
+                      <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span>Live Claude Console Logs Connected Successfully (Admin API)</span>
+                    </div>
+                  ) : hasSavedUsage ? (
+                    <div className="rounded-xl border border-emerald-800/80 bg-emerald-950/20 p-4 space-y-1.5 text-xs">
+                      <div className="flex items-center gap-2 text-emerald-400 font-semibold">
+                        <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                        <span>Live Recorded Application Token Usage (Direct API Measurement)</span>
+                      </div>
+                      <p className="text-slate-300 leading-relaxed">
+                        Measured directly from Anthropic API usage responses on every extraction, OCR, and classification request. Billed at official Anthropic rates ($3.00/MTok input, $15.00/MTok output).
+                      </p>
+                    </div>
+                  ) : (
                     <div className="rounded-xl border border-amber-800 bg-amber-950/20 p-4 space-y-2 text-xs">
                       <div className="flex items-center gap-2 text-amber-400 font-semibold">
                         <AlertCircle className="h-4 w-4" />
@@ -882,11 +901,6 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                       <p className="text-slate-500 italic">
                         Error code {consoleStatus === 'unauthorized' ? '403' : '401'}: {consoleMessage || 'Provide ANTHROPIC_ADMIN_API_KEY environment variable.'}
                       </p>
-                    </div>
-                  ) : (
-                    <div className="rounded-xl border border-emerald-800 bg-emerald-950/20 p-4 flex items-center gap-2 text-xs text-emerald-400 font-medium">
-                      <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                      <span>Live Claude Console Logs Connected Successfully (Admin API)</span>
                     </div>
                   )}
 
@@ -921,7 +935,9 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                       <span className="text-2xl font-extrabold text-orange-400 mt-2">
                         ${totalConsoleCost.toFixed(2)}
                       </span>
-                      <span className="text-[10px] text-slate-400 mt-1">Programmatic spend in Console</span>
+                      <span className="text-[10px] text-slate-400 mt-1">
+                        {isConsoleLive ? 'Programmatic spend in Console' : hasSavedUsage ? 'Measured spend via Anthropic API' : 'Simulated spend'}
+                      </span>
                     </div>
                   </div>
 
