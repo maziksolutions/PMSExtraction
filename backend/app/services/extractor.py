@@ -342,7 +342,9 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "  4. Chapter 13 or similar appendix listing parts by sub-assembly\n\n"
             "Drawing-based parts tables look like:\n"
             "  NO. | NAME | MATERIAL | QTY   (e.g. 1 | UV LAMP | QUARTZ GLASS | 1)\n"
-            "  Extract EVERY row. The drawing_position is the NO. column.\n"
+            "  Extract EVERY row.\n"
+            "  - If a table column is labeled NO., ITEM, or REF.NO and no separate catalog Part Number column is provided, capture it as part_number with its prefix (e.g. 'No. 1').\n"
+            "  - The drawing_position MUST be left null unless the column is explicitly labeled as Position No., Pos., Pos. No., or Position.\n"
             "  The drawing_number is the figure/drawing reference (e.g. 'Fig.7', 'UV STERILIZER drawing').\n\n"
             "MULTI-COLUMN TABLE FORMAT (very common in Japanese equipment manuals):\n"
             "  Pages often show 2–4 identical table sections placed side-by-side across the page width.\n"
@@ -355,9 +357,9 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "Return ONLY a valid JSON array. Each record:\n"
             "{\n"
             '  "part_name": "the pure spare name ONLY in Proper Text / Title Case, preserving original name spelling and abbreviations with zero normalization of the noun (e.g. \'O-Ring\', \'Vlv Stem\', \'Ball Bearing\', \'Fltr Element\', \'Hex Bolt\'). CRITICAL: Never include dimensions, sizes, materials, or specifications in part_name — separate them into specification",\n'
-            '  "part_number": "catalog part number (e.g. PC.NO, CODE NO, PART NO), or row Item No. from the table grid. Leave null if not found — NEVER capture PDF filenames, drawing titles, or page references here",\n'
+            '  "part_number": "catalog part number (e.g. PC.NO, CODE NO, PART NO). If no catalog part number column exists in the manual, use the Item No./Reference No./Serial No./No. with its header prefix (e.g. \'Item No. 5\', \'Ref No. 12\', \'Serial No. 101\', \'No. 3\'). If neither exists, combine Drawing No/Position No (e.g. \'FIG.7/15\'). Leave null if none of these exist",\n'
             '  "drawing_number": "DWG.NO or drawing reference in ALL CAPS (e.g. \'B3798160-02\', \'FIG.7\', \'DWG-1234\') or null",\n'
-            '  "drawing_position": "ONLY capture when clearly identified as Position No., Pos., Pos. No., or Position (e.g. \'1\', \'11\', \'1~58\'). Do NOT treat Item No., Reference No., or No. as Position Numbers — leave null if no explicit Position column exists",\n'
+            '  "drawing_position": "ONLY capture when clearly identified as Position No., Pos., Pos. No., or Position (e.g. \'1\', \'11\', \'1~58\'). Leave null if no explicit Position column exists — NEVER treat Item No., Reference No., Serial No., or No. as Position Numbers",\n'
             '  "specification": "material, size, standard, quantity note strictly as formatted in the manual with NO abbreviations or value modifications (e.g. \'QTY: 2 PCS; Material: SUS304; Size: DN50\') or null",\n'
             '  "spare_assembly": "assembly name, parts table title, or diagram section in Proper Text / Title Case (e.g. \'Cargo Pumping System\', \'Shaft Seal Assembly\', \'Main Components Exploded View\', \'Machine Spare Parts List\') or null",\n'
             '  "assembly_description": "assembly description in Proper Text / Title Case or null",\n'
@@ -405,11 +407,22 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "- ASSEMBLY DIAGRAM RULE: If a page has an exploded-view/assembly diagram with numbered callouts AND a parts table below it, extract ONLY from the parts table rows. Callout numbers in diagrams are cross-references to the table — do NOT create separate records from them.\n"
             "- DUPLICATE TABLE TEXT RULE: Some pages contain the same table represented twice: once as plain unstructured text (where column values are printed inline) and once as a structured `[TABLE]` pipe-delimited block. Do NOT extract duplicate records from both. Extract ONLY from the structured `[TABLE]` block, and ignore the plain unstructured text of those same table rows to prevent duplicate/repeated records.\n"
             "- REMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly variant tags — store in spare_model (in ALL CAPS), NOT in part_name or drawing_number.\n"
-            "- POSITION NUMBER VS PART NUMBER EXTRACTION RULE (STRICT — BUG-002):\n"
-            "    1. Capture drawing_position ONLY when the table or column is clearly labeled as 'Position No.', 'Pos.', 'Pos. No.', or 'Position'.\n"
-            "    2. Do NOT treat 'Item No.', 'Reference No.', 'Serial No.', or 'No.' as Position Numbers.\n"
-            "    3. Treat 'Item No.', 'Reference No.', 'Serial No.', and 'No.' as part_number ONLY when they appear as an individual row identifier column inside the parts table grid itself (e.g. Item 1, 2, 3).\n"
-            "    4. NEVER extract document headers, title block references, drawing titles, manual filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf', 'DECK MACHINERY'), or page references into part_number! If the table has no catalog part number or row item number column, part_number MUST be left blank (null).\n"
+            "- POSITION NUMBER EXTRACTION RULE (STRICT):\n"
+            "    1. Capture drawing_position ONLY when the table or column is clearly identified as 'Position No.', 'Pos.', 'Pos. No.', 'Position', or similar position-related labels. If not, keep drawing_position empty (null).\n"
+            "    2. NEVER treat 'Item No.', 'Reference No.', 'Ref No.', 'Serial No.', 'No.', or other general numbering fields as Position Numbers.\n"
+            "- PART NUMBER EXTRACTION RULE (STRICT):\n"
+            "    1. If an explicit catalog Part Number column is present (e.g. PC.NO, CODE NO, PART NO):\n"
+            "       • Capture that catalog number in part_number.\n"
+            "       • If an Item No., Reference No., Serial No., or No. column is also present in the table, put that item reference into the specification column with its header label (e.g. 'Ref No: 12; ...' or 'Item No: 5; ...').\n"
+            "    2. If NO catalog Part Number column is present:\n"
+            "       • Treat the Item No., Reference No., Serial No., or No. column as the part_number along with its Prefix header from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3').\n"
+            "       • In this case, do NOT combine Drawing No into part_number.\n"
+            "    3. When NEITHER a catalog Part Number NOR an Item No./Reference No./Serial No./No. is present:\n"
+            "       • If BOTH Drawing No. and Position No. are present, combine them and populate part_number as:\n"
+            "         '<Drawing No.>/<Position No.>' (e.g. 'FIG.7/15', 'B3798160-02/12').\n"
+            "       • If Item No./Reference No. was captured as part_number, do NOT combine Drawing No.\n"
+            "       • If Drawing No. or Position No. is missing, leave part_number blank (null).\n"
+            "    4. NEVER extract document headers, title block references, drawing titles, manual filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf', 'DECK MACHINERY'), or page references into part_number!\n"
             "- ASSEMBLY & ASSEMBLY DESCRIPTION UNIQUENESS & CONSISTENCY (CRITICAL):\n"
             "    • Capture spare_assembly and assembly_description as unique, consistent data across all pages of the manual.\n"
             "    • Maintain uniform formatting, casing, and wording across pages to avoid creating duplicate Assembly records.\n"
@@ -982,6 +995,144 @@ def separate_spare_name_and_spec(part_name: str | None, existing_spec: str | Non
     return to_proper_case(clean_name), formatted_spec
 
 
+_ITEM_PREFIX_RE = re.compile(
+    r"^(?:item(?:\.?\s*no\.?)?|ref(?:\.?\s*no\.?)?|reference(?:\.?\s*no\.?)?|serial(?:\.?\s*no\.?)?|no\.?)(?:\s+|[:#-]|$)",
+    re.I,
+)
+
+_EXPLICIT_POS_LABEL_RE = re.compile(
+    r"^(?:pos(?:ition)?\.?(?:\s*no\.?)?)\s*[:#-]?\s*(.*)$",
+    re.I,
+)
+
+
+def _format_item_tag(raw: str) -> str:
+    """Formats an item string into a clean spec tag, e.g. 'Ref No: 12' or 'Item No: 5'."""
+    s = raw.strip()
+    m = re.match(r"^(item|ref(?:erence)?|serial|no)\.?(?:\s*no\.?)?\s*[:#-]?\s*(.*)$", s, re.I)
+    if m:
+        kind = m.group(1).lower()
+        val = m.group(2).strip()
+        if kind == "item":
+            return f"Item No: {val}"
+        elif kind.startswith("ref"):
+            return f"Ref No: {val}"
+        elif kind == "serial":
+            return f"Serial No: {val}"
+        elif kind == "no":
+            return f"No: {val}"
+    return s
+
+
+def _standardize_item_prefix(raw: str) -> str:
+    """Standardizes prefix for part_number, e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3'."""
+    s = raw.strip()
+    m = re.match(r"^(item|ref(?:erence)?|serial|no)\.?(?:\s*no\.?)?\s*[:#-]?\s*(.*)$", s, re.I)
+    if m:
+        kind = m.group(1).lower()
+        val = m.group(2).strip()
+        if kind == "item":
+            return f"Item No. {val}"
+        elif kind.startswith("ref"):
+            return f"Ref No. {val}"
+        elif kind == "serial":
+            return f"Serial No. {val}"
+        elif kind == "no":
+            return f"No. {val}"
+    return s
+
+
+def normalize_spare_part_number_and_position(
+    part_number: str | None,
+    drawing_position: str | None,
+    drawing_number: str | None,
+    specification: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """
+    Applies the 3-rule logic for spare part_number, drawing_position, and specification:
+    1. Capture Position No. only when clearly identified as Position No., Pos., Pos. No., Position. If not, keep empty.
+    2. Item No., Reference No., Serial No., and No. treated as Part Number with Prefix only if part number not present.
+       If part number is present, item/ref capture is moved into specification.
+    3. When no Part Number or Item No./Ref No., combine Drawing No/Position No as: Drawing No./Position No.
+       If Item No./Ref No. is captured as part number, no need to combine Drawing No.
+
+    Returns: (clean_part_number, clean_drawing_position, clean_specification)
+    """
+    pn = str(part_number).strip() if part_number is not None else ""
+    pos = str(drawing_position).strip() if drawing_position is not None else ""
+    dwg = str(drawing_number).strip() if drawing_number is not None else ""
+    spec = str(specification).strip() if specification is not None else ""
+
+    if pn.lower() in ("none", "null", "n/a", "-"):
+        pn = ""
+    if pos.lower() in ("none", "null", "n/a", "-"):
+        pos = ""
+    if dwg.lower() in ("none", "null", "n/a", "-"):
+        dwg = ""
+
+    # Check if pos actually contains an Item No / Ref No / Serial No / No prefix
+    item_ref_from_pos: str | None = None
+    if pos and _ITEM_PREFIX_RE.match(pos):
+        item_ref_from_pos = pos
+        pos = ""  # Rule 1 & 2: Do NOT treat Item No., Ref No., etc. as Position Numbers
+
+    # If pos has explicit prefix like "Pos. 15" or "Pos No: 12", clean it to just "15" or "12"
+    if pos:
+        m_pos = _EXPLICIT_POS_LABEL_RE.match(pos)
+        if m_pos and m_pos.group(1).strip():
+            pos = m_pos.group(1).strip()
+
+    # Rule 2:
+    # Does part_number exist as a catalog number?
+    has_item_prefix = bool(pn and _ITEM_PREFIX_RE.match(pn))
+    has_catalog_pn = bool(pn and not has_item_prefix)
+
+    # If catalog part number IS present:
+    if has_catalog_pn:
+        # If an item/ref number was also found (e.g. from pos), put it into specification
+        if item_ref_from_pos:
+            item_tag = _format_item_tag(item_ref_from_pos)
+            if item_tag and item_tag.lower() not in spec.lower():
+                spec = f"{item_tag}; {spec}".strip("; ") if spec else item_tag
+    else:
+        # No catalog part number is present!
+        # Check if we have an item/ref number to treat as part_number along with Prefix
+        if pn and has_item_prefix:
+            pn = _standardize_item_prefix(pn)
+        elif item_ref_from_pos:
+            pn = _standardize_item_prefix(item_ref_from_pos)
+        else:
+            # Check if specification has an item/ref tag that was put there (e.g. "Ref No: 12" or "Item No: 5")
+            m_spec_item = re.search(
+                r"\b(Item\s*No|Ref\s*No|Reference\s*No|Serial\s*No|No)\s*[:.]\s*([A-Za-z0-9_-]+)",
+                spec,
+                re.I,
+            )
+            if m_spec_item:
+                raw_tag = f"{m_spec_item.group(1)} {m_spec_item.group(2)}"
+                pn = _standardize_item_prefix(raw_tag)
+                spec = re.sub(
+                    r"(?:;\s*)?\b" + re.escape(m_spec_item.group(0)) + r"\b(?:\s*;)?",
+                    "",
+                    spec,
+                    flags=re.I,
+                ).strip("; ")
+
+    # Rule 3:
+    # When no Part Number or Item No./Reference No., combine the Drawing No/Position No value:
+    # "Drawing No./Position No."
+    # If Item No./Reference No. is captured as part number, no need to combine Drawing No.
+    if not pn:
+        if dwg and pos:
+            pn = f"{dwg}/{pos}"
+
+    final_pn = pn if pn else None
+    final_pos = pos if pos else None
+    final_spec = spec if spec else None
+
+    return final_pn, final_pos, final_spec
+
+
 def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type: str = "") -> dict:
     if not isinstance(record, dict):
         return record
@@ -1005,6 +1156,17 @@ def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type
         c_name, c_spec = separate_spare_name_and_spec(record.get("part_name"), record.get("specification"))
         record["part_name"] = c_name
         record["specification"] = c_spec
+
+        # Rule 5: Normalize Part Number and Drawing Position (Bug-002 Item 5)
+        clean_pn, clean_pos, clean_spec = normalize_spare_part_number_and_position(
+            record.get("part_number"),
+            record.get("drawing_position"),
+            record.get("drawing_number"),
+            record.get("specification"),
+        )
+        record["part_number"] = clean_pn
+        record["drawing_position"] = clean_pos
+        record["specification"] = clean_spec
     elif record.get("specification"):
         record["specification"] = _format_specification_headers(record["specification"])
 
@@ -1670,8 +1832,8 @@ async def _extract_entities_from_page_image_with_openai(
                 "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
                 "A single page can contain 50-300 parts — extract ALL of them."
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
-                "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). Do NOT map Item No. or Ref No. to drawing_position."
-                "\n  • part_number → catalog Part Number (PC.NO, CODE NO, etc.), OR table row Item No. if no separate catalog Part Number column is provided. Leave null if not found — NEVER capture PDF filenames, drawing titles, or page references here."
+                "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). If not clearly a position label, keep it empty (null). NEVER map Item No., Reference No., Ref No., Serial No., or No. to drawing_position!"
+                "\n  • part_number → Catalog Part Number (PC.NO, CODE NO, etc.). If a catalog Part Number is present AND an Item No./Ref No./Serial No./No. is also present, put the item reference in specification (e.g. 'Ref No: 12'). If NO catalog Part Number exists in the manual, capture Item No., Reference No., Serial No., or No. as part_number WITH its header prefix (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). Leave null if none of these exist — NEVER capture PDF filenames, drawing titles, or page references here."
                 "\n  • part_name → the SPARE NAME ONLY in Proper Text / Title Case, preserving any abbreviations and misspellings of the name (e.g. 'O-Ring', 'Hex Bolt', 'Ball Bearing', 'Oil Seal', 'Gasket', 'Plug'). CRITICAL: Do NOT include specifications, dimensions, thread sizes, materials, or parenthetical details in part_name (e.g. for 'O-RING (15.5 x 2.4 FKM)' output 'O-Ring'; for 'HEX BOLT M12x45' output 'Hex Bolt'; for 'BALL BEARING 6205' output 'Ball Bearing') — always separate and move those additional details to specification!"
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
@@ -1761,8 +1923,8 @@ async def _extract_entities_from_page_image_with_claude(
                 "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
                 "A single page can contain 50-300 parts — extract ALL of them."
                 "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
-                "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). Do NOT map Item No. or Ref No. to drawing_position."
-                "\n  • part_number → catalog Part Number (PC.NO, CODE NO, etc.), OR table row Item No. if no separate catalog Part Number column is provided. Leave null if not found — NEVER capture PDF filenames, drawing titles, or page references here."
+                "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). If not clearly a position label, keep it empty (null). NEVER map Item No., Reference No., Ref No., Serial No., or No. to drawing_position!"
+                "\n  • part_number → Catalog Part Number (PC.NO, CODE NO, etc.). If a catalog Part Number is present AND an Item No./Ref No./Serial No./No. is also present, put the item reference in specification (e.g. 'Ref No: 12'). If NO catalog Part Number exists in the manual, capture Item No., Reference No., Serial No., or No. as part_number WITH its header prefix (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). Leave null if none of these exist — NEVER capture PDF filenames, drawing titles, or page references here."
                 "\n  • part_name → the SPARE NAME ONLY in Proper Text / Title Case, preserving any abbreviations and misspellings of the name (e.g. 'O-Ring', 'Hex Bolt', 'Ball Bearing', 'Oil Seal', 'Gasket', 'Plug'). CRITICAL: Do NOT include specifications, dimensions, thread sizes, materials, or parenthetical details in part_name (e.g. for 'O-RING (15.5 x 2.4 FKM)' output 'O-Ring'; for 'HEX BOLT M12x45' output 'Hex Bolt'; for 'BALL BEARING 6205' output 'Ball Bearing') — always separate and move those additional details to specification!"
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Remarks: <notes>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER merge remarks, model codes (e.g. 'USH-20'), applicability notes, or parentheses into QTY; always place them under 'Remarks:' (e.g. 'QTY: 1 SET; Remarks: (USH-20) For pump outlet')."
                 "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
@@ -3256,6 +3418,10 @@ async def _process_and_save_page_records(
             if is_leaked_filename_or_doc_ref(_dwg_pos, filename):
                 _dwg_pos = None
 
+            _pnum, _dwg_pos, _clean_spec = normalize_spare_part_number_and_position(
+                _pnum, _dwg_pos, _dwg, _clean_spec
+            )
+
             spare = Spare(
                 tenant_id=tenant_id,
                 vessel_id=vessel_id,
@@ -3638,7 +3804,9 @@ async def auto_extract_from_manual(
                         with open(file_path, "rb") as fh:
                             file_bytes = fh.read()
 
-                if file_bytes is not None:
+                # Only run heavy OCR/table pre-enrichment if components or jobs require text extraction.
+                # Spares extraction from PDF uses vision rendering directly and bypasses text chunks.
+                if file_bytes is not None and any(et in ("component", "job") for et in extraction_types):
                     full_text = await _enrich_pdf_text_for_selected_pages(
                         file_bytes=file_bytes,
                         filename=filename,

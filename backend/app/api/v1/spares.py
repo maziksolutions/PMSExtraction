@@ -25,6 +25,7 @@ from app.services.extractor import (
     to_proper_case,
     is_leaked_filename_or_doc_ref,
     separate_spare_name_and_spec,
+    normalize_spare_part_number_and_position,
 )
 from app.services.feedback_learning import schedule_feedback_learning
 from app.services.review_workflow import (
@@ -618,6 +619,18 @@ async def create_spare(
         data["part_name"] = to_proper_case(c_name)
         if c_spec:
             data["specification"] = c_spec
+    c_pn, c_pos, c_spec2 = normalize_spare_part_number_and_position(
+        data.get("part_number"),
+        data.get("drawing_position"),
+        data.get("drawing_number"),
+        data.get("specification"),
+    )
+    if c_pn:
+        data["part_number"] = c_pn
+    if c_pos:
+        data["drawing_position"] = c_pos
+    if c_spec2:
+        data["specification"] = c_spec2
     if data.get("spare_assembly"):
         data["spare_assembly"] = to_proper_case(data["spare_assembly"])
     if data.get("assembly_description"):
@@ -687,6 +700,17 @@ async def update_spare(
         update_data["part_name"] = to_proper_case(c_name)
         if c_spec:
             update_data["specification"] = c_spec
+    cur_pn = update_data.get("part_number") if "part_number" in update_data else spare.part_number
+    cur_pos = update_data.get("drawing_position") if "drawing_position" in update_data else spare.drawing_position
+    cur_dwg = update_data.get("drawing_number") if "drawing_number" in update_data else spare.drawing_number
+    cur_spec2 = update_data.get("specification") if "specification" in update_data else spare.specification
+    c_pn, c_pos, c_spec3 = normalize_spare_part_number_and_position(cur_pn, cur_pos, cur_dwg, cur_spec2)
+    if "part_number" in update_data or c_pn != cur_pn:
+        update_data["part_number"] = c_pn
+    if "drawing_position" in update_data or c_pos != cur_pos:
+        update_data["drawing_position"] = c_pos
+    if "specification" in update_data or c_spec3 != cur_spec2:
+        update_data["specification"] = c_spec3
     if "spare_assembly" in update_data and update_data["spare_assembly"]:
         update_data["spare_assembly"] = to_proper_case(update_data["spare_assembly"])
     if "assembly_description" in update_data and update_data["assembly_description"]:
@@ -1100,6 +1124,8 @@ async def snip_extract_spares(
                 "STEP 1: Count the number of data rows visible (not headers). "
                 "STEP 2: Output EXACTLY that many JSON records — do not stop early or skip rows. "
                 "Typical columns: REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS. "
+                "POSITION NUMBER RULE: Capture drawing_position ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position. If not clearly a position label, keep it empty (null). NEVER map Item No., Reference No., Ref No., Serial No., or No. to drawing_position! "
+                "PART NUMBER RULE: If a catalog Part Number (PC.NO, CODE NO) is present, store it in part_number, and put Item No./Ref No./Serial No./No. into specification. If NO catalog Part Number is present, capture Item No., Reference No., Serial No., or No. as part_number WITH its header prefix (e.g. 'Item No. 5', 'Ref No. 12', 'No. 3'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). "
                 "ALL output fields MUST be in English — translate ALL Japanese or non-English text to English. "
                 "Never output Japanese/non-English characters in any field."
             ),
@@ -1158,7 +1184,11 @@ async def snip_save_spares(
         _raw_pn = record.get("part_number")
         if is_leaked_filename_or_doc_ref(_raw_pn, manual_filename):
             _raw_pn = None
-        _spec = _format_specification_headers(c_spec) or (c_spec or None)
+        _clean_pn, _pos, _spec = normalize_spare_part_number_and_position(
+            _raw_pn, _pos, _dwg, c_spec
+        )
+        _raw_pn = _clean_pn
+        _spec = _format_specification_headers(_spec) or (_spec or None)
 
         spare = Spare(
             tenant_id=current_user.tenant_id,
