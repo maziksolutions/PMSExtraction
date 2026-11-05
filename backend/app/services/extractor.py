@@ -2714,6 +2714,7 @@ async def _consolidate_spares_for_manual(
 ) -> int:
     from sqlalchemy import select
     from app.models.spare import Spare, ExtractionMethod as _EM
+    from app.services.extraction_counter import record_manual_extraction_run, record_page_extraction_run
     from app.services.deduplication import fuzzy_similarity
 
     result = await db.execute(
@@ -3558,6 +3559,7 @@ async def auto_extract_from_manual(
     from sqlalchemy import select, update
 
     manual_id = uuid.UUID(manual_id_str)
+    record_manual_extraction_run(manual_id_str)
 
     async with AsyncSessionLocal() as db:
         try:
@@ -4138,6 +4140,9 @@ async def auto_extract_from_manual(
                     for chunk_idx, chunk in enumerate(text_chunks):
                         import re as _re
                         found_pages = _re.findall(r'\[PAGE (\d+)\]', chunk)
+                        if found_pages:
+                            for _fp in found_pages:
+                                record_page_extraction_run(manual_id_str, int(_fp))
                         if page_numbers is not None and found_pages:
                             chunk_pages = [int(p) for p in found_pages]
                             if not any(p in page_numbers for p in chunk_pages):
@@ -4250,6 +4255,7 @@ async def auto_extract_from_manual(
                                 page_context += f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
 
                         current_context_note = context_note
+                        record_page_extraction_run(manual_id_str, page_no)
                         if page_context:
                             current_context_note = _merge_context_notes(current_context_note, page_context)
 

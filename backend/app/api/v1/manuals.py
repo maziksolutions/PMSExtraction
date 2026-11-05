@@ -1229,10 +1229,16 @@ async def get_no_extracted_records_report(
     report.sort(key=lambda m: m["original_filename"].lower())
     extracted_report.sort(key=lambda m: m["original_filename"].lower())
 
+    total_completed_manuals = sum(1 for s in all_manuals_summary.values() if s.get("is_complete"))
+    total_targeted_manuals = sum(1 for s in all_manuals_summary.values() if s.get("has_target_pages"))
+
     return {
         "manuals": report,
         "total_no_extracted_pages": total_no_extracted_pages,
         "extracted_manuals": extracted_report,
         "total_extracted_pages": total_extracted_pages,
         "all_manuals_summary": all_manuals_summary,
+        "total_completed_manuals": total_completed_manuals,
+        "total_targeted_manuals": total_targeted_manuals,
+        "total_manuals": len(manuals),
     }
