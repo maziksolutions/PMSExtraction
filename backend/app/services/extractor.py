@@ -138,6 +138,8 @@ def set_extraction_state(
         state["current_manual_pages_total"] = current_manual_pages_total
     if current_manual_pages_done is not None:
         state["current_manual_pages_done"] = current_manual_pages_done
+        if state.get("current_manual_pages_total") and current_manual_pages_done > state["current_manual_pages_total"]:
+            state["current_manual_pages_total"] = current_manual_pages_done
     if detailed_status is not None:
         state["detailed_status"] = detailed_status
     if active_manual_ids is not None:
