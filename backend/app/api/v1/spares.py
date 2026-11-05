@@ -1123,9 +1123,10 @@ async def snip_extract_spares(
                 "This is a manually snipped/cropped image of a spare parts table. "
                 "STEP 1: Count the number of data rows visible (not headers). "
                 "STEP 2: Output EXACTLY that many JSON records — do not stop early or skip rows. "
-                "Typical columns: REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS. "
+                "Typical columns: REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY. "
                 "POSITION NUMBER RULE: Capture drawing_position ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position. If not clearly a position label, keep it empty (null). NEVER map Item No., Reference No., Ref No., Serial No., or No. to drawing_position! "
-                "PART NUMBER RULE: If a catalog Part Number (PC.NO, CODE NO) is present, store it in part_number, and put Item No./Ref No./Serial No./No. into specification. If NO catalog Part Number is present, capture Item No., Reference No., Serial No., or No. as part_number WITH its header prefix (e.g. 'Item No. 5', 'Ref No. 12', 'No. 3'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). "
+                "PART NUMBER RULE: If a catalog Part Number (PC.NO, CODE NO, PART NO) is present, store it cleanly in part_number WITHOUT column header prefixes like 'Part No' or 'Part Number' (e.g. '00621141'), and put Item No./Ref No./Serial No./No. into specification. If NO catalog Part Number is present, capture Item No., Reference No., Serial No., No., or PID Item as part_number WITH its header prefix from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'PID Item BM 005', 'PID Item BO 002', 'No. 3'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). "
+                "SPECIFICATION RULE: Strictly include technical specs (QTY, Material, Size). NEVER include the keyword 'Remarks:' or remarks notes in specification — remarks are not requested. "
                 "ALL output fields MUST be in English — translate ALL Japanese or non-English text to English. "
                 "Never output Japanese/non-English characters in any field."
             ),
