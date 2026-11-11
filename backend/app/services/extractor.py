@@ -3681,6 +3681,8 @@ async def auto_extract_from_manual(
                     pages = page_numbers
                 if page_numbers is not None and pages:
                     pages = [p for p in pages if p in page_numbers]
+                if not pages and page_numbers and (entity_types is None or entity_type in entity_types):
+                    pages = page_numbers
                 entity_pages[entity_type] = pages
 
             if entity_types is not None:
