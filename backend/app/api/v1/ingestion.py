@@ -5133,7 +5133,7 @@ async def get_manual_page_status(
 
     from app.services.extraction_counter import get_extraction_counts
 
-    manual_run_count, page_run_counts = await get_extraction_counts(manual_id)
+    manual_run_count, page_run_counts, page_reasons = await get_extraction_counts(manual_id)
 
     total_items = len(components) + len(jobs) + len(spares)
 
@@ -5185,6 +5185,13 @@ async def get_manual_page_status(
 
         page_run_count = page_run_counts.get(p, 1 if extracted_count > 0 else 0)
 
+        no_extraction_reason = page_reasons.get(p)
+        if not no_extraction_reason and is_targeted and extracted_count == 0:
+            if page_run_count > 0:
+                no_extraction_reason = "No items extracted on this page. AI extraction detected no structured records."
+            else:
+                no_extraction_reason = "Pending extraction — this page has not been processed yet."
+
         pages_data.append({
 
             "page_number": p,
@@ -5196,6 +5203,8 @@ async def get_manual_page_status(
             "extracted_count": extracted_count,
 
             "extraction_run_count": page_run_count,
+
+            "no_extraction_reason": no_extraction_reason,
 
             "targeted_types": {
 
@@ -5891,3 +5900,76 @@ async def delete_manual(
 
 
 
+
+
+
+@router.post(
+    "/{vessel_id}/manuals/{manual_id}/pages/{page_number}/explain-zero-extraction",
+    summary="Generate or fetch AI explanation for why 0 records were extracted on a specific page",
+)
+async def explain_page_zero_extraction(
+    vessel_id: uuid.UUID,
+    manual_id: uuid.UUID,
+    page_number: int,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    await _get_vessel_or_404(vessel_id, db)
+    result = await db.execute(
+        select(Manual).where(
+            Manual.id == manual_id,
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+        )
+    )
+    manual = result.scalar_one_or_none()
+    if manual is None:
+        raise HTTPException(status_code=404, detail="Manual not found")
+
+    from app.services.extraction_counter import get_extraction_counts, record_page_extraction_reason
+    _, _, page_reasons = await get_extraction_counts(manual_id)
+    existing_reason = page_reasons.get(page_number)
+    if existing_reason and not existing_reason.startswith("Pending") and not existing_reason.startswith("No items"):
+        return {
+            "page_number": page_number,
+            "reason": existing_reason,
+            "cached": True,
+        }
+
+    # Determine targeted entity type for this page
+    from app.services.extractor import _parse_page_tokens, _explain_zero_extraction, _render_single_pdf_page_image
+    comp_pages = set(_parse_page_tokens(manual.pages_with_components_physical or manual.pages_with_components))
+    job_pages = set(_parse_page_tokens(manual.pages_with_jobs_physical or manual.pages_with_jobs))
+    spare_pages = set(_parse_page_tokens(manual.pages_with_spares_physical or manual.pages_with_spares))
+
+    target_types = []
+    if page_number in spare_pages:
+        target_types.append("spare")
+    if page_number in job_pages:
+        target_types.append("job")
+    if page_number in comp_pages:
+        target_types.append("component")
+    primary_type = target_types[0] if target_types else "spare"
+
+    from app.services.blob_storage import get_file_bytes
+    file_bytes = await get_file_bytes(manual.file_path)
+    image_bytes = None
+    if file_bytes and manual.file_path.lower().endswith(".pdf"):
+        image_bytes = await asyncio.to_thread(_render_single_pdf_page_image, file_bytes, page_number, 200)
+
+    reason = await _explain_zero_extraction(
+        image_bytes=image_bytes,
+        text_content=(manual.extracted_text or "") if not image_bytes else None,
+        filename=manual.original_filename,
+        page_no=page_number,
+        extraction_type=primary_type,
+    )
+    full_reason = f"{primary_type.capitalize()}s: {reason}"
+    record_page_extraction_reason(str(manual_id), page_number, full_reason)
+
+    return {
+        "page_number": page_number,
+        "reason": full_reason,
+        "cached": False,
+    }
