@@ -1390,6 +1390,38 @@ def _parse_json_records(raw_text: str, filename: str = "", extraction_type: str 
     return [_sanitize_extracted_record(r, filename=filename, extraction_type=extraction_type) for r in raw_list]
 
 
+
+class ExtractionResult(list):
+    """List subclass that can hold a zero-extraction explanation from the model."""
+    def __init__(self, items=None, reason=None):
+        super().__init__(items or [])
+        self.no_extraction_reason = reason
+
+
+def _extract_reason_from_raw_text(raw_text: str) -> Optional[str]:
+    """Parse out a zero-extraction reason if provided by the LLM in JSON or prose."""
+    if not raw_text:
+        return None
+    clean = _strip_code_fences(raw_text).strip()
+    try:
+        parsed = json.loads(clean)
+        if isinstance(parsed, dict):
+            for k in ("no_extraction_reason", "reason", "comment", "explanation", "note", "reason_if_empty"):
+                v = parsed.get(k)
+                if v and isinstance(v, str) and v.strip():
+                    return v.strip()
+    except Exception:
+        pass
+    import re as _re
+    m = _re.search(r'"(?:no_extraction_reason|reason|explanation|comment)"\s*:\s*"([^"]+)"', raw_text, _re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    if not clean.startswith("[") and not clean.startswith("{") and len(clean) < 400:
+        if any(w in clean.lower() for w in ("no spare", "no job", "no component", "contains", "diagram", "does not contain", "no structured")):
+            return clean.strip()
+    return None
+
+
 def _redact_error_message(exc: Exception) -> str:
     message = str(exc)
     for secret in (
@@ -1934,12 +1966,15 @@ async def _extract_entities_from_page_image_with_openai(
         data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
         model_id = getattr(settings, "OPENAI_VISION_MODEL_ID", None) or "gpt-4.1"
         text_instructions = (
-            f"Output ONLY a raw JSON array — no prose, no markdown fences, no step-by-step text. "
-            f"Start your response with [ and end with ]. "
-            f"You are extracting {extraction_type} data from PDF page {page_no} of '{filename}'. "
+            f"Extract {extraction_type} data from PDF page {page_no} of '{filename}'. "
             f"Use source_page_number={page_no} for every record. "
             "ALL field values MUST be in English — translate Japanese/Chinese/non-English text. "
-            "Never output non-Latin characters in any field."
+            "Never output non-Latin characters in any field.\n\n"
+            "OUTPUT FORMAT RULES (CRITICAL):\n"
+            f"1. If this page contains {extraction_type} items, output ONLY a raw JSON array: [ {{...}}, {{...}} ]. Start with [ and end with ].\n"
+            f"2. If NO {extraction_type} items can be extracted from this page, output a JSON object with 'records' and a specific 'no_extraction_reason':\n"
+            f'   {{ "records": [], "no_extraction_reason": "<1-2 sentence detailed reason why no {extraction_type} items could be extracted from this specific page>" }}\n'
+            "3. Output ONLY valid JSON."
         )
         if extraction_type == "spare":
             text_instructions += (
@@ -1990,6 +2025,13 @@ async def _extract_entities_from_page_image_with_openai(
         )
         raw_text = (response.choices[0].message.content or "").strip()
         records = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
+        if not records:
+            ai_reason = _extract_reason_from_raw_text(raw_text)
+            logger.warning(
+                "extract_entities[openai-vision]: %s/%s page=%d 0 records — AI reason: %s — response preview: %r",
+                filename, extraction_type, page_no, ai_reason, raw_text[:400],
+            )
+            return ExtractionResult([], reason=ai_reason)
         for record in records:
             if record.get("source_page_number") in (None, "", 0):
                 record["source_page_number"] = page_no
@@ -2000,7 +2042,7 @@ async def _extract_entities_from_page_image_with_openai(
             page_no,
             len(records),
         )
-        return records
+        return ExtractionResult(records)
     except Exception as exc:
         logger.warning(
             "extract_entities[openai-vision]: failed for %s/%s page=%d: %s",
@@ -2030,12 +2072,15 @@ async def _extract_entities_from_page_image_with_claude(
         b64_data = base64.b64encode(image_bytes).decode("ascii")
 
         text_instructions = (
-            f"Output ONLY a raw JSON array — no prose, no markdown fences, no explanations. "
-            f"Start your response with [ and end with ]. "
             f"Extract {extraction_type} data from PDF page {page_no} of '{filename}'. "
             f"Use source_page_number={page_no} for every record. "
             "ALL field values MUST be in English — translate Japanese/Chinese/non-English text. "
-            "Never output non-Latin characters in any field."
+            "Never output non-Latin characters in any field.\n\n"
+            "OUTPUT FORMAT RULES (CRITICAL):\n"
+            f"1. If this page contains {extraction_type} items, output ONLY a raw JSON array: [ {{...}}, {{...}} ]. Start with [ and end with ].\n"
+            f"2. If NO {extraction_type} items can be extracted from this page (e.g. page contains exploded diagram schematics without part numbers or BOM table, page is general descriptive text without maintenance intervals, page contains dimensional drawings without a spare parts list, page is a cover/index, etc.), output a JSON object with 'records' and a clear, specific 'no_extraction_reason':\n"
+            f'   {{ "records": [], "no_extraction_reason": "<1-2 sentence detailed explanation why no {extraction_type} items could be extracted from this specific page>" }}\n'
+            "3. Output ONLY valid JSON — no markdown code fences, no conversational prose, no greetings."
         )
         if extraction_type == "spare":
             text_instructions += (
@@ -2107,10 +2152,12 @@ async def _extract_entities_from_page_image_with_claude(
             )
 
         if not records:
+            ai_reason = _extract_reason_from_raw_text(raw_text)
             logger.warning(
-                "extract_entities[claude-vision]: %s/%s page=%d 0 records — response preview: %r",
-                filename, extraction_type, page_no, raw_text[:400],
+                "extract_entities[claude-vision]: %s/%s page=%d 0 records — AI reason: %s — response preview: %r",
+                filename, extraction_type, page_no, ai_reason, raw_text[:400],
             )
+            return ExtractionResult([], reason=ai_reason)
         for record in records:
             if record.get("source_page_number") in (None, "", 0):
                 record["source_page_number"] = page_no
@@ -2118,7 +2165,7 @@ async def _extract_entities_from_page_image_with_claude(
             "extract_entities[claude-vision]: %s/%s page=%d records=%d",
             filename, extraction_type, page_no, len(records),
         )
-        return records
+        return ExtractionResult(records)
     except Exception as exc:
         logger.warning(
             "extract_entities[claude-vision]: failed for %s/%s page=%d: %s",
@@ -4522,21 +4569,23 @@ async def auto_extract_from_manual(
                                 )
                                 record_page_extraction_reason(manual_id_str, page_no, None)
                             else:
-                                try:
-                                    zero_reason = await _explain_zero_extraction(
-                                        image_bytes=image_bytes,
-                                        filename=filename,
-                                        page_no=page_no,
-                                        extraction_type=etype,
-                                    )
-                                    if zero_reason:
-                                        record_page_extraction_reason(
-                                            manual_id_str,
-                                            page_no,
-                                            f"{etype.capitalize()}s: {zero_reason}",
+                                zero_reason = getattr(vision_records, "no_extraction_reason", None)
+                                if not zero_reason:
+                                    try:
+                                        zero_reason = await _explain_zero_extraction(
+                                            image_bytes=image_bytes,
+                                            filename=filename,
+                                            page_no=page_no,
+                                            extraction_type=etype,
                                         )
-                                except Exception as z_err:
-                                    logger.warning("Failed to generate zero-extraction reason for %s p.%d: %s", filename, page_no, z_err)
+                                    except Exception as z_err:
+                                        logger.warning("Failed to generate zero-extraction reason for %s p.%d: %s", filename, page_no, z_err)
+                                if zero_reason:
+                                    record_page_extraction_reason(
+                                        manual_id_str,
+                                        page_no,
+                                        f"{etype.capitalize()}s: {zero_reason}",
+                                    )
                             all_records.extend(vision_records)
 
                             # Keep database connection active during long LLM calls

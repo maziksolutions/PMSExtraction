@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, RefreshCw, Search, CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronUp, Play, Filter, HelpCircle, FileText, XCircle, ExternalLink } from 'lucide-react'
+import { X, RefreshCw, Search, CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronUp, Play, Filter, HelpCircle, FileText, XCircle, ExternalLink, Sparkles } from 'lucide-react'
 import apiClient from '@/api/client'
 
 // Frontend range parser
@@ -188,6 +188,29 @@ export function ManualPageStatusModal({
     },
   })
 
+  // Mutation to explain all empty pages with AI
+  const explainAllMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiClient.post(`/vessels/${vesselId}/manuals/${manualId}/explain-all-zero-extractions`)
+      return res.data
+    },
+    onSuccess: (resData) => {
+      setNotification({
+        message: `AI analyzed ${resData.processed || 0} page(s) and generated zero-extraction reasons.`,
+        type: 'success',
+      })
+      queryClient.invalidateQueries({ queryKey: ['manual-page-status', manualId] })
+      setTimeout(() => setNotification(null), 8000)
+    },
+    onError: (err: any) => {
+      setNotification({
+        message: `Failed to analyze empty pages: ${err?.response?.data?.detail ?? err.message}`,
+        type: 'error',
+      })
+      setTimeout(() => setNotification(null), 5000)
+    },
+  })
+
   // Mutation to trigger page-specific retry
   const retryMutation = useMutation({
     mutationFn: async (vars: { pageNumber: number; entityTypes: string[] }) => {
@@ -317,6 +340,16 @@ export function ManualPageStatusModal({
       }
     }
     return { components, jobs, spares, totalTargeted }
+  }, [data?.pages])
+
+  const emptyTargetedPagesCount = useMemo(() => {
+    if (!data?.pages) return 0
+    return data.pages.filter(
+      (p) =>
+        p.is_targeted &&
+        p.extracted_count === 0 &&
+        (!p.no_extraction_reason || p.no_extraction_reason.includes('detected no structured records'))
+    ).length
   }, [data?.pages])
 
   return (
@@ -474,6 +507,21 @@ export function ManualPageStatusModal({
                   )}
                   <span>Re-extract Manual</span>
                 </button>
+                {emptyTargetedPagesCount > 0 && (
+                  <button
+                    onClick={() => explainAllMutation.mutate()}
+                    disabled={explainAllMutation.isPending || retryManualMutation.isPending || isCurrentlyExtracting}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:bg-amber-800/50 text-xs text-white font-medium px-3 py-1.5 transition-colors shadow-md ml-1 cursor-pointer"
+                    title="Ask AI to inspect and generate reasons for all targeted pages where 0 items were extracted"
+                  >
+                    {explainAllMutation.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5 text-amber-200" />
+                    )}
+                    <span>AI Explain Empty Pages ({emptyTargetedPagesCount})</span>
+                  </button>
+                )}
                 {isCurrentlyExtracting && (
                   <button
                     onClick={() => stopMutation.mutate()}
@@ -614,31 +662,40 @@ export function ManualPageStatusModal({
                                   <div className="flex items-center gap-1.5 text-slate-400 text-xs">
                                     <span className="text-slate-500 italic">No items extracted</span>
                                   </div>
-                                  {page.is_targeted && page.no_extraction_reason && (
-                                    <div className="rounded-lg bg-amber-950/30 border border-amber-800/40 p-2 text-[11px] text-amber-200/95 flex items-start gap-1.5 shadow-sm">
-                                      <HelpCircle className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-0.5" />
-                                      <div className="leading-snug">
-                                        <span className="font-semibold text-amber-300">AI Reason: </span>
-                                        <span className="text-amber-100/90">{page.no_extraction_reason}</span>
+                                  {page.is_targeted && page.no_extraction_reason && !page.no_extraction_reason.includes('detected no structured records') ? (
+                                    <div className="rounded-lg bg-amber-950/40 border border-amber-700/50 p-2 text-[11px] text-amber-200/95 flex items-start justify-between gap-1.5 shadow-sm">
+                                      <div className="flex items-start gap-1.5 min-w-0">
+                                        <Sparkles className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-0.5" />
+                                        <div className="leading-snug break-words">
+                                          <span className="font-semibold text-amber-300">AI Reason: </span>
+                                          <span className="text-amber-100/90">{page.no_extraction_reason}</span>
+                                        </div>
                                       </div>
+                                      <button
+                                        onClick={() => explainMutation.mutate(page.page_number)}
+                                        disabled={explainMutation.isPending && explainMutation.variables === page.page_number}
+                                        className="text-amber-400/80 hover:text-amber-200 text-[10px] shrink-0 underline ml-1 cursor-pointer"
+                                        title="Ask AI to re-inspect and re-analyze this page"
+                                      >
+                                        Re-check
+                                      </button>
                                     </div>
-                                  )}
-                                  {page.is_targeted && !page.no_extraction_reason && (
+                                  ) : page.is_targeted ? (
                                     <button
                                       type="button"
                                       onClick={() => explainMutation.mutate(page.page_number)}
                                       disabled={explainMutation.isPending && explainMutation.variables === page.page_number}
-                                      className="inline-flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300 hover:underline"
-                                      title="Ask AI to analyze this page and state why no items were extracted"
+                                      className="inline-flex items-center gap-1.5 rounded-lg bg-amber-950/40 border border-amber-700/50 hover:bg-amber-900/40 px-2 py-1 text-[11px] font-medium text-amber-300 hover:text-amber-200 transition-colors shadow-sm cursor-pointer"
+                                      title="Ask AI to inspect this page and explain why no items were extracted"
                                     >
                                       {explainMutation.isPending && explainMutation.variables === page.page_number ? (
-                                        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                                        <Loader2 className="h-3 w-3 animate-spin shrink-0 text-amber-400" />
                                       ) : (
-                                        <HelpCircle className="h-3 w-3 shrink-0" />
+                                        <Sparkles className="h-3 w-3 shrink-0 text-amber-400" />
                                       )}
-                                      <span>Explain zero extraction with AI</span>
+                                      <span>AI Explain Reason</span>
                                     </button>
-                                  )}
+                                  ) : null}
                                 </div>
                               )}
                             </td>
@@ -646,17 +703,17 @@ export function ManualPageStatusModal({
                             {/* Action Button */}
                             <td className="py-3.5 px-3 text-right">
                               <div className="flex items-center justify-end gap-1.5">
-                                {page.is_targeted && page.extracted_count === 0 && !page.no_extraction_reason && (
+                                {page.is_targeted && page.extracted_count === 0 && (!page.no_extraction_reason || page.no_extraction_reason.includes('detected no structured records')) && (
                                   <button
                                     onClick={() => explainMutation.mutate(page.page_number)}
                                     disabled={explainMutation.isPending && explainMutation.variables === page.page_number}
-                                    className="inline-flex items-center gap-1 rounded bg-slate-800 border border-amber-800/50 hover:bg-slate-700 text-amber-300 px-2 py-1 transition-colors text-[11px]"
-                                    title="Ask AI why nothing was extracted from this page"
+                                    className="inline-flex items-center gap-1 rounded bg-slate-800 border border-amber-800/50 hover:bg-slate-700 text-amber-300 px-2 py-1 transition-colors text-[11px] cursor-pointer"
+                                    title="Ask AI to inspect this page and explain why no items were extracted"
                                   >
                                     {explainMutation.isPending && explainMutation.variables === page.page_number ? (
                                       <Loader2 className="h-3 w-3 animate-spin shrink-0" />
                                     ) : (
-                                      <HelpCircle className="h-3 w-3 shrink-0 text-amber-400" />
+                                      <Sparkles className="h-3 w-3 shrink-0 text-amber-400" />
                                     )}
                                     <span>AI Explain</span>
                                   </button>
