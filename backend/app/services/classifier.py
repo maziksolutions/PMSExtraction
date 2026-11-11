@@ -95,8 +95,8 @@ EXTRACTION_KEYWORDS = {
                    "pump", "compressor", "engine", "motor", "valve", "filter"],
     "jobs": ["maintenance", "overhaul", "inspection", "service", "check",
              "test", "lubrication", "adjustment", "interval", "running hours"],
-    "spares": ["spare", "spare part", "part number", "item no", "catalog",
-               "consumable", "wear part", "spare list"],
+    "spares": ["spare", "spare part", "part number", "part no", "item no", "catalog",
+               "consumable", "wear part", "spare list", "parts list", "kit", "o-ring kit", "seal kit", "gasket kit", "repair kit"],
 }
 
 VALID_CATEGORIES = [
@@ -359,7 +359,8 @@ _JOB_RE = re.compile(
 _SPARE_RE = re.compile(
     r'\b(?:spare\s+parts?(?:\s+list)?|recommended\s+spares?' 
     r'|parts?\s+(?:list|catalogue|catalog)|spare\s+list|consumables?\s+list' 
-    r'|replacement\s+parts?|parts?\s+catalog(?:ue)?|service\s+parts?)\b',
+    r'|replacement\s+parts?|parts?\s+catalog(?:ue)?|service\s+parts?'
+    r'|(?:complete\s+)?(?:[a-z0-9\.\-]+\s+)?(?:kit|repair\s+kit|o-ring\s+kit|gasket\s+kit|seal\s+kit|voc\s+kit))\b',
     re.IGNORECASE,
 )
 
@@ -388,7 +389,7 @@ _JOB_CONTINUATION_RE = re.compile(
 )
 
 _SPARE_SECTION_RE = re.compile(
-    r"\b(?:spare parts?|parts list|recommended spares?|spare part catalogue|bill of materials?|bom)\b",
+    r"\b(?:spare parts?|parts list|recommended spares?|spare part catalogue|bill of materials?|bom|(?:o-ring|seal|gasket|repair|voc)\s+kit|kit\s+[a-z0-9\.\-]+)\b",
     re.IGNORECASE,
 )
 
@@ -493,9 +494,14 @@ def _looks_like_spare_seed_page(text: str) -> bool:
     lower = text.lower()
     table_keyword_hits = _keyword_hit_count(
         lower,
-        ("item no", "part no", "description", "qty", "quantity", "material", "catalog", "remarks"),
+        ("item no", "part no", "part no.", "pos.", "pos", "description", "qty", "quantity", "material", "catalog", "remarks"),
     )
-    return bool(_SPARE_RE.search(text) or _SPARE_SECTION_RE.search(text)) or (
+    has_parts_table_headers = (
+        ("part no" in lower or "part no." in lower or "item no" in lower or "code no" in lower or "pos." in lower or "pos " in lower)
+        and ("qty" in lower or "quantity" in lower)
+        and ("description" in lower or "part name" in lower or "name" in lower)
+    )
+    return bool(_SPARE_RE.search(text) or _SPARE_SECTION_RE.search(text)) or has_parts_table_headers or (
         _is_table_like_page(text) and table_keyword_hits >= 3
     )
 

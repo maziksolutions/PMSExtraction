@@ -49,6 +49,27 @@ interface ExtractionConfirmationModalProps {
   isExtractAll?: boolean
   isPending?: boolean
   noExtractedSummary?: Record<string, ManualSummaryItem>
+  edits?: Record<string, any>
+}
+
+function parsePageTokens(str?: string | null): number[] {
+  if (!str) return []
+  const pages: number[] = []
+  const parts = str.split(/[,\s]+/)
+  for (const part of parts) {
+    if (part.includes('-')) {
+      const [start, end] = part.split('-').map(Number)
+      if (!isNaN(start) && !isNaN(end)) {
+        for (let i = Math.min(start, end); i <= Math.max(start, end); i++) {
+          if (i > 0) pages.push(i)
+        }
+      }
+    } else {
+      const n = Number(part)
+      if (!isNaN(n) && n > 0) pages.push(n)
+    }
+  }
+  return Array.from(new Set(pages)).sort((a, b) => a - b)
 }
 
 export function ExtractionConfirmationModal({
@@ -61,6 +82,7 @@ export function ExtractionConfirmationModal({
   isExtractAll = false,
   isPending = false,
   noExtractedSummary,
+  edits,
 }: ExtractionConfirmationModalProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [extractionType, setExtractionType] = useState<'general' | 'jobs' | 'spares'>('general')
@@ -69,22 +91,99 @@ export function ExtractionConfirmationModal({
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [selectionFilter, setSelectionFilter] = useState<'all' | 'selected' | 'unselected'>('all')
 
+  const getTargetPagesForManual = (manualId: string, type: 'general' | 'jobs' | 'spares'): number[] => {
+    const edit = edits?.[manualId]
+    const m = manuals.find((x) => x.id === manualId)
+
+    if (type === 'spares') {
+      const spareRefStr = (edit?.pages_with_spares_physical as string | undefined) ??
+                          (edit?.pages_with_spares as string | undefined) ??
+                          m?.pages_with_spares_physical ??
+                          m?.pages_with_spares
+      return parsePageTokens(spareRefStr)
+    }
+    if (type === 'jobs') {
+      const jobRefStr = (edit?.pages_with_jobs_physical as string | undefined) ??
+                        (edit?.pages_with_jobs as string | undefined) ??
+                        m?.pages_with_jobs_physical ??
+                        m?.pages_with_jobs
+      return parsePageTokens(jobRefStr)
+    }
+    const compRefStr = (edit?.pages_with_components_physical as string | undefined) ??
+                       (edit?.pages_with_components as string | undefined) ??
+                       m?.pages_with_components_physical ??
+                       m?.pages_with_components
+    const jobRefStr = (edit?.pages_with_jobs_physical as string | undefined) ??
+                      (edit?.pages_with_jobs as string | undefined) ??
+                      m?.pages_with_jobs_physical ??
+                      m?.pages_with_jobs
+    const spareRefStr = (edit?.pages_with_spares_physical as string | undefined) ??
+                        (edit?.pages_with_spares as string | undefined) ??
+                        m?.pages_with_spares_physical ??
+                        m?.pages_with_spares
+    const set = new Set<number>([
+      ...parsePageTokens(compRefStr),
+      ...parsePageTokens(jobRefStr),
+      ...parsePageTokens(spareRefStr),
+    ])
+    return Array.from(set).sort((a, b) => a - b)
+  }
+
   // Helper to extract pending pages for a manual given the extraction type
   const getPendingPagesForManual = (manualId: string, type: 'general' | 'jobs' | 'spares'): number[] => {
     const summary = noExtractedSummary?.[manualId]
-    if (!summary) return []
+    const edit = edits?.[manualId]
+    const m = manuals.find((x) => x.id === manualId)
+
     if (type === 'spares') {
-      return summary.missing_spares_pages || []
+      const spareRefStr = (edit?.pages_with_spares_physical as string | undefined) ??
+                          (edit?.pages_with_spares as string | undefined) ??
+                          m?.pages_with_spares_physical ??
+                          m?.pages_with_spares
+      if (spareRefStr !== undefined && spareRefStr.trim() !== '') {
+        const targetPages = parsePageTokens(spareRefStr)
+        const extracted = new Set(summary?.extracted_spares_pages || [])
+        return targetPages.filter((p) => !extracted.has(p))
+      }
+      return summary?.missing_spares_pages || []
     }
     if (type === 'jobs') {
-      return summary.missing_jobs_pages || []
+      const jobRefStr = (edit?.pages_with_jobs_physical as string | undefined) ??
+                        (edit?.pages_with_jobs as string | undefined) ??
+                        m?.pages_with_jobs_physical ??
+                        m?.pages_with_jobs
+      if (jobRefStr !== undefined && jobRefStr.trim() !== '') {
+        const targetPages = parsePageTokens(jobRefStr)
+        const extracted = new Set(summary?.extracted_jobs_pages || [])
+        return targetPages.filter((p) => !extracted.has(p))
+      }
+      return summary?.missing_jobs_pages || []
     }
     // general: union of missing components, jobs, spares
-    const set = new Set<number>([
-      ...(summary.missing_components_pages || []),
-      ...(summary.missing_jobs_pages || []),
-      ...(summary.missing_spares_pages || []),
-    ])
+    const compRefStr = (edit?.pages_with_components_physical as string | undefined) ??
+                       (edit?.pages_with_components as string | undefined) ??
+                       m?.pages_with_components_physical ??
+                       m?.pages_with_components
+    const jobRefStr = (edit?.pages_with_jobs_physical as string | undefined) ??
+                      (edit?.pages_with_jobs as string | undefined) ??
+                      m?.pages_with_jobs_physical ??
+                      m?.pages_with_jobs
+    const spareRefStr = (edit?.pages_with_spares_physical as string | undefined) ??
+                        (edit?.pages_with_spares as string | undefined) ??
+                        m?.pages_with_spares_physical ??
+                        m?.pages_with_spares
+
+    const compPending = (compRefStr !== undefined && compRefStr.trim() !== '')
+      ? parsePageTokens(compRefStr).filter((p) => !(new Set(summary?.extracted_components_pages || [])).has(p))
+      : (summary?.missing_components_pages || [])
+    const jobPending = (jobRefStr !== undefined && jobRefStr.trim() !== '')
+      ? parsePageTokens(jobRefStr).filter((p) => !(new Set(summary?.extracted_jobs_pages || [])).has(p))
+      : (summary?.missing_jobs_pages || [])
+    const sparePending = (spareRefStr !== undefined && spareRefStr.trim() !== '')
+      ? parsePageTokens(spareRefStr).filter((p) => !(new Set(summary?.extracted_spares_pages || [])).has(p))
+      : (summary?.missing_spares_pages || [])
+
+    const set = new Set<number>([...compPending, ...jobPending, ...sparePending])
     return Array.from(set).sort((a, b) => a - b)
   }
 
@@ -137,19 +236,24 @@ export function ExtractionConfirmationModal({
   const totalConfiguredPages = useMemo(() => {
     let count = 0
     selectedIds.forEach((id) => {
-      const summary = noExtractedSummary?.[id]
-      if (summary) {
-        if (extractionType === 'spares') {
-          count += (summary.missing_spares_pages?.length || 0) + (summary.extracted_spares_pages?.length || 0)
-        } else if (extractionType === 'jobs') {
-          count += (summary.missing_jobs_pages?.length || 0) + (summary.extracted_jobs_pages?.length || 0)
-        } else {
-          count += summary.total_target_pages || 0
+      const targetPgs = getTargetPagesForManual(id, extractionType)
+      if (targetPgs.length > 0) {
+        count += targetPgs.length
+      } else {
+        const summary = noExtractedSummary?.[id]
+        if (summary) {
+          if (extractionType === 'spares') {
+            count += (summary.missing_spares_pages?.length || 0) + (summary.extracted_spares_pages?.length || 0)
+          } else if (extractionType === 'jobs') {
+            count += (summary.missing_jobs_pages?.length || 0) + (summary.extracted_jobs_pages?.length || 0)
+          } else {
+            count += summary.total_target_pages || 0
+          }
         }
       }
     })
     return count
-  }, [selectedIds, extractionType, noExtractedSummary])
+  }, [selectedIds, extractionType, noExtractedSummary, edits, manuals])
 
   // Count how many selected manuals actually have pending pages
   const manualsWithPendingCount = useMemo(() => {
@@ -259,6 +363,17 @@ export function ExtractionConfirmationModal({
           }.\n\nPlease switch Page Scope to "Complete Selected Pages" to re-extract all reference pages.`
         )
         return
+      }
+    } else {
+      manualPagesMap = {}
+      targetIds.forEach((id) => {
+        const pgs = getTargetPagesForManual(id, extractionType)
+        if (pgs.length > 0) {
+          manualPagesMap![id] = pgs
+        }
+      })
+      if (Object.keys(manualPagesMap).length === 0) {
+        manualPagesMap = undefined
       }
     }
 

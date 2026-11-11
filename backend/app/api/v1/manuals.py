@@ -141,7 +141,10 @@ def _prepare_manual_update_data(
         if printed_field in prepared or physical_field in prepared:
             printed_value = prepared.get(printed_field, getattr(manual, printed_field))
             physical_value = prepared.get(physical_field, getattr(manual, physical_field))
-            prepared[canonical_field] = printed_value or physical_value or ""
+            if physical_field in prepared:
+                prepared[canonical_field] = physical_value or printed_value or ""
+            else:
+                prepared[canonical_field] = printed_value or physical_value or ""
             page_fields_changed = True
         elif canonical_field in prepared:
             canonical_value = prepared[canonical_field]

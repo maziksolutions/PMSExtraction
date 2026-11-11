@@ -2265,6 +2265,7 @@ const ManualReview: React.FC = () => {
             extractSelectedSparesOnlyMutation.isPending
           }
           noExtractedSummary={noExtractedData?.all_manuals_summary}
+          edits={edits}
         />
       )}
     </div>

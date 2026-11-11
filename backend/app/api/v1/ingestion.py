@@ -4352,6 +4352,10 @@ async def extract_selected_manuals(
                 "spare": [p for p in _selected_manual_pages(manual, "spare") if allowed_pages is None or p in allowed_pages],
 
             }
+            if allowed_pages:
+                for etype in (entity_types or ["component", "job", "spare"]):
+                    if not manual_pages_snapshot[m_id_str].get(etype):
+                        manual_pages_snapshot[m_id_str][etype] = sorted(list(allowed_pages))
 
 
 
