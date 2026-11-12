@@ -1747,115 +1747,145 @@ async def get_untouched_manuals(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
-    await _get_vessel_or_404(vessel_id, db)
+    try:
+        await _get_vessel_or_404(vessel_id, db)
 
-    from app.services.extraction_counter import ensure_extraction_counter_tables
-    await ensure_extraction_counter_tables()
+        # 1. Fetch non-deleted manuals for this vessel
+        res = await db.execute(
+            select(Manual).where(
+                Manual.vessel_id == vessel_id,
+                Manual.tenant_id == current_user.tenant_id,
+                Manual.is_deleted == False,
+            ).order_by(Manual.batch_number.desc().nulls_last(), Manual.created_at.desc())
+        )
+        manuals = list(res.scalars().all())
+        if not manuals:
+            return {"total_untouched": 0, "manuals": []}
 
-    # 1. Fetch non-deleted manuals for this vessel
-    res = await db.execute(
-        select(Manual).where(
-            Manual.vessel_id == vessel_id,
-            Manual.tenant_id == current_user.tenant_id,
-            Manual.is_deleted == False,
-        ).order_by(Manual.batch_number.desc().nullslast(), Manual.created_at.desc())
-    )
-    manuals = list(res.scalars().all())
-    if not manuals:
-        return {"total_untouched": 0, "manuals": []}
+        manual_ids = [m.id for m in manuals]
 
-    manual_ids = [m.id for m in manuals]
-
-    # 2. Fetch extraction run counts
-    run_counts: dict[uuid.UUID, int] = {}
-    for mid in manual_ids:
+        # 2. Fetch extraction run counts safely using a savepoint
+        run_counts: dict[uuid.UUID, int] = {}
         try:
             r_res = await db.execute(
-                text("SELECT run_count FROM manual_extraction_runs WHERE manual_id = :mid"),
-                {"mid": mid}
+                text("SELECT manual_id, run_count FROM manual_extraction_runs")
             )
-            row = r_res.fetchone()
-            if row:
-                run_counts[mid] = int(row[0] or 0)
-        except Exception:
-            pass
+            for row in r_res.fetchall():
+                try:
+                    run_counts[uuid.UUID(str(row[0]))] = int(row[1] or 0)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("Could not query manual_extraction_runs in get_untouched_manuals: %s", exc)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
 
-    # 3. Fetch extracted page counts (components, jobs, spares)
-    from app.models.component import Component
-    from app.models.job import Job
-    from app.models.spare import Spare
+        # 3. Fetch extracted page counts (components, jobs, spares)
+        from app.models.component import Component
+        from app.models.job import Job
+        from app.models.spare import Spare
 
-    comp_res = await db.execute(
-        select(Component.source_manual_id, Component.page_reference).where(
-            Component.source_manual_id.in_(manual_ids),
-            Component.is_deleted == False,
-        )
-    )
-    job_res = await db.execute(
-        select(Job.source_manual_id, Job.page_reference).where(
-            Job.source_manual_id.in_(manual_ids),
-            Job.is_deleted == False,
-        )
-    )
-    spare_res = await db.execute(
-        select(Spare.source_manual_id, Spare.page_reference).where(
-            Spare.source_manual_id.in_(manual_ids),
-            Spare.is_deleted == False,
-        )
-    )
+        extracted_pages_map: dict[uuid.UUID, set[int]] = {}
 
-    extracted_pages_map: dict[uuid.UUID, set[int]] = {}
-    for mid, pg in comp_res.all():
-        if pg is not None:
-            extracted_pages_map.setdefault(mid, set()).add(pg)
-    for mid, pg in job_res.all():
-        if pg is not None:
-            extracted_pages_map.setdefault(mid, set()).add(pg)
-    for mid, pg in spare_res.all():
-        if pg is not None:
-            extracted_pages_map.setdefault(mid, set()).add(pg)
+        try:
+            comp_res = await db.execute(
+                select(Component.source_manual_id, Component.page_reference).where(
+                    Component.source_manual_id.in_(manual_ids),
+                    Component.is_deleted == False,
+                )
+            )
+            for mid, pg in comp_res.all():
+                if pg is not None:
+                    try:
+                        extracted_pages_map.setdefault(mid, set()).add(int(pg))
+                    except (ValueError, TypeError):
+                        pass
+        except Exception as exc:
+            logger.warning("Could not fetch component page references for untouched: %s", exc)
 
-    from app.services.extractor import _parse_page_tokens
+        try:
+            job_res = await db.execute(
+                select(Job.source_manual_id, Job.page_reference).where(
+                    Job.source_manual_id.in_(manual_ids),
+                    Job.is_deleted == False,
+                )
+            )
+            for mid, pg in job_res.all():
+                if pg is not None:
+                    try:
+                        extracted_pages_map.setdefault(mid, set()).add(int(pg))
+                    except (ValueError, TypeError):
+                        pass
+        except Exception as exc:
+            logger.warning("Could not fetch job page references for untouched: %s", exc)
 
-    untouched_list = []
-    for m in manuals:
-        runs = run_counts.get(m.id, 0)
-        ext_pages = extracted_pages_map.get(m.id, set())
+        try:
+            spare_res = await db.execute(
+                select(Spare.source_manual_id, Spare.page_reference).where(
+                    Spare.source_manual_id.in_(manual_ids),
+                    Spare.is_deleted == False,
+                )
+            )
+            for mid, pg in spare_res.all():
+                if pg is not None:
+                    try:
+                        extracted_pages_map.setdefault(mid, set()).add(int(pg))
+                    except (ValueError, TypeError):
+                        pass
+        except Exception as exc:
+            logger.warning("Could not fetch spare page references for untouched: %s", exc)
 
-        # Untouched if runs == 0 or 0 extracted pages
-        if runs == 0 or len(ext_pages) == 0:
-            comp_ref = (m.pages_with_components_physical or "").strip() or (m.pages_with_components or "").strip()
-            job_ref = (m.pages_with_jobs_physical or "").strip() or (m.pages_with_jobs or "").strip()
-            spare_ref = (m.pages_with_spares_physical or "").strip() or (m.pages_with_spares or "").strip()
+        from app.services.extractor import _parse_page_tokens
 
-            comp_count = len(_parse_page_tokens(comp_ref))
-            job_count = len(_parse_page_tokens(job_ref))
-            spare_count = len(_parse_page_tokens(spare_ref))
+        untouched_list = []
+        for m in manuals:
+            runs = run_counts.get(m.id, 0)
+            ext_pages = extracted_pages_map.get(m.id, set())
 
-            untouched_list.append({
-                "id": str(m.id),
-                "original_filename": m.original_filename,
-                "category": m.category,
-                "target_model": m.target_model,
-                "batch_number": m.batch_number or 1,
-                "created_at": m.created_at.isoformat() if m.created_at else None,
-                "file_size_bytes": m.file_size_bytes,
-                "useful_for_extraction": m.useful_for_extraction,
-                "status": m.status.value if hasattr(m.status, "value") else str(m.status),
-                "pages_with_components": comp_ref,
-                "pages_with_jobs": job_ref,
-                "pages_with_spares": spare_ref,
-                "targeted_components_count": comp_count,
-                "targeted_jobs_count": job_count,
-                "targeted_spares_count": spare_count,
-                "total_targeted_pages": comp_count + job_count + spare_count,
-                "run_count": runs,
-                "extracted_pages_count": len(ext_pages),
-                "is_never_run": runs == 0,
-            })
+            # Untouched if runs == 0 or 0 extracted pages
+            if runs == 0 or len(ext_pages) == 0:
+                comp_ref = (m.pages_with_components_physical or "").strip() or (m.pages_with_components or "").strip()
+                job_ref = (m.pages_with_jobs_physical or "").strip() or (m.pages_with_jobs or "").strip()
+                spare_ref = (m.pages_with_spares_physical or "").strip() or (m.pages_with_spares or "").strip()
 
-    return {
-        "total_untouched": len(untouched_list),
-        "manuals": untouched_list,
-    }
+                comp_count = len(_parse_page_tokens(comp_ref))
+                job_count = len(_parse_page_tokens(job_ref))
+                spare_count = len(_parse_page_tokens(spare_ref))
+
+                untouched_list.append({
+                    "id": str(m.id),
+                    "original_filename": m.original_filename,
+                    "category": m.category,
+                    "target_model": m.target_model,
+                    "batch_number": m.batch_number or 1,
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                    "file_size_bytes": m.file_size_bytes,
+                    "useful_for_extraction": m.useful_for_extraction,
+                    "status": m.status.value if hasattr(m.status, "value") else str(m.status),
+                    "pages_with_components": comp_ref,
+                    "pages_with_jobs": job_ref,
+                    "pages_with_spares": spare_ref,
+                    "targeted_components_count": comp_count,
+                    "targeted_jobs_count": job_count,
+                    "targeted_spares_count": spare_count,
+                    "total_targeted_pages": comp_count + job_count + spare_count,
+                    "run_count": runs,
+                    "extracted_pages_count": len(ext_pages),
+                    "is_never_run": runs == 0,
+                })
+
+        return {
+            "total_untouched": len(untouched_list),
+            "manuals": untouched_list,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("get_untouched_manuals encountered unexpected error for %s: %s", vessel_id, exc)
+        return {
+            "total_untouched": 0,
+            "manuals": [],
+        }
 
