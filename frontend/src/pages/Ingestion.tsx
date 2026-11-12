@@ -106,6 +106,20 @@ const Ingestion: React.FC = () => {
   const [isViewSelectedModalOpen, setIsViewSelectedModalOpen] = useState(false)
   const [tempSelectedFiles, setTempSelectedFiles] = useState<Record<string, SPFile>>({})
   const [batchNumber, setBatchNumber] = useState<number>(1)
+
+  // Query existing batches for this vessel and default to max(batches) + 1 for new uploads
+  const { data: existingBatches = [] } = useQuery<number[]>({
+    queryKey: ['manual-batches', vesselId],
+    queryFn: () => apiClient.get(`/vessels/${vesselId}/manuals/batches`).then((r) => r.data),
+    enabled: !!vesselId,
+  })
+
+  useEffect(() => {
+    if (existingBatches.length > 0) {
+      const nextIteration = Math.max(...existingBatches) + 1
+      setBatchNumber(nextIteration)
+    }
+  }, [existingBatches])
   const [modalCheckedIds, setModalCheckedIds] = useState<Set<string>>(new Set())
   const [modalFilterText, setModalFilterText] = useState('')
   const [modalSortField, setModalSortField] = useState<'name' | 'size' | 'modified' | null>(null)
@@ -519,7 +533,7 @@ const Ingestion: React.FC = () => {
 
               {!uploadDone && (
                 <div className="flex items-center gap-3 bg-slate-950 p-3 rounded-lg border border-slate-800">
-                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Batch Number:</span>
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider" title="Iteration number for identifying recently uploaded manuals">Iteration Number:</span>
                   <input
                     type="number"
                     min="1"
@@ -738,7 +752,7 @@ const Ingestion: React.FC = () => {
                   </button>
 
                   <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
-                    <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">Batch:</span>
+                    <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap" title="Iteration number for identifying recently uploaded manuals">Iteration:</span>
                     <input
                       type="number"
                       min="1"
