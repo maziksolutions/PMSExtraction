@@ -154,6 +154,7 @@ export interface Manual {
   sharepoint_path: string | null
   status: string
   batch_number?: number | null
+  sequence_number?: number | null
   error_message: string | null
   retry_count: number
   detected_language: string | null

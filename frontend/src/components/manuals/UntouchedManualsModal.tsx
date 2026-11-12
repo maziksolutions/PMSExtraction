@@ -21,6 +21,7 @@ export interface UntouchedManualItem {
   category?: string | null
   target_model?: string | null
   batch_number: number
+  sequence_number?: number | null
   created_at?: string | null
   file_size_bytes: number
   useful_for_extraction?: string | null
@@ -318,7 +319,7 @@ export const UntouchedManualsModal: React.FC<UntouchedManualsModalProps> = ({
                       className="rounded border-slate-700 bg-slate-800 text-emerald-500"
                     />
                   </th>
-                  <th className="py-2.5 px-3 w-[12%]">Iteration</th>
+                  <th className="py-2.5 px-3 w-[8%]">#</th>
                   <th className="py-2.5 px-3 w-[36%]">Manual Name</th>
                   <th className="py-2.5 px-3 w-[16%]">Category / Model</th>
                   <th className="py-2.5 px-3 w-[18%]">Targeted Pages</th>
@@ -346,10 +347,13 @@ export const UntouchedManualsModal: React.FC<UntouchedManualsModalProps> = ({
                         />
                       </td>
 
-                      {/* Iteration Badge */}
+                      {/* Sequence Number Badge */}
                       <td className="py-3 px-3">
-                        <span className="inline-flex items-center gap-1 rounded bg-indigo-950/60 border border-indigo-700/50 px-2 py-0.5 text-[10px] font-bold text-indigo-300">
-                          Iter #{m.batch_number || 1}
+                        <span
+                          className="inline-flex items-center justify-center rounded bg-sky-950/60 border border-sky-700/50 px-2 py-0.5 text-xs font-bold font-mono text-sky-300 shadow-xs"
+                          title={`Manual Sequence #${m.sequence_number ?? 1}`}
+                        >
+                          #{m.sequence_number ?? 1}
                         </span>
                       </td>
 

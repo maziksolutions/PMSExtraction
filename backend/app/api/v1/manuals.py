@@ -112,7 +112,7 @@ def _build_manual_filters(
 def _manual_order_expr(sort_by: str, sort_order: str):
     if sort_by == "filename":
         order_col = Manual.original_filename
-    elif sort_by == "created_at":
+    elif sort_by in ("created_at", "sequence_number"):
         order_col = Manual.created_at
     elif sort_by == "file_size":
         order_col = Manual.file_size
@@ -668,7 +668,7 @@ async def list_manuals(
     search: Optional[str] = Query(None),
     useful_for_extraction: Optional[str] = Query(None),
     batch_number: Optional[int] = Query(None),
-    sort_by: str = Query("filename", regex="^(filename|created_at|confidence|file_size|category|useful_for_extraction)$"),
+    sort_by: str = Query("filename", regex="^(filename|created_at|confidence|file_size|category|useful_for_extraction|batch_number|sequence_number)$"),
     sort_order: str = Query("asc", regex="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=1000),
@@ -692,17 +692,46 @@ async def list_manuals(
 
     order_expr = _manual_order_expr(sort_by, sort_order)
 
+    # Subquery for sequential manual upload number
+    seq_subquery = (
+        select(
+            Manual.id.label("manual_id"),
+            func.row_number().over(
+                partition_by=Manual.vessel_id,
+                order_by=[Manual.created_at.asc(), Manual.id.asc()],
+            ).label("seq_no"),
+        )
+        .where(
+            Manual.vessel_id == vessel_id,
+            Manual.tenant_id == current_user.tenant_id,
+            Manual.is_deleted == False,
+        )
+        .subquery()
+    )
+
     query = (
-        select(Manual)
+        select(Manual, seq_subquery.c.seq_no)
+        .outerjoin(seq_subquery, Manual.id == seq_subquery.c.manual_id)
         .where(*base_filter)
         .order_by(order_expr)
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
     result = await db.execute(query)
-    manuals = result.scalars().all()
+    items = []
+    for idx, row in enumerate(result.all(), 1):
+        if isinstance(row, (tuple, list)) or hasattr(row, "_mapping"):
+            m_obj = row[0]
+            seq_val = row[1] if len(row) > 1 and row[1] is not None else idx
+        else:
+            m_obj = row
+            seq_val = getattr(row, "sequence_number", None) or idx
+        out = ManualOut.model_validate(m_obj)
+        out.sequence_number = int(seq_val)
+        items.append(out)
+
     return {
-        "items": [ManualOut.model_validate(m) for m in manuals],
+        "items": items,
         "page": page,
         "page_size": page_size,
         "total": total,
@@ -857,7 +886,7 @@ async def export_manual_screening(
     min_confidence: Optional[int] = Query(None),
     search: Optional[str] = Query(None),
     useful_for_extraction: Optional[str] = Query(None),
-    sort_by: str = Query("filename", regex="^(filename|created_at|confidence)$"),
+    sort_by: str = Query("filename", regex="^(filename|created_at|confidence|file_size|category|useful_for_extraction|batch_number|sequence_number)$"),
     sort_order: str = Query("asc", regex="^(asc|desc)$"),
 ) -> StreamingResponse:
     await _get_vessel_or_404(vessel_id, db)
@@ -1750,15 +1779,32 @@ async def get_untouched_manuals(
     try:
         await _get_vessel_or_404(vessel_id, db)
 
-        # 1. Fetch non-deleted manuals for this vessel
+        # 1. Fetch non-deleted manuals for this vessel along with sequence number
         res = await db.execute(
-            select(Manual).where(
+            select(
+                Manual,
+                func.row_number().over(
+                    partition_by=Manual.vessel_id,
+                    order_by=[Manual.created_at.asc(), Manual.id.asc()],
+                ).label("seq_no"),
+            ).where(
                 Manual.vessel_id == vessel_id,
                 Manual.tenant_id == current_user.tenant_id,
                 Manual.is_deleted == False,
-            ).order_by(Manual.batch_number.desc().nulls_last(), Manual.created_at.desc())
+            ).order_by(Manual.created_at.desc(), Manual.id.desc())
         )
-        manuals = list(res.scalars().all())
+        manual_rows = res.all()
+        manuals = []
+        seq_map = {}
+        for idx, row in enumerate(manual_rows, 1):
+            if isinstance(row, (tuple, list)) or hasattr(row, "_mapping"):
+                m_obj = row[0]
+                seq_val = int(row[1]) if len(row) > 1 and row[1] is not None else idx
+            else:
+                m_obj = row
+                seq_val = getattr(row, "sequence_number", None) or idx
+            manuals.append(m_obj)
+            seq_map[m_obj.id] = seq_val
         if not manuals:
             return {"total_untouched": 0, "manuals": []}
 
@@ -1844,37 +1890,41 @@ async def get_untouched_manuals(
             runs = run_counts.get(m.id, 0)
             ext_pages = extracted_pages_map.get(m.id, set())
 
-            # Untouched if runs == 0 or 0 extracted pages
-            if runs == 0 or len(ext_pages) == 0:
-                comp_ref = (m.pages_with_components_physical or "").strip() or (m.pages_with_components or "").strip()
-                job_ref = (m.pages_with_jobs_physical or "").strip() or (m.pages_with_jobs or "").strip()
-                spare_ref = (m.pages_with_spares_physical or "").strip() or (m.pages_with_spares or "").strip()
+            # CRITICAL FIX: If manual already has extracted pages, it has been extracted and is NOT untouched!
+            if len(ext_pages) > 0:
+                continue
 
-                comp_count = len(_parse_page_tokens(comp_ref))
-                job_count = len(_parse_page_tokens(job_ref))
-                spare_count = len(_parse_page_tokens(spare_ref))
+            # Here len(ext_pages) == 0: manual has 0 extracted pages
+            comp_ref = (m.pages_with_components_physical or "").strip() or (m.pages_with_components or "").strip()
+            job_ref = (m.pages_with_jobs_physical or "").strip() or (m.pages_with_jobs or "").strip()
+            spare_ref = (m.pages_with_spares_physical or "").strip() or (m.pages_with_spares or "").strip()
 
-                untouched_list.append({
-                    "id": str(m.id),
-                    "original_filename": m.original_filename,
-                    "category": m.category,
-                    "target_model": m.target_model,
-                    "batch_number": m.batch_number or 1,
-                    "created_at": m.created_at.isoformat() if m.created_at else None,
-                    "file_size_bytes": m.file_size_bytes,
-                    "useful_for_extraction": m.useful_for_extraction,
-                    "status": m.status.value if hasattr(m.status, "value") else str(m.status),
-                    "pages_with_components": comp_ref,
-                    "pages_with_jobs": job_ref,
-                    "pages_with_spares": spare_ref,
-                    "targeted_components_count": comp_count,
-                    "targeted_jobs_count": job_count,
-                    "targeted_spares_count": spare_count,
-                    "total_targeted_pages": comp_count + job_count + spare_count,
-                    "run_count": runs,
-                    "extracted_pages_count": len(ext_pages),
-                    "is_never_run": runs == 0,
-                })
+            comp_count = len(_parse_page_tokens(comp_ref))
+            job_count = len(_parse_page_tokens(job_ref))
+            spare_count = len(_parse_page_tokens(spare_ref))
+
+            untouched_list.append({
+                "id": str(m.id),
+                "original_filename": m.original_filename,
+                "category": m.category,
+                "target_model": m.target_model,
+                "sequence_number": seq_map.get(m.id, 1),
+                "batch_number": m.batch_number or 1,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+                "file_size_bytes": m.file_size_bytes,
+                "useful_for_extraction": m.useful_for_extraction,
+                "status": m.status.value if hasattr(m.status, "value") else str(m.status),
+                "pages_with_components": comp_ref,
+                "pages_with_jobs": job_ref,
+                "pages_with_spares": spare_ref,
+                "targeted_components_count": comp_count,
+                "targeted_jobs_count": job_count,
+                "targeted_spares_count": spare_count,
+                "total_targeted_pages": comp_count + job_count + spare_count,
+                "run_count": runs,
+                "extracted_pages_count": 0,
+                "is_never_run": runs == 0,
+            })
 
         return {
             "total_untouched": len(untouched_list),

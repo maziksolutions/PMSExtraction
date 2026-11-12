@@ -69,6 +69,7 @@ interface Manual {
   blob_storage_key?: string | null
   sharepoint_path?: string | null
   batch_number?: number | null
+  sequence_number?: number | null
 }
 
 interface Gap {
@@ -1833,6 +1834,8 @@ const ManualReview: React.FC = () => {
             onChange={(e) => { const [sb, so] = e.target.value.split(':'); setSortBy(sb); setSortOrder(so) }}
             className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-xs text-slate-200 focus:border-sky-500 focus:outline-none"
           >
+            <option value="sequence_number:asc">Upload Sequence (#1 first)</option>
+            <option value="sequence_number:desc">Upload Sequence (recent first)</option>
             <option value="filename:asc">Filename A-Z</option>
             <option value="filename:desc">Filename Z-A</option>
             <option value="created_at:desc">Date (newest)</option>
@@ -1928,7 +1931,7 @@ const ManualReview: React.FC = () => {
                   />
                 </th>
                 <th className="px-3 py-3">{renderSortHeader('Extraction', 'extraction_status')}</th>
-                <th className="px-3 py-3">{renderSortHeader('Iter', 'batch_number')}</th>
+                <th className="px-3 py-3">{renderSortHeader('#', 'sequence_number')}</th>
                 <th className="px-3 py-3">{renderSortHeader('File Name', 'filename')}</th>
                 <th className="px-3 py-3">{renderSortHeader('Size', 'file_size')}</th>
                 <th className="px-3 py-3">{renderSortHeader('Category', 'category')}</th>
@@ -1945,7 +1948,7 @@ const ManualReview: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
-              {manuals.map((m) => {
+              {manuals.map((m, mIdx) => {
                 const edit = edits[m.id] ?? {}
                 const changed = Object.keys(edit).length > 0
                 const isSelected = selectedIds.has(m.id)
@@ -1982,10 +1985,10 @@ const ManualReview: React.FC = () => {
                     </td>
                     <td className="px-3 py-3 whitespace-nowrap">
                       <span
-                        className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-bold bg-indigo-950/60 text-indigo-300 border border-indigo-700/50"
-                        title={`Upload Iteration #${m.batch_number ?? 1}`}
+                        className="inline-flex items-center justify-center rounded px-2 py-0.5 text-xs font-bold font-mono bg-sky-950/60 text-sky-300 border border-sky-700/50 shadow-xs"
+                        title={`Manual Sequence #${m.sequence_number ?? mIdx + 1} (Upload Order)`}
                       >
-                        Iter #{m.batch_number ?? 1}
+                        #{m.sequence_number ?? mIdx + 1}
                       </span>
                     </td>
                     <td className="px-3 py-3 max-w-xs">

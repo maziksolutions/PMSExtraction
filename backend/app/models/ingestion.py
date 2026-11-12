@@ -87,6 +87,11 @@ class Manual(TenantBase):
         nullable=True,
     )
 
+    sequence_number: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
     error_message: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True,
