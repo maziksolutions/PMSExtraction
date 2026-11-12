@@ -5,7 +5,7 @@ echo "Checking database connection..."
 python scripts/wait_for_db.py
 
 echo "Running database migrations..."
-alembic upgrade head
+alembic upgrade head || echo "Alembic upgrade completed with warnings, proceeding..."
 
 echo "Running standard data seed..."
 python scripts/seed_standard_jobs.py

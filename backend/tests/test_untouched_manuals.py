@@ -73,6 +73,8 @@ async def test_get_untouched_manuals_endpoint():
             return self
         def all(self):
             return self.items
+        def fetchall(self):
+            return self.items
         def fetchone(self):
             return self.items[0] if self.items else None
         def scalar_one_or_none(self):
@@ -80,16 +82,14 @@ async def test_get_untouched_manuals_endpoint():
 
     # Call 1: _get_vessel_or_404
     # Call 2: select(Manual) -> [m1, m2]
-    # Call 3: SELECT run_count for m1 -> None (0 runs)
-    # Call 4: SELECT run_count for m2 -> (1,)
-    # Call 5: select(Component) -> [(m2.id, 1)]
-    # Call 6: select(Job) -> [(m2.id, 2)]
-    # Call 7: select(Spare) -> [(m2.id, 3)]
+    # Call 3: SELECT manual_id, run_count FROM manual_extraction_runs -> [(m2.id, 1)]
+    # Call 4: select(Component) -> [(m2.id, 1)]
+    # Call 5: select(Job) -> [(m2.id, 2)]
+    # Call 6: select(Spare) -> [(m2.id, 3)]
     db.execute.side_effect = [
         MockResult([MagicMock()]),          # vessel check
         MockResult([m1, m2]),               # manuals
-        MockResult([]),                     # m1 run_count
-        MockResult([(1,)]),                 # m2 run_count
+        MockResult([(m2.id, 1)]),           # run counts
         MockResult([(m2.id, 1)]),           # comp_res
         MockResult([(m2.id, 2)]),           # job_res
         MockResult([(m2.id, 3)]),           # spare_res

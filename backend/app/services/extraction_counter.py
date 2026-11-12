@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
@@ -12,29 +13,44 @@ logger = logging.getLogger(__name__)
 _tables_initialized = False
 
 
-async def ensure_extraction_counter_tables() -> None:
+async def ensure_extraction_counter_tables(db: Optional[AsyncSession] = None) -> None:
     """Ensures the tables for tracking manual and page extraction run counts exist."""
     global _tables_initialized
     if _tables_initialized:
         return
     try:
+        ddl_runs = """
+            CREATE TABLE IF NOT EXISTS manual_extraction_runs (
+                manual_id UUID PRIMARY KEY,
+                run_count INT NOT NULL DEFAULT 1,
+                last_run_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """
+        ddl_pages = """
+            CREATE TABLE IF NOT EXISTS manual_page_extractions (
+                manual_id UUID NOT NULL,
+                page_number INT NOT NULL,
+                run_count INT NOT NULL DEFAULT 1,
+                last_extracted_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (manual_id, page_number)
+            );
+        """
+        if db is not None:
+            try:
+                await db.execute(text(ddl_runs))
+                await db.execute(text(ddl_pages))
+                _tables_initialized = True
+                return
+            except Exception as e:
+                logger.warning("ensure_extraction_counter_tables on db session error: %s", e)
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+
         async with AsyncSessionLocal() as session:
-            await session.execute(text("""
-                CREATE TABLE IF NOT EXISTS manual_extraction_runs (
-                    manual_id UUID PRIMARY KEY,
-                    run_count INT NOT NULL DEFAULT 1,
-                    last_run_at TIMESTAMPTZ DEFAULT NOW()
-                );
-            """))
-            await session.execute(text("""
-                CREATE TABLE IF NOT EXISTS manual_page_extractions (
-                    manual_id UUID NOT NULL,
-                    page_number INT NOT NULL,
-                    run_count INT NOT NULL DEFAULT 1,
-                    last_extracted_at TIMESTAMPTZ DEFAULT NOW(),
-                    PRIMARY KEY (manual_id, page_number)
-                );
-            """))
+            await session.execute(text(ddl_runs))
+            await session.execute(text(ddl_pages))
             await session.commit()
             _tables_initialized = True
     except Exception as exc:
@@ -101,14 +117,39 @@ def record_page_extraction_run(manual_id_str: str, page_number: int) -> None:
         logger.warning("record_page_extraction_run error: %s", exc)
 
 
-async def get_extraction_counts(manual_id: uuid.UUID) -> Tuple[int, Dict[int, int]]:
+async def get_extraction_counts(manual_id: uuid.UUID, db: Optional[AsyncSession] = None) -> Tuple[int, Dict[int, int]]:
     """
     Returns (manual_run_count, page_run_counts_dict) for a manual.
     """
-    await ensure_extraction_counter_tables()
     manual_runs = 0
     page_runs: Dict[int, int] = {}
+
+    if db is not None:
+        try:
+            m_res = await db.execute(
+                text("SELECT run_count FROM manual_extraction_runs WHERE manual_id = :mid"),
+                {"mid": manual_id}
+            )
+            m_row = m_res.fetchone()
+            if m_row:
+                manual_runs = int(m_row[0] or 0)
+
+            p_res = await db.execute(
+                text("SELECT page_number, run_count FROM manual_page_extractions WHERE manual_id = :mid"),
+                {"mid": manual_id}
+            )
+            for r in p_res.fetchall():
+                page_runs[int(r[0])] = int(r[1] or 0)
+            return manual_runs, page_runs
+        except Exception as exc:
+            logger.warning("get_extraction_counts on db failed for %s: %s", manual_id, exc)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+
     try:
+        await ensure_extraction_counter_tables()
         async with AsyncSessionLocal() as session:
             m_res = await session.execute(
                 text("SELECT run_count FROM manual_extraction_runs WHERE manual_id = :mid"),

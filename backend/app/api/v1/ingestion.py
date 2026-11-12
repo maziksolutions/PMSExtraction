@@ -4902,346 +4902,210 @@ async def view_manual(
 )
 
 async def get_manual_page_status(
-
     vessel_id: uuid.UUID,
-
     manual_id: uuid.UUID,
-
     current_user: Annotated[User, Depends(get_current_user)],
-
     db: Annotated[AsyncSession, Depends(get_db)],
-
     components_pages_unsaved: Optional[str] = Query(None),
-
     jobs_pages_unsaved: Optional[str] = Query(None),
-
     spares_pages_unsaved: Optional[str] = Query(None),
-
 ) -> dict[str, Any]:
-
     """
-
     Returns the page-by-page status and count breakdown for a manual.
-
     Allows passing unsaved page references to reform pages dynamically.
-
     """
+    try:
+        await _get_vessel_or_404(vessel_id, db)
 
-    await _get_vessel_or_404(vessel_id, db)
-
-
-
-    # Fetch manual
-
-    result = await db.execute(
-
-        select(Manual).where(
-
-            Manual.id == manual_id,
-
-            Manual.vessel_id == vessel_id,
-
-            Manual.tenant_id == current_user.tenant_id,
-
-            Manual.is_deleted == False,
-
+        # Fetch manual
+        result = await db.execute(
+            select(Manual).where(
+                Manual.id == manual_id,
+                Manual.vessel_id == vessel_id,
+                Manual.tenant_id == current_user.tenant_id,
+                Manual.is_deleted == False,
+            )
         )
-
-    )
-
-    manual: Optional[Manual] = result.scalar_one_or_none()
-
-    if manual is None:
-
-        raise HTTPException(status_code=404, detail="Manual not found")
-
-
-
-    from app.services.extractor import _parse_page_tokens
-
-
-
-    # Use unsaved query params if provided, otherwise fallback to DB physical or canonical fields
-
-    if components_pages_unsaved is not None:
-
-        comp_ref_str = components_pages_unsaved
-
-    else:
-
-        comp_ref_str = (manual.pages_with_components_physical or "").strip() or (manual.pages_with_components or "").strip()
-
-
-
-    if jobs_pages_unsaved is not None:
-
-        job_ref_str = jobs_pages_unsaved
-
-    else:
-
-        job_ref_str = (manual.pages_with_jobs_physical or "").strip() or (manual.pages_with_jobs or "").strip()
-
-
-
-    if spares_pages_unsaved is not None:
-
-        spare_ref_str = spares_pages_unsaved
-
-    else:
-
-        spare_ref_str = (manual.pages_with_spares_physical or "").strip() or (manual.pages_with_spares or "").strip()
-
-
-
-    component_pages = set(_parse_page_tokens(comp_ref_str))
-
-    job_pages = set(_parse_page_tokens(job_ref_str))
-
-    spare_pages = set(_parse_page_tokens(spare_ref_str))
-
-    all_targeted_pages = component_pages.union(job_pages).union(spare_pages)
-
-
-
-    # Determine page range
-
-    max_page = max(all_targeted_pages) if all_targeted_pages else 0
-
-    total_pages = max(manual.page_count or 0, max_page)
-
-    if total_pages == 0 and all_targeted_pages:
-
-        total_pages = max_page
-
-
-
-    # Fetch all active components, jobs, spares for this manual
-
-    from app.models.component import Component
-
-    from app.models.job import Job
-
-    from app.models.spare import Spare
-
-
-
-    comp_res = await db.execute(
-
-        select(Component).where(
-
-            Component.source_manual_id == manual_id,
-
-            Component.vessel_id == vessel_id,
-
-            Component.tenant_id == current_user.tenant_id,
-
-            Component.is_deleted == False,
-
-        )
-
-    )
-
-    components = comp_res.scalars().all()
-
-
-
-    job_res = await db.execute(
-
-        select(Job).where(
-
-            Job.source_manual_id == manual_id,
-
-            Job.vessel_id == vessel_id,
-
-            Job.tenant_id == current_user.tenant_id,
-
-            Job.is_deleted == False,
-
-        )
-
-    )
-
-    jobs = job_res.scalars().all()
-
-
-
-    spare_res = await db.execute(
-
-        select(Spare).where(
-
-            Spare.source_manual_id == manual_id,
-
-            Spare.vessel_id == vessel_id,
-
-            Spare.tenant_id == current_user.tenant_id,
-
-            Spare.is_deleted == False,
-
-        )
-
-    )
-
-    spares = spare_res.scalars().all()
-
-
-
-    # Group by page number
-
-    items_by_page = {}
-
-    for comp in components:
-
-        p = comp.page_reference
-
-        if p is not None:
-
-            items_by_page.setdefault(p, []).append({
-
-                "type": "component",
-
-                "name": comp.component_name,
-
-                "detail": f"{comp.maker or ''} {comp.model or ''}".strip(),
-
-            })
-
-
-
-    for job in jobs:
-
-        p = job.page_reference
-
-        if p is not None:
-
-            items_by_page.setdefault(p, []).append({
-
-                "type": "job",
-
-                "name": job.job_name,
-
-                "detail": job.job_code or "",
-
-            })
-
-
-
-    for spare in spares:
-
-        p = spare.page_reference
-
-        if p is not None:
-
-            items_by_page.setdefault(p, []).append({
-
-                "type": "spare",
-
-                "name": spare.part_name,
-
-                "detail": spare.part_number or "",
-
-            })
-
-
-
-    from app.services.extraction_counter import get_extraction_counts
-
-    manual_run_count, page_run_counts = await get_extraction_counts(manual_id)
-
-    total_items = len(components) + len(jobs) + len(spares)
-
-    if manual_run_count == 0 and total_items > 0:
-
-        manual_run_count = 1
-
-
-
-    pages_data = []
-
-    for p in range(1, total_pages + 1):
-
-        is_targeted = (p in component_pages) or (p in job_pages) or (p in spare_pages)
-
-        page_items = items_by_page.get(p, [])
-
-        extracted_count = len(page_items)
-
-
-
-        # Skip pages that are not targeted and have no items extracted to keep the list focused
-
-        if not is_targeted and extracted_count == 0:
-
-            continue
-
-
-
-        if not is_targeted:
-
-            page_status = "skipped"
-
+        manual: Optional[Manual] = result.scalar_one_or_none()
+        if manual is None:
+            raise HTTPException(status_code=404, detail="Manual not found")
+
+        from app.services.extractor import _parse_page_tokens
+
+        # Use unsaved query params if non-empty, otherwise fallback to DB physical or canonical fields
+        if components_pages_unsaved is not None and components_pages_unsaved.strip():
+            comp_ref_str = components_pages_unsaved.strip()
         else:
+            comp_ref_str = (manual.pages_with_components_physical or "").strip() or (manual.pages_with_components or "").strip()
 
-            if manual.status == ManualStatus.failed:
+        if jobs_pages_unsaved is not None and jobs_pages_unsaved.strip():
+            job_ref_str = jobs_pages_unsaved.strip()
+        else:
+            job_ref_str = (manual.pages_with_jobs_physical or "").strip() or (manual.pages_with_jobs or "").strip()
 
+        if spares_pages_unsaved is not None and spares_pages_unsaved.strip():
+            spare_ref_str = spares_pages_unsaved.strip()
+        else:
+            spare_ref_str = (manual.pages_with_spares_physical or "").strip() or (manual.pages_with_spares or "").strip()
+
+        component_pages = set(_parse_page_tokens(comp_ref_str))
+        job_pages = set(_parse_page_tokens(job_ref_str))
+        spare_pages = set(_parse_page_tokens(spare_ref_str))
+        all_targeted_pages = component_pages.union(job_pages).union(spare_pages)
+
+        # Determine page range safely
+        max_page = max(all_targeted_pages) if all_targeted_pages else 0
+        manual_page_count = 0
+        try:
+            if manual.page_count:
+                manual_page_count = int(manual.page_count)
+        except (ValueError, TypeError):
+            pass
+
+        total_pages = max(manual_page_count, max_page)
+        if total_pages == 0 and all_targeted_pages:
+            total_pages = max_page
+
+        # Fetch all active components, jobs, spares for this manual
+        from app.models.component import Component
+        from app.models.job import Job
+        from app.models.spare import Spare
+
+        items_by_page: dict[int, list[dict[str, str]]] = {}
+
+        try:
+            comp_res = await db.execute(
+                select(Component).where(
+                    Component.source_manual_id == manual_id,
+                    Component.is_deleted == False,
+                )
+            )
+            for comp in comp_res.scalars().all():
+                if comp.page_reference is not None:
+                    try:
+                        p_int = int(comp.page_reference)
+                        items_by_page.setdefault(p_int, []).append({
+                            "type": "component",
+                            "name": comp.component_name or "Unnamed Component",
+                            "detail": f"{comp.maker or ''} {comp.model or ''}".strip(),
+                        })
+                    except (ValueError, TypeError):
+                        pass
+        except Exception as exc:
+            _log.warning("Could not fetch components for manual %s: %s", manual_id, exc)
+
+        try:
+            job_res = await db.execute(
+                select(Job).where(
+                    Job.source_manual_id == manual_id,
+                    Job.is_deleted == False,
+                )
+            )
+            for job in job_res.scalars().all():
+                if job.page_reference is not None:
+                    try:
+                        p_int = int(job.page_reference)
+                        items_by_page.setdefault(p_int, []).append({
+                            "type": "job",
+                            "name": job.job_name or "Unnamed Job",
+                            "detail": job.job_code or "",
+                        })
+                    except (ValueError, TypeError):
+                        pass
+        except Exception as exc:
+            _log.warning("Could not fetch jobs for manual %s: %s", manual_id, exc)
+
+        try:
+            spare_res = await db.execute(
+                select(Spare).where(
+                    Spare.source_manual_id == manual_id,
+                    Spare.is_deleted == False,
+                )
+            )
+            for spare in spare_res.scalars().all():
+                if spare.page_reference is not None:
+                    try:
+                        p_int = int(spare.page_reference)
+                        items_by_page.setdefault(p_int, []).append({
+                            "type": "spare",
+                            "name": spare.part_name or "Unnamed Spare",
+                            "detail": spare.part_number or "",
+                        })
+                    except (ValueError, TypeError):
+                        pass
+        except Exception as exc:
+            _log.warning("Could not fetch spares for manual %s: %s", manual_id, exc)
+
+        from app.services.extraction_counter import get_extraction_counts
+        manual_run_count = 0
+        page_run_counts: dict[int, int] = {}
+        try:
+            manual_run_count, page_run_counts = await get_extraction_counts(manual_id, db=db)
+        except Exception as exc:
+            _log.warning("get_extraction_counts failed for %s: %s", manual_id, exc)
+
+        total_items = sum(len(items) for items in items_by_page.values())
+        if manual_run_count == 0 and total_items > 0:
+            manual_run_count = 1
+
+        status_str = manual.status.value if hasattr(manual.status, "value") else str(manual.status or "")
+
+        pages_data = []
+        for p in range(1, total_pages + 1):
+            is_targeted = (p in component_pages) or (p in job_pages) or (p in spare_pages)
+            page_items = items_by_page.get(p, [])
+            extracted_count = len(page_items)
+
+            # Skip pages that are not targeted and have no items extracted to keep the list focused
+            if not is_targeted and extracted_count == 0:
+                continue
+
+            if not is_targeted:
+                page_status = "skipped"
+            elif status_str == "failed":
                 page_status = "failed"
-
-            elif manual.status in [ManualStatus.queued, ManualStatus.downloading, ManualStatus.converting, ManualStatus.translating, ManualStatus.scanning]:
-
+            elif status_str in ["queued", "downloading", "converting", "translating", "scanning"]:
                 page_status = "pending"
-
             else:
-
                 page_status = "success"
 
+            page_run_count = page_run_counts.get(p, 1 if extracted_count > 0 else 0)
+            pages_data.append({
+                "page_number": p,
+                "is_targeted": is_targeted,
+                "status": page_status,
+                "extracted_count": extracted_count,
+                "extraction_run_count": page_run_count,
+                "targeted_types": {
+                    "component": p in component_pages,
+                    "job": p in job_pages,
+                    "spare": p in spare_pages,
+                },
+                "items": page_items,
+            })
 
-
-        page_run_count = page_run_counts.get(p, 1 if extracted_count > 0 else 0)
-
-        pages_data.append({
-
-            "page_number": p,
-
-            "is_targeted": is_targeted,
-
-            "status": page_status,
-
-            "extracted_count": extracted_count,
-
-            "extraction_run_count": page_run_count,
-
-            "targeted_types": {
-
-                "component": p in component_pages,
-
-                "job": p in job_pages,
-
-                "spare": p in spare_pages,
-
-            },
-
-            "items": page_items
-
-        })
-
-
-
-    return {
-
-        "manual_id": str(manual_id),
-
-        "original_filename": manual.original_filename,
-
-        "page_count": manual.page_count,
-
-        "status": manual.status,
-
-        "target_model": getattr(manual, "target_model", None),
-
-        "manual_extraction_count": manual_run_count,
-
-        "pages": pages_data,
-
-    }
+        return {
+            "manual_id": str(manual_id),
+            "original_filename": manual.original_filename,
+            "page_count": manual.page_count,
+            "status": status_str,
+            "target_model": getattr(manual, "target_model", None),
+            "manual_extraction_count": manual_run_count,
+            "pages": pages_data,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("get_manual_page_status encountered unexpected error for %s: %s", manual_id, exc)
+        return {
+            "manual_id": str(manual_id),
+            "original_filename": "",
+            "page_count": 0,
+            "status": "error",
+            "target_model": None,
+            "manual_extraction_count": 0,
+            "pages": [],
+        }
 
 
 
