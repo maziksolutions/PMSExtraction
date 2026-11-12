@@ -153,6 +153,7 @@ export interface Manual {
   file_size_bytes: number
   sharepoint_path: string | null
   status: string
+  batch_number?: number | null
   error_message: string | null
   retry_count: number
   detected_language: string | null

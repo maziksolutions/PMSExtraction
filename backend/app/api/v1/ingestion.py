@@ -2321,6 +2321,18 @@ async def upload_manuals(
 
 
 
+    # Resolve upload batch / iteration number: auto-increment if not specified
+    from sqlalchemy import func as _sql_func
+    if batch_number is None or batch_number <= 0:
+        max_b_res = await db.execute(
+            select(_sql_func.max(Manual.batch_number)).where(
+                Manual.vessel_id == vessel_id,
+                Manual.tenant_id == current_user.tenant_id,
+            )
+        )
+        curr_max_b = max_b_res.scalar() or 0
+        batch_number = curr_max_b + 1
+
     # Phase 1: read all files, create DB records
 
 
