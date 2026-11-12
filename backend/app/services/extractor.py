@@ -1,4715 +1,4600 @@
-from __future__ import annotations
-
-import asyncio
-import base64
-import io
-import json
-import logging
-import os
-import re
-import uuid
-from difflib import SequenceMatcher
-from typing import Any, Optional
-
-import anthropic
-
-from app.core.config import settings
-from app.services.extraction_counter import (
-    record_manual_extraction_run,
-    record_page_extraction_run,
-    record_page_extraction_reason,
-)
-from app.services.job_ranks import backfill_manual_job_ranks
-from app.services.job_naming import (
-    append_source_references_to_description,
-    build_canonical_job_name,
-    split_reference_entries,
-    strip_source_reference_footer,
-    summarize_reference_entries,
-)
-
-logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# In-memory extraction progress tracker
-# Structure: { vessel_id_str: { "total": int, "done": int, "status": str, ... } }
-# ---------------------------------------------------------------------------
-import redis
-
-_extract_state: dict[str, dict] = {}
-_sync_redis: Optional[redis.Redis] = None
-
-def _get_sync_redis() -> Optional[redis.Redis]:
-    global _sync_redis
-    if _sync_redis is None:
-        try:
-            _sync_redis = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True, socket_timeout=2.0)
-        except Exception as exc:
-            logger.warning("Failed to initialize sync Redis client: %s", exc)
-    return _sync_redis
-
-
-_active_extraction_tasks: dict[str, asyncio.Task] = {}
-_extraction_paused_flags: dict[str, bool] = {}
-
-
-def pause_extraction(vessel_id_str: str) -> bool:
-    state = get_extraction_state(vessel_id_str)
-    if state and state.get("status") == "running":
-        _extraction_paused_flags[vessel_id_str] = True
-        set_extraction_state(vessel_id_str, status="paused")
-        return True
-    return False
-
-
-def resume_extraction(vessel_id_str: str) -> bool:
-    state = get_extraction_state(vessel_id_str)
-    if state and state.get("status") == "paused":
-        _extraction_paused_flags[vessel_id_str] = False
-        set_extraction_state(vessel_id_str, status="running")
-        return True
-    return False
-
-
-def stop_extraction(vessel_id_str: str) -> bool:
-    _extraction_paused_flags.pop(vessel_id_str, None)
-    task = _active_extraction_tasks.pop(vessel_id_str, None)
-    if task and not task.done():
-        task.cancel()
-        set_extraction_state(vessel_id_str, status="idle")
-        return True
-    state = get_extraction_state(vessel_id_str)
-    if state:
-        set_extraction_state(vessel_id_str, status="idle")
-        return True
-    return False
-
-
-def set_extraction_state(
-    vessel_id_str: str,
-    *,
-    total: int | None = None,
-    done: int | None = None,
-    status: str | None = None,
-    current_manual_name: str | None = None,
-    current_manual_pages_total: int | None = None,
-    current_manual_pages_done: int | None = None,
-    detailed_status: str | None = None,
-    active_manual_ids: list[str] | None = None,
-) -> None:
-    key = f"extraction_state:{vessel_id_str}"
-    state = {}
-    try:
-        r = _get_sync_redis()
-        if r:
-            val = r.get(key)
-            if val:
-                state = json.loads(val)
-    except Exception as exc:
-        logger.debug("Failed to read extraction state from Redis: %s", exc)
-
-    if not state:
-        state = _extract_state.get(vessel_id_str, {})
-
-    if not state:
-        state = {
-            "total": 0,
-            "done": 0,
-            "status": "idle",
-            "current_manual_name": None,
-            "current_manual_pages_total": 0,
-            "current_manual_pages_done": 0,
-            "detailed_status": None,
-            "active_manual_ids": [],
-        }
-
-    if total is not None:
-        state["total"] = total
-    if done is not None:
-        state["done"] = done
-    if status is not None:
-        state["status"] = status
-        if status in ("completed", "failed", "idle"):
-            state["current_manual_name"] = None
-            state["current_manual_pages_total"] = 0
-            state["current_manual_pages_done"] = 0
-            state["detailed_status"] = None
-            state["active_manual_ids"] = []
-    if current_manual_name is not None:
-        state["current_manual_name"] = current_manual_name
-    if current_manual_pages_total is not None:
-        state["current_manual_pages_total"] = current_manual_pages_total
-    if current_manual_pages_done is not None:
-        state["current_manual_pages_done"] = current_manual_pages_done
-        if state.get("current_manual_pages_total") and current_manual_pages_done > state["current_manual_pages_total"]:
-            state["current_manual_pages_total"] = current_manual_pages_done
-    if detailed_status is not None:
-        state["detailed_status"] = detailed_status
-    if active_manual_ids is not None:
-        state["active_manual_ids"] = list(active_manual_ids)
-
-    # Save to local cache
-    _extract_state[vessel_id_str] = state
-
-    # Save to Redis
-    try:
-        r = _get_sync_redis()
-        if r:
-            r.set(key, json.dumps(state), ex=86400)
-    except Exception as exc:
-        logger.debug("Failed to write extraction state to Redis: %s", exc)
-
-
-def get_extraction_state(vessel_id_str: str) -> dict[str, Any]:
-    key = f"extraction_state:{vessel_id_str}"
-    try:
-        r = _get_sync_redis()
-        if r:
-            val = r.get(key)
-            if val:
-                return json.loads(val)
-    except Exception as exc:
-        logger.debug("Failed to fetch extraction state from Redis: %s", exc)
-
-    return _extract_state.get(
-        vessel_id_str,
-        {
-            "total": 0,
-            "done": 0,
-            "status": "idle",
-            "current_manual_name": None,
-            "current_manual_pages_total": 0,
-            "current_manual_pages_done": 0,
-            "detailed_status": None,
-            "active_manual_ids": [],
-        },
-    )
-
-
-def get_locked_manual_ids(vessel_id_str: str) -> set[str]:
-    """Return set of manual IDs currently locked for extraction in this vessel."""
-    st = get_extraction_state(vessel_id_str)
-    if st.get("status") in ("running", "paused"):
-        return set(str(mid) for mid in (st.get("active_manual_ids") or []))
-    return set()
-
-
-def is_manual_locked_for_extraction(manual_id_str: str, vessel_id_str: str | None = None) -> bool:
-    """Return True if manual is part of an ongoing/paused extraction run."""
-    if vessel_id_str:
-        return manual_id_str in get_locked_manual_ids(vessel_id_str)
-    for vid, st in _extract_state.items():
-        if st.get("status") in ("running", "paused") and manual_id_str in (st.get("active_manual_ids") or []):
-            return True
-    return False
-
-
-class ExtractionProvidersFailed(RuntimeError):
-    """Raised when all configured extraction providers fail for a chunk."""
-
-# ---------------------------------------------------------------------------
-# Default system prompts per extraction type
-# ---------------------------------------------------------------------------
-
-DEFAULT_PROMPTS: dict[str, dict] = {
-    "component": {
-        "system": (
-            "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist "
-            "with deep knowledge of ship machinery, equipment nomenclature, and maintenance systems.\n\n"
-            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n"
-            "It may also contain [CONTEXT PAGE N] markers which provide preceding page content for header and title lookup. Do NOT extract any components or records from pages labeled with [CONTEXT PAGE N]. Use them only to find the maker, model, or group/assembly context for components listed on the adjacent [PAGE N] pages.\n\n"
-            "DOCUMENT TYPES — handle all of these:\n\n"
-            "1. MACHINERY LIST / REGISTER (tabular, one row = one component)\n"
-            "   Columns: No. | Equipment | Maker | Model/Type | Serial No. | Capacity | Location\n"
-            "   → Extract EVERY row. Use table section headers for group1/group2.\n\n"
-            "2. SINGLE-EQUIPMENT SPECIFICATION SHEET (title names ONE main piece of equipment)\n"
-            "   These have a title like 'TAIKO SHIP-CLEAN SEWAGE TREATMENT PLANT SPECIFICATION'\n"
-            "   or an instruction manual cover page showing the equipment name, maker logo, and model table.\n"
-            "   and rows like: Type | SBH-25 | Quantity | 1 set/ship\n"
-            "   EXTRACTION RULES for spec sheets:\n"
-            "   → MAIN EQUIPMENT: extract as one component.\n"
-            "     - maker = company name from the title or footer (e.g. 'TAIKO KIKAI INDUSTRIES CO.,LTD.' → 'Taiko Kikai')\n"
-            "     - model = Type value (e.g. 'SBH-25')\n"
-            "     - specification = key ratings: capacity (m³/h or persons/day), power (kW), pressure (bar), BOD/TSS limits\n"
-            "   → SUB-ASSEMBLIES: for each named sub-system with its own Type number, extract a separate component:\n"
-            "     e.g. 'Discharge Pump' → component_name='Discharge Pump', model='CF-50S', spec='4m³/h×20m, 1.5kW'\n"
-            "          'Aeration Blower' → component_name='Aeration Blower', model='TSS-25', spec='2550/min×0.015MPa, 0.4kW'\n"
-            "   → Do NOT create a component for spec rows that are just ratings (BOD Volume, Capacity, Pressure).\n"
-            "   → Use the specification field for numeric ratings (kW, rpm, capacity, m³, bar, persons/day).\n\n"
-            "3. TANK CAPACITY PLAN (each row is one tank)\n"
-            "   → component_name = tank name, specification = capacity in m³ or tonnes,\n"
-            "     group1 = 'Tanks & Capacities', group2 = tank category.\n\n"
-            "GROUP CLASSIFICATION GUIDE:\n"
-            "  group1: Propulsion | Deck Machinery | Auxiliary Machinery | Hull Equipment | "
-            "Navigation & Communication | Safety Equipment | Cargo Handling | Hotel/Accommodation | Tanks & Capacities\n"
-            "  group2 examples: Main Engine | Auxiliary Engine | Boiler | Steering Gear | "
-            "Sewage Treatment | Fresh Water System | Ballast System | Fire Fighting | HVAC | "
-            "Fuel Oil System | Air System | Lifesaving | Cargo Pump | Anchor/Mooring\n\n"
-            "Return ONLY a valid JSON array. Each record:\n"
-            "{\n"
-            '  "group1": "top-level machinery group",\n'
-            '  "group2": "machinery sub-group",\n'
-            '  "main_machinery": "the main equipment this component belongs to or IS",\n'
-            '  "component_name": "exact name — for main equipment use the full name from the title",\n'
-            '  "maker": "manufacturer name — check document title, header, and Name Plate rows; null if absent",\n'
-            '  "model": "model/type number — check Type rows and document title; null if absent",\n'
-            '  "serial_number": "serial number or null",\n'
-            '  "location": "physical location or sets installed (e.g. Engine Room, 2 sets) — from Location or Installed column; null if absent",\n'
-            '  "machinery_particulars": "machinery particulars document reference or list number — from MP No. or similar column; null if absent",\n'
-            '  "specification": "key ratings: power (kW), capacity (m³/h), pressure (bar), rpm, etc. — be specific; null if absent",\n'
-            '  "is_critical": true if propulsion/steering/power generation/fire/safety/sewage treatment equipment,\n'
-            '  "job_pages": "page range in THIS document containing maintenance jobs/schedules for this component '
-            '(e.g. \'45-67\'). Scan for sections titled Maintenance, Service Schedule, Inspection Intervals, '
-            'Periodic Maintenance. If the whole document is a maintenance manual, give the full page range. '
-            'null only if no maintenance section exists in this document",\n'
-            '  "spare_pages": "page range in THIS document containing spare parts for this component '
-            '(e.g. \'81-120\'). Scan for sections titled Spare Parts, Recommended Spares, Parts List, '
-            'Spare Part Catalogue. null only if no spare parts section exists in this document",\n'
-            '  "source_page_number": integer — the [PAGE N] number where this component appears,\n'
-            '  "confidence_score": integer 70-98\n'
-            "}\n\n"
-            "STRICT RULES:\n"
-            "- source_page_number MUST come from the [PAGE N] marker in the text — do not guess\n"
-            "- job_pages / spare_pages: scan the document headings and identify where maintenance and spare-parts\n"
-            "  sections begin and end; express as 'start-end' page range (e.g. '45-67'). ALL components from the\n"
-            "  same document share the same job_pages and spare_pages if the document is for one equipment.\n"
-            "  Set null ONLY if the document contains no such section at all (e.g. a pure machinery register).\n"
-            "- For specification sheets: maker comes from the TITLE / HEADER (e.g. 'TAIKO Ship-Clean' → maker='Taiko')\n"
-            "- For specification sheets: model comes from Type row (e.g. 'Type: SBH-25' → model='SBH-25')\n"
-            "- For instruction manual cover pages: extract the main equipment shown on the page even if there is only a title, logo, product image, and model/certificate table\n"
-            "- Fill maker and model whenever those columns or rows exist\n"
-            "- specification must capture numeric ratings not generic text\n"
-            "- Do not invent data — null when genuinely absent\n"
-            "- Return ONLY the JSON array, no explanation, no markdown fences"
-        ),
-        "user_template": (
-            "Document: {filename}\n\n"
-            "Extract every piece of physical equipment and machinery from this maritime document. "
-            "The text contains [PAGE N] markers — use them for source_page_number.\n"
-            "If this is a specification sheet for one equipment, extract the main equipment (maker from the title) "
-            "and any named sub-assemblies (motors, blowers, pumps, etc.).\n"
-            "If this is a machinery list, extract every table row including location and machinery particulars reference if present.\n\n"
-            "IMPORTANT — for job_pages and spare_pages:\n"
-            "Scan the document for sections containing maintenance schedules or spare parts lists.\n"
-            "If you find a maintenance/service section, record its page range as job_pages (e.g. '45-67').\n"
-            "If you find a spare parts/recommended spares section, record its page range as spare_pages (e.g. '81-120').\n"
-            "All components from the same single-equipment document share the same job_pages and spare_pages.\n"
-            "Only set null if that section genuinely does not exist in this document.\n\n"
-            "{text}"
-        ),
-    },
-    "job": {
-        "system": (
-            "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist.\n\n"
-            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n"
-            "It may also contain [CONTEXT PAGE N] markers which provide preceding page content for header and title lookup. Do NOT extract any jobs or records from pages labeled with [CONTEXT PAGE N]. Use them only to find the frequency or frequency context for jobs listed on the adjacent [PAGE N] pages.\n\n"
-            "Extract ALL maintenance jobs, service intervals, and inspection tasks.\n"
-            "Maintenance schedules appear as:\n"
-            "  - Tables with columns: Interval | Description/Job (e.g. 'Every day', 'Weekly', 'Monthly')\n"
-            "  - Numbered procedure lists under headings like '8. Maintenance', 'Service Schedule'\n"
-            "  - Section headings like '8.3 Check V-Belt', '9.4 Maintenance of UV Sterilizer'\n\n"
-            "FREQUENCY TYPE MAPPING (use ONLY these 5 types — no others):\n"
-            "  Every day / Daily / 24h → frequency_type='daily', frequency=1\n"
-            "  Weekly / Every week / 7 days / Biweekly / Fortnightly / Every 2 weeks → frequency_type='weekly', frequency=<week count>\n"
-            "  Monthly / Every month / 30 days / Quarterly / Every 3 months / Half yearly / Every 6 months → frequency_type='monthly', frequency=<month count>\n"
-            "  Yearly / Annually / Once a year / Every 2 years / Biannual → frequency_type='yearly', frequency=<year count>\n"
-            "  Running hours / Every Nh / Engine hours → frequency_type='hourly', frequency=<hour value>\n\n"
-            "FREQUENCY RANGE RULE (CRITICAL):\n"
-            "  When an inspection or maintenance interval is given as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs', '1-2 years'), ALWAYS extract the LOWEST (minimum) value of the range as an integer.\n"
-            "  Examples:\n"
-            "    - '4-6 months' → frequency=4, frequency_type='monthly' (NEVER average to 5 or use the upper bound 6)\n"
-            "    - '500 - 1000 hours' → frequency=500, frequency_type='hourly'\n"
-            "    - '1~2 weeks' → frequency=1, frequency_type='weekly'\n"
-            "    - '2 to 3 years' → frequency=2, frequency_type='yearly'\n\n"
-            "IMPORTANT — job_name formatting:\n"
-            "  - Be specific: 'Replace UV lamp' not 'Replace lamp'\n"
-            "  - Include equipment context: 'Check aeration blower air filter'\n"
-            "  - Preserve numbered items from tables as separate jobs\n\n"
-            "Return ONLY a valid JSON array. Each record:\n"
-            "{\n"
-            '  "job_name": "concise specific name (e.g. \'Replace UV lamp\', \'Check V-belt tension\')",\n'
-            '  "job_code": "section/item number from manual (e.g. \'8.3.2\', \'Item 4\') or null",\n'
-            '  "job_description": "full procedure text. Every line must start with /*- and any list items (e.g. a., b., 1., 2., a), b), 1), 2)) must be placed on a new line starting with /*-",\n'
-            '  "safety_precaution": "WARNING/CAUTION/NOTICE text relevant to this job or null",\n'
-            '  "frequency": integer representing the interval value (1 for daily, 2 for biweekly, 12 for yearly, etc.) or null — if given as a range (e.g. 4-6 months), ALWAYS capture the LOWEST number (e.g. 4),\n'
-            '  "frequency_type": "daily|weekly|monthly|yearly|hourly — ONLY these 5 values or null",\n'
-            '  "is_critical": true if this job is for safety/regulatory equipment or has a WARNING label,\n'
-            '  "source_page_number": integer from [PAGE N] marker or null,\n'
-            '  "confidence_score": integer 70-98\n'
-            "}\n\n"
-            "RULES:\n"
-            "- FREQUENCY RANGE RULE (CRITICAL): If frequency or interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound.\n"
-            "- job_description formatting: Every non-empty line of the description body must start with /*-. If the description contains list items (like a. line, b. line, a) line, 1) line, etc.), each item must be placed on a new line and start with /*-.\n"
-            "- MULTILINGUAL & NON-ENGLISH MANUALS: If the document contains multilingual tables (e.g. English alongside Chinese/Japanese), prefer the English text. If the manual or table is in Chinese, Japanese, or another language, translate all extracted fields (job_name, job_description, safety_precaution) into clear professional English. Never output non-Latin characters.\n"
-            "- PDF FILENAME PROHIBITION: PDF filenames must NEVER be captured in job_code or job_name. Leave these fields blank (null) if no valid value is present.\n"
-            "- source_page_number from [PAGE N] markers — do not guess\n"
-            "- Extract EVERY distinct job item — do not merge different tasks into one\n"
-            "- For maintenance schedule tables: each row/item = one job record\n"
-            "- For procedure sections (e.g. '8.3 Check V-belt'): extract as a job with description\n"
-            "- Safety precaution: copy the WARNING/CAUTION text shown near the job if any\n"
-            "- If no maintenance jobs exist in this document, return []\n"
-            "- Return ONLY the JSON array, no markdown fences"
-        ),
-        "user_template": (
-            "Document: {filename}\n\n"
-            "Extract all maintenance jobs, service intervals, and inspection tasks. "
-            "Use [PAGE N] markers for source_page_number.\n"
-            "Look for: maintenance schedule tables (Interval | Description), numbered procedure sections, "
-            "and section headings describing service tasks.\n"
-            "NOTE: If frequency is given as a range (e.g. 4-6 months), ALWAYS extract the LOWEST value (e.g. 4).\n\n{text}"
-        ),
-    },
-    "spare": {
-        "system": (
-            "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist.\n\n"
-            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n"
-            "It may also contain [CONTEXT PAGE N] markers which provide preceding page content for header and title lookup. Do NOT extract any parts or records from pages labeled with [CONTEXT PAGE N]. Use them only to find the table title, heading, or drawing/diagram title for the items listed on the adjacent [PAGE N] pages.\n\n"
-            "Extract ALL spare parts, recommended spares, and consumables.\n"
-            "Spare parts lists appear as:\n"
-            "  1. Tables: NO. | NAME | MATERIAL | QTY | REMARKS  (or similar columns)\n"
-            "  2. Drawing parts lists: numbered items callout on a technical drawing\n"
-            "  3. Sections titled: 'Spare Parts', 'Parts List', 'Recommended Spares', 'Spare Part Catalogue'\n"
-            "  4. Chapter 13 or similar appendix listing parts by sub-assembly\n\n"
-            "Drawing-based parts tables look like:\n"
-            "  NO. | NAME | MATERIAL | QTY   (e.g. 1 | UV LAMP | QUARTZ GLASS | 1)\n"
-            "  Extract EVERY row.\n"
-            "  - If a table column is labeled NO., ITEM, or REF.NO and no separate catalog Part Number column is provided, capture it as part_number with its prefix (e.g. 'No. 1').\n"
-            "  - The drawing_position MUST be left null unless the column is explicitly labeled as Position No., Pos., Pos. No., or Position.\n"
-            "  The drawing_number is the figure/drawing reference (e.g. 'Fig.7', 'UV STERILIZER drawing').\n\n"
-            "MULTI-COLUMN TABLE FORMAT (very common in Japanese equipment manuals):\n"
-            "  Pages often show 2–4 identical table sections placed side-by-side across the page width.\n"
-            "  Each section has the same column headers: REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS\n"
-            "  Items are numbered sequentially across ALL sections (e.g. 1-41 in the leftmost section,\n"
-            "  43-106 in the next, 101-176 in the third, 201-226 in the rightmost).\n"
-            "  You MUST scan ALL sections from left to right across the ENTIRE page width.\n"
-            "  DO NOT stop after reading only the first or leftmost column group.\n"
-            "  A single page can contain 100-300 individual parts — extract EVERY one.\n\n"
-            "Return ONLY a valid JSON array. Each record:\n"
-            "{\n"
-            '  "part_name": "the pure spare name ONLY in Proper Text / Title Case, preserving original name spelling and abbreviations with zero normalization of the noun (e.g. \'O-Ring\', \'Vlv Stem\', \'Ball Bearing\', \'Fltr Element\', \'Hex Bolt\'). CRITICAL: Never include dimensions, sizes, materials, or specifications in part_name — separate them into specification",\n'
-            '  "part_number": "catalog part number (e.g. PC.NO, CODE NO, PART NO). If no catalog part number column exists in the manual, use the Item No./Reference No./Serial No./No. with its header prefix (e.g. \'Item No. 5\', \'Ref No. 12\', \'Serial No. 101\', \'No. 3\'). If neither exists, combine Drawing No/Position No (e.g. \'FIG.7/15\'). Leave null if none of these exist",\n'
-            '  "drawing_number": "DWG.NO or drawing reference in ALL CAPS (e.g. \'B3798160-02\', \'FIG.7\', \'DWG-1234\') or null",\n'
-            '  "drawing_position": "ONLY capture when clearly identified as Position No., Pos., Pos. No., or Position (e.g. \'1\', \'11\', \'1~58\'). Leave null if no explicit Position column exists — NEVER treat Item No., Reference No., Serial No., or No. as Position Numbers",\n'
-            '  "specification": "material, size, standard, quantity note strictly as formatted in the manual with NO abbreviations or value modifications (e.g. \'QTY: 2 PCS; Material: SUS304; Size: DN50\') or null",\n'
-            '  "spare_assembly": "assembly name, parts table title, or diagram section in Proper Text / Title Case (e.g. \'Cargo Pumping System\', \'Shaft Seal Assembly\', \'Main Components Exploded View\', \'Machine Spare Parts List\') or null",\n'
-            '  "assembly_description": "assembly description in Proper Text / Title Case or null",\n'
-            '  "spare_maker": "manufacturer in ALL CAPS (e.g. \'WARTSILA\', \'YANMAR\', \'DAIHATSU\', \'SHINKO\', \'FRAMO\', \'TAIKO KIKAI\') or null",\n'
-            '  "spare_model": "equipment/machinery model number or type code ONLY in ALL CAPS (e.g. \'6L28/32H\', \'DK-20\', \'CB-125\', \'6EY18ALW\') — NEVER put generic assembly titles or parts list titles here, or null",\n'
-            '  "source_page_number": integer from [PAGE N] marker or null,\n'
-            '  "confidence_score": integer 70-98\n'
-            "}\n\n"
-            "RULES:\n"
-            "- source_page_number from [PAGE N] markers only\n"
-            "- CASING & FORMATTING STANDARDS (CRITICAL):\n"
-            "    1. part_name MUST contain ONLY the spare part name/noun (e.g. 'O-Ring', 'Vlv Stem', 'Ball Bearing', 'Fltr Element', 'Hex Bolt', 'Gasket', 'Oil Seal') in Proper Text / Title Case. Do NOT include dimensions, sizes (e.g. 'M12x45', '6205', '15.5 x 2.4'), materials (e.g. 'SUS316', 'FKM'), or parenthetical notes in part_name; always separate them into specification.\n"
-            "    2. spare_assembly and assembly_description MUST be in Proper Text / Title Case (Each word capitalized followed by lower case).\n"
-            "    3. spare_maker, spare_model, and drawing_number MUST be in ALL CAPS (e.g. 'WARTSILA', 'YANMAR', 'DK-20', 'FIG.7', 'DWG-102').\n"
-            "    4. specification MUST be captured as per the same format from the manual, with zero modifications, abbreviations, or changes to conventions or values.\n"
-            "- ASSEMBLY VS MODEL SEPARATION (CRITICAL):\n"
-            "    • spare_assembly: Put the assembly title, drawing section, sub-assembly, or parts table title here in Proper Text / Title Case (e.g. 'Main Components Exploded View', 'Cylinder Cover Assembly', 'Shaft Seal Assembly', 'Machine Spare Parts List').\n"
-            "    • spare_model: Put ONLY the equipment model number / machinery type code here in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125', '6L28/32H'). NEVER put assembly titles, table titles, or parts list names into spare_model. If no specific equipment model number is on the page, leave spare_model as null.\n"
-            "- MULTILINGUAL & NON-ENGLISH MANUALS: If the document contains multilingual tables (e.g. English alongside Chinese/Japanese), prefer the English text. If the manual, table, drawing title block, or diagram legend is in Chinese, Japanese, or another language, translate all extracted fields (part_name, spare_assembly, specification, etc.) into clear professional English. Never output non-Latin characters in any field.\n"
-            "- SPECIFICATION COLUMN HEADER REFERENCES (CRITICAL): Every piece of detail in specification MUST explicitly include its table column header label as a prefix. For example:\n"
-            "    \u2022 Quantity: 'QTY: 2 PCS' or 'QTY: 1 SET'. If the column has only a unit string like 'PCS' or 'SET' without a number, format as 'QTY: 1 PCS' or 'QTY: 1 SET'.\n"
-            "    \u2022 Material: 'Material: STEEL', 'Material: SUS304', 'Material: GRAPHITE'\n"
-            "    \u2022 Size/Dimensions: 'Size: DN50', 'Dimensions: 15.5 x 2.4 FKM'\n"
-            "  Combine multiple column header details with semicolons: 'QTY: 2 PCS; Material: STEEL; Size: DN50'. NEVER output the keyword 'Remarks:' or include remarks notes in specification — remarks are not requested.\n"
-            "- QTY AND SPECIFICATION CONSTRAINTS (CRITICAL):\n"
-            "    \u2022 Under specification, 'QTY:' MUST strictly contain ONLY the numeric quantity and its unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS', 'QTY: 4 EA', 'QTY: 6 EA/ST').\n"
-            "    \u2022 NEVER merge remarks, comments, notes, model variants, applicability notes, parentheses, or materials into the QTY field!\n"
-            "    \u2022 Do NOT add a 'Remarks:' field in specification. If material information is present (e.g. SUS304, Steel, Rubber), place it under 'Material:' (e.g. 'QTY: 1 PCS; Material: SUS304').\n"
-            "- PART NUMBERS VALIDATION: Validate part numbers carefully. Do NOT extract serial numbers, prose/phrases ('refer to page...', 'see drawing'), or full page text into part_number. If no valid catalog part number is found in the manual, leave part_number as null.\n"
-            "- PDF FILENAME PROHIBITION: PDF filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf') must NEVER be captured in part_number, drawing_number, drawing_position, or spare_model. Leave these fields blank (null) if the information is not found in the manual.\n"
-            "- PART NAME & SPECIFICATION SEPARATION: If a spare name contains specifications, dimensions, or materials (e.g. 'O-RING (15.5 x 2.4 FKM)' or 'HEX BOLT M12 x 45 STAINLESS'), separate them. Capture the spare name (preserving abbreviations/spelling as printed, e.g. 'O-Ring', 'Hex Bolt') in part_name, and capture the additional details (e.g. '15.5 x 2.4 FKM', 'M12 x 45 STAINLESS') in specification with header labels. Do NOT modify, replace, or normalize the part name wording.\n"
-            "- MULTI-MODEL & VARIANT TABLES GUIDE (CRITICAL FOR ENGINES & COMPRESSORS):\n"
-            "    1. VARIANT QUANTITY COLUMNS (e.g. Sabb Motor / Scandinavian manuals):\n"
-            "       • Tables often feature multiple quantity columns (e.g. '1, 2, 3, 4' under 'Ant. / Qty') corresponding to different engine variants, with a TYPEVARIANT / MODEL legend on the page (e.g. '1: L2.093 / LPW2', '2: L3.139 / LPW3', '3: L4.186 / LPW4').\n"
-            "       • When a target equipment model is specified in context (e.g. 'L3 139LB', 'L3.139', 'LPW3', or 'Variant 2'): extract ONLY rows that have a quantity listed under that target variant column. Do NOT extract rows that are blank/dash for this model. Use that column's numeric quantity in 'QTY: <count> <unit>' and set spare_model to the target model in ALL CAPS.\n"
-            "       • When NO target model is specified in context: extract each row. If all variant columns have the same quantity, use that quantity in 'QTY: <count> <unit>'. If variants differ, place the first numeric quantity in 'QTY: <first_qty> <unit>' and detail the breakdown in 'Remarks: Variant 1: <qty>; Variant 2: <qty>...'. NEVER put multiple comma-separated quantities into the QTY field itself.\n"
-            "    2. REMARKS MODEL APPLICABILITY TAGS (e.g. Atlas Copco LT compressors, Daihatsu, Yanmar):\n"
-            "       • Multi-model tables often list parts with specific model codes in the 'Remarks' or 'Description' column (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)').\n"
-            "       • When a target equipment model is specified in context (e.g. 'LT-55'): extract ONLY rows applicable to this model — including rows designated for this model (e.g. 'LT55', 'LT-55', 'LT55, -75/50Hz', 'LT-55(RH)') and common rows with no model restriction in Remarks. Ignore rows strictly designated for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS (e.g. 'LT-55').\n"
-            "       • When NO target model is specified in context: extract each row, storing the specific model tag in spare_model (e.g. 'LT-55', 'LT22') and keeping the notes under 'Remarks:'.\n"
-            "- PARTS LISTS, EXPLODED DIAGRAMS AND COMPONENT TABLES:\n"
-            "    1. If a page has an exploded-view diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser...'), extract EVERY item in that list as a spare part (e.g. part_number='No. 1', 'No. 2').\n"
-            "    2. If a page has BOTH an exploded-view diagram AND a separate parts table for the same parts, extract from the parts table to avoid duplication.\n"
-            "    3. If a page has an equipment component settings/calibration table (e.g. 'COMPONENT | SETTING | NOTES'), extract each listed component as a spare part, capturing their calibration/setting values into specification.\n"
-            "- Extract EVERY spare part row, callout list item, and component row — never skip items\n"
-            "- DUPLICATE TABLE TEXT RULE: Some pages contain the same table represented twice: once as plain unstructured text (where column values are printed inline) and once as a structured `[TABLE]` pipe-delimited block. Do NOT extract duplicate records from both. Extract ONLY from the structured `[TABLE]` block, and ignore the plain unstructured text of those same table rows to prevent duplicate/repeated records.\n"
-            "- REMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly variant tags — store in spare_model (in ALL CAPS), NOT in part_name or drawing_number.\n"
-            "- POSITION NUMBER EXTRACTION RULE (STRICT):\n"
-            "    1. Capture drawing_position ONLY when the table or column is clearly identified as 'Position No.', 'Pos.', 'Pos. No.', 'Position', or similar position-related labels. If not, keep drawing_position empty (null).\n"
-            "    2. NEVER treat 'Item No.', 'Reference No.', 'Ref No.', 'Serial No.', 'No.', or other general numbering fields as Position Numbers.\n"
-            "- PART NUMBER EXTRACTION RULE (STRICT):\n"
-            "    1. If an explicit catalog Part Number column is present (e.g. PC.NO, CODE NO, PART NO):\n"
-            "       \u2022 Capture that catalog number in part_number cleanly WITHOUT prefixing column header labels like 'Part Number', 'Part No.', 'Code No.', or 'PC. NO.'.\n"
-            "       \u2022 If an Item No., Reference No., Serial No., or No. column is also present in the table, put that item reference into the specification column with its header label (e.g. 'Ref No: 12; ...' or 'Item No: 5; ...').\n"
-            "    2. If NO catalog Part Number column is present:\n"
-            "       \u2022 Treat the Item No., Reference No., Serial No., No., or PID Item column as the part_number along with its Prefix header from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005', 'PID Item BO 002').\n"
-            "       \u2022 In this case, do NOT combine Drawing No into part_number.\n"
-            "    3. When NEITHER a catalog Part Number NOR an Item No./Reference No./Serial No./No./PID Item is present:\n"
-            "       \u2022 If BOTH Drawing No. and Position No. are present, combine them and populate part_number as:\n"
-            "         '<Drawing No.>/<Position No.>' (e.g. 'FIG.7/15', 'B3798160-02/12').\n"
-            "       \u2022 If Item No./Reference No./PID Item was captured as part_number, do NOT combine Drawing No.\n"
-            "       \u2022 If Drawing No. or Position No. is missing, leave part_number blank (null).\n"
-            "    4. NEVER extract document headers, title block references, drawing titles, manual filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf', 'DECK MACHINERY'), or page references into part_number!\n"
-            "- ASSEMBLY & ASSEMBLY DESCRIPTION UNIQUENESS & CONSISTENCY (CRITICAL):\n"
-            "    • Capture spare_assembly and assembly_description as unique, consistent data across all pages of the manual.\n"
-            "    • Maintain uniform formatting, casing, and wording across pages to avoid creating duplicate Assembly records.\n"
-            "- Part numbers: include exactly as printed (do not reformat)\n"
-            "- If no spare parts found, return []\n"
-            "- Return ONLY the JSON array, no markdown fences\n\n"
-            "LANGUAGE RULES (STRICT — NO EXCEPTIONS):\n"
-            "- ALL output fields MUST contain English text ONLY\n"
-            "- NEVER output Japanese, Chinese, Korean, or any other non-Latin characters in ANY field\n"
-            "- If source text is in Japanese/non-English: translate to English. "
-            "Use the English equivalent printed alongside (e.g. 'BALL BEARING' not 'ボールベアリング'). "
-            "If no English is visible, translate from context.\n"
-            "- If you cannot reliably translate a part name to English, output a best-effort English description\n"
-            "- Specification/remarks fields: translate ALL non-English content to English\n"
-            "- A record with non-English characters in any field is INVALID — fix it before outputting"
-        ),
-        "user_template": (
-            "Document: {filename}\n\n"
-            "Extract all spare parts, recommended spares, and consumables. "
-            "Use [PAGE N] markers for source_page_number.\n"
-            "Look for: parts tables (NO./NAME/MATERIAL/QTY), drawing parts lists, "
-            "sections titled 'Spare Parts', 'Parts List', 'Recommended Spares'.\n"
-            "IMPORTANT: All extracted data must be in English only. Translate any non-English text (Japanese, Chinese, etc.) to English.\n"
-            "CRITICAL: Keep QTY strictly limited to quantity and unit (e.g. 'QTY: 1 SET'). Never merge remarks, applicability, or notes into QTY. Do NOT include 'Remarks:' in specification.\n"
-            "MULTI-MODEL TABLES: When extracting for a target equipment model, extract only rows/columns applicable to that model (e.g. Variant 2 for L3.139, or LT55 parts for LT-55) and ignore parts strictly for other models.\n\n{text}"
-        ),
-    },
-}
-
-
-def _safe_int_page(val: Any) -> int | None:
-    """Safely convert page number to integer, handling ranges and string prefixes gracefully."""
-    if val is None:
-        return None
-    if isinstance(val, int):
-        return val
-    try:
-        return int(val)
-    except (ValueError, TypeError):
-        m = re.search(r"\d+", str(val))
-        if m:
-            try:
-                return int(m.group(0))
-            except (ValueError, TypeError):
-                pass
-        return None
-
-
-_PAGE_BLOCK_RE = re.compile(r"\[PAGE\s+(\d+)\]\s*\n?(.*?)(?=(?:\n\[PAGE\s+\d+\])|\Z)", re.S)
-
-
-def _extract_json_from_prose(text: str) -> str:
-    """Pull the first JSON array/object out of a response that leads with prose or step-by-step text.
-
-    Claude sometimes wraps its JSON inside markdown code fences and/or precedes it with
-    'STEP 1 — COUNT: ...' analysis. This function finds the actual JSON payload regardless
-    of what comes before or after it.
-    """
-    # Priority 1: content inside ```json ... ``` or ``` ... ``` fences
-    m = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?```", text, re.I)
-    if m:
-        inner = m.group(1).strip()
-        if inner.startswith("[") or inner.startswith("{"):
-            return inner
-    # Priority 2: find the first [ or { and return from there; caller handles truncation
-    for ch in ("[", "{"):
-        idx = text.find(ch)
-        if idx != -1:
-            return text[idx:]
-    return text
-
-
-def _strip_code_fences(raw_text: str) -> str:
-    if raw_text.startswith("```"):
-        lines = raw_text.splitlines()
-        lines = lines[1:] if lines and lines[0].startswith("```") else lines
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        raw_text = "\n".join(lines).strip()
-    return raw_text
-
-
-def _recover_partial_json_array(raw_text: str) -> list[dict]:
-    """Recover fully-formed records from a JSON array truncated by max_tokens."""
-    last_close = raw_text.rfind("},")
-    if last_close == -1:
-        last_close = raw_text.rfind("}")
-    if last_close == -1:
-        return []
-    candidate = raw_text[: last_close + 1].strip()
-    if not candidate.startswith("["):
-        candidate = "[" + candidate
-    candidate = candidate + "]"
-    try:
-        parsed = json.loads(candidate)
-        if isinstance(parsed, list):
-            return [r for r in parsed if isinstance(r, dict)]
-    except Exception:
-        pass
-    return []
-
-
-def to_proper_case(text: str | None) -> str | None:
-    """Convert string to Title Case / Proper Text (Each word capitalized followed by lower case)
-    while preserving hyphenated compounds like 'O-Ring', 'V-Belt', 'Non-Return', 'Anti-Vibration',
-    slashes like 'Inlet/Outlet', and parenthesized/bracketed words like '(Ptfe)', '[Auxiliary]'.
-    """
-    if not text or not str(text).strip():
-        return None
-    s = str(text).strip()
-
-    def _capitalize_token(tok: str) -> str:
-        if "-" in tok and not tok.startswith("-") and not tok.endswith("-"):
-            return "-".join(_capitalize_token(sub) for sub in tok.split("-"))
-        if "/" in tok and not tok.startswith("/") and not tok.endswith("/"):
-            return "/".join(_capitalize_token(sub) for sub in tok.split("/"))
-        if not tok:
-            return tok
-        m = re.match(r"^([^a-zA-Z0-9]*)([a-zA-Z0-9])(.*)$", tok)
-        if m:
-            prefix, first_char, rest = m.groups()
-            return prefix + first_char.upper() + rest.lower()
-        return tok
-
-    words = s.split()
-    return " ".join(_capitalize_token(w) for w in words)
-
-
-def parse_job_frequency(raw_freq: Any, raw_freq_type: Any = None) -> tuple[int | None, str | None]:
-    """Parse frequency and frequency_type, strictly resolving ranges (e.g. '4-6 months', '500-1000 hrs')
-    to the lowest numeric interval value (e.g. 4, 500).
-    """
-    freq_val: int | None = None
-    freq_type_str: str | None = None
-
-    if raw_freq_type:
-        raw_ft = str(raw_freq_type).strip().lower()
-        if raw_ft in {"daily", "weekly", "monthly", "yearly", "hourly"}:
-            freq_type_str = raw_ft
-
-    if raw_freq is not None and str(raw_freq).strip():
-        if isinstance(raw_freq, (int, float)):
-            try:
-                freq_val = int(raw_freq)
-            except (ValueError, TypeError, OverflowError):
-                freq_val = None
-        else:
-            s = str(raw_freq).strip()
-            # If string contains units or range, e.g. "4-6 months", "500 - 1000 hours"
-            # Try inferring frequency_type if not already known
-            if not freq_type_str:
-                s_lower = s.lower()
-                if "hour" in s_lower or "hr" in s_lower or re.search(r"\b\d+h\b", s_lower):
-                    freq_type_str = "hourly"
-                elif "month" in s_lower:
-                    freq_type_str = "monthly"
-                elif "week" in s_lower:
-                    freq_type_str = "weekly"
-                elif "year" in s_lower or "annual" in s_lower:
-                    freq_type_str = "yearly"
-                elif "day" in s_lower or "daily" in s_lower:
-                    freq_type_str = "daily"
-
-            # Check range pattern like "4-6", "4 to 6", "4 - 6", "4~6", "4/6"
-            range_match = re.search(r"(\d+)\s*(?:[-~–—/]|to)\s*(\d+)", s, re.I)
-            if range_match:
-                n1 = int(range_match.group(1))
-                n2 = int(range_match.group(2))
-                freq_val = min(n1, n2)
-            else:
-                num_match = re.search(r"\b\d+\b", s)
-                if num_match:
-                    try:
-                        freq_val = int(num_match.group(0))
-                    except (ValueError, TypeError):
-                        freq_val = None
-
-    return freq_val, freq_type_str
-
-
-_KNOWN_UNITS = r"(?:PCS|PC|SETS?|EA(?:/ST)?|OFF|UNITS?|KG|MM|M(?!\d)|LITRES?|LTRS?|L(?!\d)|PAIRS?|BOX(?:ES)?|ROLLS?|PKT|PACKS?)"
-_PER_UNIT = r"(?:/(?:ST|SET|ENG|VESSEL|UNIT|CYL|PUMP))?"
-_MAT_KEYWORDS = r"\b(STEEL|SUS\d*|STAINLESS|BRASS|BRONZE|RUBBER|ARAM|NBR|EPDM|IRON|CAST\s*IRON|GRAPHITE|COPPER|ALUMINUM|ALUMINIUM|PVC|PHENOL|QUARTZ|CAC\d*|SB\d*|S20C|NS\d*|HVVZN|VZN|EN1\.\d+|FKM|PTFE|TEFLON|NYLON|TITANIUM|CARBON|A200|A\d+-\d+|\d+\.\d+VZN|ST|STELLITE|NIMONIC\s*\d*[A-Z]*|NON[- ]ASBESTOS)\b"
-_SIZE_PATTERN_ENHANCED = (
-    r"^(?:"
-    r"M\d+.*|W\d+.*|DN\d+.*|PN\d+.*|"
-    r"[0-9.]+\s*[-*xX]\s*[0-9.]+.*|"
-    r"\d+[AK]\s+\d+[AK].*|\d+[AK]\b.*|"
-    r"[0-9]{4,5}(?:[-/][0-9a-z]+|[a-z]{1,4})*|"
-    r"(?:NU|NJ|NUP|NN|N|UC|NA|RNA|HK|BK)\s*\d+[0-9a-z]*|"
-    r"(?:(?:1A-|1B-|4D-)?[PGVS]-?\d+|AS568-\d+|JIS\s+B\s*\d+).*|"
-    r"(?:SPA|SPB|SPC|SPZ|[A-E]|3V|5V|8V)\s*[- ]?\s*\d+.*|"
-    r"(?:TC|SC|TB|SB|VC|VB)\s*\d+.*|"
-    r"(?:PT|NPT|RC|PF|G|R)\s*[0-9/.]+.*|"
-    r"T\s*=\s*[0-9.]+.*|[0-9.]+\s*T\b.*"
-    r")$"
-)
-
-
-def is_spec_size(val: str | None) -> bool:
-    if not val:
-        return False
-    v = str(val).strip()
-    return bool(re.match(_SIZE_PATTERN_ENHANCED, v, re.I))
-
-
-def is_spec_material(val: str | None) -> bool:
-    if not val:
-        return False
-    v = str(val).strip()
-    return bool(re.search(_MAT_KEYWORDS, v, re.I) and not re.search(r"\b(for|pump|engine|cylinder|outlet|inlet)\b", v, re.I))
-_SIZE_PATTERN = r"\b(DN\d+|M\d+.*|\d+.*X.*\d+|PT\d+.*|\d+/\d+\s*INCH.*|\d+\.\d+\s*x\s*\d+\.\d+.*)\b"
-
-
-def decompose_qty_value(raw_val: str) -> tuple[str | None, list[tuple[str, str]]]:
-    """Decomposes a raw QTY value that may have extra remarks, materials, or notes merged into it.
-    Returns: (clean_qty_str, list_of_(label, remaining_val))
-    """
-    s = (raw_val or "").strip()
-    if not s:
-        return None, []
-
-    extra_items: list[tuple[str, str]] = []
-
-    # Check if there is an explicit embedded header like 'Remarks:', 'Material:', 'Size:'
-    embedded_header_split = re.split(
-        r"\b(Material|Mat|Size|Dimensions?|Remarks?|Spec|Specification|Notes?):\s*", s, flags=re.I
-    )
-    if len(embedded_header_split) > 1:
-        s = embedded_header_split[0].strip()
-        s = re.sub(r"[\s\(\[\{]+$", "", s).strip()
-        for i in range(1, len(embedded_header_split), 2):
-            h_lbl = embedded_header_split[i].title()
-            if h_lbl.lower() in ("mat", "material"):
-                h_lbl = "Material"
-            elif h_lbl.lower() in ("dimension", "dimensions", "size"):
-                h_lbl = "Size"
-            else:
-                h_lbl = "Remarks"
-            h_val = embedded_header_split[i + 1].strip() if i + 1 < len(embedded_header_split) else ""
-            h_val = re.sub(r"[\s\)\]\}]+$", "", h_val).strip()
-            if h_val:
-                extra_items.append((h_lbl, h_val))
-
-    s = re.sub(r"[\s,;/-]+$", "", s).strip()
-
-    # If string matches size or material pattern, it is not a quantity
-    if is_spec_size(s) or re.match(r"^M\d+", s, re.I):
-        return None, [("Size", s)]
-    if is_spec_material(s):
-        return None, [("Material", s)]
-
-    # Support "1/SET" -> "1 SET"
-    s_norm = re.sub(r"^(\d+)/(" + _KNOWN_UNITS + r")\b", r"\1 \2", s, flags=re.I)
-
-    qty_regex = re.compile(
-        rf"^(\d+(?:\.\d+)?|\d+\s*(?:[-~–—/]|to)\s*\d+)?\s*({_KNOWN_UNITS}{_PER_UNIT})?(.*)$",
-        re.I,
-    )
-    m = qty_regex.match(s_norm)
-
-    clean_qty: str | None = None
-    remaining_text = ""
-
-    if m:
-        num_part = (m.group(1) or "").strip()
-        unit_part = (m.group(2) or "").strip().upper()
-        tail = (m.group(3) or "").strip()
-
-        if num_part or unit_part:
-            if num_part and unit_part:
-                clean_qty = f"{num_part} {unit_part}"
-            elif unit_part:
-                clean_qty = f"1 {unit_part}"
-            elif num_part:
-                clean_qty = f"{num_part} PCS"
-
-            remaining_text = tail
-        else:
-            remaining_text = s
-    else:
-        remaining_text = s
-
-    remaining_text = re.sub(r"^[\s,;/:–—-]+", "", remaining_text).strip()
-
-    if remaining_text:
-        inner_m = re.match(r"^\((.+)\)$", remaining_text)
-        inner_content = inner_m.group(1).strip() if inner_m else remaining_text
-
-        if re.search(_MAT_KEYWORDS, inner_content, re.I) and not re.search(
-            r"\b(for|pump|engine|cylinder|outlet|inlet)\b", inner_content, re.I
-        ):
-            extra_items.append(("Material", inner_content))
-        elif re.match(_SIZE_PATTERN, inner_content, re.I):
-            extra_items.append(("Size", inner_content))
-        else:
-            pass
-
-    return clean_qty, extra_items
-
-
-def _format_specification_headers(spec: str | None) -> str | None:
-    if not spec or not str(spec).strip():
-        return None
-    spec_str = str(spec).strip()
-
-    # First, strip any Remarks clauses completely
-    spec_str = re.sub(r"(?:;\s*)?\bRemarks?:\s*[^;]*", "", spec_str, flags=re.I).strip("; ")
-    if not spec_str:
-        return None
-
-    if ";" in spec_str:
-        raw_parts = [p.strip() for p in spec_str.split(";") if p.strip()]
-    else:
-        raw_parts = [p.strip() for p in re.split(r",\s*(?![^()]*\))|/\s*(?=[A-Za-z]+:)", spec_str) if p.strip()]
-
-    items: list[tuple[str, str]] = []
-
-    for part in raw_parts:
-        part = part.strip()
-        if not part:
-            continue
-
-        # Check for Item No / Ref No / PID Item tag
-        item_m = re.match(
-            r"^(item(?:\.?\s*no\.?)?|ref(?:\.?\s*no\.?)?|reference(?:\.?\s*no\.?)?|serial(?:\.?\s*no\.?)?|no\.?|pid[\s-]*(?:item|tag)?(?:\.?\s*no\.?)?|tag\s*no\.?)\s*[:#-]?\s*(.*)$",
-            part,
-            re.I,
-        )
-        if item_m:
-            formatted = _format_item_tag(part)
-            if ":" in formatted:
-                items.append((formatted.split(":", 1)[0].strip(), formatted.split(":", 1)[1].strip()))
-            continue
-
-        prefix_match = re.match(
-            r"^(QTY|Quantity|Material|Mat|Size|Dimensions?|Spec|Specification):\s*(.*)$",
-            part,
-            re.I,
-        )
-        if prefix_match:
-            lbl = prefix_match.group(1).title()
-            if lbl.lower() in ("quantity", "qty"):
-                lbl = "QTY"
-            elif lbl.lower() in ("mat", "material"):
-                lbl = "Material"
-            elif lbl.lower() in ("dimension", "dimensions", "size"):
-                lbl = "Size"
-            else:
-                continue  # Skip generic spec or notes
-            val = prefix_match.group(2).strip()
-
-            if lbl == "QTY":
-                cq, extras = decompose_qty_value(val)
-                if cq:
-                    items.append(("QTY", cq))
-                elif val:
-                    items.append(("QTY", val))
-                for ex_lbl, ex_val in extras:
-                    if ex_lbl != "Remarks":
-                        items.append((ex_lbl, ex_val))
-            else:
-                if val:
-                    items.append((lbl, val))
-            continue
-
-        if is_spec_material(part):
-            items.append(("Material", part))
-            continue
-
-        if is_spec_size(part) or re.match(_SIZE_PATTERN, part, re.I):
-            items.append(("Size", part))
-            continue
-
-        cq, extras = decompose_qty_value(part)
-        if cq:
-            items.append(("QTY", cq))
-            for ex_lbl, ex_val in extras:
-                if ex_lbl != "Remarks":
-                    items.append((ex_lbl, ex_val))
-            continue
-
-        if re.match(r"^\d+$", part):
-            items.append(("QTY", f"{part} PCS"))
-            continue
-
-        if re.search(_MAT_KEYWORDS, part, re.I) and not re.search(
-            r"\b(for|pump|engine|cylinder|outlet|inlet)\b", part, re.I
-        ):
-            items.append(("Material", part))
-            continue
-
-        if re.match(_SIZE_PATTERN, part, re.I):
-            items.append(("Size", part))
-            continue
-
-    formatted_parts: list[str] = []
-    seen_qty: str | None = None
-    materials: list[str] = []
-    sizes: list[str] = []
-    other_tags: list[str] = []
-
-    for lbl, val in items:
-        clean_val = re.sub(rf"^(?:{lbl}|Quantity|Remarks?|Material|Size):\s*", "", val, flags=re.I).strip()
-        if not clean_val:
-            continue
-        if lbl == "QTY":
-            if seen_qty is None:
-                seen_qty = clean_val
-        elif lbl == "Material":
-            if clean_val not in materials:
-                materials.append(clean_val)
-        elif lbl == "Size":
-            if clean_val not in sizes:
-                sizes.append(clean_val)
-        else:
-            tag_str = f"{lbl}: {clean_val}"
-            if tag_str not in other_tags:
-                other_tags.append(tag_str)
-
-    for ot in other_tags:
-        formatted_parts.append(ot)
-    if seen_qty:
-        formatted_parts.append(f"QTY: {seen_qty}")
-    if materials:
-        formatted_parts.append(f"Material: {', '.join(materials)}")
-    if sizes:
-        formatted_parts.append(f"Size: {', '.join(sizes)}")
-
-    return "; ".join(formatted_parts) if formatted_parts else None
-
-
-def is_leaked_filename_or_doc_ref(val: str | None, filename: str | None = None) -> bool:
-    """Return True if val represents a PDF filename, page reference, document title, or placeholder."""
-    if not val:
-        return False
-    v = str(val).strip()
-    if not v:
-        return False
-    v_lower = v.lower()
-
-    # 1. Any .pdf reference or page reference
-    if ".pdf" in v_lower or "(p." in v_lower or bool(re.search(r'\b(?:pages?|pp?|pg)\b\.?\s*\d+', v_lower)):
-        return True
-
-    # 2. Common placeholder values
-    if v_lower in {"none", "n/a", "null", "unknown", "nil", "-", "--", "na", "/", "not available"}:
-        return True
-
-    # 3. References to other sections or figures
-    if re.search(r'\b(refer to|see page|contained in|as per|figure|fig\.|drawing\s+title|manual\s+title)\b', v_lower):
-        return True
-
-    # 4. Compare with manual filename if provided
-    if filename:
-        fn_lower = filename.lower().strip()
-        fn_base = fn_lower.rsplit(".", 1)[0] if "." in fn_lower else fn_lower
-
-        if v_lower == fn_lower or v_lower == fn_base:
-            return True
-
-        # Strip non-ASCII and leading numbering/symbols: "30# ", "A-10_", etc.
-        fn_ascii = re.sub(r'[^\x00-\x7F]+', ' ', fn_base)
-        fn_clean = re.sub(r'^[0-9a-z]+[#_\s\-.]+', '', fn_ascii.strip(), flags=re.I).strip()
-        fn_clean = re.sub(r'\s+', ' ', fn_clean).strip()
-
-        if len(fn_clean) >= 4:
-            if fn_clean in v_lower:
-                return True
-            v_clean = re.sub(r'^[0-9a-z]+[#_\s\-.]+', '', re.sub(r'[^\x00-\x7F]+', ' ', v_lower).strip(), flags=re.I).strip()
-            v_clean = re.sub(r'\s+', ' ', v_clean).strip()
-            if v_clean and (v_clean == fn_clean or (len(v_clean) >= 4 and v_clean in fn_clean)):
-                return True
-
-    return False
-
-def separate_spare_name_and_spec(part_name: str | None, existing_spec: str | None = None) -> tuple[str, str | None]:
-    """
-    Separates embedded specifications, dimensions, materials, and notes from part_name,
-    returning (clean_part_name, formatted_specification).
-    """
-    if not part_name or not str(part_name).strip():
-        return (part_name or ""), existing_spec
-
-    clean_name = str(part_name).strip()
-    extracted_specs: list[str] = []
-
-    # 1. Extract and remove all parenthetical clauses: e.g. 'O-RING (15.5 x 2.4 FKM)' or 'VALVE SEAT (SUS316)'
-    def _extract_paren(m):
-        content = m.group(1).strip()
-        if content:
-            extracted_specs.append(content)
-        return ""
-
-    clean_name = re.sub(r"\s*\(([^)]+)\)", _extract_paren, clean_name).strip()
-
-    # 2. If existing_spec has values, check if those exact values are in clean_name and strip them
-    if existing_spec:
-        spec_pieces = re.split(r"[;,]", existing_spec)
-        for piece in spec_pieces:
-            val = re.sub(r"^(?:QTY|Quantity|Size|Dimensions?|Material|Mat|Remarks?|Notes?|Spec|Specification):\s*", "", piece.strip(), flags=re.I).strip()
-            if val and len(val) >= 2 and val.lower() not in ("pcs", "set", "ea", "unit", "none", "n/a"):
-                val_escaped = re.escape(val)
-                clean_name = re.sub(rf"(?:\s+[-/]?\s*|\s*,\s*){val_escaped}\b", "", clean_name, flags=re.I).strip()
-                if " " in val:
-                    val_no_space = re.escape(re.sub(r"\s+", "", val))
-                    clean_name = re.sub(rf"(?:\s+[-/]?\s*|\s*,\s*){val_no_space}\b", "", clean_name, flags=re.I).strip()
-
-    # 3. Trailing specifications by common patterns:
-    patterns = [
-        # Gasket ratings: e.g. '150A 10K T=2.0', '50A 10K', 'T=1.5', '1.5T', 'JIS 10K 50A'
-        r"^(.*\b(?:gasket|packing|flange|joint\s+sheet))\s+((?:JIS\s+)?(?:\d+[AK]\s+\d+[AK]|\d+[AK])\b.*|T\s*=\s*[0-9.]+.*|[0-9.]+\s*T\b.*)$",
-
-        # Thread/pipe fittings: e.g. 'PLUG PT 1/2', 'NIPPLE R 1/4', 'UNION NPT 3/8'
-        r"^(.*\b(?:plug|nipple|union|elbow|coupling|valve))\s+((?:PT|NPT|RC|PF|G|R)\s*[0-9/.]+.*)$",
-
-        # Bearing numbers: e.g. 'BALL BEARING 6205-2RS', 'BEARING NU206', 'ROLLER BEARING 30206'
-        r"^(.*\b(?:bearing))\s+([0-9]{4,5}(?:[-/][0-9a-z]+|[a-z]{1,4})*|(?:NU|NJ|NUP|NN|N|UC|NA|RNA|HK|BK)\s*\d+[0-9a-z]*)$",
-
-        # O-Ring standard series: e.g. 'O-RING G-35', 'O-RING P15', 'O-RING 1A-P15', 'O-RING AS568-010'
-        r"^(.*\b(?:o[- ]?ring))\s+((?:(?:1A-|1B-|4D-)?[PGVS]-?\d+|AS568-\d+|JIS\s+B\s*\d+).*)$",
-
-        # V-Belt sizes: e.g. 'V-BELT B-48', 'V-BELT SPA 1250', 'BELT 3V-500'
-        r"^(.*\b(?:belt))\s+((?:SPA|SPB|SPC|SPZ|[A-E]|3V|5V|8V)\s*[- ]?\s*\d+.*)$",
-
-        # Oil Seal dimensions: e.g. 'OIL SEAL TC 25 45 8', 'OIL SEAL 25X45X8', 'OIL SEAL SC355511'
-        r"^(.*\b(?:oil[- ]?seal|lip[- ]?seal|seal))\s+((?:TC|SC|TB|SB|VC|VB)?\s*\d+\s*[-*xX ]\s*\d+\s*[-*xX ]\s*\d+.*)$",
-
-        # Dimensions / metric thread / sizes: e.g. 'HEX BOLT M12X45', 'O-RING 15.5X2.4', 'STUD M16X60'
-        r"^(.*?)\s+((?:M\d+|W\d+|DN\d+|PN\d+|[0-9.]+\s*X\s*[0-9.]+|#[0-9]+).*)$",
-
-        # Standalone Material at the end: e.g. 'VALVE SEAT SUS316', 'PACKING TEFLON', 'GASKET NON-ASBESTOS'
-        rf"^(.*?)\s+({_MAT_KEYWORDS}.*)$",
-    ]
-
-    for pat in patterns:
-        m = re.search(pat, clean_name, re.I)
-        if m:
-            cand_name = m.group(1).strip()
-            cand_spec = m.group(2).strip()
-            if len(cand_name) >= 2 and re.search(r"[A-Za-z]", cand_name):
-                clean_name = cand_name
-                extracted_specs.append(cand_spec)
-                break
-
-    # Tag extracted specs properly with headers (Size:, Material:, Remarks:)
-    tagged_extracted: list[str] = []
-    for es in extracted_specs:
-        es_clean = es.strip(" ;,")
-        if not es_clean:
-            continue
-        if re.match(r"^(?:QTY|Quantity|Size|Dimensions?|Material|Mat|Remarks?|Notes?|Spec|Specification):\s*", es_clean, re.I):
-            tagged_extracted.append(es_clean)
-            continue
-
-        # Check if contains both material and other details (e.g. 'M12 X 45 STAINLESS' or '15.5 x 2.4 FKM')
-        mat_m = re.search(_MAT_KEYWORDS, es_clean, re.I)
-        if mat_m:
-            mat_val = mat_m.group(0).strip()
-            rem_val = re.sub(rf"\b{re.escape(mat_val)}\b", "", es_clean, flags=re.I).strip(" ;,")
-            if rem_val:
-                if is_spec_size(rem_val):
-                    tagged_extracted.append(f"Size: {rem_val}")
-                tagged_extracted.append(f"Material: {mat_val}")
-                continue
-            else:
-                tagged_extracted.append(f"Material: {mat_val}")
-                continue
-
-        if is_spec_size(es_clean):
-            tagged_extracted.append(f"Size: {es_clean}")
-
-    # Build final combined specification
-    final_spec = existing_spec or ""
-    for te in tagged_extracted:
-        if final_spec:
-            val = te.split(":", 1)[1].strip() if ":" in te else te
-            if val.lower() not in final_spec.lower():
-                final_spec = f"{final_spec}; {te}"
-        else:
-            final_spec = te
-
-    formatted_spec = _format_specification_headers(final_spec) if final_spec else None
-    return to_proper_case(clean_name), formatted_spec
-
-
-_CATALOG_PN_PREFIX_RE = re.compile(
-    r"^(?:part\s*(?:no\.?|number|#)?|code\s*(?:no\.?|number)?|pc\.?\s*no\.?)\s*[:#-]?\s*",
-    re.I,
-)
-
-_ITEM_PREFIX_RE = re.compile(
-    r"^(?:item(?:\.?\s*no\.?)?|ref(?:\.?\s*no\.?)?|reference(?:\.?\s*no\.?)?|serial(?:\.?\s*no\.?)?|no\.?|pid[\s-]*(?:item|tag)?(?:\.?\s*no\.?)?|tag\s*no\.?)(?:\s+|[:#-]|$|(?<=\w)\b)",
-    re.I,
-)
-
-_PID_BARE_RE = re.compile(r"^(?:BM|BO)\s*\d{2,4}[A-Z]?$", re.I)
-
-_EXPLICIT_POS_LABEL_RE = re.compile(
-    r"^(?:pos(?:ition)?\.?(?:\s*no\.?)?)\s*[:#-]?\s*(.*)$",
-    re.I,
-)
-
-
-def _is_fallback_item_id(val: str | None) -> bool:
-    if not val:
-        return False
-    v = str(val).strip()
-    return bool(_ITEM_PREFIX_RE.match(v) or _PID_BARE_RE.match(v))
-
-
-def _clean_catalog_pn(val: str | None) -> str:
-    if not val:
-        return ""
-    v = str(val).strip()
-    return _CATALOG_PN_PREFIX_RE.sub("", v).strip()
-
-
-def _format_item_tag(raw: str) -> str:
-    """Formats an item string into a clean spec tag, e.g. 'Ref No: 12' or 'Item No: 5' or 'PID Item: BM 005'."""
-    s = raw.strip()
-    m = re.match(r"^(item|ref(?:erence)?|serial|no|pid[\s-]*(?:item|tag)?|tag)\.?(?:\s*no\.?)?\s*[:#-]?\s*(.*)$", s, re.I)
-    if m:
-        kind = m.group(1).lower()
-        val = m.group(2).strip()
-        if kind == "item":
-            return f"Item No: {val}"
-        elif kind.startswith("ref"):
-            return f"Ref No: {val}"
-        elif kind == "serial":
-            return f"Serial No: {val}"
-        elif kind == "no":
-            return f"No: {val}"
-        elif "pid" in kind or kind == "tag":
-            return f"PID Item: {val.upper()}"
-    if _PID_BARE_RE.match(s):
-        return f"PID Item: {s.upper()}"
-    return s
-
-
-def _standardize_item_prefix(raw: str) -> str:
-    """Standardizes prefix for part_number, e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005'."""
-    s = raw.strip()
-    m = re.match(r"^(item|ref(?:erence)?|serial|no|pid[\s-]*(?:item|tag)?|tag)\.?(?:\s*no\.?)?\s*[:#-]?\s*(.*)$", s, re.I)
-    if m:
-        kind = m.group(1).lower()
-        val = m.group(2).strip()
-        if kind == "item":
-            return f"Item No. {val}"
-        elif kind.startswith("ref"):
-            return f"Ref No. {val}"
-        elif kind == "serial":
-            return f"Serial No. {val}"
-        elif kind == "no":
-            return f"No. {val}"
-        elif "pid" in kind or kind == "tag":
-            return f"PID Item {val.upper()}"
-    if _PID_BARE_RE.match(s):
-        return f"PID Item {s.upper()}"
-    return s
-
-
-def _strip_remarks_from_spec(spec: str) -> str:
-    if not spec:
-        return ""
-    # Strip any Remarks:... clause (including dangling 'Remarks:' or 'Remarks: something')
-    cleaned = re.sub(r"(?:;\s*)?\bRemarks?:\s*[^;]*", "", spec, flags=re.I).strip("; ")
-    return cleaned
-
-
-def normalize_spare_part_number_and_position(
-    part_number: str | None,
-    drawing_position: str | None,
-    drawing_number: str | None,
-    specification: str | None,
-) -> tuple[str | None, str | None, str | None]:
-    """
-    Applies the logic for spare part_number, drawing_position, and specification:
-    1. Capture Position No. only when clearly identified as Position No., Pos., Pos. No., Position. If not, keep empty.
-    2. Item No., Reference No., Serial No., No., and PID Item treated as Part Number with Prefix only if catalog part number not present.
-       If catalog part number is present, item/ref capture is moved into specification. Catalog part numbers must NEVER include header prefixes.
-    3. When no Part Number or Item No./Ref No./PID Item, combine Drawing No/Position No as: Drawing No./Position No.
-       If Item No./Ref No./PID Item is captured as part number, no need to combine Drawing No.
-    4. Specification must never contain the keyword 'Remarks:'.
-
-    Returns: (clean_part_number, clean_drawing_position, clean_specification)
-    """
-    pn = str(part_number).strip() if part_number is not None else ""
-    pos = str(drawing_position).strip() if drawing_position is not None else ""
-    dwg = str(drawing_number).strip() if drawing_number is not None else ""
-    spec = str(specification).strip() if specification is not None else ""
-
-    if pn.lower() in ("none", "null", "n/a", "-"):
-        pn = ""
-    if pos.lower() in ("none", "null", "n/a", "-"):
-        pos = ""
-    if dwg.lower() in ("none", "null", "n/a", "-"):
-        dwg = ""
-
-    # Check if pos actually contains an Item No / Ref No / PID Item / No prefix
-    item_ref_from_pos: str | None = None
-    if pos and _is_fallback_item_id(pos):
-        item_ref_from_pos = pos
-        pos = ""  # Rule 1 & 2: Do NOT treat Item No., Ref No., etc. as Position Numbers
-
-    # If pos has explicit prefix like "Pos. 15" or "Pos No: 12", clean it to just "15" or "12"
-    if pos:
-        m_pos = _EXPLICIT_POS_LABEL_RE.match(pos)
-        if m_pos and m_pos.group(1).strip():
-            pos = m_pos.group(1).strip()
-
-    # Determine if pn is a fallback item ID vs catalog part number
-    is_fallback_pn = _is_fallback_item_id(pn)
-
-    if not is_fallback_pn and pn:
-        # It's a catalog part number: clean any accidental "Part No:", "Code No:" header prefixes
-        pn = _clean_catalog_pn(pn)
-        if not pn:
-            is_fallback_pn = False
-        elif _is_fallback_item_id(pn):
-            is_fallback_pn = True
-
-    has_catalog_pn = bool(pn and not is_fallback_pn)
-
-    # First, if spec contains an embedded PID Item or Item/Ref tag, check if we need it for pn
-    if not has_catalog_pn and not pn:
-        # Check if specification has a PID item (e.g. "Remarks: PID Item BM 090" or "PID Item: BM 090")
-        m_pid_spec = re.search(r"\bPID[\s-]*(?:Item|Tag)?\s*[:#-]?\s*([A-Za-z0-9_-]+(?:\s+[A-Za-z0-9_-]+)*)", spec, re.I)
-        if m_pid_spec:
-            raw_tag = f"PID Item {m_pid_spec.group(1).strip()}"
-            pn = _standardize_item_prefix(raw_tag)
-            spec = re.sub(
-                r"(?:;\s*)?\b" + re.escape(m_pid_spec.group(0)) + r"\b(?:\s*;)?",
-                "",
-                spec,
-                flags=re.I,
-            ).strip("; ")
-        else:
-            # Check if specification has an item/ref/serial tag (e.g. "Item No: 5" or "Ref No. 12")
-            m_spec_item = re.search(
-                r"\b(Item\s*No|Ref\s*No|Reference\s*No|Serial\s*No|No)\s*[:.]\s*([A-Za-z0-9_-]+)",
-                spec,
-                re.I,
-            )
-            if m_spec_item:
-                raw_tag = f"{m_spec_item.group(1)} {m_spec_item.group(2)}"
-                pn = _standardize_item_prefix(raw_tag)
-                spec = re.sub(
-                    r"(?:;\s*)?\b" + re.escape(m_spec_item.group(0)) + r"\b(?:\s*;)?",
-                    "",
-                    spec,
-                    flags=re.I,
-                ).strip("; ")
-
-    # Rule 2:
-    if has_catalog_pn:
-        # If an item/ref number was also found (e.g. from pos), put it into specification
-        if item_ref_from_pos:
-            item_tag = _format_item_tag(item_ref_from_pos)
-            if item_tag and item_tag.lower() not in spec.lower():
-                spec = f"{item_tag}; {spec}".strip("; ") if spec else item_tag
-    else:
-        # No catalog part number is present!
-        # Check if we have an item/ref number to treat as part_number along with Prefix
-        if pn and _is_fallback_item_id(pn):
-            pn = _standardize_item_prefix(pn)
-        elif item_ref_from_pos:
-            pn = _standardize_item_prefix(item_ref_from_pos)
-
-    # Rule 3:
-    # When no Part Number or Item No./Reference No./PID Item, combine the Drawing No/Position No value:
-    # "Drawing No./Position No."
-    # If Item No./Reference No./PID Item is captured as part number, no need to combine Drawing No.
-    if not pn:
-        if dwg and pos:
-            pn = f"{dwg}/{pos}"
-
-    # Strip any remarks completely from specification
-    spec = _strip_remarks_from_spec(spec)
-
-    final_pn = pn if pn else None
-    final_pos = pos if pos else None
-    final_spec = spec if spec else None
-
-    return final_pn, final_pos, final_spec
-
-
-def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type: str = "") -> dict:
-    if not isinstance(record, dict):
-        return record
-
-    # Rule 3: Prevent PDF Filename Leakage & Placeholders
-    for field in ("part_number", "drawing_number", "drawing_position", "job_code", "serial_number", "spare_model"):
-        val = record.get(field)
-        if is_leaked_filename_or_doc_ref(val, filename):
-            record[field] = None
-
-    # Rule 2: Validate Part Number
-    part_num = str(record.get("part_number") or "").strip()
-    if part_num:
-        if len(part_num) > 50 or (" " in part_num and len(part_num.split()) > 3):
-            record["part_number"] = None
-        elif re.search(r'(refer to|see page|contained in|as per|figure|table)', part_num, re.I):
-            record["part_number"] = None
-
-    # Rule 4: Separate Part Name and Specification for Spares (Bug-002 Item 4)
-    if extraction_type == "spare" or "part_name" in record:
-        c_name, c_spec = separate_spare_name_and_spec(record.get("part_name"), record.get("specification"))
-        record["part_name"] = c_name
-        record["specification"] = c_spec
-
-        # Rule 5: Normalize Part Number and Drawing Position (Bug-002 Item 5)
-        clean_pn, clean_pos, clean_spec = normalize_spare_part_number_and_position(
-            record.get("part_number"),
-            record.get("drawing_position"),
-            record.get("drawing_number"),
-            record.get("specification"),
-        )
-        record["part_number"] = clean_pn
-        record["drawing_position"] = clean_pos
-        record["specification"] = clean_spec
-    elif record.get("specification"):
-        record["specification"] = _format_specification_headers(record["specification"])
-
-    # Rule 1: Strip non-English / non-ASCII characters from all string fields
-    for k, v in list(record.items()):
-        if isinstance(v, str) and v:
-            cleaned_str = re.sub(r'[^\x00-\x7F]+', '', v).strip()
-            if not cleaned_str and v:
-                if k in ("part_name", "job_name", "component_name"):
-                    record[k] = v
-                else:
-                    record[k] = None
-            else:
-                record[k] = cleaned_str
-
-    # Safe source_page_number integer parsing
-    if "source_page_number" in record and record["source_page_number"] is not None:
-        record["source_page_number"] = _safe_int_page(record["source_page_number"])
-
-    # Casing & Formatting Rules for Spares:
-    # 1. Part name, Assembly, Assembly Description in Proper Text / Title Case
-    # 2. Maker, Model, Drawing number in ALL CAPS
-    # 3. String truncation to schema limits
-    if extraction_type == "spare" or "part_name" in record:
-        if record.get("part_name"):
-            record["part_name"] = to_proper_case(record["part_name"])[:500]
-        if record.get("part_number"):
-            record["part_number"] = str(record["part_number"]).strip()[:200]
-        if record.get("drawing_position"):
-            record["drawing_position"] = str(record["drawing_position"]).strip()[:100]
-        if record.get("spare_assembly"):
-            record["spare_assembly"] = to_proper_case(record["spare_assembly"])[:300]
-        if record.get("assembly_description"):
-            record["assembly_description"] = to_proper_case(record["assembly_description"])
-        if record.get("spare_maker"):
-            record["spare_maker"] = str(record["spare_maker"]).strip().upper()[:200]
-        if record.get("spare_model"):
-            raw_model = str(record["spare_model"]).strip()
-            # If spare_model is a long sentence or assembly phrase (e.g. "PRM DELTA-30 GEAR WITH ADAPTOR FOR L3.139..."),
-            # avoid storing entire titles in spare_model.
-            is_assembly_phrase = (
-                len(raw_model) > 40
-                or any(w in raw_model.lower() for w in ("parts list", "exploded view", "assembly", "section", "catalogue", " with ", " for ", "gear", "system", "arrangement"))
-            )
-            if is_assembly_phrase:
-                if not record.get("spare_assembly"):
-                    record["spare_assembly"] = to_proper_case(raw_model)[:300]
-                # Try extracting actual model code from it, e.g. "LT-55", "L3.139", "LPW3", "6EY18"
-                m_code = re.search(r'\b(LT-?\d+[A-Z0-9/]*|L\d\s*\.?\s*\d+[A-Z0-9/]*|LPW\d+|[A-Z0-9]{2,}-\d+[A-Z0-9]*)\b', raw_model, re.I)
-                if m_code:
-                    record["spare_model"] = m_code.group(1).upper()
-                else:
-                    record["spare_model"] = None
-            else:
-                record["spare_model"] = raw_model.upper()[:200]
-        if record.get("drawing_number"):
-            record["drawing_number"] = str(record["drawing_number"]).strip().upper()[:200]
-
-    # Normalization for Jobs:
-    # Resolve ranges to lowest numeric frequency value (e.g. '4-6 months' -> 4)
-    if extraction_type == "job" or "job_name" in record:
-        if record.get("job_name"):
-            record["job_name"] = str(record["job_name"])[:500]
-        if record.get("job_code"):
-            record["job_code"] = str(record["job_code"])[:100]
-        if record.get("frequency") is not None or record.get("frequency_type"):
-            f_val, f_type = parse_job_frequency(record.get("frequency"), record.get("frequency_type"))
-            record["frequency"] = f_val
-            if f_type:
-                record["frequency_type"] = f_type
-
-    if extraction_type == "component" or "component_name" in record:
-        if record.get("component_name"):
-            record["component_name"] = str(record["component_name"])[:500]
-        if record.get("maker"):
-            record["maker"] = str(record["maker"])[:200]
-        if record.get("model"):
-            record["model"] = str(record["model"])[:200]
-
-    # Ensure required name fields are never None or empty
-    if "part_name" in record and not record["part_name"]:
-        record["part_name"] = "Unspecified Part"
-    if "job_name" in record and not record["job_name"]:
-        record["job_name"] = "Unspecified Job"
-    if "component_name" in record and not record["component_name"]:
-        record["component_name"] = "Unspecified Component"
-
-    return record
-
-
-def _parse_json_records(raw_text: str, filename: str = "", extraction_type: str = "") -> list[dict]:
-    clean = _strip_code_fences(raw_text).strip()
-    if not clean.startswith("[") and not clean.startswith("{"):
-        clean = _extract_json_from_prose(raw_text).strip()
-    try:
-        parsed: Any = json.loads(clean)
-    except json.JSONDecodeError:
-        parsed = _recover_partial_json_array(clean)
-
-    raw_list = []
-    if isinstance(parsed, list):
-        raw_list = [r for r in parsed if isinstance(r, dict)]
-    elif isinstance(parsed, dict):
-        for key in ("items", "records", "components", "jobs", "spares", "data", "results"):
-            value = parsed.get(key)
-            if isinstance(value, list):
-                raw_list = [r for r in value if isinstance(r, dict)]
-                break
-        else:
-            if any(field in parsed for field in ("component_name", "job_name", "part_name", "source_page_number")):
-                raw_list = [parsed]
-
-    return [_sanitize_extracted_record(r, filename=filename, extraction_type=extraction_type) for r in raw_list]
-
-
-
-class ExtractionResult(list):
-    """List subclass that can hold a zero-extraction explanation from the model."""
-    def __init__(self, items=None, reason=None):
-        super().__init__(items or [])
-        self.no_extraction_reason = reason
-
-
-def _extract_reason_from_raw_text(raw_text: str) -> Optional[str]:
-    """Parse out a zero-extraction reason if provided by the LLM in JSON or prose."""
-    if not raw_text:
-        return None
-    clean = _strip_code_fences(raw_text).strip()
-    try:
-        parsed = json.loads(clean)
-        if isinstance(parsed, dict):
-            for k in ("no_extraction_reason", "reason", "comment", "explanation", "note", "reason_if_empty"):
-                v = parsed.get(k)
-                if v and isinstance(v, str) and v.strip():
-                    return v.strip()
-    except Exception:
-        pass
-    import re as _re
-    m = _re.search(r'"(?:no_extraction_reason|reason|explanation|comment)"\s*:\s*"([^"]+)"', raw_text, _re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-    if not clean.startswith("[") and not clean.startswith("{") and len(clean) < 400:
-        if any(w in clean.lower() for w in ("no spare", "no job", "no component", "contains", "diagram", "does not contain", "no structured")):
-            return clean.strip()
-    return None
-
-
-def _redact_error_message(exc: Exception) -> str:
-    message = str(exc)
-    for secret in (
-        getattr(settings, "OPENAI_API_KEY", ""),
-        getattr(settings, "ANTHROPIC_API_KEY", ""),
-        getattr(settings, "GEMINI_API_KEY", ""),
-    ):
-        if secret:
-            message = message.replace(secret, "***")
-    return message
-
-
-def _enhance_image_for_extraction(image_bytes: bytes) -> bytes:
-    """Boost contrast and sharpness so the vision model reads dense table text accurately."""
-    try:
-        from PIL import Image as PILImage, ImageEnhance
-        img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
-        img = ImageEnhance.Contrast(img).enhance(1.4)
-        img = ImageEnhance.Sharpness(img).enhance(2.0)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=False)
-        return buf.getvalue()
-    except Exception:
-        return image_bytes
-
-
-async def _extract_with_claude(
-    *,
-    system_prompt: str,
-    user_message: str,
-    filename: str,
-    extraction_type: str,
-) -> list[dict]:
-    if not settings.ANTHROPIC_API_KEY:
-        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
-
-    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-    base_cap: int = getattr(settings, "EXTRACTION_MAX_TOKENS", 32000)
-    model_id: str = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
-    use_caching: bool = getattr(settings, "EXTRACTION_ENABLE_PROMPT_CACHING", True)
-    sufficiency_retry: bool = getattr(settings, "EXTRACTION_SUFFICIENCY_RETRY", True)
-
-    system_arg: Any = (
-        [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
-        if use_caching else system_prompt
-    )
-    caps = [base_cap, min(base_cap * 2, 64000)] if sufficiency_retry else [base_cap]
-
-    rows: list[dict] = []
-    for attempt, cap in enumerate(caps):
-        api_max_tokens = min(cap, 8192)
-        message = await client.messages.create(
-            model=model_id,
-            max_tokens=api_max_tokens,
-            system=system_arg,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        try:
-            from app.services.token_tracker import record_claude_usage
-            record_claude_usage(message.usage, model=model_id)
-        except Exception:
-            pass
-        raw_text: str = message.content[0].text.strip()
-        rows = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
-        # Only retry if the model was genuinely cut off (hit the token limit) or if we
-        # received partial records but the JSON array didn't close. Do NOT retry when
-        # rows==0 and stop_reason is end_turn — Claude returned prose ("no spares found")
-        # rather than [], and doubling the cap won't change that.
-        hard_cutoff = message.stop_reason == "max_tokens"
-        partial_array = len(rows) > 0 and not raw_text.rstrip().endswith("]")
-        if not hard_cutoff and not partial_array:
-            logger.info(
-                "extract_entities[claude]: %s/%s rows=%d cap=%d",
-                filename, extraction_type, len(rows), cap,
-            )
-            return rows
-        logger.warning(
-            "extract_entities[claude]: %s/%s truncated at cap=%d attempt=%d rows=%d — retrying",
-            filename, extraction_type, cap, attempt, len(rows),
-        )
-    return rows
-
-
-async def _extract_with_openai(
-    *,
-    system_prompt: str,
-    user_message: str,
-    filename: str,
-    extraction_type: str,
-) -> list[dict]:
-    if not settings.OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
-
-    from openai import AsyncOpenAI
-
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-    max_tokens = getattr(settings, "EXTRACTION_MAX_TOKENS", 16000)
-    model_id: str = getattr(settings, "OPENAI_MODEL_ID", None) or "gpt-4.1-mini"
-    response = await client.chat.completions.create(
-        model=model_id,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
-        max_tokens=max_tokens,
-        temperature=0,
-    )
-    raw_text = (response.choices[0].message.content or "").strip()
-    if not raw_text:
-        raise RuntimeError("OpenAI returned an empty response")
-    logger.info("extract_entities[openai]: %s/%s responded", filename, extraction_type)
-    return _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
-
-
-
-async def _extract_with_gemini(
-    *,
-    system_prompt: str,
-    user_message: str,
-    filename: str,
-    extraction_type: str,
-) -> list[dict]:
-    if not settings.GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-
-    import httpx
-
-    prompt = f"{system_prompt}\n\n{user_message}"
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash-lite:generateContent?key={settings.GEMINI_API_KEY}"
-    )
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    async with httpx.AsyncClient(timeout=180) as client:
-        response = None
-        for attempt, wait_seconds in enumerate((5, 10, 20), start=1):
-            response = await client.post(url, json=payload)
-            if response.status_code != 429:
-                response.raise_for_status()
-                break
-            if attempt == 3:
-                response.raise_for_status()
-            logger.warning(
-                "extract_entities[gemini]: 429 for %s/%s, retrying in %ss",
-                filename,
-                extraction_type,
-                wait_seconds,
-            )
-            await asyncio.sleep(wait_seconds)
-    data = response.json()
-    raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    logger.info("extract_entities[gemini]: %s/%s responded", filename, extraction_type)
-    return _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
-
-
-def _dedupe_records(records: list[dict], extraction_type: str) -> list[dict]:
-    seen: set[str] = set()
-    deduped: list[dict] = []
-    for record in records:
-        if extraction_type == "component":
-            component_name = (record.get("component_name") or "").strip().lower()
-            main_machinery = (record.get("main_machinery") or "").strip().lower()
-            maker = (record.get("maker") or "").strip().lower()
-            model = (record.get("model") or "").strip().lower()
-            combined = f"{component_name} {main_machinery}"
-            if any(keyword in combined for keyword in ("pump", "motor", "fan", "blower", "compressor")) and maker and model:
-                root = next(
-                    (
-                        keyword
-                        for keyword in ("pump", "motor", "fan", "blower", "compressor")
-                        if keyword in combined
-                    ),
-                    "",
-                )
-                key = "|".join([root, maker, model])
-            else:
-                key = "|".join(
-                    [
-                        component_name,
-                        main_machinery,
-                        str(record.get("source_page_number") or ""),
-                    ]
-                )
-        elif extraction_type == "job":
-            key = "|".join(
-                [
-                    (record.get("job_name") or "").strip().lower(),
-                    (record.get("job_code") or "").strip().lower(),
-                    str(record.get("source_page_number") or ""),
-                ]
-            )
-        else:
-            # Include drawing_number + drawing_position so distinct parts that share a
-            # part_name but differ by position (e.g. two M3x6 bolts) are not collapsed.
-            key = "|".join([
-                (record.get("part_number") or "").strip().lower(),
-                (record.get("drawing_number") or "").strip().lower(),
-                (record.get("drawing_position") or "").strip().lower(),
-                (record.get("part_name") or "").strip().lower(),
-                str(record.get("source_page_number") or ""),
-            ])
-        if key.strip("|") and key in seen:
-            continue
-        if key.strip("|"):
-            seen.add(key)
-        deduped.append(record)
-    return deduped
-
-
-def _parse_page_tokens(value: str | None) -> list[int]:
-    if not value:
-        return []
-    val = str(value).strip()
-    if not val:
-        return []
-    # Normalize common separators: Chinese/Japanese punctuation, semicolons, ideographic commas, slashes
-    val = val.replace("，", ",").replace(";", ",").replace("；", ",").replace("、", ",").replace("/", ",")
-    # Normalize range symbols: en-dash, em-dash, horizontal bar, minus, fullwidth hyphen, tilde, fullwidth tilde, Chinese to (至/到)
-    val = re.sub(r"[–—―~～至到−－﹣]", "-", val)
-    # Normalize english 'to' or 'through' surrounded by word boundaries
-    val = re.sub(r"\b(?:to|through)\b", "-", val, flags=re.I)
-    # Strip common prefixes and suffixes
-    val = re.sub(r"\b(?:pages?|pp?|pg)\b\.?", "", val, flags=re.I)
-    val = re.sub(r"[第页]", "", val)
-    # Strip enclosing brackets/parentheses
-    val = val.replace("[", "").replace("]", "").replace("(", "").replace(")", "").replace("{", "").replace("}", "")
-
-    pages: set[int] = set()
-    for token in val.split(","):
-        cleaned = token.strip()
-        if not cleaned:
-            continue
-        if "-" in cleaned:
-            parts = [p.strip() for p in cleaned.split("-") if p.strip()]
-            if len(parts) == 2:
-                try:
-                    start = int(parts[0])
-                    end = int(parts[1])
-                    for page in range(min(start, end), max(start, end) + 1):
-                        if page > 0:
-                            pages.add(page)
-                    continue
-                except ValueError:
-                    pass
-        try:
-            p = int(cleaned)
-            if p > 0:
-                pages.add(p)
-                continue
-        except ValueError:
-            pass
-        for num in re.findall(r"\b\d+\b", cleaned):
-            try:
-                p = int(num)
-                if p > 0:
-                    pages.add(p)
-            except ValueError:
-                pass
-    return sorted(pages)
-
-
-def _split_marked_pages(text: str) -> list[tuple[int, str]]:
-    pages: list[tuple[int, str]] = []
-    for match in _PAGE_BLOCK_RE.finditer(text):
-        page_no = int(match.group(1))
-        page_body = match.group(2).strip()
-        pages.append((page_no, page_body))
-    return pages
-
-
-def _build_marked_text_from_lookup(page_lookup: dict[int, str], page_count: int) -> str:
-    total = max(page_count, max(page_lookup.keys(), default=0))
-    parts: list[str] = []
-    for page_no in range(1, total + 1):
-        page_body = (page_lookup.get(page_no) or "").strip()
-        parts.append(f"[PAGE {page_no}]\n{page_body}".rstrip())
-    return "\n\n".join(parts).strip()
-
-
-def _filter_text_to_pages(text: str, selected_pages: list[int], include_context: bool = False) -> str:
-    if not selected_pages:
-        return text
-    if "[PAGE " not in text:
-        return text
-    
-    if not include_context:
-        page_set = set(selected_pages)
-        selected_blocks = [
-            f"[PAGE {page_no}]\n{page_body}".strip()
-            for page_no, page_body in _split_marked_pages(text)
-            if page_no in page_set
-        ]
-        return "\n\n".join(selected_blocks).strip()
-
-    all_pages = list(_split_marked_pages(text))
-    all_pages_dict = {pno: pbody for pno, pbody in all_pages}
-    
-    selected_blocks = []
-    appended = set()
-    for page_no in sorted(selected_pages):
-        prev_page = page_no - 1
-        if prev_page > 0 and prev_page in all_pages_dict and prev_page not in appended and prev_page not in selected_pages:
-            body = all_pages_dict[prev_page].strip()
-            selected_blocks.append(f"[CONTEXT PAGE {prev_page}]\n{body}")
-            appended.add(prev_page)
-            
-        if page_no in all_pages_dict and page_no not in appended:
-            body = all_pages_dict[page_no].strip()
-            selected_blocks.append(f"[PAGE {page_no}]\n{body}")
-            appended.add(page_no)
-            
-    return "\n\n".join(selected_blocks).strip()
-
-
-def _build_preceding_titles_history(text: str, target_page: int, max_lookback: int = 10) -> str:
-    if "[PAGE " not in text:
-        return ""
-    all_pages = dict(_split_marked_pages(text))
-    
-    history_lines = []
-    start_page = max(1, target_page - max_lookback)
-    for pno in range(start_page, target_page):
-        pbody = all_pages.get(pno) or ""
-        # Get the first 3 non-empty lines to find headers/titles
-        lines = [line.strip() for line in pbody.splitlines() if line.strip()]
-        title_lines = lines[:3]
-        if title_lines:
-            joined_title = " | ".join(title_lines)
-            if len(joined_title) > 200:
-                joined_title = joined_title[:197] + "..."
-            history_lines.append(f"Page {pno}: \"{joined_title}\"")
-        else:
-            history_lines.append(f"Page {pno}: [Empty or no text]")
-            
-    if history_lines:
-        return "\n".join(history_lines)
-    return ""
-
-
-async def _ocr_page_with_claude(image_bytes: bytes, filename: str, page_no: int) -> str:
-    if not settings.ANTHROPIC_API_KEY:
-        return ""
-    try:
-        model_id: str = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
-        b64_data = base64.b64encode(image_bytes).decode("ascii")
-        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY, timeout=30.0)
-        
-        user_content = [
-            {
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/png", "data": b64_data},
-            },
-            {
-                "type": "text",
-                "text": f"Extract all readable text from page {page_no} of {filename}."
-            },
-        ]
-        message = await client.messages.create(
-            model=model_id,
-            max_tokens=4000,
-            system=(
-                "You are extracting visible text from a maritime manual page image. "
-                "Return plain text only. Preserve table rows line by line. "
-                "If you can detect columns, separate them using ' | '. "
-                "Do not explain anything."
-            ),
-            messages=[{"role": "user", "content": user_content}],
-        )
-        try:
-            from app.services.token_tracker import record_claude_usage
-            record_claude_usage(message.usage, model=model_id)
-        except Exception:
-            pass
-        return message.content[0].text.strip()
-    except Exception as exc:
-        logger.warning(
-            "extractor OCR[claude]: failed for %s page=%d: %s",
-            filename,
-            page_no,
-            _redact_error_message(exc),
-        )
-        return ""
-
-
-async def _ocr_page_with_openai(image_bytes: bytes, filename: str, page_no: int) -> str:
-    # 1. Try local non-AI OCR (Tesseract) first
-    try:
-        import pytesseract
-        from PIL import Image
-        import io
-        
-        img = Image.open(io.BytesIO(image_bytes))
-        best_ocr = ""
-        for config in ("--psm 6", "--psm 11", "--psm 12"):
-            ocr_text = pytesseract.image_to_string(img, config=config).strip()
-            if len(ocr_text) > len(best_ocr):
-                best_ocr = ocr_text
-        if best_ocr.strip():
-            logger.info("Local pytesseract OCR successfully recognized text (%d chars)", len(best_ocr))
-            return best_ocr.strip()
-    except Exception as exc:
-        logger.warning("Local pytesseract OCR failed, falling back to AI: %s", exc)
-
-    # 2. Fall back to AI-based OCR
-    if settings.ANTHROPIC_API_KEY and not settings.OPENAI_API_KEY:
-        return await _ocr_page_with_claude(image_bytes, filename, page_no)
-
-    if not settings.OPENAI_API_KEY:
-        return ""
-    try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=30.0)
-        data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
-        model_id = getattr(settings, "OPENAI_VISION_MODEL_ID", None) or "gpt-4.1"
-        response = await client.chat.completions.create(
-            model=model_id,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are extracting visible text from a maritime manual page image. "
-                        "Return plain text only. Preserve table rows line by line. "
-                        "If you can detect columns, separate them using ' | '. "
-                        "Do not explain anything."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": f"Extract all readable text from page {page_no} of {filename}."},
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
-                },
-            ],
-            temperature=0,
-            max_tokens=8000,
-        )
-        return (response.choices[0].message.content or "").strip()
-    except Exception as exc:
-        logger.warning(
-            "extractor OCR[openai]: failed for %s page=%d: %s",
-            filename,
-            page_no,
-            _redact_error_message(exc),
-        )
-        return ""
-
-
-def _detect_column_bands(img: Any, min_gap_px: int = 80) -> list[tuple[int, int]]:
-    """Detect vertical whitespace bands to find natural column group boundaries.
-
-    Returns a list of (x_start, x_end) pixel ranges for each column group.
-    Falls back to an empty list if numpy is unavailable or detection is ambiguous.
-    """
-    try:
-        import numpy as np
-        arr = np.asarray(img.convert("L"))
-        col_density = (arr < 200).mean(axis=0)
-        is_gap = col_density < 0.02
-
-        gaps: list[tuple[int, int]] = []
-        start: int | None = None
-        for x, gap in enumerate(is_gap.tolist()):
-            if gap and start is None:
-                start = x
-            elif not gap and start is not None:
-                if x - start >= min_gap_px:
-                    gaps.append((start, x))
-                start = None
-
-        bands: list[tuple[int, int]] = []
-        prev_end = 0
-        for gap_start, gap_end in gaps:
-            if gap_start - prev_end > min_gap_px * 2:
-                bands.append((prev_end, gap_start))
-            prev_end = gap_end
-        if prev_end < img.width - min_gap_px * 2:
-            bands.append((prev_end, img.width))
-
-        if len(bands) < 2 or len(bands) > 6:
-            return []
-        return bands
-    except Exception:
-        return []
-
-
-async def _extract_spare_parts_from_image_split(
-    *,
-    image_bytes: bytes,
-    filename: str,
-    page_no: int,
-    context_note: str | None = None,
-    on_strip_start: Any | None = None,
-) -> list[dict]:
-    """Force full-page spare parts extraction from page image, bypassing column splits."""
-    if on_strip_start:
-        on_strip_start(0, 1)
-
-    full_note = (
-        "This page contains spare parts, equipment components, or an exploded drawing parts list/legend. "
-        "Extract ALL spare parts, callout list items, and listed components. "
-        "Scan the entire page from left-to-right and top-to-bottom. "
-        "Translate any Japanese/Chinese/non-English descriptions to English. If the page has a drawing with a parts list, bill of materials (BOM) in the corner or title block, extract every part. "
-        "Return a JSON array with EVERY item — never return prose."
-    )
-    if context_note:
-        full_note += f" {context_note}"
-
-    logger.info(
-        "extract_spare_split: forcing full-page extraction for %s page=%d",
-        filename, page_no,
-    )
-    return await _extract_entities_from_page_image(
-        image_bytes=image_bytes,
-        filename=filename,
-        page_no=page_no,
-        extraction_type="spare",
-        context_note=full_note,
-    )
-
-
-async def _extract_entities_from_page_image_with_openai(
-    *,
-    image_bytes: bytes,
-    filename: str,
-    page_no: int,
-    extraction_type: str,
-    context_note: str | None = None,
-) -> list[dict]:
-    if not settings.OPENAI_API_KEY:
-        return []
-
-    # Enhance image quality before sending to the vision model
-    image_bytes = _enhance_image_for_extraction(image_bytes)
-
-    prompt_cfg = DEFAULT_PROMPTS[extraction_type]
-    try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-        data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
-        model_id = getattr(settings, "OPENAI_VISION_MODEL_ID", None) or "gpt-4.1"
-        text_instructions = (
-            f"Extract {extraction_type} data from PDF page {page_no} of '{filename}'. "
-            f"Use source_page_number={page_no} for every record. "
-            "ALL field values MUST be in English — translate Japanese/Chinese/non-English text. "
-            "Never output non-Latin characters in any field.\n\n"
-            "OUTPUT FORMAT RULES (CRITICAL):\n"
-            f"1. If this page contains {extraction_type} items, output ONLY a raw JSON array: [ {{...}}, {{...}} ]. Start with [ and end with ].\n"
-            f"2. If NO {extraction_type} items can be extracted from this page, output a JSON object with 'records' and a specific 'no_extraction_reason':\n"
-            f'   {{ "records": [], "no_extraction_reason": "<1-2 sentence detailed reason why no {extraction_type} items could be extracted from this specific page>" }}\n'
-            "3. Output ONLY valid JSON."
-        )
-        if extraction_type == "spare":
-            text_instructions += (
-                "\n\nPARTS LISTS AND EXPLODED DIAGRAM RULES (CRITICAL):"
-                "\n1. If the page has an exploded-view/assembly diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser' or 'Item No. 1: Fan Motor'): extract EVERY item from the list/legend as a spare part. Use 'No. 1', 'No. 2', etc. as part_number, the component name as part_name, and the diagram title or figure number as drawing_number/spare_assembly."
-                "\n2. If the page has BOTH an exploded-view diagram AND a separate full catalog parts table for the same parts on the SAME page, extract from the parts table to avoid duplication."
-                "\n3. If the page contains equipment components listed with settings, calibration values, or technical specifications (e.g. 'COMPONENT | SETTING | NOTES' or 'Fig.8 Calibration'): extract the listed components as spare parts, capturing their settings/parameters in the specification field."
-                "\n4. If the page contains an engineering drawing, assembly diagram, cross-sectional schematic, or piping diagram with a title block, bill of materials (BOM), parts table, or callout list (including in Chinese e.g. 序号, 名称, 材质, 数量, or Japanese NO., 品名, 材质, 数量): translate and extract EVERY part listed in the drawing's bill of materials (BOM), title block, or callout list."
-                "\n5. Read all text in its natural orientation, including landscape or rotated drawings."
-                "\n\nREMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly tags — put in spare_model, NOT part_name or drawing_number."
-                "\n\nCount every TABLE data row (excluding column headers), then output exactly that many JSON records. "
-                "Do not stop early. "
-                "\n\nFor multi-column parts tables (REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS "
-                "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
-                "A single page can contain 50-300 parts — extract ALL of them."
-                "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
-                "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). If not clearly a position label, keep it empty (null). NEVER map Item No., Reference No., Ref No., Serial No., or No. to drawing_position!"
-                "\n  • part_number → Catalog Part Number (PC.NO, CODE NO, etc.). If a catalog Part Number is present, capture it cleanly WITHOUT column header prefixes like 'Part No' or 'Part Number' (e.g. '00621141'). If an Item No./Ref No./Serial No./No. is also present, put that item reference in specification (e.g. 'Ref No: 12'). If NO catalog Part Number exists in the manual, capture Item No., Reference No., Serial No., No., or PID Item as part_number WITH its header prefix from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005', 'PID Item BO 002'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). Leave null if none of these exist — NEVER capture PDF filenames, drawing titles, or page references here."
-                "\n  • part_name → the SPARE NAME ONLY in Proper Text / Title Case, preserving any abbreviations and misspellings of the name (e.g. 'O-Ring', 'Hex Bolt', 'Ball Bearing', 'Oil Seal', 'Gasket', 'Plug'). CRITICAL: Do NOT include specifications, dimensions, thread sizes, materials, or parenthetical details in part_name (e.g. for 'O-RING (15.5 x 2.4 FKM)' output 'O-Ring'; for 'HEX BOLT M12x45' output 'Hex Bolt'; for 'BALL BEARING 6205' output 'Ball Bearing') — always separate and move those additional details to specification!"
-                "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER output the keyword 'Remarks:' or include remarks notes in specification — remarks are not requested."
-                "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
-                "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
-                "\n\nMULTI-MODEL & VARIANT TABLES RULE (CRITICAL):"
-                "\n• Variant quantity columns (e.g. '1, 2, 3, 4' under Ant./Qty with TYPEVARIANT legend like '1: L2.093/LPW2, 2: L3.139/LPW3, 3: L4.186/LPW4'): When a target model is specified in context (e.g. L3 139LB / LPW3 / Variant 2), extract ONLY rows with a quantity in that model's column; do NOT extract rows that are blank/dash for this model. Use that column's quantity in 'QTY: <count> <unit>' and set spare_model to the target model."
-                "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
-            )
-        elif extraction_type == "job":
-            text_instructions += (
-                "\n\nFREQUENCY RANGE RULE (CRITICAL): If frequency or maintenance interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound."
-            )
-        if context_note:
-            text_instructions += f"\n\nAdditional context:\n{context_note}"
-
-        response = await client.chat.completions.create(
-            model=model_id,
-            messages=[
-                {"role": "system", "content": prompt_cfg["system"]},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": text_instructions},
-                        {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
-                    ],
-                },
-            ],
-            temperature=0,
-            max_tokens=32000,
-        )
-        raw_text = (response.choices[0].message.content or "").strip()
-        records = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
-        if not records:
-            ai_reason = _extract_reason_from_raw_text(raw_text)
-            logger.warning(
-                "extract_entities[openai-vision]: %s/%s page=%d 0 records — AI reason: %s — response preview: %r",
-                filename, extraction_type, page_no, ai_reason, raw_text[:400],
-            )
-            return ExtractionResult([], reason=ai_reason)
-        for record in records:
-            if record.get("source_page_number") in (None, "", 0):
-                record["source_page_number"] = page_no
-        logger.info(
-            "extract_entities[openai-vision]: %s/%s page=%d records=%d",
-            filename,
-            extraction_type,
-            page_no,
-            len(records),
-        )
-        return ExtractionResult(records)
-    except Exception as exc:
-        logger.warning(
-            "extract_entities[openai-vision]: failed for %s/%s page=%d: %s",
-            filename,
-            extraction_type,
-            page_no,
-            _redact_error_message(exc),
-        )
-        raise exc
-
-
-async def _extract_entities_from_page_image_with_claude(
-    *,
-    image_bytes: bytes,
-    filename: str,
-    page_no: int,
-    extraction_type: str,
-    context_note: str | None = None,
-) -> list[dict]:
-    if not settings.ANTHROPIC_API_KEY:
-        return []
-
-    image_bytes = _enhance_image_for_extraction(image_bytes)
-    prompt_cfg = DEFAULT_PROMPTS[extraction_type]
-    try:
-        model_id: str = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
-        b64_data = base64.b64encode(image_bytes).decode("ascii")
-
-        text_instructions = (
-            f"Extract {extraction_type} data from PDF page {page_no} of '{filename}'. "
-            f"Use source_page_number={page_no} for every record. "
-            "ALL field values MUST be in English — translate Japanese/Chinese/non-English text. "
-            "Never output non-Latin characters in any field.\n\n"
-            "OUTPUT FORMAT RULES (CRITICAL):\n"
-            f"1. If this page contains {extraction_type} items, output ONLY a raw JSON array: [ {{...}}, {{...}} ]. Start with [ and end with ].\n"
-            f"2. If NO {extraction_type} items can be extracted from this page (e.g. page contains exploded diagram schematics without part numbers or BOM table, page is general descriptive text without maintenance intervals, page contains dimensional drawings without a spare parts list, page is a cover/index, etc.), output a JSON object with 'records' and a clear, specific 'no_extraction_reason':\n"
-            f'   {{ "records": [], "no_extraction_reason": "<1-2 sentence detailed explanation why no {extraction_type} items could be extracted from this specific page>" }}\n'
-            "3. Output ONLY valid JSON — no markdown code fences, no conversational prose, no greetings."
-        )
-        if extraction_type == "spare":
-            text_instructions += (
-                "\n\nPARTS LISTS AND EXPLODED DIAGRAM RULES (CRITICAL):"
-                "\n1. If the page has an exploded-view/assembly diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser' or 'Item No. 1: Fan Motor'): extract EVERY item from the list/legend as a spare part. Use 'No. 1', 'No. 2', etc. as part_number, the component name as part_name, and the diagram title or figure number as drawing_number/spare_assembly."
-                "\n2. If the page has BOTH an exploded-view diagram AND a separate full catalog parts table for the same parts on the SAME page, extract from the parts table to avoid duplication."
-                "\n3. If the page contains equipment components listed with settings, calibration values, or technical specifications (e.g. 'COMPONENT | SETTING | NOTES' or 'Fig.8 Calibration'): extract the listed components as spare parts, capturing their settings/parameters in the specification field."
-                "\n4. If the page contains an engineering drawing, assembly diagram, cross-sectional schematic, or piping diagram with a title block, bill of materials (BOM), parts table, or callout list (including in Chinese e.g. 序号, 名称, 材质, 数量, or Japanese NO., 品名, 材质, 数量): translate and extract EVERY part listed in the drawing's bill of materials (BOM), title block, or callout list."
-                "\n5. Read all text in its natural orientation, including landscape or rotated drawings."
-                "\n\nREMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly tags — put in spare_model, NOT part_name or drawing_number."
-                "\n\nCount every TABLE data row (excluding column headers), then output exactly that many JSON records. "
-                "Do not stop early. "
-                "\n\nFor multi-column parts tables (REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS "
-                "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
-                "A single page can contain 50-300 parts — extract ALL of them."
-                "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
-                "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). If not clearly a position label, keep it empty (null). NEVER map Item No., Reference No., Ref No., Serial No., or No. to drawing_position!"
-                "\n  • part_number → Catalog Part Number (PC.NO, CODE NO, etc.). If a catalog Part Number is present, capture it cleanly WITHOUT column header prefixes like 'Part No' or 'Part Number' (e.g. '00621141'). If an Item No./Ref No./Serial No./No. is also present, put that item reference in specification (e.g. 'Ref No: 12'). If NO catalog Part Number exists in the manual, capture Item No., Reference No., Serial No., No., or PID Item as part_number WITH its header prefix from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005', 'PID Item BO 002'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). Leave null if none of these exist — NEVER capture PDF filenames, drawing titles, or page references here."
-                "\n  • part_name → the SPARE NAME ONLY in Proper Text / Title Case, preserving any abbreviations and misspellings of the name (e.g. 'O-Ring', 'Hex Bolt', 'Ball Bearing', 'Oil Seal', 'Gasket', 'Plug'). CRITICAL: Do NOT include specifications, dimensions, thread sizes, materials, or parenthetical details in part_name (e.g. for 'O-RING (15.5 x 2.4 FKM)' output 'O-Ring'; for 'HEX BOLT M12x45' output 'Hex Bolt'; for 'BALL BEARING 6205' output 'Ball Bearing') — always separate and move those additional details to specification!"
-                "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER output the keyword 'Remarks:' or include remarks notes in specification — remarks are not requested."
-                "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
-                "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
-                "\n\nMULTI-MODEL & VARIANT TABLES RULE (CRITICAL):"
-                "\n• Variant quantity columns (e.g. '1, 2, 3, 4' under Ant./Qty with TYPEVARIANT legend like '1: L2.093/LPW2, 2: L3.139/LPW3, 3: L4.186/LPW4'): When a target model is specified in context (e.g. L3 139LB / LPW3 / Variant 2), extract ONLY rows with a quantity in that model's column; do NOT extract rows that are blank/dash for this model. Use that column's quantity in 'QTY: <count> <unit>' and set spare_model to the target model."
-                "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
-            )
-        elif extraction_type == "job":
-            text_instructions += (
-                "\n\nFREQUENCY RANGE RULE (CRITICAL): If frequency or maintenance interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound."
-            )
-        if context_note:
-            text_instructions += f"\n\nAdditional context:\n{context_note}"
-
-        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-        vision_cap: int = getattr(settings, "EXTRACTION_VISION_MAX_TOKENS", 32000)
-        sufficiency_retry: bool = getattr(settings, "EXTRACTION_SUFFICIENCY_RETRY", True)
-        caps = [vision_cap, min(vision_cap * 2, 64000)] if sufficiency_retry else [vision_cap]
-
-        user_content = [
-            {
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/png", "data": b64_data},
-            },
-            {"type": "text", "text": text_instructions},
-        ]
-        records: list[dict] = []
-        for attempt, cap in enumerate(caps):
-            api_max_tokens = min(cap, 8192)
-            message = await client.messages.create(
-                model=model_id,
-                max_tokens=api_max_tokens,
-                system=prompt_cfg["system"],
-                messages=[{"role": "user", "content": user_content}],
-            )
-            try:
-                from app.services.token_tracker import record_claude_usage
-                record_claude_usage(message.usage, model=model_id)
-            except Exception:
-                pass
-            raw_text = message.content[0].text.strip()
-            records = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
-            hard_cutoff = message.stop_reason == "max_tokens"
-            partial_array = len(records) > 0 and not raw_text.rstrip().endswith("]")
-            if not hard_cutoff and not partial_array:
-                break
-            logger.warning(
-                "extract_entities[claude-vision]: %s/%s page=%d truncated cap=%d attempt=%d rows=%d — retrying",
-                filename, extraction_type, page_no, cap, attempt, len(records),
-            )
-
-        if not records:
-            ai_reason = _extract_reason_from_raw_text(raw_text)
-            logger.warning(
-                "extract_entities[claude-vision]: %s/%s page=%d 0 records — AI reason: %s — response preview: %r",
-                filename, extraction_type, page_no, ai_reason, raw_text[:400],
-            )
-            return ExtractionResult([], reason=ai_reason)
-        for record in records:
-            if record.get("source_page_number") in (None, "", 0):
-                record["source_page_number"] = page_no
-        logger.info(
-            "extract_entities[claude-vision]: %s/%s page=%d records=%d",
-            filename, extraction_type, page_no, len(records),
-        )
-        return ExtractionResult(records)
-    except Exception as exc:
-        logger.warning(
-            "extract_entities[claude-vision]: failed for %s/%s page=%d: %s",
-            filename, extraction_type, page_no, _redact_error_message(exc),
-        )
-        raise exc
-
-
-_claude_vision_billing_failed = False  # module-level circuit breaker; reset on process restart
-_claude_vision_billing_failed_until: float = 0.0
-_claude_text_billing_failed = False
-_claude_text_billing_failed_until: float = 0.0
-
-
-def is_claude_vision_billing_tripped() -> bool:
-    import time
-    global _claude_vision_billing_failed, _claude_vision_billing_failed_until
-    if _claude_vision_billing_failed_until > 0:
-        if time.time() < _claude_vision_billing_failed_until:
-            return True
-        else:
-            _claude_vision_billing_failed = False
-            _claude_vision_billing_failed_until = 0.0
-            return False
-    return bool(_claude_vision_billing_failed)
-
-
-def trip_claude_vision_billing(cooldown_seconds: float = 60.0) -> None:
-    import time
-    global _claude_vision_billing_failed, _claude_vision_billing_failed_until
-    _claude_vision_billing_failed = True
-    _claude_vision_billing_failed_until = time.time() + cooldown_seconds
-
-
-def is_claude_text_billing_tripped() -> bool:
-    import time
-    global _claude_text_billing_failed, _claude_text_billing_failed_until
-    if _claude_text_billing_failed_until > 0:
-        if time.time() < _claude_text_billing_failed_until:
-            return True
-        else:
-            _claude_text_billing_failed = False
-            _claude_text_billing_failed_until = 0.0
-            return False
-    return bool(_claude_text_billing_failed) or is_claude_vision_billing_tripped()
-
-
-def trip_claude_text_billing(cooldown_seconds: float = 60.0) -> None:
-    import time
-    global _claude_text_billing_failed, _claude_text_billing_failed_until
-    _claude_text_billing_failed = True
-    _claude_text_billing_failed_until = time.time() + cooldown_seconds
-    trip_claude_vision_billing(cooldown_seconds)
-
-
-def reset_claude_billing_breakers() -> None:
-    global _claude_vision_billing_failed, _claude_vision_billing_failed_until
-    global _claude_text_billing_failed, _claude_text_billing_failed_until
-    _claude_vision_billing_failed = False
-    _claude_vision_billing_failed_until = 0.0
-    _claude_text_billing_failed = False
-    _claude_text_billing_failed_until = 0.0
-
-
-async def _extract_entities_from_page_image(
-    *,
-    image_bytes: bytes,
-    filename: str,
-    page_no: int,
-    extraction_type: str,
-    context_note: str | None = None,
-) -> list[dict]:
-    """Try Claude vision first; fall back to OpenAI vision."""
-    claude_err = None
-    if settings.ANTHROPIC_API_KEY and not is_claude_vision_billing_tripped():
-        try:
-            records = await _extract_entities_from_page_image_with_claude(
-                image_bytes=image_bytes,
-                filename=filename,
-                page_no=page_no,
-                extraction_type=extraction_type,
-                context_note=context_note,
-            )
-            if records:
-                return records
-        except Exception as exc:
-            claude_err = exc
-            err_str = str(exc)
-            if "credit balance" in err_str.lower() or "402" in err_str or (
-                "400" in err_str and "credit" in err_str.lower()
-            ):
-                trip_claude_vision_billing(cooldown_seconds=60.0)
-                logger.warning(
-                    "extract_entities[claude-vision]: billing error (%s) — cooling down Claude vision for 60s",
-                    _redact_error_message(exc),
-                )
-            # Fall through to OpenAI regardless
-
-    if not settings.OPENAI_API_KEY:
-        if claude_err:
-            raise claude_err
-        if not settings.ANTHROPIC_API_KEY:
-            raise RuntimeError("No Vision LLM API Key is configured on the server (both ANTHROPIC_API_KEY and OPENAI_API_KEY are empty).")
-        if is_claude_vision_billing_tripped():
-            raise RuntimeError("Claude Vision billing/credit limit was reached recently (cooldown active), and no OpenAI fallback is configured.")
-        return []
-
-    return await _extract_entities_from_page_image_with_openai(
-        image_bytes=image_bytes,
-        filename=filename,
-        page_no=page_no,
-        extraction_type=extraction_type,
-        context_note=context_note,
-    )
-
-
-async def _explain_zero_extraction(
-    *,
-    image_bytes: bytes | None = None,
-    text_content: str | None = None,
-    filename: str,
-    page_no: int,
-    extraction_type: str,
-) -> str:
-    """
-    When extraction yields 0 records for a targeted page, query the vision or text LLM
-    to generate a 1-sentence specific reason why no entities could be extracted.
-    """
-    prompt = (
-        f"You are a maritime technical manual analyst. We targeted page {page_no} of '{filename}' to extract {extraction_type} items, "
-        f"but found 0 items. In 1 to 2 clear, concise sentences (maximum 25 words), explain specifically why no {extraction_type} items "
-        f"can be extracted from this page (e.g. 'Page contains an exploded diagram without part callouts or bill of materials table', "
-        f"'Page contains descriptive operating instructions without maintenance intervals or tasks', "
-        f"'Page outlines technical specifications rather than discrete spare parts', "
-        f"'Page is a section title or index without machinery components', etc.). "
-        f"Output ONLY the concise explanation without greetings, prefixes like 'Reason:', or markdown formatting."
-    )
-
-    # 1. Try Claude first
-    if settings.ANTHROPIC_API_KEY and not is_claude_vision_billing_tripped():
-        try:
-            import anthropic
-            model_id: str = getattr(settings, 'CLAUDE_MODEL_ID', None) or 'claude-sonnet-4-6'
-            client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-            user_content: list[dict] = []
-            if image_bytes:
-                b64_data = base64.b64encode(image_bytes).decode('ascii')
-                user_content.append({
-                    'type': 'image',
-                    'source': {'type': 'base64', 'media_type': 'image/png', 'data': b64_data},
-                })
-            elif text_content:
-                user_content.append({'type': 'text', 'text': f"Page text content:\n{text_content[:3000]}\n"})
-            user_content.append({'type': 'text', 'text': prompt})
-
-            msg = await client.messages.create(
-                model=model_id,
-                max_tokens=150,
-                system='You are a maritime technical manual analyst. Be precise and concise.',
-                messages=[{'role': 'user', 'content': user_content}],
-            )
-            raw = msg.content[0].text.strip()
-            cleaned = raw.strip('"\'')
-            if cleaned.lower().startswith('reason:'):
-                cleaned = cleaned[7:].strip()
-            if cleaned:
-                return cleaned
-        except Exception as exc:
-            logger.warning('_explain_zero_extraction: Claude failed for %s p.%d: %s', filename, page_no, exc)
-
-    # 2. Try OpenAI fallback
-    if settings.OPENAI_API_KEY:
-        try:
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-            openai_model = getattr(settings, 'OPENAI_VISION_MODEL_ID', None) or getattr(settings, 'OPENAI_MODEL_ID', None) or 'gpt-4o-mini'
-            user_parts: list[dict] = []
-            if image_bytes:
-                b64_data = base64.b64encode(image_bytes).decode('ascii')
-                user_parts.append({
-                    'type': 'image_url',
-                    'image_url': {'url': f"data:image/png;base64,{b64_data}", 'detail': 'low'},
-                })
-            elif text_content:
-                user_parts.append({'type': 'text', 'text': f"Page text content:\n{text_content[:3000]}\n"})
-            user_parts.append({'type': 'text', 'text': prompt})
-
-            res = await client.chat.completions.create(
-                model=openai_model,
-                messages=[
-                    {'role': 'system', 'content': 'You are a maritime technical manual analyst. Be precise and concise.'},
-                    {'role': 'user', 'content': user_parts},
-                ],
-                max_tokens=150,
-                temperature=0.0,
-            )
-            raw = (res.choices[0].message.content or '').strip()
-            cleaned = raw.strip('"\'')
-            if cleaned.lower().startswith('reason:'):
-                cleaned = cleaned[7:].strip()
-            if cleaned:
-                return cleaned
-        except Exception as exc:
-            logger.warning('_explain_zero_extraction: OpenAI failed for %s p.%d: %s', filename, page_no, exc)
-
-    return f'No structured {extraction_type} data or callouts detected on this page.'
-
-
-def _render_single_pdf_page_image(
-    file_bytes: bytes,
-    page_no: int,
-    resolution: int = 200,
-) -> Optional[bytes]:
-    try:
-        import fitz
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
-        if 1 <= page_no <= len(doc):
-            page = doc[page_no - 1]
-            pix = page.get_pixmap(dpi=resolution)
-            png_bytes = pix.tobytes("png")
-            doc.close()
-            return png_bytes
-    except Exception as fitz_exc:
-        logger.warning("fitz single page render failed: page=%d error=%s", page_no, fitz_exc)
-    try:
-        import pdfplumber
-        import io
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            if 1 <= page_no <= len(pdf.pages):
-                page_image = pdf.pages[page_no - 1].to_image(resolution=resolution).original
-                image_buffer = io.BytesIO()
-                page_image.save(image_buffer, format="PNG")
-                return image_buffer.getvalue()
-    except Exception as exc:
-        logger.warning("extractor single page render failed: page=%d error=%s", page_no, exc)
-    return None
-
-
-async def _render_selected_pdf_page_images(
-    *,
-    file_bytes: bytes,
-    selected_pages: list[int],
-    resolution: int = 400,
-) -> dict[int, bytes]:
-    rendered: dict[int, bytes] = {}
-    try:
-        import pdfplumber
-    except Exception:
-        return rendered
-
-    try:
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for page_no in selected_pages:
-                if page_no < 1 or page_no > len(pdf.pages):
-                    continue
-                try:
-                    page_image = pdf.pages[page_no - 1].to_image(resolution=resolution).original
-                    image_buffer = io.BytesIO()
-                    page_image.save(image_buffer, format="PNG")
-                    rendered[page_no] = image_buffer.getvalue()
-                except Exception as exc:
-                    logger.warning("extractor page render failed: page=%d error=%s", page_no, exc)
-    except Exception as exc:
-        logger.warning("extractor page render failed for selected pages: %s", exc)
-
-    return rendered
-
-
-async def _enrich_pdf_text_for_selected_pages(
-    *,
-    file_bytes: bytes,
-    filename: str,
-    full_text: str,
-    selected_pages: list[int],
-    page_count: int,
-) -> str:
-    page_lookup = {page_no: page_body for page_no, page_body in _split_marked_pages(full_text)}
-    _SPARSE_TABLE_HEADERS = re.compile(
-        r"(PC\.?\s*NO|REF\.?\s*NO|DESCRIPTION|PART\s+NO|QTY|REMARKS|CODE\s+NO)",
-        re.I,
-    )
-
-    def _page_needs_ocr(text: str) -> bool:
-        text = (text or "").strip()
-        if len(text) < 120:
-            return True
-        # Text is present but looks like a garbled multi-column table: headers found but very few data rows
-        if _SPARSE_TABLE_HEADERS.search(text):
-            lines = [l for l in text.splitlines() if l.strip()]
-            header_count = sum(1 for l in lines if _SPARSE_TABLE_HEADERS.search(l))
-            data_lines = len(lines) - header_count
-            if data_lines < 10:
-                return True
-        return False
-
-    target_pages = [
-        page_no
-        for page_no in selected_pages
-        if _page_needs_ocr(page_lookup.get(page_no))
-    ]
-    if not target_pages:
-        return full_text
-
-    try:
-        import pdfplumber
-    except Exception:
-        pdfplumber = None
-
-    try:
-        import pytesseract  # type: ignore
-    except Exception:
-        pytesseract = None
-
-    if pdfplumber is None:
-        return full_text
-
-    try:
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for page_no in target_pages:
-                if page_no < 1 or page_no > len(pdf.pages):
-                    continue
-                page = pdf.pages[page_no - 1]
-                page_parts: list[str] = []
-
-                try:
-                    text = (page.extract_text() or "").strip()
-                    if text:
-                        page_parts.append(text)
-                except Exception:
-                    pass
-
-                try:
-                    for table in (page.extract_tables() or []):
-                        if not table:
-                            continue
-                        rows = [
-                            " | ".join(str(c).strip() if c else "" for c in row)
-                            for row in table
-                            if row and any(c for c in row if c)
-                        ]
-                        if rows:
-                            page_parts.append("[TABLE]\n" + "\n".join(rows))
-                except Exception:
-                    pass
-
-                combined = "\n".join(part for part in page_parts if part).strip()
-                if len(combined) < 120:
-                    try:
-                        page_image = page.to_image(resolution=200).original
-                    except Exception:
-                        page_image = None
-
-                    if page_image is not None and pytesseract is not None:
-                        try:
-                            best_ocr = combined
-                            for config in ("--psm 6", "--psm 11", "--psm 12"):
-                                ocr_text = pytesseract.image_to_string(page_image, config=config).strip()
-                                if len(ocr_text) > len(best_ocr):
-                                    best_ocr = ocr_text
-                            combined = best_ocr
-                        except Exception:
-                            pass
-
-                    if len(combined) < 120 and page_image is not None:
-                        try:
-                            image_buffer = io.BytesIO()
-                            page_image.save(image_buffer, format="PNG")
-                            vision_text = await _ocr_page_with_openai(
-                                image_buffer.getvalue(),
-                                filename,
-                                page_no,
-                            )
-                            if len(vision_text) > len(combined):
-                                combined = vision_text
-                        except Exception:
-                            pass
-
-                page_lookup[page_no] = combined.strip()
-                logger.info(
-                    "extractor OCR enrich: %s page=%d chars=%d",
-                    filename,
-                    page_no,
-                    len(page_lookup[page_no]),
-                )
-    except Exception as exc:
-        logger.warning("extractor OCR enrich failed for %s: %s", filename, exc)
-        return full_text
-
-    return _build_marked_text_from_lookup(page_lookup, page_count)
-
-
-def _selected_manual_pages(manual: Any, entity_type: str) -> list[int]:
-    physical_attr = {
-        "component": "pages_with_components_physical",
-        "job": "pages_with_jobs_physical",
-        "spare": "pages_with_spares_physical",
-    }[entity_type]
-    canonical_attr = {
-        "component": "pages_with_components",
-        "job": "pages_with_jobs",
-        "spare": "pages_with_spares",
-    }[entity_type]
-    raw_val = (getattr(manual, physical_attr, None) or "").strip() or (getattr(manual, canonical_attr, None) or "").strip()
-    return _parse_page_tokens(raw_val)
-
-
-def _normalise_text(value: str | None) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", (value or "").lower())).strip()
-
-
-def _component_match_score(search_text: str, component: Any, page_reference: int | None) -> float:
-    haystack = _normalise_text(search_text)
-    component_text = _normalise_text(
-        " ".join(
-            filter(
-                None,
-                [
-                    getattr(component, "component_name", None),
-                    getattr(component, "main_machinery", None),
-                    getattr(component, "maker", None),
-                    getattr(component, "model", None),
-                ],
-            )
-        )
-    )
-    if not haystack or not component_text:
-        return 0.0
-
-    hay_tokens = set(haystack.split())
-    comp_tokens = set(component_text.split())
-    overlap = len(hay_tokens & comp_tokens) / max(len(comp_tokens), 1)
-    ratio = SequenceMatcher(None, haystack, component_text).ratio()
-    score = max(overlap, ratio)
-
-    component_page = getattr(component, "page_reference", None)
-    if page_reference and component_page:
-        distance = abs(page_reference - component_page)
-        if distance == 0:
-            score += 0.15
-        elif distance <= 3:
-            score += 0.08
-        elif distance <= 6:
-            score += 0.03
-
-    return score
-
-
-def _component_has_manual_reference(component: Any, manual: Any) -> bool:
-    manual_id = getattr(manual, "id", None)
-    manual_name = (getattr(manual, "original_filename", None) or "").strip()
-    component_manual_id = getattr(component, "source_manual_id", None)
-    pdf_reference = getattr(component, "pdf_reference", None) or ""
-    return bool(
-        (manual_id and component_manual_id == manual_id)
-        or (manual_name and manual_name.lower() in pdf_reference.lower())
-    )
-
-
-def _page_in_reference(page_reference: int | None, pages_value: str | None) -> bool:
-    if page_reference is None or not pages_value:
-        return False
-    return page_reference in set(_parse_page_tokens(pages_value))
-
-
-def _merge_reference_values(current: str | None, incoming: str | None) -> str | None:
-    current_clean = (current or "").strip()
-    incoming_clean = (incoming or "").strip()
-    if not current_clean:
-        return incoming_clean or None
-    if not incoming_clean:
-        return current_clean or None
-    if incoming_clean in current_clean:
-        return current_clean
-    return f"{current_clean}; {incoming_clean}"
-
-
-def _link_score(
-    *,
-    search_text: str,
-    component: Any,
-    page_reference: int | None,
-    relation: str,
-    manual: Any,
-) -> float:
-    score = _component_match_score(search_text, component, page_reference)
-
-    if _component_has_manual_reference(component, manual):
-        score += 0.16
-
-    if relation == "job" and _page_in_reference(page_reference, getattr(component, "job_pages", None)):
-        score += 0.2
-    if relation == "spare" and _page_in_reference(page_reference, getattr(component, "spare_pages", None)):
-        score += 0.2
-
-    return score
-
-
-def _manual_page_refs_summary(manual: Any) -> str:
-    parts: list[str] = []
-    for label, printed_attr, physical_attr in (
-        ("components", "pages_with_components_printed", "pages_with_components_physical"),
-        ("jobs", "pages_with_jobs_printed", "pages_with_jobs_physical"),
-        ("spares", "pages_with_spares_printed", "pages_with_spares_physical"),
-    ):
-        printed = getattr(manual, printed_attr, None) or ""
-        physical = getattr(manual, physical_attr, None) or ""
-        if printed or physical:
-            parts.append(f"{label}: printed={printed or 'none'}, physical={physical or 'none'}")
-    return "; ".join(parts)
-
-
-def _build_component_context_text(components: list[Any], manual: Any) -> str:
-    if not components and not manual:
-        return ""
-    def _value(component: Any, key: str) -> Any:
-        if isinstance(component, dict):
-            return component.get(key)
-        return getattr(component, key, None)
-
-    # Collect distinct equipment models
-    distinct_models: list[str] = []
-    seen_models: set[str] = set()
-
-    manual_target_model = (getattr(manual, "target_model", None) or "").strip()
-    if manual_target_model and manual_target_model.upper() not in {"N/A", "UNKNOWN", "NONE", "-", "--", "NULL", "UNSPECIFIED"}:
-        distinct_models.append(manual_target_model)
-        seen_models.add(manual_target_model.upper())
-    for component in (components or []):
-        m = _value(component, "model")
-        if m and isinstance(m, str):
-            clean_m = m.strip()
-            if clean_m and clean_m.upper() not in {"N/A", "UNKNOWN", "NONE", "-", "--", "NULL", "UNSPECIFIED"}:
-                if clean_m.upper() not in seen_models:
-                    seen_models.add(clean_m.upper())
-                    distinct_models.append(clean_m)
-
-    # If components did not provide a model, inspect manual filename
-    manual_filename = (getattr(manual, "original_filename", None) or getattr(manual, "filename", None) or "").strip()
-    if not distinct_models and manual_filename:
-        m_match = re.search(r'\b(LT-?\d+[A-Z0-9/]*|L\d\s*\.?\s*\d+[A-Z0-9/]*|LPW\d+|[A-Z0-9]{2,}-\d+[A-Z0-9]*)\b', manual_filename, re.I)
-        if m_match:
-            candidate = m_match.group(1).strip()
-            if candidate.upper() not in {"PDF", "AIR", "BOAT", "RESCUE", "LIFE", "COMPRESSOR", "ENGINE"}:
-                distinct_models.append(candidate)
-
-    lines = [
-        "Known component context from this manual:",
-        f"Manual screening refs -> {_manual_page_refs_summary(manual) or 'not set'}",
-    ]
-    for component in (components or [])[:40]:
-        lines.append(
-            " - "
-            + " | ".join(
-                filter(
-                    None,
-                    [
-                        f"name={_value(component, 'component_name')}",
-                        f"main={_value(component, 'main_machinery')}",
-                        f"maker={_value(component, 'maker')}",
-                        f"model={_value(component, 'model')}",
-                        f"page={_value(component, 'page_reference') or _value(component, 'source_page_number')}",
-                    ],
-                )
-            )
-        )
-
-    if distinct_models:
-        models_str = ", ".join(distinct_models)
-        lines.append(
-            f"TARGET EQUIPMENT MODEL(S): {models_str}\n"
-            "CRITICAL: If the parts table contains model-specific rows or columns for multiple models (e.g. Atlas Copco LT22 vs LT55, or Sabb/Lister Petter Variant 1: LPW2 vs Variant 2: LPW3/L3.139):\n"
-            f"- Extract ONLY rows/columns applicable to the target model ({models_str}).\n"
-            "- Ignore parts that strictly belong to other models or engine variants.\n"
-            "- If the table uses multi-variant quantity columns (e.g. 1, 2, 3), use the quantity from the column corresponding to the target model.\n"
-            "- Set spare_model to the matching target model in ALL CAPS."
-        )
-    else:
-        lines.append(
-            "When extracting jobs or spares, prefer linking each record to one of these components via job_name wording, spare_model, or component context."
-        )
-    return "\n".join(lines)
-
-
-def _combine_unique_text_parts(*values: str | None) -> str | None:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for value in values:
-        for part in re.split(r"\n{2,}", value or ""):
-            cleaned = part.strip()
-            if not cleaned:
-                continue
-            key = re.sub(r"\s+", " ", cleaned).lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            ordered.append(cleaned)
-    return "\n\n".join(ordered) if ordered else None
-
-
-def _jobs_are_mergeable(left: Any, right: Any) -> bool:
-    if getattr(left, "component_id", None) != getattr(right, "component_id", None):
-        return False
-    if getattr(left, "frequency", None) != getattr(right, "frequency", None):
-        return False
-    if getattr(left, "frequency_type", None) != getattr(right, "frequency_type", None):
-        return False
-    if getattr(left, "source_manual_id", None) != getattr(right, "source_manual_id", None):
-        return False
-
-    left_name = _normalise_text(getattr(left, "job_name", None))
-    right_name = _normalise_text(getattr(right, "job_name", None))
-    if not left_name or not right_name:
-        return False
-    if left_name == right_name:
-        return True
-
-    similarity = SequenceMatcher(None, left_name, right_name).ratio()
-    left_page = getattr(left, "page_reference", None)
-    right_page = getattr(right, "page_reference", None)
-    same_page = left_page is not None and right_page is not None and left_page == right_page
-    return similarity >= 0.84 or (same_page and similarity >= 0.72)
-
-
-async def _consolidate_jobs_for_manual(
-    *,
-    db: Any,
-    manual: Any,
-    vessel_id: uuid.UUID,
-    tenant_id: uuid.UUID,
-) -> int:
-    from sqlalchemy import select
-    from app.models.job import Job
-
-    result = await db.execute(
-        select(Job).where(
-            Job.vessel_id == vessel_id,
-            Job.tenant_id == tenant_id,
-            Job.is_deleted == False,
-            Job.source_manual_id == manual.id,
-        ).order_by(Job.created_at, Job.job_name)
-    )
-    jobs = list(result.scalars().all())
-    component_ids = {job.component_id for job in jobs if getattr(job, "component_id", None)}
-    component_names: dict[uuid.UUID, str] = {}
-    if component_ids:
-        from app.models.component import Component
-
-        component_result = await db.execute(select(Component).where(Component.id.in_(component_ids)))
-        component_names = {
-            component.id: component.component_name
-            for component in component_result.scalars().all()
-        }
-    merged_count = 0
-
-    for idx, target in enumerate(jobs):
-        if getattr(target, "is_deleted", False):
-            continue
-        for candidate in jobs[idx + 1:]:
-            if getattr(candidate, "is_deleted", False):
-                continue
-            if not _jobs_are_mergeable(target, candidate):
-                continue
-
-            reference_entries = split_reference_entries(
-                pdf_reference=target.pdf_reference,
-                page_reference=target.page_reference,
-                source_reference=target.source_reference,
-                description=target.job_description,
-            )
-            reference_entries.extend(
-                split_reference_entries(
-                    pdf_reference=candidate.pdf_reference,
-                    page_reference=candidate.page_reference,
-                    source_reference=candidate.source_reference,
-                    description=candidate.job_description,
-                )
-            )
-            target_clean = strip_source_reference_footer(target.job_description)
-            cand_clean = strip_source_reference_footer(candidate.job_description)
-            target.job_description = _combine_unique_text_parts(target_clean, cand_clean)
-            target.safety_precaution = _combine_unique_text_parts(target.safety_precaution, candidate.safety_precaution)
-            target.tools_required = _combine_unique_text_parts(target.tools_required, candidate.tools_required)
-            if not target.job_code and candidate.job_code:
-                target.job_code = candidate.job_code
-            if not target.performing_rank and candidate.performing_rank:
-                target.performing_rank = candidate.performing_rank
-            if not target.verifying_rank and candidate.verifying_rank:
-                target.verifying_rank = candidate.verifying_rank
-            if not target.cms_id and candidate.cms_id:
-                target.cms_id = candidate.cms_id
-            target.is_critical = bool(target.is_critical or candidate.is_critical)
-            target.confidence_score = max(
-                int(target.confidence_score or 0),
-                int(candidate.confidence_score or 0),
-            ) or None
-            resolved_name = await build_canonical_job_name(
-                db,
-                component_name=component_names.get(getattr(target, "component_id", None)),
-                job_names=[target.job_name, candidate.job_name],
-                job_descriptions=[target.job_description, candidate.job_description],
-                tenant_id=tenant_id,
-                frequency=target.frequency,
-                frequency_type=target.frequency_type,
-                job_id=target.id,
-                component_id=getattr(target, "component_id", None),
-            )
-            if resolved_name:
-                target.job_name = resolved_name
-            pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
-            target.pdf_reference = pdf_reference
-            target.page_reference = primary_page
-            target.source_reference = source_reference
-            target.job_description = append_source_references_to_description(target.job_description, reference_entries)
-            db.add(target)
-
-            candidate.is_deleted = True
-            db.add(candidate)
-            merged_count += 1
-
-    return merged_count
-
-
-async def _consolidate_spares_for_manual(
-    *,
-    db: Any,
-    manual: Any,
-    vessel_id: uuid.UUID,
-    tenant_id: uuid.UUID,
-) -> int:
-    from sqlalchemy import select
-    from app.models.spare import Spare, ExtractionMethod as _EM
-    from app.services.extraction_counter import (
-    record_manual_extraction_run,
-    record_page_extraction_run,
-    record_page_extraction_reason,
-)
-    from app.services.deduplication import fuzzy_similarity
-
-    result = await db.execute(
-        select(Spare).where(
-            Spare.vessel_id == vessel_id,
-            Spare.tenant_id == tenant_id,
-            Spare.is_deleted == False,
-            Spare.source_manual_id == manual.id,
-        ).order_by(Spare.created_at, Spare.part_name)
-    )
-    spares = list(result.scalars().all())
-    merged_count = 0
-
-    for idx, target in enumerate(spares):
-        if getattr(target, "is_deleted", False):
-            continue
-        for candidate in spares[idx + 1:]:
-            if getattr(candidate, "is_deleted", False):
-                continue
-            
-            # Match component mappings unless it's an exact duplicate on the same manual page
-            page_t = getattr(target, "page_reference", None)
-            page_c = getattr(candidate, "page_reference", None)
-            same_page = page_t is not None and page_c is not None and page_t == page_c
-
-            pos_t = (target.drawing_position or "").strip().lower()
-            pos_c = (candidate.drawing_position or "").strip().lower()
-            name_t = (target.part_name or "").strip().lower()
-            name_c = (candidate.part_name or "").strip().lower()
-            pn_t = (target.part_number or "").strip().upper()
-            pn_c = (candidate.part_number or "").strip().upper()
-
-            is_exact_same_page_match = same_page and name_t and name_t == name_c and pn_t == pn_c and pos_t == pos_c
-
-            if not is_exact_same_page_match and target.component_id != candidate.component_id:
-                continue
-
-            # If both have different non-empty drawing positions, do NOT merge them
-            if pos_t and pos_c and pos_t != pos_c:
-                continue
-
-            # Fuzzy name check
-            if not name_t or not name_c:
-                continue
-            if not is_exact_same_page_match and fuzzy_similarity(name_t, name_c) < 0.88:
-                continue
-
-            # Part number mismatch check
-            if pn_t and pn_c and pn_t != pn_c:
-                continue
-
-            # Merge candidates metadata into target
-            if not target.part_number and candidate.part_number:
-                target.part_number = candidate.part_number
-            if not target.drawing_number and candidate.drawing_number:
-                target.drawing_number = candidate.drawing_number
-            if not target.drawing_position and candidate.drawing_position:
-                target.drawing_position = candidate.drawing_position
-            
-            merged_spec = target.specification or candidate.specification
-            target.specification = _format_specification_headers(merged_spec)
-
-            if not target.spare_assembly and candidate.spare_assembly:
-                target.spare_assembly = candidate.spare_assembly
-            if not target.assembly_description and candidate.assembly_description:
-                target.assembly_description = candidate.assembly_description
-            if not target.spare_maker and candidate.spare_maker:
-                target.spare_maker = candidate.spare_maker
-            if not target.spare_model and candidate.spare_model:
-                target.spare_model = candidate.spare_model
-            if not target.spare_assembly and candidate.spare_assembly:
-                target.spare_assembly = candidate.spare_assembly
-            if not target.assembly_description and candidate.assembly_description:
-                target.assembly_description = candidate.assembly_description
-            if not target.spare_maker and candidate.spare_maker:
-                target.spare_maker = candidate.spare_maker
-            if not target.spare_model and candidate.spare_model:
-                target.spare_model = candidate.spare_model
-
-            target.is_critical = bool(target.is_critical or candidate.is_critical)
-            
-            # Confidence score
-            score_t = int(getattr(target, "confidence_score", 0) or 0)
-            score_c = int(getattr(candidate, "confidence_score", 0) or 0)
-            if score_c > score_t:
-                target.confidence_score = score_c
-
-            # Mark candidate duplicate as deleted
-            candidate.is_deleted = True
-            db.add(candidate)
-            db.add(target)
-            merged_count += 1
-
-    return merged_count
-
-# ---------------------------------------------------------------------------
-# Core extraction function
-# ---------------------------------------------------------------------------
-
-
-async def extract_entities(
-    text_chunk: str,
-    extraction_type: str,
-    filename: str,
-    custom_prompt: str | None = None,
-    context_note: str | None = None,
-) -> list[dict]:
-    """
-    Call the configured AI providers to extract structured entities from a text chunk.
-
-    Args:
-        text_chunk: The manual text to process.
-        extraction_type: One of "component", "job", "spare".
-        filename: Source filename (used for logging).
-        custom_prompt: Optional override for the system prompt.
-
-    Returns:
-        List of dicts parsed from Claude's JSON response, or [] on error.
-    """
-    global _claude_vision_billing_failed
-    prompt_config = DEFAULT_PROMPTS.get(extraction_type, DEFAULT_PROMPTS["component"])
-    system_prompt = custom_prompt or prompt_config["system"]
-    user_message = prompt_config["user_template"].format(text=text_chunk, filename=filename)
-    if context_note:
-        user_message = f"{user_message}\n\nAdditional extraction context:\n{context_note}"
-    providers: list[tuple[str, Any]] = [
-        ("claude", _extract_with_claude),
-        ("openai", _extract_with_openai),
-        ("gemini", _extract_with_gemini),
-    ]
-    last_error: Exception | None = None
-
-    for provider_name, provider in providers:
-        if provider_name == "claude" and is_claude_text_billing_tripped():
-            continue
-        try:
-            records = await provider(
-                system_prompt=system_prompt,
-                user_message=user_message,
-                filename=filename,
-                extraction_type=extraction_type,
-            )
-            logger.info(
-                "extract_entities: provider=%s %s/%s records=%d",
-                provider_name,
-                filename,
-                extraction_type,
-                len(records),
-            )
-            return records
-        except json.JSONDecodeError as exc:
-            last_error = exc
-            logger.warning(
-                "extract_entities: provider=%s JSON parse error for %s/%s: %s",
-                provider_name,
-                filename,
-                extraction_type,
-                exc,
-            )
-        except Exception as exc:
-            last_error = exc
-            err_str = str(exc)
-            if provider_name == "claude" and (
-                "credit balance" in err_str.lower() or ("400" in err_str and "credit" in err_str.lower())
-            ):
-                trip_claude_text_billing(cooldown_seconds=60.0)
-                logger.warning(
-                    "extract_entities: Claude billing error — cooling down Claude for 60s"
-                )
-            else:
-                logger.warning(
-                    "extract_entities: provider=%s failed for %s/%s: %s",
-                    provider_name,
-                    filename,
-                    extraction_type,
-                    _redact_error_message(exc),
-                )
-
-    if last_error is not None:
-        message = _redact_error_message(last_error)
-        logger.error(
-            "extract_entities: all providers failed for %s/%s: %s",
-            filename,
-            extraction_type,
-            message,
-        )
-        raise ExtractionProvidersFailed(
-            f"All extraction providers failed for {filename}/{extraction_type}: {message}"
-        )
-    return []
-
-
-def _merge_context_notes(*notes: str | None) -> str | None:
-    merged = [note.strip() for note in notes if note and note.strip()]
-    if not merged:
-        return None
-    return "\n\n".join(merged)
-
-
-# ---------------------------------------------------------------------------
-# Post-processing helpers
-# ---------------------------------------------------------------------------
-
-
-async def _overwrite_component_manual_refs(
-    *,
-    db: Any,
-    manual: Any,
-    vessel_id: uuid.UUID,
-    tenant_id: uuid.UUID,
-) -> int:
-    from sqlalchemy import select
-    from app.models.component import Component, QCStatus
-
-    result = await db.execute(
-        select(Component).where(
-            Component.vessel_id == vessel_id,
-            Component.tenant_id == tenant_id,
-            Component.is_deleted == False,
-            Component.qc_status != QCStatus.rejected,
-        )
-    )
-    components = result.scalars().all()
-
-    updated = 0
-    job_pages = getattr(manual, "pages_with_jobs", None) or None
-    spare_pages = getattr(manual, "pages_with_spares", None) or None
-    pdf_ref = manual.original_filename
-    for comp in components:
-        if not _component_has_manual_reference(comp, manual):
-            continue
-        changed = False
-        if job_pages and comp.job_pages != job_pages and ";" not in (comp.job_pages or ""):
-            comp.job_pages = job_pages
-            changed = True
-        if spare_pages and comp.spare_pages != spare_pages and ";" not in (comp.spare_pages or ""):
-            comp.spare_pages = spare_pages
-            changed = True
-        merged_pdf_ref = _merge_reference_values(comp.pdf_reference, pdf_ref)
-        if comp.pdf_reference != merged_pdf_ref:
-            comp.pdf_reference = merged_pdf_ref
-            changed = True
-        if changed:
-            db.add(comp)
-            updated += 1
-    return updated
-
-
-async def _call_llm_json(system_prompt: str, user_message: str) -> dict:
-    # 1. Claude
-    if settings.ANTHROPIC_API_KEY:
-        try:
-            import httpx
-            headers = {
-                "x-api-key": settings.ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            }
-            model_id = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
-            payload = {
-                "model": model_id,
-                "max_tokens": 4000,
-                "system": system_prompt,
-                "messages": [{"role": "user", "content": user_message}],
-            }
-            async with httpx.AsyncClient(timeout=120) as client:
-                res = await client.post("https://api.anthropic.com/v1/messages", json=payload, headers=headers)
-                res.raise_for_status()
-                raw = res.json()["content"][0]["text"]
-                clean = _strip_code_fences(raw).strip()
-                return json.loads(clean)
-        except Exception as e:
-            logger.warning("LLM mapping: Claude failed: %s", e)
-
-    # 2. OpenAI
-    if settings.OPENAI_API_KEY:
-        try:
-            import httpx
-            headers = {
-                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-                "content-type": "application/json",
-            }
-            payload = {
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                "response_format": {"type": "json_object"}
-            }
-            async with httpx.AsyncClient(timeout=120) as client:
-                res = await client.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers)
-                res.raise_for_status()
-                raw = res.json()["choices"][0]["message"]["content"]
-                clean = _strip_code_fences(raw).strip()
-                return json.loads(clean)
-        except Exception as e:
-            logger.warning("LLM mapping: OpenAI failed: %s", e)
-
-    # 3. Gemini
-    if settings.GEMINI_API_KEY:
-        try:
-            import httpx
-            prompt = f"{system_prompt}\n\n{user_message}"
-            url = (
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-2.0-flash-lite:generateContent?key={settings.GEMINI_API_KEY}"
-            )
-            payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            async with httpx.AsyncClient(timeout=120) as client:
-                res = await client.post(url, json=payload)
-                res.raise_for_status()
-                raw = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-                clean = _strip_code_fences(raw).strip()
-                return json.loads(clean)
-        except Exception as e:
-            logger.warning("LLM mapping: Gemini failed: %s", e)
-
-    return {}
-
-
-async def _ai_link_records_to_components(
-    records: list[Any],
-    components: list[Any],
-    relation: str,
-    filename: str
-) -> dict[str, str | None]:
-    """Uses LLM to match jobs or spares to the correct component from a list.
-    
-    Returns a dict mapping record ID string to component ID string (or None).
-    """
-    if not records or not components:
-        return {}
-        
-    comp_list = []
-    for c in components:
-        comp_list.append({
-            "id": str(c.id),
-            "component_name": c.component_name,
-            "maker": c.maker,
-            "model": c.model,
-            "main_machinery": c.main_machinery,
-            "page_reference": c.page_reference or c.source_page_number
-        })
-        
-    mapping = {}
-    batch_size = 30
-    for i in range(0, len(records), batch_size):
-        batch = records[i:i+batch_size]
-        record_list = []
-        for r in batch:
-            if relation == "job":
-                record_list.append({
-                    "id": str(r.id),
-                    "job_name": r.job_name,
-                    "job_code": r.job_code,
-                    "job_description": r.job_description[:400] if r.job_description else "",
-                    "page_reference": r.page_reference or r.source_page_number
-                })
-            else:  # spare
-                record_list.append({
-                    "id": str(r.id),
-                    "part_name": r.part_name,
-                    "part_number": r.part_number,
-                    "spare_model": r.spare_model,
-                    "specification": r.specification,
-                    "drawing_number": r.drawing_number,
-                    "page_reference": r.page_reference or r.source_page_number
-                })
-                
-        system_prompt = (
-            "You are an expert maritime PMS data matching specialist.\n"
-            "Your task is to match each record (job or spare part) to the correct machinery component from the components list.\n\n"
-            "Match based on:\n"
-            "1. Maker & Model matching: Look closely at the maker and model name of the component, and check if the record references it.\n"
-            "2. Semantic connection: Look at the name of the component (e.g. 'Discharge Pump', 'Aeration Blower') and check if the record is associated with it.\n"
-            "3. Page proximity: Records are usually described on page numbers close to the component's page number.\n\n"
-            "Return ONLY a JSON object mapping each record's id (as key) to the correct component's id (as value), or null if the record cannot be mapped to any listed component. Example:\n"
-            "{\n"
-            "  \"record_id_1\": \"component_id_A\",\n"
-            "  \"record_id_2\": null\n"
-            "}\n"
-            "Return ONLY this JSON object. No explanation, no prose."
-        )
-        user_message = (
-            f"Document: {filename}\n\n"
-            f"Components:\n{json.dumps(comp_list, indent=2)}\n\n"
-            f"Records to match:\n{json.dumps(record_list, indent=2)}"
-        )
-        
-        batch_mapping = await _call_llm_json(system_prompt, user_message)
-        if batch_mapping and isinstance(batch_mapping, dict):
-            for k, v in batch_mapping.items():
-                mapping[k] = v
-                
-    return mapping
-
-
-async def _link_records_to_components(
-    *,
-    db: Any,
-    manual: Any,
-    vessel_id: uuid.UUID,
-    tenant_id: uuid.UUID,
-) -> tuple[int, int]:
-    from sqlalchemy import select
-    from app.models.component import Component, QCStatus
-    from app.models.job import Job
-    from app.models.spare import Spare, ExtractionMethod as _EM
-
-    comp_result = await db.execute(
-        select(Component).where(
-            Component.vessel_id == vessel_id,
-            Component.tenant_id == tenant_id,
-            Component.is_deleted == False,
-            Component.qc_status != QCStatus.rejected,
-        )
-    )
-    all_components = comp_result.scalars().all()
-    same_manual_components = [comp for comp in all_components if _component_has_manual_reference(comp, manual)]
-    fallback_components = same_manual_components or all_components
-
-    def pick_component(search_text: str, page_reference: int | None, relation: str):
-        if not fallback_components:
-            return None
-        if len(same_manual_components) == 1:
-            return same_manual_components[0]
-        ranked = sorted(
-            (
-                (
-                    _link_score(
-                        search_text=search_text,
-                        component=component,
-                        page_reference=page_reference,
-                        relation=relation,
-                        manual=manual,
-                    ),
-                    component,
-                )
-                for component in fallback_components
-            ),
-            key=lambda item: item[0],
-            reverse=True,
-        )
-        best_score, best_component = ranked[0]
-        return best_component if best_score >= 0.28 else None
-
-    # Fetch jobs
-    jobs_result = await db.execute(
-        select(Job).where(
-            Job.vessel_id == vessel_id,
-            Job.tenant_id == tenant_id,
-            Job.is_deleted == False,
-            Job.source_manual_id == manual.id,
-        )
-    )
-    jobs = jobs_result.scalars().all()
-
-    # Determine mapping path for jobs
-    job_mapping = {}
-    if len(fallback_components) == 1:
-        single_comp_id = str(fallback_components[0].id)
-        job_mapping = {str(job.id): single_comp_id for job in jobs}
-    elif len(fallback_components) > 1 and jobs:
-        job_mapping = await _ai_link_records_to_components(
-            records=jobs,
-            components=fallback_components,
-            relation="job",
-            filename=manual.original_filename
-        )
-
-    # Apply jobs mapping
-    jobs_linked = 0
-    comp_dict = {str(c.id): c for c in fallback_components}
-    for job in jobs:
-        comp_id = job_mapping.get(str(job.id))
-        match = comp_dict.get(comp_id) if comp_id else None
-        
-        # Fallback to Jaccard mapping
-        if not match:
-            match = pick_component(
-                " ".join(filter(None, [job.job_name, job.job_code, job.job_description])),
-                job.page_reference,
-                "job",
-            )
-            
-        if match:
-            changed = False
-            if job.component_id != match.id:
-                job.component_id = match.id
-                changed = True
-            if job.is_unmapped:
-                job.is_unmapped = False
-                changed = True
-            if job.pdf_reference != manual.original_filename:
-                job.pdf_reference = manual.original_filename
-                changed = True
-            source_ref = (
-                f"{manual.original_filename} (p.{job.page_reference})"
-                if job.page_reference
-                else manual.original_filename
-            )
-            if job.source_reference != source_ref:
-                job.source_reference = source_ref
-                changed = True
-            canonical_name = await build_canonical_job_name(
-                db,
-                component_name=getattr(match, "component_name", None),
-                job_names=[job.job_name],
-                job_descriptions=[job.job_description],
-                tenant_id=job.tenant_id,
-                frequency=job.frequency,
-                frequency_type=job.frequency_type,
-                job_id=job.id,
-                component_id=match.id,
-            )
-            if canonical_name and job.job_name != canonical_name:
-                from sqlalchemy import text
-                await db.execute(text("""
-                    INSERT INTO job_name_backup (job_id, original_job_name)
-                    VALUES (:job_id, :original_job_name)
-                    ON CONFLICT (job_id) DO NOTHING;
-                """), {"job_id": job.id, "original_job_name": job.job_name})
-                job.job_name = canonical_name
-                changed = True
-            description_with_refs = append_source_references_to_description(job.job_description, [source_ref])
-            if job.job_description != description_with_refs:
-                job.job_description = description_with_refs
-                changed = True
-            if changed:
-                db.add(job)
-                jobs_linked += 1
-
-    # Fetch spares
-    spares_result = await db.execute(
-        select(Spare).where(
-            Spare.vessel_id == vessel_id,
-            Spare.tenant_id == tenant_id,
-            Spare.is_deleted == False,
-            Spare.source_manual_id == manual.id,
-        )
-    )
-    spares = spares_result.scalars().all()
-
-    # Apply spares mapping (reverted to original text-overlap logic to preserve accuracy)
-    spares_linked = 0
-    for spare in spares:
-        match = pick_component(
-            " ".join(
-                filter(
-                    None,
-                    [
-                        spare.part_name,
-                        spare.part_number,
-                        spare.spare_model,
-                        spare.specification,
-                        spare.drawing_number,
-                    ],
-                )
-            ),
-            spare.page_reference,
-            "spare",
-        )
-            
-        if match:
-            changed = False
-            if spare.component_id != match.id:
-                spare.component_id = match.id
-                changed = True
-            if spare.machinery_maker != match.maker:
-                spare.machinery_maker = match.maker
-                changed = True
-            if spare.machinery_model != match.model:
-                spare.machinery_model = match.model
-                changed = True
-            if changed:
-                db.add(spare)
-                spares_linked += 1
-
-    return jobs_linked, spares_linked
-
-
-# ---------------------------------------------------------------------------
-# Full-manual auto-extraction (background task)
-# ---------------------------------------------------------------------------
-
-
-async def _process_and_save_page_records(
-    db,
-    page_records: list[dict],
-    etype: str,
-    manual,
-    all_manual_ids: list[uuid.UUID],
-    filename: str,
-    vessel_id: uuid.UUID,
-    tenant_id: uuid.UUID,
-    vessel_shipyard: Optional[str],
-    page_no: Optional[int],
-    extracted_component_context: list[dict],
-    existing_manual_component_context: list[dict],
-) -> None:
-    if not page_records:
-        return
-
-    from app.models.component import Component, QCStatus
-    from app.models.job import FrequencyType, Job
-    from app.models.spare import Spare, ExtractionMethod as _EM
-    from sqlalchemy import update
-
-    # Deduplicate new records for this page/chunk context
-    records = _dedupe_records(page_records, etype)
-    if not records:
-        return
-
-    # Determine page references to clear
-    pages_to_clear = set()
-    if page_no is not None:
-        pages_to_clear.add(page_no)
-    else:
-        for record in records:
-            source_page = record.get("source_page_number")
-            if source_page is not None:
-                try:
-                    pages_to_clear.add(int(source_page))
-                except (TypeError, ValueError):
-                    pass
-
-    # Clean replace existing auto-extracted items specifically on these pages
-    if pages_to_clear:
-        if etype == "component":
-            comp_delete_query = (
-                update(Component)
-                .where(
-                    Component.source_manual_id.in_(all_manual_ids),
-                    Component.is_deleted == False,
-                    Component.qc_status != QCStatus.accepted,
-                    Component.page_reference.in_(pages_to_clear),
-                )
-                .values(is_deleted=True)
-            )
-            await db.execute(comp_delete_query)
-        elif etype == "job":
-            job_delete_query = (
-                update(Job)
-                .where(
-                    Job.source_manual_id.in_(all_manual_ids),
-                    Job.is_deleted == False,
-                    Job.qc_status != QCStatus.accepted,
-                    Job.page_reference.in_(pages_to_clear),
-                )
-                .values(is_deleted=True)
-            )
-            await db.execute(job_delete_query)
-        elif etype == "spare":
-            spare_delete_query = (
-                update(Spare)
-                .where(
-                    Spare.source_manual_id.in_(all_manual_ids),
-                    Spare.is_deleted == False,
-                    Spare.qc_status != QCStatus.accepted,
-                    Spare.page_reference.in_(pages_to_clear),
-                )
-                .values(is_deleted=True)
-            )
-            await db.execute(spare_delete_query)
-
-    # Build DB objects
-    to_add = []
-    for record in records:
-        confidence = int(record.get("confidence_score", 70))
-        raw_source_page = record.get("source_page_number")
-        if raw_source_page is None and page_no is not None:
-            raw_source_page = page_no
-        safe_page = _safe_int_page(raw_source_page)
-
-        if etype == "component":
-            _maker = str(record.get("maker")).strip()[:200] if record.get("maker") else None
-            _model = str(record.get("model")).strip()[:200] if record.get("model") else None
-            if not _maker and vessel_shipyard:
-                _maker = vessel_shipyard[:200]
-            if not _model and _maker:
-                _model = "N/A"
-            comp = Component(
-                tenant_id=tenant_id,
-                vessel_id=vessel_id,
-                source_manual_id=manual.id,
-                confidence_score=confidence,
-                qc_status=QCStatus.pending,
-                is_unmapped=True,
-                group1=str(record.get("group1") or "Uncategorised")[:100],
-                group2=str(record.get("group2") or "Uncategorised")[:100],
-                main_machinery=str(record.get("main_machinery") or "Unknown")[:200],
-                component_name=str(record.get("component_name") or "Unknown Component")[:500],
-                maker=_maker,
-                model=_model,
-                serial_number=str(record.get("serial_number"))[:100] if record.get("serial_number") else None,
-                specification=record.get("specification") or None,
-                location=str(record.get("location"))[:200] if record.get("location") else None,
-                machinery_particulars=str(record.get("machinery_particulars"))[:200] if record.get("machinery_particulars") else None,
-                is_critical=bool(record.get("is_critical", False)),
-                job_pages=record.get("job_pages") or getattr(manual, "pages_with_jobs", None) or None,
-                spare_pages=record.get("spare_pages") or getattr(manual, "pages_with_spares", None) or None,
-                page_reference=safe_page,
-                pdf_reference=filename,
-            )
-            to_add.append(comp)
-            extracted_component_context.append(
-                {
-                    "component_name": comp.component_name,
-                    "main_machinery": comp.main_machinery,
-                    "maker": comp.maker,
-                    "model": comp.model,
-                    "source_page_number": comp.page_reference,
-                }
-            )
-
-        elif etype == "job":
-            raw_freq_type = record.get("frequency_type")
-            raw_freq = record.get("frequency")
-            freq_val, freq_type_str = parse_job_frequency(raw_freq, raw_freq_type)
-            freq_type: Optional[FrequencyType] = None
-            if freq_type_str:
-                try:
-                    freq_type = FrequencyType(freq_type_str)
-                except ValueError:
-                    freq_type = None
-
-            job = Job(
-                tenant_id=tenant_id,
-                vessel_id=vessel_id,
-                source_manual_id=manual.id,
-                confidence_score=confidence,
-                qc_status=QCStatus.pending,
-                job_name=str(record.get("job_name") or "Unknown Job")[:500],
-                job_code=str(record.get("job_code"))[:100] if record.get("job_code") else None,
-                job_description=record.get("job_description") or None,
-                safety_precaution=record.get("safety_precaution") or None,
-                frequency=freq_val,
-                frequency_type=freq_type,
-                is_critical=bool(record.get("is_critical", False)),
-                page_reference=safe_page,
-                pdf_reference=filename,
-                source_reference=(
-                    f"{filename} (p.{safe_page})"
-                    if safe_page is not None
-                    else filename
-                ),
-            )
-            job.job_description = append_source_references_to_description(
-                job.job_description,
-                split_reference_entries(
-                    pdf_reference=job.pdf_reference,
-                    page_reference=job.page_reference,
-                    source_reference=job.source_reference,
-                ),
-            )
-            to_add.append(job)
-
-        elif etype == "spare":
-            _assembly = record.get("spare_assembly") or None
-            if not _assembly:
-                candidates = extracted_component_context or existing_manual_component_context
-                if candidates:
-                    _assembly = candidates[0].get("component_name")
-                else:
-                    base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
-                    _assembly = base_name.replace("-", " ").replace("_", " ").title()
-
-            _asm = to_proper_case(record.get("spare_assembly") or _assembly)
-            if _asm:
-                _asm = _asm[:300]
-            _asm_desc = to_proper_case(record.get("assembly_description") or _asm)
-            _maker = str(record.get("spare_maker")).strip().upper()[:200] if record.get("spare_maker") else None
-            _model = str(record.get("spare_model")).strip().upper()[:200] if record.get("spare_model") else None
-            if not _model and getattr(manual, "target_model", None):
-                _model = str(manual.target_model).strip().upper()[:200]
-            _dwg = str(record.get("drawing_number")).strip().upper()[:200] if record.get("drawing_number") else None
-            if is_leaked_filename_or_doc_ref(_dwg, filename):
-                _dwg = None
-            _raw_pnum = record.get("part_number")
-            if is_leaked_filename_or_doc_ref(_raw_pnum, filename):
-                _pnum = None
-            else:
-                _pnum = str(_raw_pnum).strip()[:200] if _raw_pnum else None
-            _raw_pname = record.get("part_name")
-            _raw_spec = record.get("specification")
-            _clean_pname, _clean_spec = separate_spare_name_and_spec(_raw_pname, _raw_spec)
-            _pname = to_proper_case(_clean_pname) or "Unknown Part"
-            if _pname:
-                _pname = _pname[:500]
-            _dwg_pos = str(record.get("drawing_position")).strip()[:100] if record.get("drawing_position") else None
-            if is_leaked_filename_or_doc_ref(_dwg_pos, filename):
-                _dwg_pos = None
-
-            _pnum, _dwg_pos, _clean_spec = normalize_spare_part_number_and_position(
-                _pnum, _dwg_pos, _dwg, _clean_spec
-            )
-
-            spare = Spare(
-                tenant_id=tenant_id,
-                vessel_id=vessel_id,
-                source_manual_id=manual.id,
-                confidence_score=confidence,
-                qc_status=QCStatus.pending,
-                part_name=_pname,
-                part_number=_pnum,
-                drawing_number=_dwg,
-                drawing_position=_dwg_pos,
-                specification=_format_specification_headers(_clean_spec) or (_clean_spec or None),
-                spare_assembly=_asm,
-                assembly_description=_asm_desc,
-                spare_maker=_maker,
-                spare_model=_model,
-                page_reference=safe_page,
-            )
-            to_add.append(spare)
-
-    for obj in to_add:
-        db.add(obj)
-    await db.commit()
-
-
-async def auto_extract_from_manual(
-    manual_id_str: str,
-    entity_types: Optional[list[str]] = None,
-    page_numbers: Optional[list[int]] = None,
-    target_model: Optional[str] = None,
-    debug_log: Optional[list[str]] = None,
-    locked_entity_pages: Optional[dict[str, list[int]]] = None,
-) -> None:
-    """
-    Background task: extract Components, Jobs, and Spares from a Manual.
-
-    Opens its own DB session so it can run as a FastAPI BackgroundTask or
-    directly from a Celery worker.
-    """
-    from app.core.database import AsyncSessionLocal
-    from app.models.component import Component, QCStatus
-    from app.models.ingestion import Manual, ManualStatus
-    from app.models.job import FrequencyType, Job
-    from app.models.spare import Spare, ExtractionMethod as _EM
-    from app.services.feedback_learning import build_learning_context
-    from sqlalchemy import select, update
-
-    manual_id = uuid.UUID(manual_id_str)
-    try:
-        from app.services.extraction_counter import record_manual_extraction_run
-        record_manual_extraction_run(manual_id_str)
-    except Exception as exc:
-        logger.warning("record_manual_extraction_run error: %s", exc)
-
-    async with AsyncSessionLocal() as db:
-        try:
-            # ------------------------------------------------------------------
-            # Load the manual (vessel_id and tenant_id come from the record itself)
-            # ------------------------------------------------------------------
-            from sqlalchemy.orm import undefer
-
-            result = await db.execute(
-                select(Manual)
-                .options(undefer(Manual.extracted_text))
-                .where(
-                    Manual.id == manual_id,
-                    Manual.is_deleted == False,
-                )
-            )
-            manual: Optional[Manual] = result.scalar_one_or_none()
-            reset_claude_billing_breakers()
-            if debug_log is not None:
-                debug_log.append(f"Loaded manual: {getattr(manual, 'original_filename', None)}, status={getattr(manual, 'status', None)}, spares_ref={getattr(manual, 'pages_with_spares', None)}")
-            if manual is None:
-                logger.warning("auto_extract_from_manual: manual %s not found", manual_id_str)
-                return
-
-            if target_model and manual.target_model != target_model.strip():
-                manual.target_model = target_model.strip()
-                await db.commit()
-
-            vessel_id = manual.vessel_id
-            tenant_id = manual.tenant_id
-            vessel_id_str = str(vessel_id)
-
-            # Load vessel for shipyard fallback
-            from app.models.vessel import VesselProject
-            vessel_result = await db.execute(
-                select(VesselProject).where(
-                    VesselProject.id == vessel_id,
-                    VesselProject.is_deleted == False,
-                )
-            )
-            vessel_obj = vessel_result.scalar_one_or_none()
-            vessel_shipyard = getattr(vessel_obj, "shipyard", None) or None
-
-            category: Optional[str] = manual.category
-            norm_cat = (category or "").strip().lower()
-            # Skip only if truly unknown AND no page signals from classifier
-            pages_with_any = (
-                getattr(manual, "pages_with_components", None)
-                or getattr(manual, "pages_with_jobs", None)
-                or getattr(manual, "pages_with_spares", None)
-            )
-            if norm_cat in ("", "unknown/unclassifiable", "unknown") and not pages_with_any:
-                logger.info(
-                    "auto_extract_from_manual: skipping manual %s — category=%r, no page signals",
-                    manual_id_str,
-                    category,
-                )
-                return
-            # If unknown but has page signals, treat as Instruction Manual for extraction
-            if norm_cat in ("", "unknown/unclassifiable", "unknown"):
-                category = "Instruction Manual"
-                logger.info(
-                    "auto_extract_from_manual: treating unknown manual %s as Instruction Manual (has page signals)",
-                    manual_id_str,
-                )
-
-            entity_pages = {}
-            for entity_type in ("component", "job", "spare"):
-                if locked_entity_pages and entity_type in locked_entity_pages and locked_entity_pages[entity_type]:
-                    pages = locked_entity_pages[entity_type]
-                else:
-                    pages = _selected_manual_pages(manual, entity_type)
-                if not pages and page_numbers and (entity_types is None or entity_type in entity_types):
-                    pages = page_numbers
-                if page_numbers is not None and pages:
-                    pages = [p for p in pages if p in page_numbers]
-                if not pages and page_numbers and (entity_types is None or entity_type in entity_types):
-                    pages = page_numbers
-                entity_pages[entity_type] = pages
-
-            if entity_types is not None:
-                entity_pages = {
-                    k: v for k, v in entity_pages.items() if k in entity_types
-                }
-            selected_extraction_types = [
-                entity_type for entity_type, pages in entity_pages.items() if pages
-            ]
-            remaining_extraction_types: list[str] | None = None
-
-            try:
-                from app.services.manual_match_reuse import (
-                    find_best_manual_match_for_source,
-                    reuse_records_from_matched_manual,
-                )
-
-                best_match = await find_best_manual_match_for_source(
-                    db,
-                    tenant_id=tenant_id,
-                    source_manual_id=manual.id,
-                )
-                if best_match and str(best_match.get("match_confidence") or "").lower() in {"exact", "high", "medium"}:
-                    matched_manual_result = await db.execute(
-                        select(Manual).where(
-                            Manual.id == uuid.UUID(str(best_match["matched_manual_id"])),
-                            Manual.is_deleted == False,
-                        )
-                    )
-                    matched_manual = matched_manual_result.scalar_one_or_none()
-                    if matched_manual is not None:
-                        payload = await reuse_records_from_matched_manual(
-                            db,
-                            tenant_id=tenant_id,
-                            vessel_id=vessel_id,
-                            source_manual=manual,
-                            matched_manual=matched_manual,
-                            match_confidence=str(best_match.get("match_confidence") or ""),
-                            match_score=best_match.get("match_score"),
-                            auto_merge_components=True,
-                        )
-                        copied_by_type = {
-                            "component": int(payload.get("copied_components", 0) or 0),
-                            "job": int(payload.get("copied_jobs", 0) or 0),
-                            "spare": int(payload.get("copied_spares", 0) or 0),
-                        }
-                        remaining_extraction_types = [
-                            entity_type
-                            for entity_type in selected_extraction_types
-                            if copied_by_type.get(entity_type, 0) <= 0
-                        ]
-                        if remaining_extraction_types:
-                            logger.warning(
-                                "auto_extract_from_manual: partial manual-match reuse for %s; copied components=%d jobs=%d spares=%d, extracting remaining=%s",
-                                manual_id_str,
-                                copied_by_type["component"],
-                                copied_by_type["job"],
-                                copied_by_type["spare"],
-                                ",".join(remaining_extraction_types),
-                            )
-                        else:
-                            await db.execute(
-                                update(Manual)
-                                .where(Manual.id == manual_id)
-                                .values(status=ManualStatus.classified)
-                            )
-                            await db.commit()
-                            logger.warning(
-                                "auto_extract_from_manual: reused matched manual for %s exact=%s components=%d jobs=%d spares=%d",
-                                manual_id_str,
-                                payload.get("exact_match"),
-                                payload.get("copied_components", 0),
-                                payload.get("copied_jobs", 0),
-                                payload.get("copied_spares", 0),
-                            )
-                            return
-            except Exception as manual_match_err:
-                logger.warning("auto_extract_from_manual: matched-manual reuse failed: %s", manual_match_err)
-
-            # ------------------------------------------------------------------
-            # Mark as scanning
-            # ------------------------------------------------------------------
-            await db.execute(
-                update(Manual)
-                .where(Manual.id == manual_id)
-                .values(status=ManualStatus.scanning)
-            )
-            await db.commit()
-
-            # ------------------------------------------------------------------
-            # Get text with [PAGE N] markers.
-            # Use stored DB text if it already has markers; otherwise re-extract
-            # from blob storage (handles both old records and blob-stored files).
-            # ------------------------------------------------------------------
-            filename = manual.original_filename
-            set_extraction_state(
-                vessel_id_str,
-                current_manual_name=filename,
-                current_manual_pages_total=100,
-                current_manual_pages_done=0,
-                detailed_status="Initializing manual extraction..."
-            )
-            file_path = manual.blob_storage_key
-            full_text = ""
-            file_bytes: Optional[bytes] = None
-            ext = (manual.file_extension or (manual.original_filename.rsplit(".", 1)[-1] if "." in (manual.original_filename or "") else "")).lower()
-
-            stored_text = getattr(manual, "extracted_text", None) or ""
-            if isinstance(stored_text, str):
-                stored_text = stored_text.replace("\r\n", "\n")
-            is_pdf = (ext == "pdf")
-            if is_pdf:
-                # Skip full text parsing for all PDF manuals as we extract/OCR target pages on-demand
-                full_text = stored_text or ""
-                logger.info("auto_extract_from_manual: skipping full-text scanning phase for PDF manual %s", filename)
-            elif stored_text and "[PAGE " in stored_text:
-                # Already has page markers — use as-is
-                full_text = stored_text
-                logger.info("auto_extract_from_manual: using stored extracted_text for %s", filename)
-            else:
-                # Need to (re-)extract: try blob storage first, then local disk
-                set_extraction_state(
-                    vessel_id_str,
-                    current_manual_name=filename,
-                    detailed_status="Downloading manual from storage..."
-                )
-                # Try blob storage (MinIO / Azure)
-                is_local_path = file_path and (
-                    file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
-                )
-                if file_path and not is_local_path:
-                    try:
-                        from app.services.blob_storage import BlobStorageService
-                        blob_svc = BlobStorageService()
-                        file_bytes = await blob_svc.download_bytes(file_path)
-                        logger.info(
-                            "auto_extract_from_manual: downloaded %d bytes from blob for %s",
-                            len(file_bytes), filename,
-                        )
-                    except Exception as blob_err:
-                        logger.warning(
-                            "auto_extract_from_manual: blob download failed for %s: %s", filename, blob_err
-                        )
-
-                # Fallback to local disk
-                if file_bytes is None and file_path and os.path.exists(file_path):
-                    with open(file_path, "rb") as fh:
-                        file_bytes = fh.read()
-
-                if file_bytes is not None:
-                    if ext == "pdf":
-                        try:
-                            import pdfplumber
-                            import io as _io
-
-                            def _read_pdf_bytes(data: bytes) -> str:
-                                parts: list[str] = []
-                                with pdfplumber.open(_io.BytesIO(data)) as pdf:
-                                    for page_num, page in enumerate(pdf.pages, start=1):
-                                        page_parts: list[str] = []
-                                        text = page.extract_text()
-                                        if text and text.strip():
-                                            page_parts.append(text)
-                                        if page_parts:
-                                            parts.append(f"[PAGE {page_num}]\n" + "\n".join(page_parts))
-                                        else:
-                                            parts.append(f"[PAGE {page_num}]\n")
-                                return "\n\n".join(parts)
-
-                            full_text = await asyncio.to_thread(_read_pdf_bytes, file_bytes)
-                            # Persist the freshly-extracted text so future calls are instant
-                            if full_text:
-                                await db.execute(
-                                    update(Manual)
-                                    .where(Manual.id == manual_id)
-                                    .values(extracted_text=full_text)
-                                )
-                                await db.commit()
-                        except Exception as pdf_err:
-                            logger.warning("pdfplumber failed for %s: %s", filename, pdf_err)
-                    elif ext == "docx":
-                        try:
-                            import docx
-                            import io as _io
-
-                            def _read_docx_bytes(data: bytes) -> str:
-                                doc = docx.Document(_io.BytesIO(data))
-                                return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-
-                            full_text = await asyncio.to_thread(_read_docx_bytes, file_bytes)
-                        except Exception as docx_err:
-                            logger.warning("docx extraction failed for %s: %s", filename, docx_err)
-                elif stored_text:
-                    # Last resort: use stored text even without page markers
-                    full_text = stored_text
-                    logger.warning(
-                        "auto_extract_from_manual: using stored text without [PAGE] markers for %s", filename
-                    )
-
-            if ext != "pdf" and not full_text.strip():
-                logger.warning("auto_extract_from_manual: no text extracted from %s, skipping", filename)
-                return
-
-            # ------------------------------------------------------------------
-            # Determine which entity types to extract strictly from screened page refs.
-            # This keeps extraction cost aligned to what reviewers selected.
-            # ------------------------------------------------------------------
-            extraction_types = [entity_type for entity_type, pages in entity_pages.items() if pages]
-            if remaining_extraction_types is not None:
-                extraction_types = [
-                    entity_type for entity_type in extraction_types if entity_type in remaining_extraction_types
-                ]
-
-            if debug_log is not None:
-                debug_log.append(f"entity_pages={entity_pages}, selected_extraction_types={selected_extraction_types}, extraction_types={extraction_types}")
-            if not extraction_types:
-                if debug_log is not None:
-                    debug_log.append(f"EXIT: no extraction_types for manual {filename}")
-                logger.warning(
-                    "auto_extract_from_manual: skipping manual %s because no screened extraction pages are set",
-                    filename,
-                )
-                await db.execute(
-                    update(Manual)
-                    .where(Manual.id == manual_id)
-                    .values(status=ManualStatus.classified)
-                )
-                await db.commit()
-                return
-
-            # Add preceding pages for context to the OCR/enrichment page list
-            selected_pages_all = sorted({page for pages in entity_pages.values() for page in pages})
-            if page_numbers is not None:
-                selected_pages_all = [p for p in selected_pages_all if p in page_numbers]
-            ocr_pages = set(selected_pages_all)
-            for p in selected_pages_all:
-                if p > 1:
-                    ocr_pages.add(p - 1)
-            selected_pages_all = sorted(list(ocr_pages))
-            if ext == "pdf" and selected_pages_all:
-                set_extraction_state(
-                    vessel_id_str,
-                    current_manual_name=filename,
-                    detailed_status="Pre-processing tables and page layouts..."
-                )
-                if file_bytes is None:
-                    is_local_path = file_path and (
-                        file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
-                    )
-                    if file_path and not is_local_path:
-                        try:
-                            from app.services.blob_storage import BlobStorageService
-
-                            blob_svc = BlobStorageService()
-                            file_bytes = await blob_svc.download_bytes(file_path)
-                        except Exception as blob_err:
-                            logger.warning(
-                                "auto_extract_from_manual: blob download failed during OCR enrich for %s: %s",
-                                filename,
-                                blob_err,
-                            )
-                    if file_bytes is None and file_path and os.path.exists(file_path):
-                        with open(file_path, "rb") as fh:
-                            file_bytes = fh.read()
-
-                # Only run heavy OCR/table pre-enrichment if components or jobs require text extraction.
-                # Spares extraction from PDF uses vision rendering directly and bypasses text chunks.
-                if file_bytes is not None and any(et in ("component", "job") for et in extraction_types):
-                    full_text = await _enrich_pdf_text_for_selected_pages(
-                        file_bytes=file_bytes,
-                        filename=filename,
-                        full_text=full_text,
-                        selected_pages=selected_pages_all,
-                        page_count=getattr(manual, "page_count", 0) or 0,
-                    )
-
-            type_to_text: dict[str, str] = {}
-            for entity_type in extraction_types:
-                selected_pages = entity_pages[entity_type]
-                if page_numbers is not None:
-                    selected_pages = [p for p in selected_pages if p in page_numbers]
-                filtered_text = _filter_text_to_pages(full_text, selected_pages, include_context=True)
-                type_to_text[entity_type] = filtered_text
-                logger.warning(
-                    "auto_extract_from_manual: %s using %s screened pages=%s chars=%d",
-                    filename,
-                    entity_type,
-                    selected_pages,
-                    len(filtered_text),
-                )
-
-            # ------------------------------------------------------------------
-            # Chunk the full text so every page is processed.
-            # Claude claude-sonnet-4-6 has a 200k token context window.
-            # 120,000 chars ≈ 30,000 tokens — leaves ample room for system
-            # prompt and a large JSON response.
-            # ------------------------------------------------------------------
-            CHUNK_SIZE = max(4_000, int(getattr(settings, "EXTRACTION_CHUNK_CHARS", 14_000) or 14_000))
-            OVERLAP = max(0, int(getattr(settings, "EXTRACTION_CHUNK_OVERLAP_CHARS", 500) or 500))
-
-            def _chunk_text(text: str) -> list[str]:
-                page_blocks = [
-                    f"[PAGE {page_no}]\n{page_body}".strip()
-                    for page_no, page_body in _split_marked_pages(text)
-                ]
-                if page_blocks:
-                    chunks: list[str] = []
-                    current_blocks: list[str] = []
-                    current_size = 0
-                    for block in page_blocks:
-                        block_size = len(block) + 2
-                        if current_blocks and current_size + block_size > CHUNK_SIZE:
-                            chunks.append("\n\n".join(current_blocks))
-                            overlap_blocks: list[str] = []
-                            overlap_size = 0
-                            for previous_block in reversed(current_blocks):
-                                previous_size = len(previous_block) + 2
-                                if overlap_blocks and overlap_size + previous_size > OVERLAP:
-                                    break
-                                overlap_blocks.insert(0, previous_block)
-                                overlap_size += previous_size
-                            current_blocks = overlap_blocks.copy()
-                            current_size = sum(len(item) + 2 for item in current_blocks)
-                        current_blocks.append(block)
-                        current_size += block_size
-                    if current_blocks:
-                        chunks.append("\n\n".join(current_blocks))
-                    return chunks
-                if len(text) <= CHUNK_SIZE:
-                    return [text]
-                chunks: list[str] = []
-                start = 0
-                while start < len(text):
-                    end = min(start + CHUNK_SIZE, len(text))
-                    chunks.append(text[start:end])
-                    if end >= len(text):
-                        break
-                    start = max(end - OVERLAP, start + 1)
-                return chunks
-
-            text_chunks = _chunk_text(full_text)
-            logger.info(
-                "auto_extract_from_manual: %s → %d chars, %d chunk(s)",
-                filename, len(full_text), len(text_chunks),
-            )
-
-            # Calculate total sub-steps for page-level progress tracking
-            total_sub_steps = 0
-            type_chunks_count: dict[str, int] = {}
-            for etype in extraction_types:
-                is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
-                source_text = type_to_text.get(etype)
-                if source_text is None:
-                    source_text = full_text
-
-                if not is_pdf_spare and source_text.strip():
-                    chunks = _chunk_text(source_text)
-                    type_chunks_count[etype] = len(chunks)
-                    total_sub_steps += len(chunks)
-                else:
-                    type_chunks_count[etype] = 0
-
-                if ext == "pdf" and file_bytes is not None and (etype in {"component", "spare"} or (etype == "job" and not source_text.strip())):
-                    selected_pages = entity_pages.get(etype) or []
-                    if etype == "spare":
-                        total_sub_steps += len(selected_pages) * 4
-                    else:
-                        total_sub_steps += len(selected_pages)
-
-            # Set initial progress state for this manual
-            set_extraction_state(
-                vessel_id_str,
-                current_manual_name=filename,
-                current_manual_pages_total=total_sub_steps,
-                current_manual_pages_done=0,
-                detailed_status="Initializing extraction loop..."
-            )
-            done_sub_steps = 0
-
-            # ------------------------------------------------------------------
-            # Run extractions across all chunks
-            # ------------------------------------------------------------------
-            components_to_add: list[Component] = []
-            jobs_to_add: list[Job] = []
-            spares_to_add: list[Spare] = []
-            extracted_component_context: list[dict[str, Any]] = []
-            existing_manual_component_context: list[dict[str, Any]] = []
-
-            # Get sibling/duplicate manual IDs for clean replacement and context lookup
-            same_filename_result = await db.execute(
-                select(Manual.id).where(
-                    Manual.vessel_id == vessel_id,
-                    Manual.original_filename == manual.original_filename,
-                    Manual.is_deleted == False,
-                    Manual.id != manual.id,
-                )
-            )
-            sibling_manual_ids = [row[0] for row in same_filename_result.all()]
-            all_manual_ids = [manual.id, *sibling_manual_ids]
-            components_extracted_any = False
-
-            if any(entity_type in {"job", "spare"} for entity_type in extraction_types):
-                existing_component_result = await db.execute(
-                    select(Component).where(
-                        Component.vessel_id == vessel_id,
-                        Component.tenant_id == tenant_id,
-                        Component.source_manual_id.in_(all_manual_ids),
-                        Component.is_deleted == False,
-                    )
-                )
-                existing_manual_component_context = [
-                    {
-                        "component_name": component.component_name,
-                        "main_machinery": component.main_machinery,
-                        "maker": component.maker,
-                        "model": component.model,
-                        "source_page_number": component.page_reference,
-                    }
-                    for component in existing_component_result.scalars().all()
-                ]
-
-                # Fallback: if no direct source_manual_id match, look for components linked via pdf_reference
-                if not existing_manual_component_context and manual.original_filename:
-                    pdf_ref_result = await db.execute(
-                        select(Component).where(
-                            Component.vessel_id == vessel_id,
-                            Component.tenant_id == tenant_id,
-                            Component.pdf_reference.ilike(f"%{manual.original_filename}%"),
-                            Component.is_deleted == False,
-                        )
-                    )
-                    existing_manual_component_context = [
-                        {
-                            "component_name": component.component_name,
-                            "main_machinery": component.main_machinery,
-                            "maker": component.maker,
-                            "model": component.model,
-                            "source_page_number": component.page_reference,
-                        }
-                        for component in pdf_ref_result.scalars().all()
-                    ]
-
-            learning_context_by_type: dict[str, str | None] = {}
-            for entity_type in extraction_types:
-                learning_context_by_type[entity_type] = await build_learning_context(
-                    db,
-                    tenant_id=tenant_id,
-                    entity_type=entity_type,
-                    source_manual_category=manual.category,
-                )
-
-            for etype in extraction_types:
-                # Pre-clear existing auto-extracted records for the target pages being re-extracted
-                target_pages_to_clear = entity_pages.get(etype) or []
-                if page_numbers is not None:
-                    target_pages_to_clear = [p for p in target_pages_to_clear if p in page_numbers] or page_numbers
-
-                if target_pages_to_clear:
-                    if etype == "component":
-                        await db.execute(
-                            update(Component)
-                            .where(
-                                Component.source_manual_id.in_(all_manual_ids),
-                                Component.is_deleted == False,
-                                Component.page_reference.in_(target_pages_to_clear),
-                            )
-                            .values(is_deleted=True)
-                        )
-                    elif etype == "job":
-                        await db.execute(
-                            update(Job)
-                            .where(
-                                Job.source_manual_id.in_(all_manual_ids),
-                                Job.is_deleted == False,
-                                Job.page_reference.in_(target_pages_to_clear),
-                            )
-                            .values(is_deleted=True)
-                        )
-                    elif etype == "spare":
-                        await db.execute(
-                            update(Spare)
-                            .where(
-                                Spare.source_manual_id.in_(all_manual_ids),
-                                Spare.is_deleted == False,
-                                Spare.extraction_method != _EM.manual,
-                                Spare.page_reference.in_(target_pages_to_clear),
-                            )
-                            .values(is_deleted=True)
-                        )
-                    await db.commit()
-
-                all_records: list[dict] = []
-                is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
-                source_text = type_to_text.get(etype)
-                if source_text is None:
-                    source_text = full_text
-
-                if not is_pdf_spare and source_text.strip():
-                    text_chunks = _chunk_text(source_text)
-                    logger.info(
-                        "auto_extract_from_manual: %s -> %s chars=%d chunks=%d",
-                        filename,
-                        etype,
-                        len(source_text),
-                        len(text_chunks),
-                    )
-                    for chunk_idx, chunk in enumerate(text_chunks):
-                        import re as _re
-                        found_pages = _re.findall(r'\[PAGE (\d+)\]', chunk)
-                        if found_pages:
-                            for _fp in found_pages:
-                                record_page_extraction_run(manual_id_str, int(_fp))
-                        if page_numbers is not None and found_pages:
-                            chunk_pages = [int(p) for p in found_pages]
-                            if not any(p in page_numbers for p in chunk_pages):
-                                continue
-                        done_sub_steps += 1
-                        if found_pages:
-                            page_desc = f"pages {', '.join(found_pages)}"
-                        else:
-                            page_desc = f"chunk {chunk_idx + 1}/{len(text_chunks)}"
-                        set_extraction_state(
-                            vessel_id_str,
-                            current_manual_name=filename,
-                            current_manual_pages_done=done_sub_steps,
-                            detailed_status=f"Extracting {etype}s from text ({page_desc})..."
-                        )
-                        chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
-                        context_note = learning_context_by_type.get(etype)
-                        if etype in {"job", "spare"}:
-                            context_components = extracted_component_context or existing_manual_component_context
-                            comp_context_str = _build_component_context_text(context_components, manual)
-                            if comp_context_str:
-                                context_note = _merge_context_notes(
-                                    comp_context_str,
-                                    learning_context_by_type.get(etype),
-                                )
-                    
-                        # Fetch preceding page titles context
-                        chunk_context = context_note
-                        if found_pages:
-                            try:
-                                first_pno = min(int(p) for p in found_pages)
-                                titles_history = _build_preceding_titles_history(full_text, first_pno, max_lookback=10)
-                                if titles_history:
-                                    history_note = f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
-                                    chunk_context = _merge_context_notes(chunk_context, history_note)
-                            except Exception:
-                                pass
-
-                        try:
-                            records = await asyncio.wait_for(
-                                extract_entities(chunk, etype, chunk_label, context_note=chunk_context),
-                                timeout=240.0
-                            )
-                        except asyncio.TimeoutError:
-                            logger.error(
-                                "auto_extract_from_manual: text extraction chunk %s for %s/%s timed out after 4 minutes. Skipping.",
-                                chunk_label, filename, etype
-                            )
-                            records = []
-
-                        if records:
-                            if etype == "component":
-                                components_extracted_any = True
-                            await _process_and_save_page_records(
-                                db=db,
-                                page_records=records,
-                                etype=etype,
-                                manual=manual,
-                                all_manual_ids=all_manual_ids,
-                                filename=filename,
-                                vessel_id=vessel_id,
-                                tenant_id=tenant_id,
-                                vessel_shipyard=vessel_shipyard,
-                                page_no=(int(found_pages[0]) if found_pages else None),
-                                extracted_component_context=extracted_component_context,
-                                existing_manual_component_context=existing_manual_component_context,
-                             )
-                            if found_pages:
-                                for _fp in found_pages:
-                                    record_page_extraction_reason(manual_id_str, int(_fp), None)
-                        else:
-                            if found_pages and not is_pdf_spare:
-                                try:
-                                    zero_reason = await _explain_zero_extraction(
-                                        text_content=chunk,
-                                        filename=filename,
-                                        page_no=int(found_pages[0]),
-                                        extraction_type=etype,
-                                    )
-                                    if zero_reason:
-                                        for _fp in found_pages:
-                                            record_page_extraction_reason(
-                                                manual_id_str,
-                                                int(_fp),
-                                                f"{etype.capitalize()}s: {zero_reason}",
-                                            )
-                                except Exception as z_err:
-                                    logger.warning("Failed to generate zero-extraction reason for text %s p.%s: %s", filename, found_pages, z_err)
-                        all_records.extend(records)
-                else:
-                    if is_pdf_spare:
-                        logger.info("auto_extract_from_manual: skipping text extraction for spares (will use PDF vision extraction)")
-                    elif not source_text.strip():
-                        logger.info("auto_extract_from_manual: source text for %s is empty, skipping text extraction", etype)
-
-                if ext == "pdf" and file_bytes is not None and (etype in {"component", "spare"} or (etype == "job" and (not all_records or not source_text.strip()))):
-                    selected_pages = entity_pages.get(etype) or []
-                    if page_numbers is not None:
-                        selected_pages = [p for p in selected_pages if p in page_numbers]
-                    
-                    context_note = learning_context_by_type.get(etype)
-                    if etype in {"job", "spare"}:
-                        context_components = extracted_component_context or existing_manual_component_context
-                        comp_context_str = _build_component_context_text(context_components, manual)
-                        if comp_context_str:
-                            context_note = _merge_context_notes(
-                                comp_context_str,
-                                learning_context_by_type.get(etype),
-                            )
-                    for page_no in selected_pages:
-                        if debug_log is not None:
-                            debug_log.append(f"Processing {etype} page {page_no}, file_bytes={len(file_bytes) if file_bytes else 0}")
-                        # Render single page image on-demand to keep memory footprint low
-                        image_bytes = await asyncio.to_thread(_render_single_pdf_page_image, file_bytes, page_no, 200)
-                        if debug_log is not None:
-                            debug_log.append(f"Rendered image for page {page_no}: {len(image_bytes) if image_bytes else 'FAILED/NONE'}")
-                        if not image_bytes:
-                            continue
-
-                        # Fetch preceding page text context if available to help identify assembly/header
-                        page_context = ""
-                        prev_page = page_no - 1
-                        if prev_page > 0 and full_text:
-                            prev_page_text = _filter_text_to_pages(full_text, [prev_page], include_context=False)
-                            if prev_page_text.strip():
-                                page_context = f"\nPreceding Page {prev_page} Text (For Header/Assembly/Title Context):\n{prev_page_text}\n"
-
-                        # Add preceding page headers/titles history for deep lookbacks (up to 10 pages earlier)
-                        if full_text:
-                            titles_history = _build_preceding_titles_history(full_text, page_no, max_lookback=10)
-                            if titles_history:
-                                page_context += f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
-
-                        current_context_note = context_note
-                        record_page_extraction_run(manual_id_str, page_no)
-                        if page_context:
-                            current_context_note = _merge_context_notes(current_context_note, page_context)
-
-                        try:
-                            if etype == "spare":
-                                def on_strip_start(strip_idx, total_strips):
-                                    nonlocal done_sub_steps
-                                    if strip_idx > 0:
-                                        done_sub_steps += 1
-                                    set_extraction_state(
-                                        vessel_id_str,
-                                        current_manual_name=filename,
-                                        current_manual_pages_done=done_sub_steps,
-                                        detailed_status=f"Extracting spares from image page {page_no} (strip {strip_idx + 1}/{total_strips})..."
-                                    )
-
-                                done_sub_steps += 1
-                                set_extraction_state(
-                                    vessel_id_str,
-                                    current_manual_name=filename,
-                                    current_manual_pages_done=done_sub_steps,
-                                    detailed_status=f"Extracting spares from image page {page_no} (starting)..."
-                                )
-                                try:
-                                    if debug_log is not None:
-                                        debug_log.append(f"Calling vision for page {page_no}, anthropic_key={bool(settings.ANTHROPIC_API_KEY)}, openai_key={bool(settings.OPENAI_API_KEY)}")
-                                    vision_records = await asyncio.wait_for(
-                                        _extract_spare_parts_from_image_split(
-                                            image_bytes=image_bytes,
-                                            filename=filename,
-                                            page_no=page_no,
-                                            context_note=current_context_note,
-                                            on_strip_start=on_strip_start,
-                                        ),
-                                        timeout=240.0
-                                    )
-                                    if debug_log is not None:
-                                        debug_log.append(f"Vision returned {len(vision_records)} records")
-                                except Exception as v_err:
-                                    if debug_log is not None:
-                                        debug_log.append(f"Vision error on page {page_no}: {type(v_err).__name__}: {v_err}")
-                                    logger.error(
-                                        "auto_extract_from_manual: vision spares page %d for %s error: %s",
-                                        page_no, filename, v_err
-                                    )
-                                    vision_records = []
-                            else:
-                                done_sub_steps += 1
-                                set_extraction_state(
-                                    vessel_id_str,
-                                    current_manual_name=filename,
-                                    current_manual_pages_done=done_sub_steps,
-                                    detailed_status=f"Extracting {etype}s from image page {page_no} of {manual.page_count or 'N/A'}..."
-                                )
-                                try:
-                                    vision_records = await asyncio.wait_for(
-                                        _extract_entities_from_page_image(
-                                            image_bytes=image_bytes,
-                                            filename=filename,
-                                            page_no=page_no,
-                                            extraction_type=etype,
-                                            context_note=current_context_note,
-                                        ),
-                                        timeout=240.0
-                                    )
-                                except asyncio.TimeoutError:
-                                    logger.error(
-                                        "auto_extract_from_manual: vision %s page %d for %s timed out after 4 minutes. Skipping.",
-                                        etype, page_no, filename
-                                    )
-                                    vision_records = []
-                            if debug_log is not None:
-                                debug_log.append(f"Vision returned {len(vision_records)} records for page {page_no}")
-                            if vision_records:
-                                if etype == "component":
-                                    components_extracted_any = True
-                                await _process_and_save_page_records(
-                                    db=db,
-                                    page_records=vision_records,
-                                    etype=etype,
-                                    manual=manual,
-                                    all_manual_ids=all_manual_ids,
-                                    filename=filename,
-                                    vessel_id=vessel_id,
-                                    tenant_id=tenant_id,
-                                    vessel_shipyard=vessel_shipyard,
-                                    page_no=page_no,
-                                    extracted_component_context=extracted_component_context,
-                                    existing_manual_component_context=existing_manual_component_context,
-                                )
-                                record_page_extraction_reason(manual_id_str, page_no, None)
-                            else:
-                                zero_reason = getattr(vision_records, "no_extraction_reason", None)
-                                if not zero_reason:
-                                    try:
-                                        zero_reason = await _explain_zero_extraction(
-                                            image_bytes=image_bytes,
-                                            filename=filename,
-                                            page_no=page_no,
-                                            extraction_type=etype,
-                                        )
-                                    except Exception as z_err:
-                                        logger.warning("Failed to generate zero-extraction reason for %s p.%d: %s", filename, page_no, z_err)
-                                if zero_reason:
-                                    record_page_extraction_reason(
-                                        manual_id_str,
-                                        page_no,
-                                        f"{etype.capitalize()}s: {zero_reason}",
-                                    )
-                            all_records.extend(vision_records)
-
-                            # Keep database connection active during long LLM calls
-                            try:
-                                from sqlalchemy import text
-                                await db.execute(text("SELECT 1"))
-                            except Exception:
-                                pass
-                        except Exception as page_exc:
-                            # Mapping and saving are now handled page-by-page.
-                            logger.error(
-                                "auto_extract_from_manual: failed page %d for %s/%s: %s",
-                                page_no, filename, etype, page_exc
-                            )
-
-            # Restore manual status to classified
-            await db.execute(
-                update(Manual)
-                .where(Manual.id == manual_id)
-                .values(status=ManualStatus.classified)
-            )
-            await db.commit()
-
-            logger.warning("auto_extract_from_manual: completed extraction iterations for %s", filename)
-
-            try:
-                if components_extracted_any:
-                    from app.services.component_matcher import auto_merge_extracted_components
-
-                    merged, unmatched = await auto_merge_extracted_components(
-                        db=db,
-                        vessel_id=vessel_id,
-                        tenant_id=tenant_id,
-                    )
-                    await db.commit()
-                    logger.warning(
-                        "auto_extract_from_manual: component match vessel=%s merged=%d unmatched=%d",
-                        vessel_id_str,
-                        merged,
-                        unmatched,
-                    )
-
-                component_ref_updates = await _overwrite_component_manual_refs(
-                    db=db,
-                    manual=manual,
-                    vessel_id=vessel_id,
-                    tenant_id=tenant_id,
-                )
-                jobs_linked, spares_linked = await _link_records_to_components(
-                    db=db,
-                    manual=manual,
-                    vessel_id=vessel_id,
-                    tenant_id=tenant_id,
-                )
-                merged_jobs = await _consolidate_jobs_for_manual(
-                    db=db,
-                    manual=manual,
-                    vessel_id=vessel_id,
-                    tenant_id=tenant_id,
-                )
-                merged_spares = await _consolidate_spares_for_manual(
-                    db=db,
-                    manual=manual,
-                    vessel_id=vessel_id,
-                    tenant_id=tenant_id,
-                )
-                manual_job_ranks_updated = await backfill_manual_job_ranks(
-                    db=db,
-                    tenant_id=tenant_id,
-                    vessel_id=vessel_id,
-                    manual_id=manual.id,
-                )
-                await db.commit()
-                logger.warning(
-                    "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d merged_jobs=%d merged_spares=%d manual_job_ranks=%s",
-                    vessel_id_str,
-                    component_ref_updates,
-                    jobs_linked,
-                    spares_linked,
-                    merged_jobs,
-                    merged_spares,
-                    manual_job_ranks_updated,
-                )
-            except Exception as link_exc:
-                logger.warning("auto_extract_from_manual: manual sync failed: %s", link_exc)
-
-            # Clear running state and set status to completed ONLY if standalone manual run
-            try:
-                curr_state = get_extraction_state(vessel_id_str)
-                if curr_state.get("total", 0) <= 1:
-                    set_extraction_state(
-                        vessel_id_str,
-                        status="completed",
-                        detailed_status="Extraction completed successfully."
-                    )
-            except Exception as state_exc:
-                logger.error("Failed to update extraction state to completed: %s", state_exc)
-
-        except BaseException as task_exc:
-            logger.error("auto_extract_from_manual failed or cancelled: %s", task_exc, exc_info=True)
-            from app.models.ingestion import ManualStatus, Manual
-            from sqlalchemy import update
-            try:
-                err_msg = "Extraction stopped by user." if isinstance(task_exc, asyncio.CancelledError) else str(task_exc)[:500]
-                await db.execute(
-                    update(Manual)
-                    .where(Manual.id == manual_id)
-                    .values(
-                        status=ManualStatus.failed,
-                        error_message=err_msg
-                    )
-                )
-                await db.commit()
-            except Exception as db_exc:
-                logger.error("Failed to mark manual as failed/cancelled in DB: %s", db_exc)
-
-            # Reset extraction state to idle/failed
-            try:
-                set_extraction_state(
-                    vessel_id_str,
-                    status="failed" if not isinstance(task_exc, asyncio.CancelledError) else "idle",
-                    detailed_status="Extraction stopped by user." if isinstance(task_exc, asyncio.CancelledError) else f"Extraction failed: {task_exc}"
-                )
-            except Exception as state_exc:
-                logger.error("Failed to update extraction state on task error: %s", state_exc)
-
-            raise task_exc
+from __future__ import annotations
+
+import asyncio
+import base64
+import io
+import json
+import logging
+import os
+import re
+import uuid
+from difflib import SequenceMatcher
+from typing import Any, Optional
+
+import anthropic
+
+from app.core.config import settings
+from app.services.extraction_counter import record_manual_extraction_run, record_page_extraction_run
+from app.services.job_ranks import backfill_manual_job_ranks
+from app.services.deduplication import extract_spare_model_heading
+from app.services.job_naming import (
+    append_source_references_to_description,
+    build_canonical_job_name,
+    split_reference_entries,
+    strip_source_reference_footer,
+    summarize_reference_entries,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# In-memory extraction progress tracker
+# Structure: { vessel_id_str: { "total": int, "done": int, "status": str, ... } }
+# ---------------------------------------------------------------------------
+import redis
+
+_extract_state: dict[str, dict] = {}
+_sync_redis: Optional[redis.Redis] = None
+
+def _get_sync_redis() -> Optional[redis.Redis]:
+    global _sync_redis
+    if _sync_redis is None:
+        try:
+            _sync_redis = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True, socket_timeout=2.0)
+        except Exception as exc:
+            logger.warning("Failed to initialize sync Redis client: %s", exc)
+    return _sync_redis
+
+
+_active_extraction_tasks: dict[str, asyncio.Task] = {}
+_extraction_paused_flags: dict[str, bool] = {}
+
+
+def pause_extraction(vessel_id_str: str) -> bool:
+    state = get_extraction_state(vessel_id_str)
+    if state and state.get("status") == "running":
+        _extraction_paused_flags[vessel_id_str] = True
+        set_extraction_state(vessel_id_str, status="paused")
+        return True
+    return False
+
+
+def resume_extraction(vessel_id_str: str) -> bool:
+    state = get_extraction_state(vessel_id_str)
+    if state and state.get("status") == "paused":
+        _extraction_paused_flags[vessel_id_str] = False
+        set_extraction_state(vessel_id_str, status="running")
+        return True
+    return False
+
+
+def stop_extraction(vessel_id_str: str) -> bool:
+    _extraction_paused_flags.pop(vessel_id_str, None)
+    task = _active_extraction_tasks.pop(vessel_id_str, None)
+    if task and not task.done():
+        task.cancel()
+        set_extraction_state(vessel_id_str, status="idle")
+        return True
+    state = get_extraction_state(vessel_id_str)
+    if state:
+        set_extraction_state(vessel_id_str, status="idle")
+        return True
+    return False
+
+
+def set_extraction_state(
+    vessel_id_str: str,
+    *,
+    total: int | None = None,
+    done: int | None = None,
+    status: str | None = None,
+    current_manual_name: str | None = None,
+    current_manual_pages_total: int | None = None,
+    current_manual_pages_done: int | None = None,
+    detailed_status: str | None = None,
+    active_manual_ids: list[str] | None = None,
+) -> None:
+    key = f"extraction_state:{vessel_id_str}"
+    state = {}
+    try:
+        r = _get_sync_redis()
+        if r:
+            val = r.get(key)
+            if val:
+                state = json.loads(val)
+    except Exception as exc:
+        logger.debug("Failed to read extraction state from Redis: %s", exc)
+
+    if not state:
+        state = _extract_state.get(vessel_id_str, {})
+
+    if not state:
+        state = {
+            "total": 0,
+            "done": 0,
+            "status": "idle",
+            "current_manual_name": None,
+            "current_manual_pages_total": 0,
+            "current_manual_pages_done": 0,
+            "detailed_status": None,
+            "active_manual_ids": [],
+        }
+
+    if total is not None:
+        state["total"] = total
+    if done is not None:
+        state["done"] = done
+    if status is not None:
+        state["status"] = status
+        if status in ("completed", "failed", "idle"):
+            state["current_manual_name"] = None
+            state["current_manual_pages_total"] = 0
+            state["current_manual_pages_done"] = 0
+            state["detailed_status"] = None
+            state["active_manual_ids"] = []
+    if current_manual_name is not None:
+        state["current_manual_name"] = current_manual_name
+    if current_manual_pages_total is not None:
+        state["current_manual_pages_total"] = current_manual_pages_total
+    if current_manual_pages_done is not None:
+        state["current_manual_pages_done"] = current_manual_pages_done
+        if state.get("current_manual_pages_total") and current_manual_pages_done > state["current_manual_pages_total"]:
+            state["current_manual_pages_total"] = current_manual_pages_done
+    if detailed_status is not None:
+        state["detailed_status"] = detailed_status
+    if active_manual_ids is not None:
+        state["active_manual_ids"] = list(active_manual_ids)
+
+    # Save to local cache
+    _extract_state[vessel_id_str] = state
+
+    # Save to Redis
+    try:
+        r = _get_sync_redis()
+        if r:
+            r.set(key, json.dumps(state), ex=86400)
+    except Exception as exc:
+        logger.debug("Failed to write extraction state to Redis: %s", exc)
+
+
+def get_extraction_state(vessel_id_str: str) -> dict[str, Any]:
+    key = f"extraction_state:{vessel_id_str}"
+    try:
+        r = _get_sync_redis()
+        if r:
+            val = r.get(key)
+            if val:
+                return json.loads(val)
+    except Exception as exc:
+        logger.debug("Failed to fetch extraction state from Redis: %s", exc)
+
+    return _extract_state.get(
+        vessel_id_str,
+        {
+            "total": 0,
+            "done": 0,
+            "status": "idle",
+            "current_manual_name": None,
+            "current_manual_pages_total": 0,
+            "current_manual_pages_done": 0,
+            "detailed_status": None,
+            "active_manual_ids": [],
+        },
+    )
+
+
+def get_locked_manual_ids(vessel_id_str: str) -> set[str]:
+    """Return set of manual IDs currently locked for extraction in this vessel."""
+    st = get_extraction_state(vessel_id_str)
+    if st.get("status") in ("running", "paused"):
+        return set(str(mid) for mid in (st.get("active_manual_ids") or []))
+    return set()
+
+
+def is_manual_locked_for_extraction(manual_id_str: str, vessel_id_str: str | None = None) -> bool:
+    """Return True if manual is part of an ongoing/paused extraction run."""
+    if vessel_id_str:
+        return manual_id_str in get_locked_manual_ids(vessel_id_str)
+    for vid, st in _extract_state.items():
+        if st.get("status") in ("running", "paused") and manual_id_str in (st.get("active_manual_ids") or []):
+            return True
+    return False
+
+
+class ExtractionProvidersFailed(RuntimeError):
+    """Raised when all configured extraction providers fail for a chunk."""
+
+# ---------------------------------------------------------------------------
+# Default system prompts per extraction type
+# ---------------------------------------------------------------------------
+
+DEFAULT_PROMPTS: dict[str, dict] = {
+    "component": {
+        "system": (
+            "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist "
+            "with deep knowledge of ship machinery, equipment nomenclature, and maintenance systems.\n\n"
+            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n"
+            "It may also contain [CONTEXT PAGE N] markers which provide preceding page content for header and title lookup. Do NOT extract any components or records from pages labeled with [CONTEXT PAGE N]. Use them only to find the maker, model, or group/assembly context for components listed on the adjacent [PAGE N] pages.\n\n"
+            "DOCUMENT TYPES — handle all of these:\n\n"
+            "1. MACHINERY LIST / REGISTER (tabular, one row = one component)\n"
+            "   Columns: No. | Equipment | Maker | Model/Type | Serial No. | Capacity | Location\n"
+            "   → Extract EVERY row. Use table section headers for group1/group2.\n\n"
+            "2. SINGLE-EQUIPMENT SPECIFICATION SHEET (title names ONE main piece of equipment)\n"
+            "   These have a title like 'TAIKO SHIP-CLEAN SEWAGE TREATMENT PLANT SPECIFICATION'\n"
+            "   or an instruction manual cover page showing the equipment name, maker logo, and model table.\n"
+            "   and rows like: Type | SBH-25 | Quantity | 1 set/ship\n"
+            "   EXTRACTION RULES for spec sheets:\n"
+            "   → MAIN EQUIPMENT: extract as one component.\n"
+            "     - maker = company name from the title or footer (e.g. 'TAIKO KIKAI INDUSTRIES CO.,LTD.' → 'Taiko Kikai')\n"
+            "     - model = Type value (e.g. 'SBH-25')\n"
+            "     - specification = key ratings: capacity (m³/h or persons/day), power (kW), pressure (bar), BOD/TSS limits\n"
+            "   → SUB-ASSEMBLIES: for each named sub-system with its own Type number, extract a separate component:\n"
+            "     e.g. 'Discharge Pump' → component_name='Discharge Pump', model='CF-50S', spec='4m³/h×20m, 1.5kW'\n"
+            "          'Aeration Blower' → component_name='Aeration Blower', model='TSS-25', spec='2550/min×0.015MPa, 0.4kW'\n"
+            "   → Do NOT create a component for spec rows that are just ratings (BOD Volume, Capacity, Pressure).\n"
+            "   → Use the specification field for numeric ratings (kW, rpm, capacity, m³, bar, persons/day).\n\n"
+            "3. TANK CAPACITY PLAN (each row is one tank)\n"
+            "   → component_name = tank name, specification = capacity in m³ or tonnes,\n"
+            "     group1 = 'Tanks & Capacities', group2 = tank category.\n\n"
+            "GROUP CLASSIFICATION GUIDE:\n"
+            "  group1: Propulsion | Deck Machinery | Auxiliary Machinery | Hull Equipment | "
+            "Navigation & Communication | Safety Equipment | Cargo Handling | Hotel/Accommodation | Tanks & Capacities\n"
+            "  group2 examples: Main Engine | Auxiliary Engine | Boiler | Steering Gear | "
+            "Sewage Treatment | Fresh Water System | Ballast System | Fire Fighting | HVAC | "
+            "Fuel Oil System | Air System | Lifesaving | Cargo Pump | Anchor/Mooring\n\n"
+            "Return ONLY a valid JSON array. Each record:\n"
+            "{\n"
+            '  "group1": "top-level machinery group",\n'
+            '  "group2": "machinery sub-group",\n'
+            '  "main_machinery": "the main equipment this component belongs to or IS",\n'
+            '  "component_name": "exact name — for main equipment use the full name from the title",\n'
+            '  "maker": "manufacturer name — check document title, header, and Name Plate rows; null if absent",\n'
+            '  "model": "model/type number — check Type rows and document title; null if absent",\n'
+            '  "serial_number": "serial number or null",\n'
+            '  "location": "physical location or sets installed (e.g. Engine Room, 2 sets) — from Location or Installed column; null if absent",\n'
+            '  "machinery_particulars": "machinery particulars document reference or list number — from MP No. or similar column; null if absent",\n'
+            '  "specification": "key ratings: power (kW), capacity (m³/h), pressure (bar), rpm, etc. — be specific; null if absent",\n'
+            '  "is_critical": true if propulsion/steering/power generation/fire/safety/sewage treatment equipment,\n'
+            '  "job_pages": "page range in THIS document containing maintenance jobs/schedules for this component '
+            '(e.g. \'45-67\'). Scan for sections titled Maintenance, Service Schedule, Inspection Intervals, '
+            'Periodic Maintenance. If the whole document is a maintenance manual, give the full page range. '
+            'null only if no maintenance section exists in this document",\n'
+            '  "spare_pages": "page range in THIS document containing spare parts for this component '
+            '(e.g. \'81-120\'). Scan for sections titled Spare Parts, Recommended Spares, Parts List, '
+            'Spare Part Catalogue. null only if no spare parts section exists in this document",\n'
+            '  "source_page_number": integer — the [PAGE N] number where this component appears,\n'
+            '  "confidence_score": integer 70-98\n'
+            "}\n\n"
+            "STRICT RULES:\n"
+            "- source_page_number MUST come from the [PAGE N] marker in the text — do not guess\n"
+            "- job_pages / spare_pages: scan the document headings and identify where maintenance and spare-parts\n"
+            "  sections begin and end; express as 'start-end' page range (e.g. '45-67'). ALL components from the\n"
+            "  same document share the same job_pages and spare_pages if the document is for one equipment.\n"
+            "  Set null ONLY if the document contains no such section at all (e.g. a pure machinery register).\n"
+            "- For specification sheets: maker comes from the TITLE / HEADER (e.g. 'TAIKO Ship-Clean' → maker='Taiko')\n"
+            "- For specification sheets: model comes from Type row (e.g. 'Type: SBH-25' → model='SBH-25')\n"
+            "- For instruction manual cover pages: extract the main equipment shown on the page even if there is only a title, logo, product image, and model/certificate table\n"
+            "- Fill maker and model whenever those columns or rows exist\n"
+            "- specification must capture numeric ratings not generic text\n"
+            "- Do not invent data — null when genuinely absent\n"
+            "- Return ONLY the JSON array, no explanation, no markdown fences"
+        ),
+        "user_template": (
+            "Document: {filename}\n\n"
+            "Extract every piece of physical equipment and machinery from this maritime document. "
+            "The text contains [PAGE N] markers — use them for source_page_number.\n"
+            "If this is a specification sheet for one equipment, extract the main equipment (maker from the title) "
+            "and any named sub-assemblies (motors, blowers, pumps, etc.).\n"
+            "If this is a machinery list, extract every table row including location and machinery particulars reference if present.\n\n"
+            "IMPORTANT — for job_pages and spare_pages:\n"
+            "Scan the document for sections containing maintenance schedules or spare parts lists.\n"
+            "If you find a maintenance/service section, record its page range as job_pages (e.g. '45-67').\n"
+            "If you find a spare parts/recommended spares section, record its page range as spare_pages (e.g. '81-120').\n"
+            "All components from the same single-equipment document share the same job_pages and spare_pages.\n"
+            "Only set null if that section genuinely does not exist in this document.\n\n"
+            "{text}"
+        ),
+    },
+    "job": {
+        "system": (
+            "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist.\n\n"
+            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n"
+            "It may also contain [CONTEXT PAGE N] markers which provide preceding page content for header and title lookup. Do NOT extract any jobs or records from pages labeled with [CONTEXT PAGE N]. Use them only to find the frequency or frequency context for jobs listed on the adjacent [PAGE N] pages.\n\n"
+            "Extract ALL maintenance jobs, service intervals, and inspection tasks.\n"
+            "Maintenance schedules appear as:\n"
+            "  - Tables with columns: Interval | Description/Job (e.g. 'Every day', 'Weekly', 'Monthly')\n"
+            "  - Numbered procedure lists under headings like '8. Maintenance', 'Service Schedule'\n"
+            "  - Section headings like '8.3 Check V-Belt', '9.4 Maintenance of UV Sterilizer'\n\n"
+            "FREQUENCY TYPE MAPPING (use ONLY these 5 types — no others):\n"
+            "  Every day / Daily / 24h → frequency_type='daily', frequency=1\n"
+            "  Weekly / Every week / 7 days / Biweekly / Fortnightly / Every 2 weeks → frequency_type='weekly', frequency=<week count>\n"
+            "  Monthly / Every month / 30 days / Quarterly / Every 3 months / Half yearly / Every 6 months → frequency_type='monthly', frequency=<month count>\n"
+            "  Yearly / Annually / Once a year / Every 2 years / Biannual → frequency_type='yearly', frequency=<year count>\n"
+            "  Running hours / Every Nh / Engine hours → frequency_type='hourly', frequency=<hour value>\n\n"
+            "FREQUENCY RANGE RULE (CRITICAL):\n"
+            "  When an inspection or maintenance interval is given as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs', '1-2 years'), ALWAYS extract the LOWEST (minimum) value of the range as an integer.\n"
+            "  Examples:\n"
+            "    - '4-6 months' → frequency=4, frequency_type='monthly' (NEVER average to 5 or use the upper bound 6)\n"
+            "    - '500 - 1000 hours' → frequency=500, frequency_type='hourly'\n"
+            "    - '1~2 weeks' → frequency=1, frequency_type='weekly'\n"
+            "    - '2 to 3 years' → frequency=2, frequency_type='yearly'\n\n"
+            "IMPORTANT — job_name formatting:\n"
+            "  - Be specific: 'Replace UV lamp' not 'Replace lamp'\n"
+            "  - Include equipment context: 'Check aeration blower air filter'\n"
+            "  - Preserve numbered items from tables as separate jobs\n\n"
+            "Return ONLY a valid JSON array. Each record:\n"
+            "{\n"
+            '  "job_name": "concise specific name (e.g. \'Replace UV lamp\', \'Check V-belt tension\')",\n'
+            '  "job_code": "section/item number from manual (e.g. \'8.3.2\', \'Item 4\') or null",\n'
+            '  "job_description": "full procedure text. Every line must start with /*- and any list items (e.g. a., b., 1., 2., a), b), 1), 2)) must be placed on a new line starting with /*-",\n'
+            '  "safety_precaution": "WARNING/CAUTION/NOTICE text relevant to this job or null",\n'
+            '  "frequency": integer representing the interval value (1 for daily, 2 for biweekly, 12 for yearly, etc.) or null — if given as a range (e.g. 4-6 months), ALWAYS capture the LOWEST number (e.g. 4),\n'
+            '  "frequency_type": "daily|weekly|monthly|yearly|hourly — ONLY these 5 values or null",\n'
+            '  "is_critical": true if this job is for safety/regulatory equipment or has a WARNING label,\n'
+            '  "source_page_number": integer from [PAGE N] marker or null,\n'
+            '  "confidence_score": integer 70-98\n'
+            "}\n\n"
+            "RULES:\n"
+            "- FREQUENCY RANGE RULE (CRITICAL): If frequency or interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound.\n"
+            "- job_description formatting: Every non-empty line of the description body must start with /*-. If the description contains list items (like a. line, b. line, a) line, 1) line, etc.), each item must be placed on a new line and start with /*-.\n"
+            "- MULTILINGUAL & NON-ENGLISH MANUALS: If the document contains multilingual tables (e.g. English alongside Chinese/Japanese), prefer the English text. If the manual or table is in Chinese, Japanese, or another language, translate all extracted fields (job_name, job_description, safety_precaution) into clear professional English. Never output non-Latin characters.\n"
+            "- PDF FILENAME PROHIBITION: PDF filenames must NEVER be captured in job_code or job_name. Leave these fields blank (null) if no valid value is present.\n"
+            "- source_page_number from [PAGE N] markers — do not guess\n"
+            "- Extract EVERY distinct job item — do not merge different tasks into one\n"
+            "- For maintenance schedule tables: each row/item = one job record\n"
+            "- For procedure sections (e.g. '8.3 Check V-belt'): extract as a job with description\n"
+            "- Safety precaution: copy the WARNING/CAUTION text shown near the job if any\n"
+            "- If no maintenance jobs exist in this document, return []\n"
+            "- Return ONLY the JSON array, no markdown fences"
+        ),
+        "user_template": (
+            "Document: {filename}\n\n"
+            "Extract all maintenance jobs, service intervals, and inspection tasks. "
+            "Use [PAGE N] markers for source_page_number.\n"
+            "Look for: maintenance schedule tables (Interval | Description), numbered procedure sections, "
+            "and section headings describing service tasks.\n"
+            "NOTE: If frequency is given as a range (e.g. 4-6 months), ALWAYS extract the LOWEST value (e.g. 4).\n\n{text}"
+        ),
+    },
+    "spare": {
+        "system": (
+            "You are an expert maritime PMS (Planned Maintenance System) data extraction specialist.\n\n"
+            "The text contains [PAGE N] markers — use these numbers for source_page_number.\n"
+            "It may also contain [CONTEXT PAGE N] markers which provide preceding page content for header and title lookup. Do NOT extract any parts or records from pages labeled with [CONTEXT PAGE N]. Use them only to find the table title, heading, or drawing/diagram title for the items listed on the adjacent [PAGE N] pages.\n\n"
+            "Extract ALL spare parts, recommended spares, and consumables.\n"
+            "Spare parts lists appear as:\n"
+            "  1. Tables: NO. | NAME | MATERIAL | QTY | REMARKS  (or similar columns)\n"
+            "  2. Drawing parts lists: numbered items callout on a technical drawing\n"
+            "  3. Sections titled: 'Spare Parts', 'Parts List', 'Recommended Spares', 'Spare Part Catalogue'\n"
+            "  4. Chapter 13 or similar appendix listing parts by sub-assembly\n\n"
+            "Drawing-based parts tables look like:\n"
+            "  NO. | NAME | MATERIAL | QTY   (e.g. 1 | UV LAMP | QUARTZ GLASS | 1)\n"
+            "  Extract EVERY row.\n"
+            "  - If a table column is labeled NO., ITEM, or REF.NO and no separate catalog Part Number column is provided, capture it as part_number with its prefix (e.g. 'No. 1').\n"
+            "  - The drawing_position MUST be left null unless the column is explicitly labeled as Position No., Pos., Pos. No., or Position.\n"
+            "  The drawing_number is the figure/drawing reference (e.g. 'Fig.7', 'UV STERILIZER drawing').\n\n"
+            "MULTI-COLUMN TABLE FORMAT (very common in Japanese equipment manuals):\n"
+            "  Pages often show 2–4 identical table sections placed side-by-side across the page width.\n"
+            "  Each section has the same column headers: REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS\n"
+            "  Items are numbered sequentially across ALL sections (e.g. 1-41 in the leftmost section,\n"
+            "  43-106 in the next, 101-176 in the third, 201-226 in the rightmost).\n"
+            "  You MUST scan ALL sections from left to right across the ENTIRE page width.\n"
+            "  DO NOT stop after reading only the first or leftmost column group.\n"
+            "  A single page can contain 100-300 individual parts — extract EVERY one.\n\n"
+            "Return ONLY a valid JSON array. Each record:\n"
+            "{\n"
+            '  "part_name": "the pure spare name ONLY in Proper Text / Title Case, preserving original name spelling and abbreviations with zero normalization of the noun (e.g. \'O-Ring\', \'Vlv Stem\', \'Ball Bearing\', \'Fltr Element\', \'Hex Bolt\'). CRITICAL: Never include dimensions, sizes, materials, or specifications in part_name — separate them into specification",\n'
+            '  "part_number": "catalog part number (e.g. PC.NO, CODE NO, PART NO). If no catalog part number column exists in the manual, use the Item No./Reference No./Serial No./No. with its header prefix (e.g. \'Item No. 5\', \'Ref No. 12\', \'Serial No. 101\', \'No. 3\'). If neither exists, combine Drawing No/Position No (e.g. \'FIG.7/15\'). Leave null if none of these exist",\n'
+            '  "drawing_number": "DWG.NO or drawing reference in ALL CAPS (e.g. \'B3798160-02\', \'FIG.7\', \'DWG-1234\') or null",\n'
+            '  "drawing_position": "ONLY capture when clearly identified as Position No., Pos., Pos. No., or Position (e.g. \'1\', \'11\', \'1~58\'). Leave null if no explicit Position column exists — NEVER treat Item No., Reference No., Serial No., or No. as Position Numbers",\n'
+            '  "specification": "material, size, standard, quantity note strictly as formatted in the manual with NO abbreviations or value modifications (e.g. \'QTY: 2 PCS; Material: SUS304; Size: DN50\') or null",\n'
+            '  "spare_assembly": "assembly name, parts table title, or diagram section in Proper Text / Title Case (e.g. \'Cargo Pumping System\', \'Shaft Seal Assembly\', \'Main Components Exploded View\', \'Machine Spare Parts List\') or null",\n'
+            '  "assembly_description": "assembly description in Proper Text / Title Case or null",\n'
+            '  "spare_maker": "manufacturer in ALL CAPS (e.g. \'WARTSILA\', \'YANMAR\', \'DAIHATSU\', \'SHINKO\', \'FRAMO\', \'TAIKO KIKAI\') or null",\n'
+            '  "spare_model": "equipment/machinery model number or type code ONLY in ALL CAPS (e.g. \'6L28/32H\', \'DK-20\', \'CB-125\', \'6EY18ALW\') — NEVER put generic assembly titles or parts list titles here, or null",\n'
+            '  "source_page_number": integer from [PAGE N] marker or null,\n'
+            '  "confidence_score": integer 70-98\n'
+            "}\n\n"
+            "RULES:\n"
+            "- source_page_number from [PAGE N] markers only\n"
+            "- CASING & FORMATTING STANDARDS (CRITICAL):\n"
+            "    1. part_name MUST contain ONLY the spare part name/noun (e.g. 'O-Ring', 'Vlv Stem', 'Ball Bearing', 'Fltr Element', 'Hex Bolt', 'Gasket', 'Oil Seal') in Proper Text / Title Case. Do NOT include dimensions, sizes (e.g. 'M12x45', '6205', '15.5 x 2.4'), materials (e.g. 'SUS316', 'FKM'), or parenthetical notes in part_name; always separate them into specification.\n"
+            "    2. spare_assembly and assembly_description MUST be in Proper Text / Title Case (Each word capitalized followed by lower case).\n"
+            "    3. spare_maker, spare_model, and drawing_number MUST be in ALL CAPS (e.g. 'WARTSILA', 'YANMAR', 'DK-20', 'FIG.7', 'DWG-102').\n"
+            "    4. specification MUST be captured as per the same format from the manual, with zero modifications, abbreviations, or changes to conventions or values.\n"
+            "- ASSEMBLY VS MODEL SEPARATION (CRITICAL):\n"
+            "    • spare_assembly: Put the assembly title, drawing section, sub-assembly, or parts table title here in Proper Text / Title Case (e.g. 'Main Components Exploded View', 'Cylinder Cover Assembly', 'Shaft Seal Assembly', 'Machine Spare Parts List').\n"
+            "    • spare_model: Put ONLY the equipment model number / machinery type code here in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125', '6L28/32H'). NEVER put assembly titles, table titles, or parts list names into spare_model. If no specific equipment model number is on the page, leave spare_model as null.\n"
+            "- MULTILINGUAL & NON-ENGLISH MANUALS: If the document contains multilingual tables (e.g. English alongside Chinese/Japanese), prefer the English text. If the manual, table, drawing title block, or diagram legend is in Chinese, Japanese, or another language, translate all extracted fields (part_name, spare_assembly, specification, etc.) into clear professional English. Never output non-Latin characters in any field.\n"
+            "- SPECIFICATION COLUMN HEADER REFERENCES (CRITICAL): Every piece of detail in specification MUST explicitly include its table column header label as a prefix. For example:\n"
+            "    \u2022 Quantity: 'QTY: 2 PCS' or 'QTY: 1 SET'. If the column has only a unit string like 'PCS' or 'SET' without a number, format as 'QTY: 1 PCS' or 'QTY: 1 SET'.\n"
+            "    \u2022 Material: 'Material: STEEL', 'Material: SUS304', 'Material: GRAPHITE'\n"
+            "    \u2022 Size/Dimensions: 'Size: DN50', 'Dimensions: 15.5 x 2.4 FKM'\n"
+            "  Combine multiple column header details with semicolons: 'QTY: 2 PCS; Material: STEEL; Size: DN50'. NEVER output the keyword 'Remarks:' or include remarks notes in specification — remarks are not requested.\n"
+            "- QTY AND SPECIFICATION CONSTRAINTS (CRITICAL):\n"
+            "    \u2022 Under specification, 'QTY:' MUST strictly contain ONLY the numeric quantity and its unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS', 'QTY: 4 EA', 'QTY: 6 EA/ST').\n"
+            "    \u2022 NEVER merge remarks, comments, notes, model variants, applicability notes, parentheses, or materials into the QTY field!\n"
+            "    \u2022 Do NOT add a 'Remarks:' field in specification. If material information is present (e.g. SUS304, Steel, Rubber), place it under 'Material:' (e.g. 'QTY: 1 PCS; Material: SUS304').\n"
+            "- PART NUMBERS VALIDATION: Validate part numbers carefully. Do NOT extract serial numbers, prose/phrases ('refer to page...', 'see drawing'), or full page text into part_number. If no valid catalog part number is found in the manual, leave part_number as null.\n"
+            "- PDF FILENAME PROHIBITION: PDF filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf') must NEVER be captured in part_number, drawing_number, drawing_position, or spare_model. Leave these fields blank (null) if the information is not found in the manual.\n"
+            "- PART NAME & SPECIFICATION SEPARATION: If a spare name contains specifications, dimensions, or materials (e.g. 'O-RING (15.5 x 2.4 FKM)' or 'HEX BOLT M12 x 45 STAINLESS'), separate them. Capture the spare name (preserving abbreviations/spelling as printed, e.g. 'O-Ring', 'Hex Bolt') in part_name, and capture the additional details (e.g. '15.5 x 2.4 FKM', 'M12 x 45 STAINLESS') in specification with header labels. Do NOT modify, replace, or normalize the part name wording.\n"
+            "- MULTI-MODEL & VARIANT TABLES GUIDE (CRITICAL FOR ENGINES & COMPRESSORS):\n"
+            "    1. VARIANT QUANTITY COLUMNS (e.g. Sabb Motor / Scandinavian manuals):\n"
+            "       • Tables often feature multiple quantity columns (e.g. '1, 2, 3, 4' under 'Ant. / Qty') corresponding to different engine variants, with a TYPEVARIANT / MODEL legend on the page (e.g. '1: L2.093 / LPW2', '2: L3.139 / LPW3', '3: L4.186 / LPW4').\n"
+            "       • When a target equipment model is specified in context (e.g. 'L3 139LB', 'L3.139', 'LPW3', or 'Variant 2'): extract ONLY rows that have a quantity listed under that target variant column. Do NOT extract rows that are blank/dash for this model. Use that column's numeric quantity in 'QTY: <count> <unit>' and set spare_model to the target model in ALL CAPS.\n"
+            "       • When NO target model is specified in context: extract each row. If all variant columns have the same quantity, use that quantity in 'QTY: <count> <unit>'. If variants differ, place the first numeric quantity in 'QTY: <first_qty> <unit>' and detail the breakdown in 'Remarks: Variant 1: <qty>; Variant 2: <qty>...'. NEVER put multiple comma-separated quantities into the QTY field itself.\n"
+            "    2. REMARKS MODEL APPLICABILITY TAGS (e.g. Atlas Copco LT compressors, Daihatsu, Yanmar):\n"
+            "       • Multi-model tables often list parts with specific model codes in the 'Remarks' or 'Description' column (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)').\n"
+            "       • When a target equipment model is specified in context (e.g. 'LT-55'): extract ONLY rows applicable to this model — including rows designated for this model (e.g. 'LT55', 'LT-55', 'LT55, -75/50Hz', 'LT-55(RH)') and common rows with no model restriction in Remarks. Ignore rows strictly designated for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS (e.g. 'LT-55').\n"
+            "       • When NO target model is specified in context: extract each row, storing the specific model tag in spare_model (e.g. 'LT-55', 'LT22') and keeping the notes under 'Remarks:'.\n"
+            "    3. MODEL HEADINGS & MULTI-MODEL KITS RULE (CRITICAL):\n"
+            "       • When parts tables, kit lists, or sections appear under distinct model headings or kit titles (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'), ALWAYS extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS.\n"
+            "       • The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) frequently appears under different model headings. Each model heading represents distinct equipment parts; NEVER skip, omit, or merge rows with duplicate part numbers when they belong to different model headings! Extract every row under each model heading.\n"
+            "- PARTS LISTS, EXPLODED DIAGRAMS AND COMPONENT TABLES:\n"
+            "    1. If a page has an exploded-view diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser...'), extract EVERY item in that list as a spare part (e.g. part_number='No. 1', 'No. 2').\n"
+            "    2. If a page has BOTH an exploded-view diagram AND a separate parts table for the same parts, extract from the parts table to avoid duplication.\n"
+            "    3. If a page has an equipment component settings/calibration table (e.g. 'COMPONENT | SETTING | NOTES'), extract each listed component as a spare part, capturing their calibration/setting values into specification.\n"
+            "- Extract EVERY spare part row, callout list item, and component row — never skip items\n"
+            "- DUPLICATE TABLE TEXT RULE: Some pages contain the same table represented twice: once as plain unstructured text (where column values are printed inline) and once as a structured `[TABLE]` pipe-delimited block. Do NOT extract duplicate records from both. Extract ONLY from the structured `[TABLE]` block, and ignore the plain unstructured text of those same table rows to prevent duplicate/repeated records.\n"
+            "- REMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly variant tags — store in spare_model (in ALL CAPS), NOT in part_name or drawing_number.\n"
+            "- POSITION NUMBER EXTRACTION RULE (STRICT):\n"
+            "    1. Capture drawing_position ONLY when the table or column is clearly identified as 'Position No.', 'Pos.', 'Pos. No.', 'Position', or similar position-related labels. If not, keep drawing_position empty (null).\n"
+            "    2. NEVER treat 'Item No.', 'Reference No.', 'Ref No.', 'Serial No.', 'No.', or other general numbering fields as Position Numbers.\n"
+            "- PART NUMBER EXTRACTION RULE (STRICT):\n"
+            "    1. If an explicit catalog Part Number column is present (e.g. PC.NO, CODE NO, PART NO):\n"
+            "       \u2022 Capture that catalog number in part_number cleanly WITHOUT prefixing column header labels like 'Part Number', 'Part No.', 'Code No.', or 'PC. NO.'.\n"
+            "       \u2022 If an Item No., Reference No., Serial No., or No. column is also present in the table, put that item reference into the specification column with its header label (e.g. 'Ref No: 12; ...' or 'Item No: 5; ...').\n"
+            "    2. If NO catalog Part Number column is present:\n"
+            "       \u2022 Treat the Item No., Reference No., Serial No., No., or PID Item column as the part_number along with its Prefix header from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005', 'PID Item BO 002').\n"
+            "       \u2022 In this case, do NOT combine Drawing No into part_number.\n"
+            "    3. When NEITHER a catalog Part Number NOR an Item No./Reference No./Serial No./No./PID Item is present:\n"
+            "       \u2022 If BOTH Drawing No. and Position No. are present, combine them and populate part_number as:\n"
+            "         '<Drawing No.>/<Position No.>' (e.g. 'FIG.7/15', 'B3798160-02/12').\n"
+            "       \u2022 If Item No./Reference No./PID Item was captured as part_number, do NOT combine Drawing No.\n"
+            "       \u2022 If Drawing No. or Position No. is missing, leave part_number blank (null).\n"
+            "    4. NEVER extract document headers, title block references, drawing titles, manual filenames (e.g. 'A-10 GALLEY & LAUNDRY.pdf', 'DECK MACHINERY'), or page references into part_number!\n"
+            "- ASSEMBLY & ASSEMBLY DESCRIPTION UNIQUENESS & CONSISTENCY (CRITICAL):\n"
+            "    • Capture spare_assembly and assembly_description as unique, consistent data across all pages of the manual.\n"
+            "    • Maintain uniform formatting, casing, and wording across pages to avoid creating duplicate Assembly records.\n"
+            "- Part numbers: include exactly as printed (do not reformat)\n"
+            "- If no spare parts found, return []\n"
+            "- Return ONLY the JSON array, no markdown fences\n\n"
+            "LANGUAGE RULES (STRICT — NO EXCEPTIONS):\n"
+            "- ALL output fields MUST contain English text ONLY\n"
+            "- NEVER output Japanese, Chinese, Korean, or any other non-Latin characters in ANY field\n"
+            "- If source text is in Japanese/non-English: translate to English. "
+            "Use the English equivalent printed alongside (e.g. 'BALL BEARING' not 'ボールベアリング'). "
+            "If no English is visible, translate from context.\n"
+            "- If you cannot reliably translate a part name to English, output a best-effort English description\n"
+            "- Specification/remarks fields: translate ALL non-English content to English\n"
+            "- A record with non-English characters in any field is INVALID — fix it before outputting"
+        ),
+        "user_template": (
+            "Document: {filename}\n\n"
+            "Extract all spare parts, recommended spares, and consumables. "
+            "Use [PAGE N] markers for source_page_number.\n"
+            "Look for: parts tables (NO./NAME/MATERIAL/QTY), drawing parts lists, "
+            "sections titled 'Spare Parts', 'Parts List', 'Recommended Spares'.\n"
+            "IMPORTANT: All extracted data must be in English only. Translate any non-English text (Japanese, Chinese, etc.) to English.\n"
+            "CRITICAL: Keep QTY strictly limited to quantity and unit (e.g. 'QTY: 1 SET'). Never merge remarks, applicability, or notes into QTY. Do NOT include 'Remarks:' in specification.\n"
+            "MULTI-MODEL TABLES: When extracting for a target equipment model, extract only rows/columns applicable to that model (e.g. Variant 2 for L3.139, or LT55 parts for LT-55) and ignore parts strictly for other models.\n\n{text}"
+        ),
+    },
+}
+
+
+def _safe_int_page(val: Any) -> int | None:
+    """Safely convert page number to integer, handling ranges and string prefixes gracefully."""
+    if val is None:
+        return None
+    if isinstance(val, int):
+        return val
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        m = re.search(r"\d+", str(val))
+        if m:
+            try:
+                return int(m.group(0))
+            except (ValueError, TypeError):
+                pass
+        return None
+
+
+_PAGE_BLOCK_RE = re.compile(r"\[PAGE\s+(\d+)\]\s*\n?(.*?)(?=(?:\n\[PAGE\s+\d+\])|\Z)", re.S)
+
+
+def _extract_json_from_prose(text: str) -> str:
+    """Pull the first JSON array/object out of a response that leads with prose or step-by-step text.
+
+    Claude sometimes wraps its JSON inside markdown code fences and/or precedes it with
+    'STEP 1 — COUNT: ...' analysis. This function finds the actual JSON payload regardless
+    of what comes before or after it.
+    """
+    # Priority 1: content inside ```json ... ``` or ``` ... ``` fences
+    m = re.search(r"```(?:json)?\s*\n?([\s\S]*?)\n?```", text, re.I)
+    if m:
+        inner = m.group(1).strip()
+        if inner.startswith("[") or inner.startswith("{"):
+            return inner
+    # Priority 2: find the first [ or { and return from there; caller handles truncation
+    for ch in ("[", "{"):
+        idx = text.find(ch)
+        if idx != -1:
+            return text[idx:]
+    return text
+
+
+def _strip_code_fences(raw_text: str) -> str:
+    if raw_text.startswith("```"):
+        lines = raw_text.splitlines()
+        lines = lines[1:] if lines and lines[0].startswith("```") else lines
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        raw_text = "\n".join(lines).strip()
+    return raw_text
+
+
+def _recover_partial_json_array(raw_text: str) -> list[dict]:
+    """Recover fully-formed records from a JSON array truncated by max_tokens."""
+    last_close = raw_text.rfind("},")
+    if last_close == -1:
+        last_close = raw_text.rfind("}")
+    if last_close == -1:
+        return []
+    candidate = raw_text[: last_close + 1].strip()
+    if not candidate.startswith("["):
+        candidate = "[" + candidate
+    candidate = candidate + "]"
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, list):
+            return [r for r in parsed if isinstance(r, dict)]
+    except Exception:
+        pass
+    return []
+
+
+def to_proper_case(text: str | None) -> str | None:
+    """Convert string to Title Case / Proper Text (Each word capitalized followed by lower case)
+    while preserving hyphenated compounds like 'O-Ring', 'V-Belt', 'Non-Return', 'Anti-Vibration',
+    slashes like 'Inlet/Outlet', and parenthesized/bracketed words like '(Ptfe)', '[Auxiliary]'.
+    """
+    if not text or not str(text).strip():
+        return None
+    s = str(text).strip()
+
+    def _capitalize_token(tok: str) -> str:
+        if "-" in tok and not tok.startswith("-") and not tok.endswith("-"):
+            return "-".join(_capitalize_token(sub) for sub in tok.split("-"))
+        if "/" in tok and not tok.startswith("/") and not tok.endswith("/"):
+            return "/".join(_capitalize_token(sub) for sub in tok.split("/"))
+        if not tok:
+            return tok
+        m = re.match(r"^([^a-zA-Z0-9]*)([a-zA-Z0-9])(.*)$", tok)
+        if m:
+            prefix, first_char, rest = m.groups()
+            return prefix + first_char.upper() + rest.lower()
+        return tok
+
+    words = s.split()
+    return " ".join(_capitalize_token(w) for w in words)
+
+
+def parse_job_frequency(raw_freq: Any, raw_freq_type: Any = None) -> tuple[int | None, str | None]:
+    """Parse frequency and frequency_type, strictly resolving ranges (e.g. '4-6 months', '500-1000 hrs')
+    to the lowest numeric interval value (e.g. 4, 500).
+    """
+    freq_val: int | None = None
+    freq_type_str: str | None = None
+
+    if raw_freq_type:
+        raw_ft = str(raw_freq_type).strip().lower()
+        if raw_ft in {"daily", "weekly", "monthly", "yearly", "hourly"}:
+            freq_type_str = raw_ft
+
+    if raw_freq is not None and str(raw_freq).strip():
+        if isinstance(raw_freq, (int, float)):
+            try:
+                freq_val = int(raw_freq)
+            except (ValueError, TypeError, OverflowError):
+                freq_val = None
+        else:
+            s = str(raw_freq).strip()
+            # If string contains units or range, e.g. "4-6 months", "500 - 1000 hours"
+            # Try inferring frequency_type if not already known
+            if not freq_type_str:
+                s_lower = s.lower()
+                if "hour" in s_lower or "hr" in s_lower or re.search(r"\b\d+h\b", s_lower):
+                    freq_type_str = "hourly"
+                elif "month" in s_lower:
+                    freq_type_str = "monthly"
+                elif "week" in s_lower:
+                    freq_type_str = "weekly"
+                elif "year" in s_lower or "annual" in s_lower:
+                    freq_type_str = "yearly"
+                elif "day" in s_lower or "daily" in s_lower:
+                    freq_type_str = "daily"
+
+            # Check range pattern like "4-6", "4 to 6", "4 - 6", "4~6", "4/6"
+            range_match = re.search(r"(\d+)\s*(?:[-~–—/]|to)\s*(\d+)", s, re.I)
+            if range_match:
+                n1 = int(range_match.group(1))
+                n2 = int(range_match.group(2))
+                freq_val = min(n1, n2)
+            else:
+                num_match = re.search(r"\b\d+\b", s)
+                if num_match:
+                    try:
+                        freq_val = int(num_match.group(0))
+                    except (ValueError, TypeError):
+                        freq_val = None
+
+    return freq_val, freq_type_str
+
+
+_KNOWN_UNITS = r"(?:PCS|PC|SETS?|EA(?:/ST)?|OFF|UNITS?|KG|MM|M(?!\d)|LITRES?|LTRS?|L(?!\d)|PAIRS?|BOX(?:ES)?|ROLLS?|PKT|PACKS?)"
+_PER_UNIT = r"(?:/(?:ST|SET|ENG|VESSEL|UNIT|CYL|PUMP))?"
+_MAT_KEYWORDS = r"\b(STEEL|SUS\d*|STAINLESS|BRASS|BRONZE|RUBBER|ARAM|NBR|EPDM|IRON|CAST\s*IRON|GRAPHITE|COPPER|ALUMINUM|ALUMINIUM|PVC|PHENOL|QUARTZ|CAC\d*|SB\d*|S20C|NS\d*|HVVZN|VZN|EN1\.\d+|FKM|PTFE|TEFLON|NYLON|TITANIUM|CARBON|A200|A\d+-\d+|\d+\.\d+VZN|ST|STELLITE|NIMONIC\s*\d*[A-Z]*|NON[- ]ASBESTOS)\b"
+_SIZE_PATTERN_ENHANCED = (
+    r"^(?:"
+    r"M\d+.*|W\d+.*|DN\d+.*|PN\d+.*|"
+    r"[0-9.]+\s*[-*xX]\s*[0-9.]+.*|"
+    r"\d+[AK]\s+\d+[AK].*|\d+[AK]\b.*|"
+    r"[0-9]{4,5}(?:[-/][0-9a-z]+|[a-z]{1,4})*|"
+    r"(?:NU|NJ|NUP|NN|N|UC|NA|RNA|HK|BK)\s*\d+[0-9a-z]*|"
+    r"(?:(?:1A-|1B-|4D-)?[PGVS]-?\d+|AS568-\d+|JIS\s+B\s*\d+).*|"
+    r"(?:SPA|SPB|SPC|SPZ|[A-E]|3V|5V|8V)\s*[- ]?\s*\d+.*|"
+    r"(?:TC|SC|TB|SB|VC|VB)\s*\d+.*|"
+    r"(?:PT|NPT|RC|PF|G|R)\s*[0-9/.]+.*|"
+    r"T\s*=\s*[0-9.]+.*|[0-9.]+\s*T\b.*"
+    r")$"
+)
+
+
+def is_spec_size(val: str | None) -> bool:
+    if not val:
+        return False
+    v = str(val).strip()
+    return bool(re.match(_SIZE_PATTERN_ENHANCED, v, re.I))
+
+
+def is_spec_material(val: str | None) -> bool:
+    if not val:
+        return False
+    v = str(val).strip()
+    return bool(re.search(_MAT_KEYWORDS, v, re.I) and not re.search(r"\b(for|pump|engine|cylinder|outlet|inlet)\b", v, re.I))
+_SIZE_PATTERN = r"\b(DN\d+|M\d+.*|\d+.*X.*\d+|PT\d+.*|\d+/\d+\s*INCH.*|\d+\.\d+\s*x\s*\d+\.\d+.*)\b"
+
+
+def decompose_qty_value(raw_val: str) -> tuple[str | None, list[tuple[str, str]]]:
+    """Decomposes a raw QTY value that may have extra remarks, materials, or notes merged into it.
+    Returns: (clean_qty_str, list_of_(label, remaining_val))
+    """
+    s = (raw_val or "").strip()
+    if not s:
+        return None, []
+
+    extra_items: list[tuple[str, str]] = []
+
+    # Check if there is an explicit embedded header like 'Remarks:', 'Material:', 'Size:'
+    embedded_header_split = re.split(
+        r"\b(Material|Mat|Size|Dimensions?|Remarks?|Spec|Specification|Notes?):\s*", s, flags=re.I
+    )
+    if len(embedded_header_split) > 1:
+        s = embedded_header_split[0].strip()
+        s = re.sub(r"[\s\(\[\{]+$", "", s).strip()
+        for i in range(1, len(embedded_header_split), 2):
+            h_lbl = embedded_header_split[i].title()
+            if h_lbl.lower() in ("mat", "material"):
+                h_lbl = "Material"
+            elif h_lbl.lower() in ("dimension", "dimensions", "size"):
+                h_lbl = "Size"
+            else:
+                h_lbl = "Remarks"
+            h_val = embedded_header_split[i + 1].strip() if i + 1 < len(embedded_header_split) else ""
+            h_val = re.sub(r"[\s\)\]\}]+$", "", h_val).strip()
+            if h_val:
+                extra_items.append((h_lbl, h_val))
+
+    s = re.sub(r"[\s,;/-]+$", "", s).strip()
+
+    # If string matches size or material pattern, it is not a quantity
+    if is_spec_size(s) or re.match(r"^M\d+", s, re.I):
+        return None, [("Size", s)]
+    if is_spec_material(s):
+        return None, [("Material", s)]
+
+    # Support "1/SET" -> "1 SET"
+    s_norm = re.sub(r"^(\d+)/(" + _KNOWN_UNITS + r")\b", r"\1 \2", s, flags=re.I)
+
+    qty_regex = re.compile(
+        rf"^(\d+(?:\.\d+)?|\d+\s*(?:[-~–—/]|to)\s*\d+)?\s*({_KNOWN_UNITS}{_PER_UNIT})?(.*)$",
+        re.I,
+    )
+    m = qty_regex.match(s_norm)
+
+    clean_qty: str | None = None
+    remaining_text = ""
+
+    if m:
+        num_part = (m.group(1) or "").strip()
+        unit_part = (m.group(2) or "").strip().upper()
+        tail = (m.group(3) or "").strip()
+
+        if num_part or unit_part:
+            if num_part and unit_part:
+                clean_qty = f"{num_part} {unit_part}"
+            elif unit_part:
+                clean_qty = f"1 {unit_part}"
+            elif num_part:
+                clean_qty = f"{num_part} PCS"
+
+            remaining_text = tail
+        else:
+            remaining_text = s
+    else:
+        remaining_text = s
+
+    remaining_text = re.sub(r"^[\s,;/:–—-]+", "", remaining_text).strip()
+
+    if remaining_text:
+        inner_m = re.match(r"^\((.+)\)$", remaining_text)
+        inner_content = inner_m.group(1).strip() if inner_m else remaining_text
+
+        if re.search(_MAT_KEYWORDS, inner_content, re.I) and not re.search(
+            r"\b(for|pump|engine|cylinder|outlet|inlet)\b", inner_content, re.I
+        ):
+            extra_items.append(("Material", inner_content))
+        elif re.match(_SIZE_PATTERN, inner_content, re.I):
+            extra_items.append(("Size", inner_content))
+        else:
+            pass
+
+    return clean_qty, extra_items
+
+
+def _format_specification_headers(spec: str | None) -> str | None:
+    if not spec or not str(spec).strip():
+        return None
+    spec_str = str(spec).strip()
+
+    # First, strip any Remarks clauses completely
+    spec_str = re.sub(r"(?:;\s*)?\bRemarks?:\s*[^;]*", "", spec_str, flags=re.I).strip("; ")
+    if not spec_str:
+        return None
+
+    if ";" in spec_str:
+        raw_parts = [p.strip() for p in spec_str.split(";") if p.strip()]
+    else:
+        raw_parts = [p.strip() for p in re.split(r",\s*(?![^()]*\))|/\s*(?=[A-Za-z]+:)", spec_str) if p.strip()]
+
+    items: list[tuple[str, str]] = []
+
+    for part in raw_parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        # Check for Item No / Ref No / PID Item tag
+        item_m = re.match(
+            r"^(item(?:\.?\s*no\.?)?|ref(?:\.?\s*no\.?)?|reference(?:\.?\s*no\.?)?|serial(?:\.?\s*no\.?)?|no\.?|pid[\s-]*(?:item|tag)?(?:\.?\s*no\.?)?|tag\s*no\.?)\s*[:#-]?\s*(.*)$",
+            part,
+            re.I,
+        )
+        if item_m:
+            formatted = _format_item_tag(part)
+            if ":" in formatted:
+                items.append((formatted.split(":", 1)[0].strip(), formatted.split(":", 1)[1].strip()))
+            continue
+
+        prefix_match = re.match(
+            r"^(QTY|Quantity|Material|Mat|Size|Dimensions?|Spec|Specification):\s*(.*)$",
+            part,
+            re.I,
+        )
+        if prefix_match:
+            lbl = prefix_match.group(1).title()
+            if lbl.lower() in ("quantity", "qty"):
+                lbl = "QTY"
+            elif lbl.lower() in ("mat", "material"):
+                lbl = "Material"
+            elif lbl.lower() in ("dimension", "dimensions", "size"):
+                lbl = "Size"
+            else:
+                continue  # Skip generic spec or notes
+            val = prefix_match.group(2).strip()
+
+            if lbl == "QTY":
+                cq, extras = decompose_qty_value(val)
+                if cq:
+                    items.append(("QTY", cq))
+                elif val:
+                    items.append(("QTY", val))
+                for ex_lbl, ex_val in extras:
+                    if ex_lbl != "Remarks":
+                        items.append((ex_lbl, ex_val))
+            else:
+                if val:
+                    items.append((lbl, val))
+            continue
+
+        if is_spec_material(part):
+            items.append(("Material", part))
+            continue
+
+        if is_spec_size(part) or re.match(_SIZE_PATTERN, part, re.I):
+            items.append(("Size", part))
+            continue
+
+        cq, extras = decompose_qty_value(part)
+        if cq:
+            items.append(("QTY", cq))
+            for ex_lbl, ex_val in extras:
+                if ex_lbl != "Remarks":
+                    items.append((ex_lbl, ex_val))
+            continue
+
+        if re.match(r"^\d+$", part):
+            items.append(("QTY", f"{part} PCS"))
+            continue
+
+        if re.search(_MAT_KEYWORDS, part, re.I) and not re.search(
+            r"\b(for|pump|engine|cylinder|outlet|inlet)\b", part, re.I
+        ):
+            items.append(("Material", part))
+            continue
+
+        if re.match(_SIZE_PATTERN, part, re.I):
+            items.append(("Size", part))
+            continue
+
+    formatted_parts: list[str] = []
+    seen_qty: str | None = None
+    materials: list[str] = []
+    sizes: list[str] = []
+    other_tags: list[str] = []
+
+    for lbl, val in items:
+        clean_val = re.sub(rf"^(?:{lbl}|Quantity|Remarks?|Material|Size):\s*", "", val, flags=re.I).strip()
+        if not clean_val:
+            continue
+        if lbl == "QTY":
+            if seen_qty is None:
+                seen_qty = clean_val
+        elif lbl == "Material":
+            if clean_val not in materials:
+                materials.append(clean_val)
+        elif lbl == "Size":
+            if clean_val not in sizes:
+                sizes.append(clean_val)
+        else:
+            tag_str = f"{lbl}: {clean_val}"
+            if tag_str not in other_tags:
+                other_tags.append(tag_str)
+
+    for ot in other_tags:
+        formatted_parts.append(ot)
+    if seen_qty:
+        formatted_parts.append(f"QTY: {seen_qty}")
+    if materials:
+        formatted_parts.append(f"Material: {', '.join(materials)}")
+    if sizes:
+        formatted_parts.append(f"Size: {', '.join(sizes)}")
+
+    return "; ".join(formatted_parts) if formatted_parts else None
+
+
+def is_leaked_filename_or_doc_ref(val: str | None, filename: str | None = None) -> bool:
+    """Return True if val represents a PDF filename, page reference, document title, or placeholder."""
+    if not val:
+        return False
+    v = str(val).strip()
+    if not v:
+        return False
+    v_lower = v.lower()
+
+    # 1. Any .pdf reference or page reference
+    if ".pdf" in v_lower or "(p." in v_lower or bool(re.search(r'\b(?:pages?|pp?|pg)\b\.?\s*\d+', v_lower)):
+        return True
+
+    # 2. Common placeholder values
+    if v_lower in {"none", "n/a", "null", "unknown", "nil", "-", "--", "na", "/", "not available"}:
+        return True
+
+    # 3. References to other sections or figures
+    if re.search(r'\b(refer to|see page|contained in|as per|figure|fig\.|drawing\s+title|manual\s+title)\b', v_lower):
+        return True
+
+    # 4. Compare with manual filename if provided
+    if filename:
+        fn_lower = filename.lower().strip()
+        fn_base = fn_lower.rsplit(".", 1)[0] if "." in fn_lower else fn_lower
+
+        if v_lower == fn_lower or v_lower == fn_base:
+            return True
+
+        # Strip non-ASCII and leading numbering/symbols: "30# ", "A-10_", etc.
+        fn_ascii = re.sub(r'[^\x00-\x7F]+', ' ', fn_base)
+        fn_clean = re.sub(r'^[0-9a-z]+[#_\s\-.]+', '', fn_ascii.strip(), flags=re.I).strip()
+        fn_clean = re.sub(r'\s+', ' ', fn_clean).strip()
+
+        if len(fn_clean) >= 4:
+            if fn_clean in v_lower:
+                return True
+            v_clean = re.sub(r'^[0-9a-z]+[#_\s\-.]+', '', re.sub(r'[^\x00-\x7F]+', ' ', v_lower).strip(), flags=re.I).strip()
+            v_clean = re.sub(r'\s+', ' ', v_clean).strip()
+            if v_clean and (v_clean == fn_clean or (len(v_clean) >= 4 and v_clean in fn_clean)):
+                return True
+
+    return False
+
+def separate_spare_name_and_spec(part_name: str | None, existing_spec: str | None = None) -> tuple[str, str | None]:
+    """
+    Separates embedded specifications, dimensions, materials, and notes from part_name,
+    returning (clean_part_name, formatted_specification).
+    """
+    if not part_name or not str(part_name).strip():
+        return (part_name or ""), existing_spec
+
+    clean_name = str(part_name).strip()
+    extracted_specs: list[str] = []
+
+    # 1. Extract and remove all parenthetical clauses: e.g. 'O-RING (15.5 x 2.4 FKM)' or 'VALVE SEAT (SUS316)'
+    def _extract_paren(m):
+        content = m.group(1).strip()
+        if content:
+            extracted_specs.append(content)
+        return ""
+
+    clean_name = re.sub(r"\s*\(([^)]+)\)", _extract_paren, clean_name).strip()
+
+    # 2. If existing_spec has values, check if those exact values are in clean_name and strip them
+    if existing_spec:
+        spec_pieces = re.split(r"[;,]", existing_spec)
+        for piece in spec_pieces:
+            val = re.sub(r"^(?:QTY|Quantity|Size|Dimensions?|Material|Mat|Remarks?|Notes?|Spec|Specification):\s*", "", piece.strip(), flags=re.I).strip()
+            if val and len(val) >= 2 and val.lower() not in ("pcs", "set", "ea", "unit", "none", "n/a"):
+                val_escaped = re.escape(val)
+                clean_name = re.sub(rf"(?:\s+[-/]?\s*|\s*,\s*){val_escaped}\b", "", clean_name, flags=re.I).strip()
+                if " " in val:
+                    val_no_space = re.escape(re.sub(r"\s+", "", val))
+                    clean_name = re.sub(rf"(?:\s+[-/]?\s*|\s*,\s*){val_no_space}\b", "", clean_name, flags=re.I).strip()
+
+    # 3. Trailing specifications by common patterns:
+    patterns = [
+        # Gasket ratings: e.g. '150A 10K T=2.0', '50A 10K', 'T=1.5', '1.5T', 'JIS 10K 50A'
+        r"^(.*\b(?:gasket|packing|flange|joint\s+sheet))\s+((?:JIS\s+)?(?:\d+[AK]\s+\d+[AK]|\d+[AK])\b.*|T\s*=\s*[0-9.]+.*|[0-9.]+\s*T\b.*)$",
+
+        # Thread/pipe fittings: e.g. 'PLUG PT 1/2', 'NIPPLE R 1/4', 'UNION NPT 3/8'
+        r"^(.*\b(?:plug|nipple|union|elbow|coupling|valve))\s+((?:PT|NPT|RC|PF|G|R)\s*[0-9/.]+.*)$",
+
+        # Bearing numbers: e.g. 'BALL BEARING 6205-2RS', 'BEARING NU206', 'ROLLER BEARING 30206'
+        r"^(.*\b(?:bearing))\s+([0-9]{4,5}(?:[-/][0-9a-z]+|[a-z]{1,4})*|(?:NU|NJ|NUP|NN|N|UC|NA|RNA|HK|BK)\s*\d+[0-9a-z]*)$",
+
+        # O-Ring standard series: e.g. 'O-RING G-35', 'O-RING P15', 'O-RING 1A-P15', 'O-RING AS568-010'
+        r"^(.*\b(?:o[- ]?ring))\s+((?:(?:1A-|1B-|4D-)?[PGVS]-?\d+|AS568-\d+|JIS\s+B\s*\d+).*)$",
+
+        # V-Belt sizes: e.g. 'V-BELT B-48', 'V-BELT SPA 1250', 'BELT 3V-500'
+        r"^(.*\b(?:belt))\s+((?:SPA|SPB|SPC|SPZ|[A-E]|3V|5V|8V)\s*[- ]?\s*\d+.*)$",
+
+        # Oil Seal dimensions: e.g. 'OIL SEAL TC 25 45 8', 'OIL SEAL 25X45X8', 'OIL SEAL SC355511'
+        r"^(.*\b(?:oil[- ]?seal|lip[- ]?seal|seal))\s+((?:TC|SC|TB|SB|VC|VB)?\s*\d+\s*[-*xX ]\s*\d+\s*[-*xX ]\s*\d+.*)$",
+
+        # Dimensions / metric thread / sizes: e.g. 'HEX BOLT M12X45', 'O-RING 15.5X2.4', 'STUD M16X60'
+        r"^(.*?)\s+((?:M\d+|W\d+|DN\d+|PN\d+|[0-9.]+\s*X\s*[0-9.]+|#[0-9]+).*)$",
+
+        # Standalone Material at the end: e.g. 'VALVE SEAT SUS316', 'PACKING TEFLON', 'GASKET NON-ASBESTOS'
+        rf"^(.*?)\s+({_MAT_KEYWORDS}.*)$",
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, clean_name, re.I)
+        if m:
+            cand_name = m.group(1).strip()
+            cand_spec = m.group(2).strip()
+            if len(cand_name) >= 2 and re.search(r"[A-Za-z]", cand_name):
+                clean_name = cand_name
+                extracted_specs.append(cand_spec)
+                break
+
+    # Tag extracted specs properly with headers (Size:, Material:, Remarks:)
+    tagged_extracted: list[str] = []
+    for es in extracted_specs:
+        es_clean = es.strip(" ;,")
+        if not es_clean:
+            continue
+        if re.match(r"^(?:QTY|Quantity|Size|Dimensions?|Material|Mat|Remarks?|Notes?|Spec|Specification):\s*", es_clean, re.I):
+            tagged_extracted.append(es_clean)
+            continue
+
+        # Check if contains both material and other details (e.g. 'M12 X 45 STAINLESS' or '15.5 x 2.4 FKM')
+        mat_m = re.search(_MAT_KEYWORDS, es_clean, re.I)
+        if mat_m:
+            mat_val = mat_m.group(0).strip()
+            rem_val = re.sub(rf"\b{re.escape(mat_val)}\b", "", es_clean, flags=re.I).strip(" ;,")
+            if rem_val:
+                if is_spec_size(rem_val):
+                    tagged_extracted.append(f"Size: {rem_val}")
+                tagged_extracted.append(f"Material: {mat_val}")
+                continue
+            else:
+                tagged_extracted.append(f"Material: {mat_val}")
+                continue
+
+        if is_spec_size(es_clean):
+            tagged_extracted.append(f"Size: {es_clean}")
+
+    # Build final combined specification
+    final_spec = existing_spec or ""
+    for te in tagged_extracted:
+        if final_spec:
+            val = te.split(":", 1)[1].strip() if ":" in te else te
+            if val.lower() not in final_spec.lower():
+                final_spec = f"{final_spec}; {te}"
+        else:
+            final_spec = te
+
+    formatted_spec = _format_specification_headers(final_spec) if final_spec else None
+    return to_proper_case(clean_name), formatted_spec
+
+
+_CATALOG_PN_PREFIX_RE = re.compile(
+    r"^(?:part\s*(?:no\.?|number|#)?|code\s*(?:no\.?|number)?|pc\.?\s*no\.?)\s*[:#-]?\s*",
+    re.I,
+)
+
+_ITEM_PREFIX_RE = re.compile(
+    r"^(?:item(?:\.?\s*no\.?)?|ref(?:\.?\s*no\.?)?|reference(?:\.?\s*no\.?)?|serial(?:\.?\s*no\.?)?|no\.?|pid[\s-]*(?:item|tag)?(?:\.?\s*no\.?)?|tag\s*no\.?)(?:\s+|[:#-]|$|(?<=\w)\b)",
+    re.I,
+)
+
+_PID_BARE_RE = re.compile(r"^(?:BM|BO)\s*\d{2,4}[A-Z]?$", re.I)
+
+_EXPLICIT_POS_LABEL_RE = re.compile(
+    r"^(?:pos(?:ition)?\.?(?:\s*no\.?)?)\s*[:#-]?\s*(.*)$",
+    re.I,
+)
+
+
+def _is_fallback_item_id(val: str | None) -> bool:
+    if not val:
+        return False
+    v = str(val).strip()
+    return bool(_ITEM_PREFIX_RE.match(v) or _PID_BARE_RE.match(v))
+
+
+def _clean_catalog_pn(val: str | None) -> str:
+    if not val:
+        return ""
+    v = str(val).strip()
+    return _CATALOG_PN_PREFIX_RE.sub("", v).strip()
+
+
+def _format_item_tag(raw: str) -> str:
+    """Formats an item string into a clean spec tag, e.g. 'Ref No: 12' or 'Item No: 5' or 'PID Item: BM 005'."""
+    s = raw.strip()
+    m = re.match(r"^(item|ref(?:erence)?|serial|no|pid[\s-]*(?:item|tag)?|tag)\.?(?:\s*no\.?)?\s*[:#-]?\s*(.*)$", s, re.I)
+    if m:
+        kind = m.group(1).lower()
+        val = m.group(2).strip()
+        if kind == "item":
+            return f"Item No: {val}"
+        elif kind.startswith("ref"):
+            return f"Ref No: {val}"
+        elif kind == "serial":
+            return f"Serial No: {val}"
+        elif kind == "no":
+            return f"No: {val}"
+        elif "pid" in kind or kind == "tag":
+            return f"PID Item: {val.upper()}"
+    if _PID_BARE_RE.match(s):
+        return f"PID Item: {s.upper()}"
+    return s
+
+
+def _standardize_item_prefix(raw: str) -> str:
+    """Standardizes prefix for part_number, e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005'."""
+    s = raw.strip()
+    m = re.match(r"^(item|ref(?:erence)?|serial|no|pid[\s-]*(?:item|tag)?|tag)\.?(?:\s*no\.?)?\s*[:#-]?\s*(.*)$", s, re.I)
+    if m:
+        kind = m.group(1).lower()
+        val = m.group(2).strip()
+        if kind == "item":
+            return f"Item No. {val}"
+        elif kind.startswith("ref"):
+            return f"Ref No. {val}"
+        elif kind == "serial":
+            return f"Serial No. {val}"
+        elif kind == "no":
+            return f"No. {val}"
+        elif "pid" in kind or kind == "tag":
+            return f"PID Item {val.upper()}"
+    if _PID_BARE_RE.match(s):
+        return f"PID Item {s.upper()}"
+    return s
+
+
+def _strip_remarks_from_spec(spec: str) -> str:
+    if not spec:
+        return ""
+    # Strip any Remarks:... clause (including dangling 'Remarks:' or 'Remarks: something')
+    cleaned = re.sub(r"(?:;\s*)?\bRemarks?:\s*[^;]*", "", spec, flags=re.I).strip("; ")
+    return cleaned
+
+
+def normalize_spare_part_number_and_position(
+    part_number: str | None,
+    drawing_position: str | None,
+    drawing_number: str | None,
+    specification: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """
+    Applies the logic for spare part_number, drawing_position, and specification:
+    1. Capture Position No. only when clearly identified as Position No., Pos., Pos. No., Position. If not, keep empty.
+    2. Item No., Reference No., Serial No., No., and PID Item treated as Part Number with Prefix only if catalog part number not present.
+       If catalog part number is present, item/ref capture is moved into specification. Catalog part numbers must NEVER include header prefixes.
+    3. When no Part Number or Item No./Ref No./PID Item, combine Drawing No/Position No as: Drawing No./Position No.
+       If Item No./Ref No./PID Item is captured as part number, no need to combine Drawing No.
+    4. Specification must never contain the keyword 'Remarks:'.
+
+    Returns: (clean_part_number, clean_drawing_position, clean_specification)
+    """
+    pn = str(part_number).strip() if part_number is not None else ""
+    pos = str(drawing_position).strip() if drawing_position is not None else ""
+    dwg = str(drawing_number).strip() if drawing_number is not None else ""
+    spec = str(specification).strip() if specification is not None else ""
+
+    if pn.lower() in ("none", "null", "n/a", "-"):
+        pn = ""
+    if pos.lower() in ("none", "null", "n/a", "-"):
+        pos = ""
+    if dwg.lower() in ("none", "null", "n/a", "-"):
+        dwg = ""
+
+    # Check if pos actually contains an Item No / Ref No / PID Item / No prefix
+    item_ref_from_pos: str | None = None
+    if pos and _is_fallback_item_id(pos):
+        item_ref_from_pos = pos
+        pos = ""  # Rule 1 & 2: Do NOT treat Item No., Ref No., etc. as Position Numbers
+
+    # If pos has explicit prefix like "Pos. 15" or "Pos No: 12", clean it to just "15" or "12"
+    if pos:
+        m_pos = _EXPLICIT_POS_LABEL_RE.match(pos)
+        if m_pos and m_pos.group(1).strip():
+            pos = m_pos.group(1).strip()
+
+    # Determine if pn is a fallback item ID vs catalog part number
+    is_fallback_pn = _is_fallback_item_id(pn)
+
+    if not is_fallback_pn and pn:
+        # It's a catalog part number: clean any accidental "Part No:", "Code No:" header prefixes
+        pn = _clean_catalog_pn(pn)
+        if not pn:
+            is_fallback_pn = False
+        elif _is_fallback_item_id(pn):
+            is_fallback_pn = True
+
+    has_catalog_pn = bool(pn and not is_fallback_pn)
+
+    # First, if spec contains an embedded PID Item or Item/Ref tag, check if we need it for pn
+    if not has_catalog_pn and not pn:
+        # Check if specification has a PID item (e.g. "Remarks: PID Item BM 090" or "PID Item: BM 090")
+        m_pid_spec = re.search(r"\bPID[\s-]*(?:Item|Tag)?\s*[:#-]?\s*([A-Za-z0-9_-]+(?:\s+[A-Za-z0-9_-]+)*)", spec, re.I)
+        if m_pid_spec:
+            raw_tag = f"PID Item {m_pid_spec.group(1).strip()}"
+            pn = _standardize_item_prefix(raw_tag)
+            spec = re.sub(
+                r"(?:;\s*)?\b" + re.escape(m_pid_spec.group(0)) + r"\b(?:\s*;)?",
+                "",
+                spec,
+                flags=re.I,
+            ).strip("; ")
+        else:
+            # Check if specification has an item/ref/serial tag (e.g. "Item No: 5" or "Ref No. 12")
+            m_spec_item = re.search(
+                r"\b(Item\s*No|Ref\s*No|Reference\s*No|Serial\s*No|No)\s*[:.]\s*([A-Za-z0-9_-]+)",
+                spec,
+                re.I,
+            )
+            if m_spec_item:
+                raw_tag = f"{m_spec_item.group(1)} {m_spec_item.group(2)}"
+                pn = _standardize_item_prefix(raw_tag)
+                spec = re.sub(
+                    r"(?:;\s*)?\b" + re.escape(m_spec_item.group(0)) + r"\b(?:\s*;)?",
+                    "",
+                    spec,
+                    flags=re.I,
+                ).strip("; ")
+
+    # Rule 2:
+    if has_catalog_pn:
+        # If an item/ref number was also found (e.g. from pos), put it into specification
+        if item_ref_from_pos:
+            item_tag = _format_item_tag(item_ref_from_pos)
+            if item_tag and item_tag.lower() not in spec.lower():
+                spec = f"{item_tag}; {spec}".strip("; ") if spec else item_tag
+    else:
+        # No catalog part number is present!
+        # Check if we have an item/ref number to treat as part_number along with Prefix
+        if pn and _is_fallback_item_id(pn):
+            pn = _standardize_item_prefix(pn)
+        elif item_ref_from_pos:
+            pn = _standardize_item_prefix(item_ref_from_pos)
+
+    # Rule 3:
+    # When no Part Number or Item No./Reference No./PID Item, combine the Drawing No/Position No value:
+    # "Drawing No./Position No."
+    # If Item No./Reference No./PID Item is captured as part number, no need to combine Drawing No.
+    if not pn:
+        if dwg and pos:
+            pn = f"{dwg}/{pos}"
+
+    # Strip any remarks completely from specification
+    spec = _strip_remarks_from_spec(spec)
+
+    final_pn = pn if pn else None
+    final_pos = pos if pos else None
+    final_spec = spec if spec else None
+
+    return final_pn, final_pos, final_spec
+
+
+def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type: str = "") -> dict:
+    if not isinstance(record, dict):
+        return record
+
+    # Rule 3: Prevent PDF Filename Leakage & Placeholders
+    for field in ("part_number", "drawing_number", "drawing_position", "job_code", "serial_number", "spare_model"):
+        val = record.get(field)
+        if is_leaked_filename_or_doc_ref(val, filename):
+            record[field] = None
+
+    # Rule 2: Validate Part Number
+    part_num = str(record.get("part_number") or "").strip()
+    if part_num:
+        if len(part_num) > 50 or (" " in part_num and len(part_num.split()) > 3):
+            record["part_number"] = None
+        elif re.search(r'(refer to|see page|contained in|as per|figure|table)', part_num, re.I):
+            record["part_number"] = None
+
+    # Rule 4: Separate Part Name and Specification for Spares (Bug-002 Item 4)
+    if extraction_type == "spare" or "part_name" in record:
+        c_name, c_spec = separate_spare_name_and_spec(record.get("part_name"), record.get("specification"))
+        record["part_name"] = c_name
+        record["specification"] = c_spec
+
+        # Rule 5: Normalize Part Number and Drawing Position (Bug-002 Item 5)
+        clean_pn, clean_pos, clean_spec = normalize_spare_part_number_and_position(
+            record.get("part_number"),
+            record.get("drawing_position"),
+            record.get("drawing_number"),
+            record.get("specification"),
+        )
+        record["part_number"] = clean_pn
+        record["drawing_position"] = clean_pos
+        record["specification"] = clean_spec
+    elif record.get("specification"):
+        record["specification"] = _format_specification_headers(record["specification"])
+
+    # Rule 1: Strip non-English / non-ASCII characters from all string fields
+    for k, v in list(record.items()):
+        if isinstance(v, str) and v:
+            cleaned_str = re.sub(r'[^\x00-\x7F]+', '', v).strip()
+            if not cleaned_str and v:
+                if k in ("part_name", "job_name", "component_name"):
+                    record[k] = v
+                else:
+                    record[k] = None
+            else:
+                record[k] = cleaned_str
+
+    # Safe source_page_number integer parsing
+    if "source_page_number" in record and record["source_page_number"] is not None:
+        record["source_page_number"] = _safe_int_page(record["source_page_number"])
+
+    # Casing & Formatting Rules for Spares:
+    # 1. Part name, Assembly, Assembly Description in Proper Text / Title Case
+    # 2. Maker, Model, Drawing number in ALL CAPS
+    # 3. String truncation to schema limits
+    if extraction_type == "spare" or "part_name" in record:
+        if record.get("part_name"):
+            record["part_name"] = to_proper_case(record["part_name"])[:500]
+        if record.get("part_number"):
+            record["part_number"] = str(record["part_number"]).strip()[:200]
+        if record.get("drawing_position"):
+            record["drawing_position"] = str(record["drawing_position"]).strip()[:100]
+        if record.get("spare_assembly"):
+            record["spare_assembly"] = to_proper_case(record["spare_assembly"])[:300]
+        if record.get("assembly_description"):
+            record["assembly_description"] = to_proper_case(record["assembly_description"])
+        if record.get("spare_maker"):
+            record["spare_maker"] = str(record["spare_maker"]).strip().upper()[:200]
+        if record.get("spare_model"):
+            raw_model = str(record["spare_model"]).strip()
+            # If spare_model is a long sentence or assembly phrase (e.g. "PRM DELTA-30 GEAR WITH ADAPTOR FOR L3.139..."),
+            # avoid storing entire titles in spare_model.
+            is_assembly_phrase = (
+                len(raw_model) > 40
+                or any(w in raw_model.lower() for w in ("parts list", "exploded view", "assembly", "section", "catalogue", " with ", " for ", "gear", "system", "arrangement"))
+            )
+            if is_assembly_phrase:
+                if not record.get("spare_assembly"):
+                    record["spare_assembly"] = to_proper_case(raw_model)[:300]
+                # Try extracting actual model code from it, e.g. "LT-55", "L3.139", "LPW3", "6EY18"
+                m_code = re.search(r'\b(LT-?\d+[A-Z0-9/]*|L\d\s*\.?\s*\d+[A-Z0-9/]*|LPW\d+|[A-Z0-9]{2,}-\d+[A-Z0-9]*)\b', raw_model, re.I)
+                if m_code:
+                    record["spare_model"] = m_code.group(1).upper()
+                else:
+                    record["spare_model"] = None
+            else:
+                record["spare_model"] = raw_model.upper()[:200]
+        if record.get("drawing_number"):
+            record["drawing_number"] = str(record["drawing_number"]).strip().upper()[:200]
+
+    # Normalization for Jobs:
+    # Resolve ranges to lowest numeric frequency value (e.g. '4-6 months' -> 4)
+    if extraction_type == "job" or "job_name" in record:
+        if record.get("job_name"):
+            record["job_name"] = str(record["job_name"])[:500]
+        if record.get("job_code"):
+            record["job_code"] = str(record["job_code"])[:100]
+        if record.get("frequency") is not None or record.get("frequency_type"):
+            f_val, f_type = parse_job_frequency(record.get("frequency"), record.get("frequency_type"))
+            record["frequency"] = f_val
+            if f_type:
+                record["frequency_type"] = f_type
+
+    if extraction_type == "component" or "component_name" in record:
+        if record.get("component_name"):
+            record["component_name"] = str(record["component_name"])[:500]
+        if record.get("maker"):
+            record["maker"] = str(record["maker"])[:200]
+        if record.get("model"):
+            record["model"] = str(record["model"])[:200]
+
+    # Ensure required name fields are never None or empty
+    if "part_name" in record and not record["part_name"]:
+        record["part_name"] = "Unspecified Part"
+    if "job_name" in record and not record["job_name"]:
+        record["job_name"] = "Unspecified Job"
+    if "component_name" in record and not record["component_name"]:
+        record["component_name"] = "Unspecified Component"
+
+    return record
+
+
+def _parse_json_records(raw_text: str, filename: str = "", extraction_type: str = "") -> list[dict]:
+    clean = _strip_code_fences(raw_text).strip()
+    if not clean.startswith("[") and not clean.startswith("{"):
+        clean = _extract_json_from_prose(raw_text).strip()
+    try:
+        parsed: Any = json.loads(clean)
+    except json.JSONDecodeError:
+        parsed = _recover_partial_json_array(clean)
+
+    raw_list = []
+    if isinstance(parsed, list):
+        raw_list = [r for r in parsed if isinstance(r, dict)]
+    elif isinstance(parsed, dict):
+        for key in ("items", "records", "components", "jobs", "spares", "data", "results"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                raw_list = [r for r in value if isinstance(r, dict)]
+                break
+        else:
+            if any(field in parsed for field in ("component_name", "job_name", "part_name", "source_page_number")):
+                raw_list = [parsed]
+
+    return [_sanitize_extracted_record(r, filename=filename, extraction_type=extraction_type) for r in raw_list]
+
+
+def _redact_error_message(exc: Exception) -> str:
+    message = str(exc)
+    for secret in (
+        getattr(settings, "OPENAI_API_KEY", ""),
+        getattr(settings, "ANTHROPIC_API_KEY", ""),
+        getattr(settings, "GEMINI_API_KEY", ""),
+    ):
+        if secret:
+            message = message.replace(secret, "***")
+    return message
+
+
+def _enhance_image_for_extraction(image_bytes: bytes) -> bytes:
+    """Boost contrast and sharpness so the vision model reads dense table text accurately."""
+    try:
+        from PIL import Image as PILImage, ImageEnhance
+        img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
+        img = ImageEnhance.Contrast(img).enhance(1.4)
+        img = ImageEnhance.Sharpness(img).enhance(2.0)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=False)
+        return buf.getvalue()
+    except Exception:
+        return image_bytes
+
+
+async def _extract_with_claude(
+    *,
+    system_prompt: str,
+    user_message: str,
+    filename: str,
+    extraction_type: str,
+) -> list[dict]:
+    if not settings.ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+
+    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    base_cap: int = getattr(settings, "EXTRACTION_MAX_TOKENS", 32000)
+    model_id: str = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
+    use_caching: bool = getattr(settings, "EXTRACTION_ENABLE_PROMPT_CACHING", True)
+    sufficiency_retry: bool = getattr(settings, "EXTRACTION_SUFFICIENCY_RETRY", True)
+
+    system_arg: Any = (
+        [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+        if use_caching else system_prompt
+    )
+    caps = [base_cap, min(base_cap * 2, 64000)] if sufficiency_retry else [base_cap]
+
+    rows: list[dict] = []
+    for attempt, cap in enumerate(caps):
+        api_max_tokens = min(cap, 8192)
+        message = await client.messages.create(
+            model=model_id,
+            max_tokens=api_max_tokens,
+            system=system_arg,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        try:
+            from app.services.token_tracker import record_claude_usage
+            record_claude_usage(message.usage, model=model_id)
+        except Exception:
+            pass
+        raw_text: str = message.content[0].text.strip()
+        rows = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
+        # Only retry if the model was genuinely cut off (hit the token limit) or if we
+        # received partial records but the JSON array didn't close. Do NOT retry when
+        # rows==0 and stop_reason is end_turn — Claude returned prose ("no spares found")
+        # rather than [], and doubling the cap won't change that.
+        hard_cutoff = message.stop_reason == "max_tokens"
+        partial_array = len(rows) > 0 and not raw_text.rstrip().endswith("]")
+        if not hard_cutoff and not partial_array:
+            logger.info(
+                "extract_entities[claude]: %s/%s rows=%d cap=%d",
+                filename, extraction_type, len(rows), cap,
+            )
+            return rows
+        logger.warning(
+            "extract_entities[claude]: %s/%s truncated at cap=%d attempt=%d rows=%d — retrying",
+            filename, extraction_type, cap, attempt, len(rows),
+        )
+    return rows
+
+
+async def _extract_with_openai(
+    *,
+    system_prompt: str,
+    user_message: str,
+    filename: str,
+    extraction_type: str,
+) -> list[dict]:
+    if not settings.OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    max_tokens = getattr(settings, "EXTRACTION_MAX_TOKENS", 16000)
+    model_id: str = getattr(settings, "OPENAI_MODEL_ID", None) or "gpt-4.1-mini"
+    response = await client.chat.completions.create(
+        model=model_id,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        max_tokens=max_tokens,
+        temperature=0,
+    )
+    raw_text = (response.choices[0].message.content or "").strip()
+    if not raw_text:
+        raise RuntimeError("OpenAI returned an empty response")
+    logger.info("extract_entities[openai]: %s/%s responded", filename, extraction_type)
+    return _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
+
+
+
+async def _extract_with_gemini(
+    *,
+    system_prompt: str,
+    user_message: str,
+    filename: str,
+    extraction_type: str,
+) -> list[dict]:
+    if not settings.GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    import httpx
+
+    prompt = f"{system_prompt}\n\n{user_message}"
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.0-flash-lite:generateContent?key={settings.GEMINI_API_KEY}"
+    )
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    async with httpx.AsyncClient(timeout=180) as client:
+        response = None
+        for attempt, wait_seconds in enumerate((5, 10, 20), start=1):
+            response = await client.post(url, json=payload)
+            if response.status_code != 429:
+                response.raise_for_status()
+                break
+            if attempt == 3:
+                response.raise_for_status()
+            logger.warning(
+                "extract_entities[gemini]: 429 for %s/%s, retrying in %ss",
+                filename,
+                extraction_type,
+                wait_seconds,
+            )
+            await asyncio.sleep(wait_seconds)
+    data = response.json()
+    raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    logger.info("extract_entities[gemini]: %s/%s responded", filename, extraction_type)
+    return _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
+
+
+def _dedupe_records(records: list[dict], extraction_type: str) -> list[dict]:
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for record in records:
+        if extraction_type == "component":
+            component_name = (record.get("component_name") or "").strip().lower()
+            main_machinery = (record.get("main_machinery") or "").strip().lower()
+            maker = (record.get("maker") or "").strip().lower()
+            model = (record.get("model") or "").strip().lower()
+            combined = f"{component_name} {main_machinery}"
+            if any(keyword in combined for keyword in ("pump", "motor", "fan", "blower", "compressor")) and maker and model:
+                root = next(
+                    (
+                        keyword
+                        for keyword in ("pump", "motor", "fan", "blower", "compressor")
+                        if keyword in combined
+                    ),
+                    "",
+                )
+                key = "|".join([root, maker, model])
+            else:
+                key = "|".join(
+                    [
+                        component_name,
+                        main_machinery,
+                        str(record.get("source_page_number") or ""),
+                    ]
+                )
+        elif extraction_type == "job":
+            key = "|".join(
+                [
+                    (record.get("job_name") or "").strip().lower(),
+                    (record.get("job_code") or "").strip().lower(),
+                    str(record.get("source_page_number") or ""),
+                ]
+            )
+        else:
+            # Include drawing_number + drawing_position + model heading so distinct parts that share a
+            # part_name or part_number under different model headings are not collapsed.
+            model_tag = extract_spare_model_heading(record).lower()
+            key = "|".join([
+                (record.get("part_number") or "").strip().lower(),
+                (record.get("drawing_number") or "").strip().lower(),
+                (record.get("drawing_position") or "").strip().lower(),
+                (record.get("part_name") or "").strip().lower(),
+                model_tag,
+                str(record.get("source_page_number") or ""),
+            ])
+        if key.strip("|") and key in seen:
+            continue
+        if key.strip("|"):
+            seen.add(key)
+        deduped.append(record)
+    return deduped
+
+
+def _parse_page_tokens(value: str | None) -> list[int]:
+    if not value:
+        return []
+    val = str(value).strip()
+    if not val:
+        return []
+    # Normalize common separators: Chinese/Japanese punctuation, semicolons, ideographic commas, slashes
+    val = val.replace("，", ",").replace(";", ",").replace("；", ",").replace("、", ",").replace("/", ",")
+    # Normalize range symbols: en-dash, em-dash, horizontal bar, minus, fullwidth hyphen, tilde, fullwidth tilde, Chinese to (至/到)
+    val = re.sub(r"[–—―~～至到−－﹣]", "-", val)
+    # Normalize english 'to' or 'through' surrounded by word boundaries
+    val = re.sub(r"\b(?:to|through)\b", "-", val, flags=re.I)
+    # Strip common prefixes and suffixes
+    val = re.sub(r"\b(?:pages?|pp?|pg)\b\.?", "", val, flags=re.I)
+    val = re.sub(r"[第页]", "", val)
+    # Strip enclosing brackets/parentheses
+    val = val.replace("[", "").replace("]", "").replace("(", "").replace(")", "").replace("{", "").replace("}", "")
+
+    pages: set[int] = set()
+    for token in val.split(","):
+        cleaned = token.strip()
+        if not cleaned:
+            continue
+        if "-" in cleaned:
+            parts = [p.strip() for p in cleaned.split("-") if p.strip()]
+            if len(parts) == 2:
+                try:
+                    start = int(parts[0])
+                    end = int(parts[1])
+                    for page in range(min(start, end), max(start, end) + 1):
+                        if page > 0:
+                            pages.add(page)
+                    continue
+                except ValueError:
+                    pass
+        try:
+            p = int(cleaned)
+            if p > 0:
+                pages.add(p)
+                continue
+        except ValueError:
+            pass
+        for num in re.findall(r"\b\d+\b", cleaned):
+            try:
+                p = int(num)
+                if p > 0:
+                    pages.add(p)
+            except ValueError:
+                pass
+    return sorted(pages)
+
+
+def _split_marked_pages(text: str) -> list[tuple[int, str]]:
+    pages: list[tuple[int, str]] = []
+    for match in _PAGE_BLOCK_RE.finditer(text):
+        page_no = int(match.group(1))
+        page_body = match.group(2).strip()
+        pages.append((page_no, page_body))
+    return pages
+
+
+def _build_marked_text_from_lookup(page_lookup: dict[int, str], page_count: int) -> str:
+    total = max(page_count, max(page_lookup.keys(), default=0))
+    parts: list[str] = []
+    for page_no in range(1, total + 1):
+        page_body = (page_lookup.get(page_no) or "").strip()
+        parts.append(f"[PAGE {page_no}]\n{page_body}".rstrip())
+    return "\n\n".join(parts).strip()
+
+
+def _filter_text_to_pages(text: str, selected_pages: list[int], include_context: bool = False) -> str:
+    if not selected_pages:
+        return text
+    if "[PAGE " not in text:
+        return text
+    
+    if not include_context:
+        page_set = set(selected_pages)
+        selected_blocks = [
+            f"[PAGE {page_no}]\n{page_body}".strip()
+            for page_no, page_body in _split_marked_pages(text)
+            if page_no in page_set
+        ]
+        return "\n\n".join(selected_blocks).strip()
+
+    all_pages = list(_split_marked_pages(text))
+    all_pages_dict = {pno: pbody for pno, pbody in all_pages}
+    
+    selected_blocks = []
+    appended = set()
+    for page_no in sorted(selected_pages):
+        prev_page = page_no - 1
+        if prev_page > 0 and prev_page in all_pages_dict and prev_page not in appended and prev_page not in selected_pages:
+            body = all_pages_dict[prev_page].strip()
+            selected_blocks.append(f"[CONTEXT PAGE {prev_page}]\n{body}")
+            appended.add(prev_page)
+            
+        if page_no in all_pages_dict and page_no not in appended:
+            body = all_pages_dict[page_no].strip()
+            selected_blocks.append(f"[PAGE {page_no}]\n{body}")
+            appended.add(page_no)
+            
+    return "\n\n".join(selected_blocks).strip()
+
+
+def _build_preceding_titles_history(text: str, target_page: int, max_lookback: int = 10) -> str:
+    if "[PAGE " not in text:
+        return ""
+    all_pages = dict(_split_marked_pages(text))
+    
+    history_lines = []
+    start_page = max(1, target_page - max_lookback)
+    for pno in range(start_page, target_page):
+        pbody = all_pages.get(pno) or ""
+        # Get the first 3 non-empty lines to find headers/titles
+        lines = [line.strip() for line in pbody.splitlines() if line.strip()]
+        title_lines = lines[:3]
+        if title_lines:
+            joined_title = " | ".join(title_lines)
+            if len(joined_title) > 200:
+                joined_title = joined_title[:197] + "..."
+            history_lines.append(f"Page {pno}: \"{joined_title}\"")
+        else:
+            history_lines.append(f"Page {pno}: [Empty or no text]")
+            
+    if history_lines:
+        return "\n".join(history_lines)
+    return ""
+
+
+async def _ocr_page_with_claude(image_bytes: bytes, filename: str, page_no: int) -> str:
+    if not settings.ANTHROPIC_API_KEY:
+        return ""
+    try:
+        model_id: str = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
+        b64_data = base64.b64encode(image_bytes).decode("ascii")
+        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY, timeout=30.0)
+        
+        user_content = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": b64_data},
+            },
+            {
+                "type": "text",
+                "text": f"Extract all readable text from page {page_no} of {filename}."
+            },
+        ]
+        message = await client.messages.create(
+            model=model_id,
+            max_tokens=4000,
+            system=(
+                "You are extracting visible text from a maritime manual page image. "
+                "Return plain text only. Preserve table rows line by line. "
+                "If you can detect columns, separate them using ' | '. "
+                "Do not explain anything."
+            ),
+            messages=[{"role": "user", "content": user_content}],
+        )
+        try:
+            from app.services.token_tracker import record_claude_usage
+            record_claude_usage(message.usage, model=model_id)
+        except Exception:
+            pass
+        return message.content[0].text.strip()
+    except Exception as exc:
+        logger.warning(
+            "extractor OCR[claude]: failed for %s page=%d: %s",
+            filename,
+            page_no,
+            _redact_error_message(exc),
+        )
+        return ""
+
+
+async def _ocr_page_with_openai(image_bytes: bytes, filename: str, page_no: int) -> str:
+    # 1. Try local non-AI OCR (Tesseract) first
+    try:
+        import pytesseract
+        from PIL import Image
+        import io
+        
+        img = Image.open(io.BytesIO(image_bytes))
+        best_ocr = ""
+        for config in ("--psm 6", "--psm 11", "--psm 12"):
+            ocr_text = pytesseract.image_to_string(img, config=config).strip()
+            if len(ocr_text) > len(best_ocr):
+                best_ocr = ocr_text
+        if best_ocr.strip():
+            logger.info("Local pytesseract OCR successfully recognized text (%d chars)", len(best_ocr))
+            return best_ocr.strip()
+    except Exception as exc:
+        logger.warning("Local pytesseract OCR failed, falling back to AI: %s", exc)
+
+    # 2. Fall back to AI-based OCR
+    if settings.ANTHROPIC_API_KEY and not settings.OPENAI_API_KEY:
+        return await _ocr_page_with_claude(image_bytes, filename, page_no)
+
+    if not settings.OPENAI_API_KEY:
+        return ""
+    try:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=30.0)
+        data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+        model_id = getattr(settings, "OPENAI_VISION_MODEL_ID", None) or "gpt-4.1"
+        response = await client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are extracting visible text from a maritime manual page image. "
+                        "Return plain text only. Preserve table rows line by line. "
+                        "If you can detect columns, separate them using ' | '. "
+                        "Do not explain anything."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"Extract all readable text from page {page_no} of {filename}."},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ],
+            temperature=0,
+            max_tokens=8000,
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.warning(
+            "extractor OCR[openai]: failed for %s page=%d: %s",
+            filename,
+            page_no,
+            _redact_error_message(exc),
+        )
+        return ""
+
+
+def _detect_column_bands(img: Any, min_gap_px: int = 80) -> list[tuple[int, int]]:
+    """Detect vertical whitespace bands to find natural column group boundaries.
+
+    Returns a list of (x_start, x_end) pixel ranges for each column group.
+    Falls back to an empty list if numpy is unavailable or detection is ambiguous.
+    """
+    try:
+        import numpy as np
+        arr = np.asarray(img.convert("L"))
+        col_density = (arr < 200).mean(axis=0)
+        is_gap = col_density < 0.02
+
+        gaps: list[tuple[int, int]] = []
+        start: int | None = None
+        for x, gap in enumerate(is_gap.tolist()):
+            if gap and start is None:
+                start = x
+            elif not gap and start is not None:
+                if x - start >= min_gap_px:
+                    gaps.append((start, x))
+                start = None
+
+        bands: list[tuple[int, int]] = []
+        prev_end = 0
+        for gap_start, gap_end in gaps:
+            if gap_start - prev_end > min_gap_px * 2:
+                bands.append((prev_end, gap_start))
+            prev_end = gap_end
+        if prev_end < img.width - min_gap_px * 2:
+            bands.append((prev_end, img.width))
+
+        if len(bands) < 2 or len(bands) > 6:
+            return []
+        return bands
+    except Exception:
+        return []
+
+
+async def _extract_spare_parts_from_image_split(
+    *,
+    image_bytes: bytes,
+    filename: str,
+    page_no: int,
+    context_note: str | None = None,
+    on_strip_start: Any | None = None,
+) -> list[dict]:
+    """Force full-page spare parts extraction from page image, bypassing column splits."""
+    if on_strip_start:
+        on_strip_start(0, 1)
+
+    full_note = (
+        "This page contains spare parts, equipment components, or an exploded drawing parts list/legend. "
+        "Extract ALL spare parts, callout list items, and listed components. "
+        "Scan the entire page from left-to-right and top-to-bottom. "
+        "Translate any Japanese/Chinese/non-English descriptions to English. If the page has a drawing with a parts list, bill of materials (BOM) in the corner or title block, extract every part. "
+        "Return a JSON array with EVERY item — never return prose."
+    )
+    if context_note:
+        full_note += f" {context_note}"
+
+    logger.info(
+        "extract_spare_split: forcing full-page extraction for %s page=%d",
+        filename, page_no,
+    )
+    return await _extract_entities_from_page_image(
+        image_bytes=image_bytes,
+        filename=filename,
+        page_no=page_no,
+        extraction_type="spare",
+        context_note=full_note,
+    )
+
+
+async def _extract_entities_from_page_image_with_openai(
+    *,
+    image_bytes: bytes,
+    filename: str,
+    page_no: int,
+    extraction_type: str,
+    context_note: str | None = None,
+) -> list[dict]:
+    if not settings.OPENAI_API_KEY:
+        return []
+
+    # Enhance image quality before sending to the vision model
+    image_bytes = _enhance_image_for_extraction(image_bytes)
+
+    prompt_cfg = DEFAULT_PROMPTS[extraction_type]
+    try:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        data_url = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+        model_id = getattr(settings, "OPENAI_VISION_MODEL_ID", None) or "gpt-4.1"
+        text_instructions = (
+            f"Output ONLY a raw JSON array — no prose, no markdown fences, no step-by-step text. "
+            f"Start your response with [ and end with ]. "
+            f"You are extracting {extraction_type} data from PDF page {page_no} of '{filename}'. "
+            f"Use source_page_number={page_no} for every record. "
+            "ALL field values MUST be in English — translate Japanese/Chinese/non-English text. "
+            "Never output non-Latin characters in any field."
+        )
+        if extraction_type == "spare":
+            text_instructions += (
+                "\n\nPARTS LISTS AND EXPLODED DIAGRAM RULES (CRITICAL):"
+                "\n1. If the page has an exploded-view/assembly diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser' or 'Item No. 1: Fan Motor'): extract EVERY item from the list/legend as a spare part. Use 'No. 1', 'No. 2', etc. as part_number, the component name as part_name, and the diagram title or figure number as drawing_number/spare_assembly."
+                "\n2. If the page has BOTH an exploded-view diagram AND a separate full catalog parts table for the same parts on the SAME page, extract from the parts table to avoid duplication."
+                "\n3. If the page contains equipment components listed with settings, calibration values, or technical specifications (e.g. 'COMPONENT | SETTING | NOTES' or 'Fig.8 Calibration'): extract the listed components as spare parts, capturing their settings/parameters in the specification field."
+                "\n4. If the page contains an engineering drawing, assembly diagram, cross-sectional schematic, or piping diagram with a title block, bill of materials (BOM), parts table, or callout list (including in Chinese e.g. 序号, 名称, 材质, 数量, or Japanese NO., 品名, 材质, 数量): translate and extract EVERY part listed in the drawing's bill of materials (BOM), title block, or callout list."
+                "\n5. Read all text in its natural orientation, including landscape or rotated drawings."
+                "\n\nREMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly tags — put in spare_model, NOT part_name or drawing_number."
+                "\n\nCount every TABLE data row (excluding column headers), then output exactly that many JSON records. "
+                "Do not stop early. "
+                "\n\nFor multi-column parts tables (REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS "
+                "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
+                "A single page can contain 50-300 parts — extract ALL of them."
+                "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
+                "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). If not clearly a position label, keep it empty (null). NEVER map Item No., Reference No., Ref No., Serial No., or No. to drawing_position!"
+                "\n  • part_number → Catalog Part Number (PC.NO, CODE NO, etc.). If a catalog Part Number is present, capture it cleanly WITHOUT column header prefixes like 'Part No' or 'Part Number' (e.g. '00621141'). If an Item No./Ref No./Serial No./No. is also present, put that item reference in specification (e.g. 'Ref No: 12'). If NO catalog Part Number exists in the manual, capture Item No., Reference No., Serial No., No., or PID Item as part_number WITH its header prefix from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005', 'PID Item BO 002'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). Leave null if none of these exist — NEVER capture PDF filenames, drawing titles, or page references here."
+                "\n  • part_name → the SPARE NAME ONLY in Proper Text / Title Case, preserving any abbreviations and misspellings of the name (e.g. 'O-Ring', 'Hex Bolt', 'Ball Bearing', 'Oil Seal', 'Gasket', 'Plug'). CRITICAL: Do NOT include specifications, dimensions, thread sizes, materials, or parenthetical details in part_name (e.g. for 'O-RING (15.5 x 2.4 FKM)' output 'O-Ring'; for 'HEX BOLT M12x45' output 'Hex Bolt'; for 'BALL BEARING 6205' output 'Ball Bearing') — always separate and move those additional details to specification!"
+                "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER output the keyword 'Remarks:' or include remarks notes in specification — remarks are not requested."
+                "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
+                "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
+                "\n\nMULTI-MODEL & VARIANT TABLES RULE (CRITICAL):"
+                "\n• Variant quantity columns (e.g. '1, 2, 3, 4' under Ant./Qty with TYPEVARIANT legend like '1: L2.093/LPW2, 2: L3.139/LPW3, 3: L4.186/LPW4'): When a target model is specified in context (e.g. L3 139LB / LPW3 / Variant 2), extract ONLY rows with a quantity in that model's column; do NOT extract rows that are blank/dash for this model. Use that column's quantity in 'QTY: <count> <unit>' and set spare_model to the target model."
+                "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
+                "\n• Model headings & multi-model kits (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'): Always extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS. The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) often appears under different model headings. Each model heading represents distinct equipment parts; NEVER skip or omit rows with duplicate part numbers when they belong to different model headings!"
+            )
+        elif extraction_type == "job":
+            text_instructions += (
+                "\n\nFREQUENCY RANGE RULE (CRITICAL): If frequency or maintenance interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound."
+            )
+        if context_note:
+            text_instructions += f"\n\nAdditional context:\n{context_note}"
+
+        response = await client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {"role": "system", "content": prompt_cfg["system"]},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": text_instructions},
+                        {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
+                    ],
+                },
+            ],
+            temperature=0,
+            max_tokens=32000,
+        )
+        raw_text = (response.choices[0].message.content or "").strip()
+        records = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
+        for record in records:
+            if record.get("source_page_number") in (None, "", 0):
+                record["source_page_number"] = page_no
+        logger.info(
+            "extract_entities[openai-vision]: %s/%s page=%d records=%d",
+            filename,
+            extraction_type,
+            page_no,
+            len(records),
+        )
+        return records
+    except Exception as exc:
+        logger.warning(
+            "extract_entities[openai-vision]: failed for %s/%s page=%d: %s",
+            filename,
+            extraction_type,
+            page_no,
+            _redact_error_message(exc),
+        )
+        raise exc
+
+
+async def _extract_entities_from_page_image_with_claude(
+    *,
+    image_bytes: bytes,
+    filename: str,
+    page_no: int,
+    extraction_type: str,
+    context_note: str | None = None,
+) -> list[dict]:
+    if not settings.ANTHROPIC_API_KEY:
+        return []
+
+    image_bytes = _enhance_image_for_extraction(image_bytes)
+    prompt_cfg = DEFAULT_PROMPTS[extraction_type]
+    try:
+        model_id: str = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
+        b64_data = base64.b64encode(image_bytes).decode("ascii")
+
+        text_instructions = (
+            f"Output ONLY a raw JSON array — no prose, no markdown fences, no explanations. "
+            f"Start your response with [ and end with ]. "
+            f"Extract {extraction_type} data from PDF page {page_no} of '{filename}'. "
+            f"Use source_page_number={page_no} for every record. "
+            "ALL field values MUST be in English — translate Japanese/Chinese/non-English text. "
+            "Never output non-Latin characters in any field."
+        )
+        if extraction_type == "spare":
+            text_instructions += (
+                "\n\nPARTS LISTS AND EXPLODED DIAGRAM RULES (CRITICAL):"
+                "\n1. If the page has an exploded-view/assembly diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser' or 'Item No. 1: Fan Motor'): extract EVERY item from the list/legend as a spare part. Use 'No. 1', 'No. 2', etc. as part_number, the component name as part_name, and the diagram title or figure number as drawing_number/spare_assembly."
+                "\n2. If the page has BOTH an exploded-view diagram AND a separate full catalog parts table for the same parts on the SAME page, extract from the parts table to avoid duplication."
+                "\n3. If the page contains equipment components listed with settings, calibration values, or technical specifications (e.g. 'COMPONENT | SETTING | NOTES' or 'Fig.8 Calibration'): extract the listed components as spare parts, capturing their settings/parameters in the specification field."
+                "\n4. If the page contains an engineering drawing, assembly diagram, cross-sectional schematic, or piping diagram with a title block, bill of materials (BOM), parts table, or callout list (including in Chinese e.g. 序号, 名称, 材质, 数量, or Japanese NO., 品名, 材质, 数量): translate and extract EVERY part listed in the drawing's bill of materials (BOM), title block, or callout list."
+                "\n5. Read all text in its natural orientation, including landscape or rotated drawings."
+                "\n\nREMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly tags — put in spare_model, NOT part_name or drawing_number."
+                "\n\nCount every TABLE data row (excluding column headers), then output exactly that many JSON records. "
+                "Do not stop early. "
+                "\n\nFor multi-column parts tables (REF.NO | CODE NO | PC.NO | DESCRIPTION | QTY | REMARKS "
+                "repeated 2-4 times across the page width): scan ALL column groups left-to-right. "
+                "A single page can contain 50-300 parts — extract ALL of them."
+                "\n  • drawing_number → DWG.NO or drawing reference printed at the page bottom/title block (read the actual value from the page — e.g. 'B3798160-02', 'Fig.7')"
+                "\n  • drawing_position → Capture ONLY when explicitly labeled as Position No., Pos., Pos. No., or Position (e.g. '1~58'). If not clearly a position label, keep it empty (null). NEVER map Item No., Reference No., Ref No., Serial No., or No. to drawing_position!"
+                "\n  • part_number → Catalog Part Number (PC.NO, CODE NO, etc.). If a catalog Part Number is present, capture it cleanly WITHOUT column header prefixes like 'Part No' or 'Part Number' (e.g. '00621141'). If an Item No./Ref No./Serial No./No. is also present, put that item reference in specification (e.g. 'Ref No: 12'). If NO catalog Part Number exists in the manual, capture Item No., Reference No., Serial No., No., or PID Item as part_number WITH its header prefix from the manual (e.g. 'Item No. 5', 'Ref No. 12', 'Serial No. 101', 'No. 3', 'PID Item BM 005', 'PID Item BO 002'). If neither exists, combine Drawing No/Position No (e.g. 'FIG.7/15'). Leave null if none of these exist — NEVER capture PDF filenames, drawing titles, or page references here."
+                "\n  • part_name → the SPARE NAME ONLY in Proper Text / Title Case, preserving any abbreviations and misspellings of the name (e.g. 'O-Ring', 'Hex Bolt', 'Ball Bearing', 'Oil Seal', 'Gasket', 'Plug'). CRITICAL: Do NOT include specifications, dimensions, thread sizes, materials, or parenthetical details in part_name (e.g. for 'O-RING (15.5 x 2.4 FKM)' output 'O-Ring'; for 'HEX BOLT M12x45' output 'Hex Bolt'; for 'BALL BEARING 6205' output 'Ball Bearing') — always separate and move those additional details to specification!"
+                "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER output the keyword 'Remarks:' or include remarks notes in specification — remarks are not requested."
+                "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
+                "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
+                "\n\nMULTI-MODEL & VARIANT TABLES RULE (CRITICAL):"
+                "\n• Variant quantity columns (e.g. '1, 2, 3, 4' under Ant./Qty with TYPEVARIANT legend like '1: L2.093/LPW2, 2: L3.139/LPW3, 3: L4.186/LPW4'): When a target model is specified in context (e.g. L3 139LB / LPW3 / Variant 2), extract ONLY rows with a quantity in that model's column; do NOT extract rows that are blank/dash for this model. Use that column's quantity in 'QTY: <count> <unit>' and set spare_model to the target model."
+                "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
+                "\n• Model headings & multi-model kits (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'): Always extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS. The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) often appears under different model headings. Each model heading represents distinct equipment parts; NEVER skip or omit rows with duplicate part numbers when they belong to different model headings!"
+            )
+        elif extraction_type == "job":
+            text_instructions += (
+                "\n\nFREQUENCY RANGE RULE (CRITICAL): If frequency or maintenance interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound."
+            )
+        if context_note:
+            text_instructions += f"\n\nAdditional context:\n{context_note}"
+
+        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        vision_cap: int = getattr(settings, "EXTRACTION_VISION_MAX_TOKENS", 32000)
+        sufficiency_retry: bool = getattr(settings, "EXTRACTION_SUFFICIENCY_RETRY", True)
+        caps = [vision_cap, min(vision_cap * 2, 64000)] if sufficiency_retry else [vision_cap]
+
+        user_content = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": b64_data},
+            },
+            {"type": "text", "text": text_instructions},
+        ]
+        records: list[dict] = []
+        for attempt, cap in enumerate(caps):
+            api_max_tokens = min(cap, 8192)
+            message = await client.messages.create(
+                model=model_id,
+                max_tokens=api_max_tokens,
+                system=prompt_cfg["system"],
+                messages=[{"role": "user", "content": user_content}],
+            )
+            try:
+                from app.services.token_tracker import record_claude_usage
+                record_claude_usage(message.usage, model=model_id)
+            except Exception:
+                pass
+            raw_text = message.content[0].text.strip()
+            records = _parse_json_records(raw_text, filename=filename, extraction_type=extraction_type)
+            hard_cutoff = message.stop_reason == "max_tokens"
+            partial_array = len(records) > 0 and not raw_text.rstrip().endswith("]")
+            if not hard_cutoff and not partial_array:
+                break
+            logger.warning(
+                "extract_entities[claude-vision]: %s/%s page=%d truncated cap=%d attempt=%d rows=%d — retrying",
+                filename, extraction_type, page_no, cap, attempt, len(records),
+            )
+
+        if not records:
+            logger.warning(
+                "extract_entities[claude-vision]: %s/%s page=%d 0 records — response preview: %r",
+                filename, extraction_type, page_no, raw_text[:400],
+            )
+        for record in records:
+            if record.get("source_page_number") in (None, "", 0):
+                record["source_page_number"] = page_no
+        logger.info(
+            "extract_entities[claude-vision]: %s/%s page=%d records=%d",
+            filename, extraction_type, page_no, len(records),
+        )
+        return records
+    except Exception as exc:
+        logger.warning(
+            "extract_entities[claude-vision]: failed for %s/%s page=%d: %s",
+            filename, extraction_type, page_no, _redact_error_message(exc),
+        )
+        raise exc
+
+
+_claude_vision_billing_failed = False  # module-level circuit breaker; reset on process restart
+_claude_vision_billing_failed_until: float = 0.0
+_claude_text_billing_failed = False
+_claude_text_billing_failed_until: float = 0.0
+
+
+def is_claude_vision_billing_tripped() -> bool:
+    import time
+    global _claude_vision_billing_failed, _claude_vision_billing_failed_until
+    if _claude_vision_billing_failed_until > 0:
+        if time.time() < _claude_vision_billing_failed_until:
+            return True
+        else:
+            _claude_vision_billing_failed = False
+            _claude_vision_billing_failed_until = 0.0
+            return False
+    return bool(_claude_vision_billing_failed)
+
+
+def trip_claude_vision_billing(cooldown_seconds: float = 60.0) -> None:
+    import time
+    global _claude_vision_billing_failed, _claude_vision_billing_failed_until
+    _claude_vision_billing_failed = True
+    _claude_vision_billing_failed_until = time.time() + cooldown_seconds
+
+
+def is_claude_text_billing_tripped() -> bool:
+    import time
+    global _claude_text_billing_failed, _claude_text_billing_failed_until
+    if _claude_text_billing_failed_until > 0:
+        if time.time() < _claude_text_billing_failed_until:
+            return True
+        else:
+            _claude_text_billing_failed = False
+            _claude_text_billing_failed_until = 0.0
+            return False
+    return bool(_claude_text_billing_failed) or is_claude_vision_billing_tripped()
+
+
+def trip_claude_text_billing(cooldown_seconds: float = 60.0) -> None:
+    import time
+    global _claude_text_billing_failed, _claude_text_billing_failed_until
+    _claude_text_billing_failed = True
+    _claude_text_billing_failed_until = time.time() + cooldown_seconds
+    trip_claude_vision_billing(cooldown_seconds)
+
+
+def reset_claude_billing_breakers() -> None:
+    global _claude_vision_billing_failed, _claude_vision_billing_failed_until
+    global _claude_text_billing_failed, _claude_text_billing_failed_until
+    _claude_vision_billing_failed = False
+    _claude_vision_billing_failed_until = 0.0
+    _claude_text_billing_failed = False
+    _claude_text_billing_failed_until = 0.0
+
+
+async def _extract_entities_from_page_image(
+    *,
+    image_bytes: bytes,
+    filename: str,
+    page_no: int,
+    extraction_type: str,
+    context_note: str | None = None,
+) -> list[dict]:
+    """Try Claude vision first; fall back to OpenAI vision."""
+    claude_err = None
+    if settings.ANTHROPIC_API_KEY and not is_claude_vision_billing_tripped():
+        try:
+            records = await _extract_entities_from_page_image_with_claude(
+                image_bytes=image_bytes,
+                filename=filename,
+                page_no=page_no,
+                extraction_type=extraction_type,
+                context_note=context_note,
+            )
+            if records:
+                return records
+        except Exception as exc:
+            claude_err = exc
+            err_str = str(exc)
+            if "credit balance" in err_str.lower() or "402" in err_str or (
+                "400" in err_str and "credit" in err_str.lower()
+            ):
+                trip_claude_vision_billing(cooldown_seconds=60.0)
+                logger.warning(
+                    "extract_entities[claude-vision]: billing error (%s) — cooling down Claude vision for 60s",
+                    _redact_error_message(exc),
+                )
+            # Fall through to OpenAI regardless
+
+    if not settings.OPENAI_API_KEY:
+        if claude_err:
+            raise claude_err
+        if not settings.ANTHROPIC_API_KEY:
+            raise RuntimeError("No Vision LLM API Key is configured on the server (both ANTHROPIC_API_KEY and OPENAI_API_KEY are empty).")
+        if is_claude_vision_billing_tripped():
+            raise RuntimeError("Claude Vision billing/credit limit was reached recently (cooldown active), and no OpenAI fallback is configured.")
+        return []
+
+    return await _extract_entities_from_page_image_with_openai(
+        image_bytes=image_bytes,
+        filename=filename,
+        page_no=page_no,
+        extraction_type=extraction_type,
+        context_note=context_note,
+    )
+
+
+def _render_single_pdf_page_image(
+    file_bytes: bytes,
+    page_no: int,
+    resolution: int = 200,
+) -> Optional[bytes]:
+    try:
+        import fitz
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        if 1 <= page_no <= len(doc):
+            page = doc[page_no - 1]
+            pix = page.get_pixmap(dpi=resolution)
+            png_bytes = pix.tobytes("png")
+            doc.close()
+            return png_bytes
+    except Exception as fitz_exc:
+        logger.warning("fitz single page render failed: page=%d error=%s", page_no, fitz_exc)
+    try:
+        import pdfplumber
+        import io
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            if 1 <= page_no <= len(pdf.pages):
+                page_image = pdf.pages[page_no - 1].to_image(resolution=resolution).original
+                image_buffer = io.BytesIO()
+                page_image.save(image_buffer, format="PNG")
+                return image_buffer.getvalue()
+    except Exception as exc:
+        logger.warning("extractor single page render failed: page=%d error=%s", page_no, exc)
+    return None
+
+
+async def _render_selected_pdf_page_images(
+    *,
+    file_bytes: bytes,
+    selected_pages: list[int],
+    resolution: int = 400,
+) -> dict[int, bytes]:
+    rendered: dict[int, bytes] = {}
+    try:
+        import pdfplumber
+    except Exception:
+        return rendered
+
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page_no in selected_pages:
+                if page_no < 1 or page_no > len(pdf.pages):
+                    continue
+                try:
+                    page_image = pdf.pages[page_no - 1].to_image(resolution=resolution).original
+                    image_buffer = io.BytesIO()
+                    page_image.save(image_buffer, format="PNG")
+                    rendered[page_no] = image_buffer.getvalue()
+                except Exception as exc:
+                    logger.warning("extractor page render failed: page=%d error=%s", page_no, exc)
+    except Exception as exc:
+        logger.warning("extractor page render failed for selected pages: %s", exc)
+
+    return rendered
+
+
+async def _enrich_pdf_text_for_selected_pages(
+    *,
+    file_bytes: bytes,
+    filename: str,
+    full_text: str,
+    selected_pages: list[int],
+    page_count: int,
+) -> str:
+    page_lookup = {page_no: page_body for page_no, page_body in _split_marked_pages(full_text)}
+    _SPARSE_TABLE_HEADERS = re.compile(
+        r"(PC\.?\s*NO|REF\.?\s*NO|DESCRIPTION|PART\s+NO|QTY|REMARKS|CODE\s+NO)",
+        re.I,
+    )
+
+    def _page_needs_ocr(text: str) -> bool:
+        text = (text or "").strip()
+        if len(text) < 120:
+            return True
+        # Text is present but looks like a garbled multi-column table: headers found but very few data rows
+        if _SPARSE_TABLE_HEADERS.search(text):
+            lines = [l for l in text.splitlines() if l.strip()]
+            header_count = sum(1 for l in lines if _SPARSE_TABLE_HEADERS.search(l))
+            data_lines = len(lines) - header_count
+            if data_lines < 10:
+                return True
+        return False
+
+    target_pages = [
+        page_no
+        for page_no in selected_pages
+        if _page_needs_ocr(page_lookup.get(page_no))
+    ]
+    if not target_pages:
+        return full_text
+
+    try:
+        import pdfplumber
+    except Exception:
+        pdfplumber = None
+
+    try:
+        import pytesseract  # type: ignore
+    except Exception:
+        pytesseract = None
+
+    if pdfplumber is None:
+        return full_text
+
+    try:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page_no in target_pages:
+                if page_no < 1 or page_no > len(pdf.pages):
+                    continue
+                page = pdf.pages[page_no - 1]
+                page_parts: list[str] = []
+
+                try:
+                    text = (page.extract_text() or "").strip()
+                    if text:
+                        page_parts.append(text)
+                except Exception:
+                    pass
+
+                try:
+                    for table in (page.extract_tables() or []):
+                        if not table:
+                            continue
+                        rows = [
+                            " | ".join(str(c).strip() if c else "" for c in row)
+                            for row in table
+                            if row and any(c for c in row if c)
+                        ]
+                        if rows:
+                            page_parts.append("[TABLE]\n" + "\n".join(rows))
+                except Exception:
+                    pass
+
+                combined = "\n".join(part for part in page_parts if part).strip()
+                if len(combined) < 120:
+                    try:
+                        page_image = page.to_image(resolution=200).original
+                    except Exception:
+                        page_image = None
+
+                    if page_image is not None and pytesseract is not None:
+                        try:
+                            best_ocr = combined
+                            for config in ("--psm 6", "--psm 11", "--psm 12"):
+                                ocr_text = pytesseract.image_to_string(page_image, config=config).strip()
+                                if len(ocr_text) > len(best_ocr):
+                                    best_ocr = ocr_text
+                            combined = best_ocr
+                        except Exception:
+                            pass
+
+                    if len(combined) < 120 and page_image is not None:
+                        try:
+                            image_buffer = io.BytesIO()
+                            page_image.save(image_buffer, format="PNG")
+                            vision_text = await _ocr_page_with_openai(
+                                image_buffer.getvalue(),
+                                filename,
+                                page_no,
+                            )
+                            if len(vision_text) > len(combined):
+                                combined = vision_text
+                        except Exception:
+                            pass
+
+                page_lookup[page_no] = combined.strip()
+                logger.info(
+                    "extractor OCR enrich: %s page=%d chars=%d",
+                    filename,
+                    page_no,
+                    len(page_lookup[page_no]),
+                )
+    except Exception as exc:
+        logger.warning("extractor OCR enrich failed for %s: %s", filename, exc)
+        return full_text
+
+    return _build_marked_text_from_lookup(page_lookup, page_count)
+
+
+def _selected_manual_pages(manual: Any, entity_type: str) -> list[int]:
+    physical_attr = {
+        "component": "pages_with_components_physical",
+        "job": "pages_with_jobs_physical",
+        "spare": "pages_with_spares_physical",
+    }[entity_type]
+    canonical_attr = {
+        "component": "pages_with_components",
+        "job": "pages_with_jobs",
+        "spare": "pages_with_spares",
+    }[entity_type]
+    raw_val = (getattr(manual, physical_attr, None) or "").strip() or (getattr(manual, canonical_attr, None) or "").strip()
+    return _parse_page_tokens(raw_val)
+
+
+def _normalise_text(value: str | None) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", (value or "").lower())).strip()
+
+
+def _component_match_score(search_text: str, component: Any, page_reference: int | None) -> float:
+    haystack = _normalise_text(search_text)
+    component_text = _normalise_text(
+        " ".join(
+            filter(
+                None,
+                [
+                    getattr(component, "component_name", None),
+                    getattr(component, "main_machinery", None),
+                    getattr(component, "maker", None),
+                    getattr(component, "model", None),
+                ],
+            )
+        )
+    )
+    if not haystack or not component_text:
+        return 0.0
+
+    hay_tokens = set(haystack.split())
+    comp_tokens = set(component_text.split())
+    overlap = len(hay_tokens & comp_tokens) / max(len(comp_tokens), 1)
+    ratio = SequenceMatcher(None, haystack, component_text).ratio()
+    score = max(overlap, ratio)
+
+    component_page = getattr(component, "page_reference", None)
+    if page_reference and component_page:
+        distance = abs(page_reference - component_page)
+        if distance == 0:
+            score += 0.15
+        elif distance <= 3:
+            score += 0.08
+        elif distance <= 6:
+            score += 0.03
+
+    return score
+
+
+def _component_has_manual_reference(component: Any, manual: Any) -> bool:
+    manual_id = getattr(manual, "id", None)
+    manual_name = (getattr(manual, "original_filename", None) or "").strip()
+    component_manual_id = getattr(component, "source_manual_id", None)
+    pdf_reference = getattr(component, "pdf_reference", None) or ""
+    return bool(
+        (manual_id and component_manual_id == manual_id)
+        or (manual_name and manual_name.lower() in pdf_reference.lower())
+    )
+
+
+def _page_in_reference(page_reference: int | None, pages_value: str | None) -> bool:
+    if page_reference is None or not pages_value:
+        return False
+    return page_reference in set(_parse_page_tokens(pages_value))
+
+
+def _merge_reference_values(current: str | None, incoming: str | None) -> str | None:
+    current_clean = (current or "").strip()
+    incoming_clean = (incoming or "").strip()
+    if not current_clean:
+        return incoming_clean or None
+    if not incoming_clean:
+        return current_clean or None
+    if incoming_clean in current_clean:
+        return current_clean
+    return f"{current_clean}; {incoming_clean}"
+
+
+def _link_score(
+    *,
+    search_text: str,
+    component: Any,
+    page_reference: int | None,
+    relation: str,
+    manual: Any,
+) -> float:
+    score = _component_match_score(search_text, component, page_reference)
+
+    if _component_has_manual_reference(component, manual):
+        score += 0.16
+
+    if relation == "job" and _page_in_reference(page_reference, getattr(component, "job_pages", None)):
+        score += 0.2
+    if relation == "spare" and _page_in_reference(page_reference, getattr(component, "spare_pages", None)):
+        score += 0.2
+
+    return score
+
+
+def _manual_page_refs_summary(manual: Any) -> str:
+    parts: list[str] = []
+    for label, printed_attr, physical_attr in (
+        ("components", "pages_with_components_printed", "pages_with_components_physical"),
+        ("jobs", "pages_with_jobs_printed", "pages_with_jobs_physical"),
+        ("spares", "pages_with_spares_printed", "pages_with_spares_physical"),
+    ):
+        printed = getattr(manual, printed_attr, None) or ""
+        physical = getattr(manual, physical_attr, None) or ""
+        if printed or physical:
+            parts.append(f"{label}: printed={printed or 'none'}, physical={physical or 'none'}")
+    return "; ".join(parts)
+
+
+def _build_component_context_text(components: list[Any], manual: Any) -> str:
+    if not components and not manual:
+        return ""
+    def _value(component: Any, key: str) -> Any:
+        if isinstance(component, dict):
+            return component.get(key)
+        return getattr(component, key, None)
+
+    # Collect distinct equipment models
+    distinct_models: list[str] = []
+    seen_models: set[str] = set()
+
+    manual_target_model = (getattr(manual, "target_model", None) or "").strip()
+    if manual_target_model and manual_target_model.upper() not in {"N/A", "UNKNOWN", "NONE", "-", "--", "NULL", "UNSPECIFIED"}:
+        distinct_models.append(manual_target_model)
+        seen_models.add(manual_target_model.upper())
+    for component in (components or []):
+        m = _value(component, "model")
+        if m and isinstance(m, str):
+            clean_m = m.strip()
+            if clean_m and clean_m.upper() not in {"N/A", "UNKNOWN", "NONE", "-", "--", "NULL", "UNSPECIFIED"}:
+                if clean_m.upper() not in seen_models:
+                    seen_models.add(clean_m.upper())
+                    distinct_models.append(clean_m)
+
+    # If components did not provide a model, inspect manual filename
+    manual_filename = (getattr(manual, "original_filename", None) or getattr(manual, "filename", None) or "").strip()
+    if not distinct_models and manual_filename:
+        m_match = re.search(r'\b(LT-?\d+[A-Z0-9/]*|L\d\s*\.?\s*\d+[A-Z0-9/]*|LPW\d+|[A-Z0-9]{2,}-\d+[A-Z0-9]*)\b', manual_filename, re.I)
+        if m_match:
+            candidate = m_match.group(1).strip()
+            if candidate.upper() not in {"PDF", "AIR", "BOAT", "RESCUE", "LIFE", "COMPRESSOR", "ENGINE"}:
+                distinct_models.append(candidate)
+
+    lines = [
+        "Known component context from this manual:",
+        f"Manual screening refs -> {_manual_page_refs_summary(manual) or 'not set'}",
+    ]
+    for component in (components or [])[:40]:
+        lines.append(
+            " - "
+            + " | ".join(
+                filter(
+                    None,
+                    [
+                        f"name={_value(component, 'component_name')}",
+                        f"main={_value(component, 'main_machinery')}",
+                        f"maker={_value(component, 'maker')}",
+                        f"model={_value(component, 'model')}",
+                        f"page={_value(component, 'page_reference') or _value(component, 'source_page_number')}",
+                    ],
+                )
+            )
+        )
+
+    if distinct_models:
+        models_str = ", ".join(distinct_models)
+        lines.append(
+            f"TARGET EQUIPMENT MODEL(S): {models_str}\n"
+            "CRITICAL: If the parts table contains model-specific rows or columns for multiple models (e.g. Atlas Copco LT22 vs LT55, or Sabb/Lister Petter Variant 1: LPW2 vs Variant 2: LPW3/L3.139):\n"
+            f"- Extract ONLY rows/columns applicable to the target model ({models_str}).\n"
+            "- Ignore parts that strictly belong to other models or engine variants.\n"
+            "- If the table uses multi-variant quantity columns (e.g. 1, 2, 3), use the quantity from the column corresponding to the target model.\n"
+            "- Set spare_model to the matching target model in ALL CAPS."
+        )
+    else:
+        lines.append(
+            "When extracting jobs or spares, prefer linking each record to one of these components via job_name wording, spare_model, or component context."
+        )
+    return "\n".join(lines)
+
+
+def _combine_unique_text_parts(*values: str | None) -> str | None:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        for part in re.split(r"\n{2,}", value or ""):
+            cleaned = part.strip()
+            if not cleaned:
+                continue
+            key = re.sub(r"\s+", " ", cleaned).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(cleaned)
+    return "\n\n".join(ordered) if ordered else None
+
+
+def _jobs_are_mergeable(left: Any, right: Any) -> bool:
+    if getattr(left, "component_id", None) != getattr(right, "component_id", None):
+        return False
+    if getattr(left, "frequency", None) != getattr(right, "frequency", None):
+        return False
+    if getattr(left, "frequency_type", None) != getattr(right, "frequency_type", None):
+        return False
+    if getattr(left, "source_manual_id", None) != getattr(right, "source_manual_id", None):
+        return False
+
+    left_name = _normalise_text(getattr(left, "job_name", None))
+    right_name = _normalise_text(getattr(right, "job_name", None))
+    if not left_name or not right_name:
+        return False
+    if left_name == right_name:
+        return True
+
+    similarity = SequenceMatcher(None, left_name, right_name).ratio()
+    left_page = getattr(left, "page_reference", None)
+    right_page = getattr(right, "page_reference", None)
+    same_page = left_page is not None and right_page is not None and left_page == right_page
+    return similarity >= 0.84 or (same_page and similarity >= 0.72)
+
+
+async def _consolidate_jobs_for_manual(
+    *,
+    db: Any,
+    manual: Any,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> int:
+    from sqlalchemy import select
+    from app.models.job import Job
+
+    result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == tenant_id,
+            Job.is_deleted == False,
+            Job.source_manual_id == manual.id,
+        ).order_by(Job.created_at, Job.job_name)
+    )
+    jobs = list(result.scalars().all())
+    component_ids = {job.component_id for job in jobs if getattr(job, "component_id", None)}
+    component_names: dict[uuid.UUID, str] = {}
+    if component_ids:
+        from app.models.component import Component
+
+        component_result = await db.execute(select(Component).where(Component.id.in_(component_ids)))
+        component_names = {
+            component.id: component.component_name
+            for component in component_result.scalars().all()
+        }
+    merged_count = 0
+
+    for idx, target in enumerate(jobs):
+        if getattr(target, "is_deleted", False):
+            continue
+        for candidate in jobs[idx + 1:]:
+            if getattr(candidate, "is_deleted", False):
+                continue
+            if not _jobs_are_mergeable(target, candidate):
+                continue
+
+            reference_entries = split_reference_entries(
+                pdf_reference=target.pdf_reference,
+                page_reference=target.page_reference,
+                source_reference=target.source_reference,
+                description=target.job_description,
+            )
+            reference_entries.extend(
+                split_reference_entries(
+                    pdf_reference=candidate.pdf_reference,
+                    page_reference=candidate.page_reference,
+                    source_reference=candidate.source_reference,
+                    description=candidate.job_description,
+                )
+            )
+            target_clean = strip_source_reference_footer(target.job_description)
+            cand_clean = strip_source_reference_footer(candidate.job_description)
+            target.job_description = _combine_unique_text_parts(target_clean, cand_clean)
+            target.safety_precaution = _combine_unique_text_parts(target.safety_precaution, candidate.safety_precaution)
+            target.tools_required = _combine_unique_text_parts(target.tools_required, candidate.tools_required)
+            if not target.job_code and candidate.job_code:
+                target.job_code = candidate.job_code
+            if not target.performing_rank and candidate.performing_rank:
+                target.performing_rank = candidate.performing_rank
+            if not target.verifying_rank and candidate.verifying_rank:
+                target.verifying_rank = candidate.verifying_rank
+            if not target.cms_id and candidate.cms_id:
+                target.cms_id = candidate.cms_id
+            target.is_critical = bool(target.is_critical or candidate.is_critical)
+            target.confidence_score = max(
+                int(target.confidence_score or 0),
+                int(candidate.confidence_score or 0),
+            ) or None
+            resolved_name = await build_canonical_job_name(
+                db,
+                component_name=component_names.get(getattr(target, "component_id", None)),
+                job_names=[target.job_name, candidate.job_name],
+                job_descriptions=[target.job_description, candidate.job_description],
+                tenant_id=tenant_id,
+                frequency=target.frequency,
+                frequency_type=target.frequency_type,
+                job_id=target.id,
+                component_id=getattr(target, "component_id", None),
+            )
+            if resolved_name:
+                target.job_name = resolved_name
+            pdf_reference, primary_page, source_reference = summarize_reference_entries(reference_entries)
+            target.pdf_reference = pdf_reference
+            target.page_reference = primary_page
+            target.source_reference = source_reference
+            target.job_description = append_source_references_to_description(target.job_description, reference_entries)
+            db.add(target)
+
+            candidate.is_deleted = True
+            db.add(candidate)
+            merged_count += 1
+
+    return merged_count
+
+
+async def _consolidate_spares_for_manual(
+    *,
+    db: Any,
+    manual: Any,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> int:
+    from sqlalchemy import select
+    from app.models.spare import Spare, ExtractionMethod as _EM
+    from app.services.extraction_counter import record_manual_extraction_run, record_page_extraction_run
+    from app.services.deduplication import fuzzy_similarity
+
+    result = await db.execute(
+        select(Spare).where(
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == tenant_id,
+            Spare.is_deleted == False,
+            Spare.source_manual_id == manual.id,
+        ).order_by(Spare.created_at, Spare.part_name)
+    )
+    spares = list(result.scalars().all())
+    merged_count = 0
+
+    for idx, target in enumerate(spares):
+        if getattr(target, "is_deleted", False):
+            continue
+        for candidate in spares[idx + 1:]:
+            if getattr(candidate, "is_deleted", False):
+                continue
+            
+            # Match component mappings unless it's an exact duplicate on the same manual page
+            page_t = getattr(target, "page_reference", None)
+            page_c = getattr(candidate, "page_reference", None)
+            same_page = page_t is not None and page_c is not None and page_t == page_c
+
+            pos_t = (target.drawing_position or "").strip().lower()
+            pos_c = (candidate.drawing_position or "").strip().lower()
+            name_t = (target.part_name or "").strip().lower()
+            name_c = (candidate.part_name or "").strip().lower()
+            pn_t = (target.part_number or "").strip().upper()
+            pn_c = (candidate.part_number or "").strip().upper()
+
+            is_exact_same_page_match = same_page and name_t and name_t == name_c and pn_t == pn_c and pos_t == pos_c
+
+            if not is_exact_same_page_match and target.component_id != candidate.component_id:
+                continue
+
+            # If both have different non-empty drawing positions, do NOT merge them
+            if pos_t and pos_c and pos_t != pos_c:
+                continue
+
+            # Fuzzy name check
+            if not name_t or not name_c:
+                continue
+            if not is_exact_same_page_match and fuzzy_similarity(name_t, name_c) < 0.88:
+                continue
+
+            # Part number mismatch check
+            if pn_t and pn_c and pn_t != pn_c:
+                continue
+
+            # Model heading check: Spares should ONLY be treated as duplicates when they appear
+            # under the SAME model heading. Spares belonging to different model headings must be kept.
+            model_t = extract_spare_model_heading(target)
+            model_c = extract_spare_model_heading(candidate)
+            if model_t and model_c and model_t != model_c:
+                continue
+
+            # Merge candidates metadata into target
+            if not target.part_number and candidate.part_number:
+                target.part_number = candidate.part_number
+            if not target.drawing_number and candidate.drawing_number:
+                target.drawing_number = candidate.drawing_number
+            if not target.drawing_position and candidate.drawing_position:
+                target.drawing_position = candidate.drawing_position
+            
+            merged_spec = target.specification or candidate.specification
+            target.specification = _format_specification_headers(merged_spec)
+
+            if not target.spare_assembly and candidate.spare_assembly:
+                target.spare_assembly = candidate.spare_assembly
+            if not target.assembly_description and candidate.assembly_description:
+                target.assembly_description = candidate.assembly_description
+            if not target.spare_maker and candidate.spare_maker:
+                target.spare_maker = candidate.spare_maker
+            if not target.spare_model and candidate.spare_model:
+                target.spare_model = candidate.spare_model
+
+            target.is_critical = bool(target.is_critical or candidate.is_critical)
+            
+            # Confidence score
+            score_t = int(getattr(target, "confidence_score", 0) or 0)
+            score_c = int(getattr(candidate, "confidence_score", 0) or 0)
+            if score_c > score_t:
+                target.confidence_score = score_c
+
+            # Mark candidate duplicate as deleted under the same model heading
+            candidate.is_deleted = True
+            candidate.is_duplicate = True
+            candidate.merged_into_id = target.id
+            db.add(candidate)
+            db.add(target)
+            merged_count += 1
+
+    # Cross-manual duplicate check for the same vessel:
+    # If a spare has already been extracted from another manual for the SAME model heading,
+    # mark it as a duplicate and ignore it.
+    other_spares_res = await db.execute(
+        select(Spare).where(
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == tenant_id,
+            Spare.source_manual_id != manual.id,
+            Spare.is_deleted == False,
+        )
+    )
+    other_spares = list(other_spares_res.scalars().all())
+
+    if other_spares:
+        for target in spares:
+            if getattr(target, "is_deleted", False):
+                continue
+
+            pn_t = (target.part_number or "").strip().upper()
+            pos_t = (target.drawing_position or "").strip().lower()
+            name_t = (target.part_name or "").strip().lower()
+            model_t = extract_spare_model_heading(target)
+
+            for existing in other_spares:
+                if getattr(existing, "is_deleted", False):
+                    continue
+
+                pn_e = (existing.part_number or "").strip().upper()
+                pos_e = (existing.drawing_position or "").strip().lower()
+                name_e = (existing.part_name or "").strip().lower()
+                model_e = extract_spare_model_heading(existing)
+
+                # Part number match
+                if pn_t and pn_e:
+                    if pn_t != pn_e:
+                        continue
+                else:
+                    if not (name_t and name_e and name_t == name_e and pos_t and pos_e and pos_t == pos_e):
+                        continue
+
+                # Model heading match: MUST be for the SAME model heading
+                if model_t and model_e:
+                    if model_t != model_e:
+                        continue  # Different model headings -> NOT a duplicate!
+                elif bool(model_t) != bool(model_e):
+                    continue  # One has a specific model heading, the other does not -> NOT a duplicate!
+
+                # Name similarity check
+                if name_t and name_e and fuzzy_similarity(name_t, name_e) < 0.88:
+                    continue
+
+                # Drawing position check
+                if pos_t and pos_e and pos_t != pos_e:
+                    continue
+
+                # Confirmed duplicate from another manual for the SAME model heading
+                target.is_deleted = True
+                target.is_duplicate = True
+                target.merged_into_id = existing.id
+                db.add(target)
+                merged_count += 1
+                break
+
+    return merged_count
+
+# ---------------------------------------------------------------------------
+# Core extraction function
+# ---------------------------------------------------------------------------
+
+
+async def extract_entities(
+    text_chunk: str,
+    extraction_type: str,
+    filename: str,
+    custom_prompt: str | None = None,
+    context_note: str | None = None,
+) -> list[dict]:
+    """
+    Call the configured AI providers to extract structured entities from a text chunk.
+
+    Args:
+        text_chunk: The manual text to process.
+        extraction_type: One of "component", "job", "spare".
+        filename: Source filename (used for logging).
+        custom_prompt: Optional override for the system prompt.
+
+    Returns:
+        List of dicts parsed from Claude's JSON response, or [] on error.
+    """
+    global _claude_vision_billing_failed
+    prompt_config = DEFAULT_PROMPTS.get(extraction_type, DEFAULT_PROMPTS["component"])
+    system_prompt = custom_prompt or prompt_config["system"]
+    user_message = prompt_config["user_template"].format(text=text_chunk, filename=filename)
+    if context_note:
+        user_message = f"{user_message}\n\nAdditional extraction context:\n{context_note}"
+    providers: list[tuple[str, Any]] = [
+        ("claude", _extract_with_claude),
+        ("openai", _extract_with_openai),
+        ("gemini", _extract_with_gemini),
+    ]
+    last_error: Exception | None = None
+
+    for provider_name, provider in providers:
+        if provider_name == "claude" and is_claude_text_billing_tripped():
+            continue
+        try:
+            records = await provider(
+                system_prompt=system_prompt,
+                user_message=user_message,
+                filename=filename,
+                extraction_type=extraction_type,
+            )
+            logger.info(
+                "extract_entities: provider=%s %s/%s records=%d",
+                provider_name,
+                filename,
+                extraction_type,
+                len(records),
+            )
+            return records
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            logger.warning(
+                "extract_entities: provider=%s JSON parse error for %s/%s: %s",
+                provider_name,
+                filename,
+                extraction_type,
+                exc,
+            )
+        except Exception as exc:
+            last_error = exc
+            err_str = str(exc)
+            if provider_name == "claude" and (
+                "credit balance" in err_str.lower() or ("400" in err_str and "credit" in err_str.lower())
+            ):
+                trip_claude_text_billing(cooldown_seconds=60.0)
+                logger.warning(
+                    "extract_entities: Claude billing error — cooling down Claude for 60s"
+                )
+            else:
+                logger.warning(
+                    "extract_entities: provider=%s failed for %s/%s: %s",
+                    provider_name,
+                    filename,
+                    extraction_type,
+                    _redact_error_message(exc),
+                )
+
+    if last_error is not None:
+        message = _redact_error_message(last_error)
+        logger.error(
+            "extract_entities: all providers failed for %s/%s: %s",
+            filename,
+            extraction_type,
+            message,
+        )
+        raise ExtractionProvidersFailed(
+            f"All extraction providers failed for {filename}/{extraction_type}: {message}"
+        )
+    return []
+
+
+def _merge_context_notes(*notes: str | None) -> str | None:
+    merged = [note.strip() for note in notes if note and note.strip()]
+    if not merged:
+        return None
+    return "\n\n".join(merged)
+
+
+# ---------------------------------------------------------------------------
+# Post-processing helpers
+# ---------------------------------------------------------------------------
+
+
+async def _overwrite_component_manual_refs(
+    *,
+    db: Any,
+    manual: Any,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> int:
+    from sqlalchemy import select
+    from app.models.component import Component, QCStatus
+
+    result = await db.execute(
+        select(Component).where(
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == tenant_id,
+            Component.is_deleted == False,
+            Component.qc_status != QCStatus.rejected,
+        )
+    )
+    components = result.scalars().all()
+
+    updated = 0
+    job_pages = getattr(manual, "pages_with_jobs", None) or None
+    spare_pages = getattr(manual, "pages_with_spares", None) or None
+    pdf_ref = manual.original_filename
+    for comp in components:
+        if not _component_has_manual_reference(comp, manual):
+            continue
+        changed = False
+        if job_pages and comp.job_pages != job_pages and ";" not in (comp.job_pages or ""):
+            comp.job_pages = job_pages
+            changed = True
+        if spare_pages and comp.spare_pages != spare_pages and ";" not in (comp.spare_pages or ""):
+            comp.spare_pages = spare_pages
+            changed = True
+        merged_pdf_ref = _merge_reference_values(comp.pdf_reference, pdf_ref)
+        if comp.pdf_reference != merged_pdf_ref:
+            comp.pdf_reference = merged_pdf_ref
+            changed = True
+        if changed:
+            db.add(comp)
+            updated += 1
+    return updated
+
+
+async def _call_llm_json(system_prompt: str, user_message: str) -> dict:
+    # 1. Claude
+    if settings.ANTHROPIC_API_KEY:
+        try:
+            import httpx
+            headers = {
+                "x-api-key": settings.ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+            model_id = getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6"
+            payload = {
+                "model": model_id,
+                "max_tokens": 4000,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_message}],
+            }
+            async with httpx.AsyncClient(timeout=120) as client:
+                res = await client.post("https://api.anthropic.com/v1/messages", json=payload, headers=headers)
+                res.raise_for_status()
+                raw = res.json()["content"][0]["text"]
+                clean = _strip_code_fences(raw).strip()
+                return json.loads(clean)
+        except Exception as e:
+            logger.warning("LLM mapping: Claude failed: %s", e)
+
+    # 2. OpenAI
+    if settings.OPENAI_API_KEY:
+        try:
+            import httpx
+            headers = {
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "content-type": "application/json",
+            }
+            payload = {
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                "response_format": {"type": "json_object"}
+            }
+            async with httpx.AsyncClient(timeout=120) as client:
+                res = await client.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers)
+                res.raise_for_status()
+                raw = res.json()["choices"][0]["message"]["content"]
+                clean = _strip_code_fences(raw).strip()
+                return json.loads(clean)
+        except Exception as e:
+            logger.warning("LLM mapping: OpenAI failed: %s", e)
+
+    # 3. Gemini
+    if settings.GEMINI_API_KEY:
+        try:
+            import httpx
+            prompt = f"{system_prompt}\n\n{user_message}"
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"gemini-2.0-flash-lite:generateContent?key={settings.GEMINI_API_KEY}"
+            )
+            payload = {"contents": [{"parts": [{"text": prompt}]}]}
+            async with httpx.AsyncClient(timeout=120) as client:
+                res = await client.post(url, json=payload)
+                res.raise_for_status()
+                raw = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+                clean = _strip_code_fences(raw).strip()
+                return json.loads(clean)
+        except Exception as e:
+            logger.warning("LLM mapping: Gemini failed: %s", e)
+
+    return {}
+
+
+async def _ai_link_records_to_components(
+    records: list[Any],
+    components: list[Any],
+    relation: str,
+    filename: str
+) -> dict[str, str | None]:
+    """Uses LLM to match jobs or spares to the correct component from a list.
+    
+    Returns a dict mapping record ID string to component ID string (or None).
+    """
+    if not records or not components:
+        return {}
+        
+    comp_list = []
+    for c in components:
+        comp_list.append({
+            "id": str(c.id),
+            "component_name": c.component_name,
+            "maker": c.maker,
+            "model": c.model,
+            "main_machinery": c.main_machinery,
+            "page_reference": c.page_reference or c.source_page_number
+        })
+        
+    mapping = {}
+    batch_size = 30
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i+batch_size]
+        record_list = []
+        for r in batch:
+            if relation == "job":
+                record_list.append({
+                    "id": str(r.id),
+                    "job_name": r.job_name,
+                    "job_code": r.job_code,
+                    "job_description": r.job_description[:400] if r.job_description else "",
+                    "page_reference": r.page_reference or r.source_page_number
+                })
+            else:  # spare
+                record_list.append({
+                    "id": str(r.id),
+                    "part_name": r.part_name,
+                    "part_number": r.part_number,
+                    "spare_model": r.spare_model,
+                    "specification": r.specification,
+                    "drawing_number": r.drawing_number,
+                    "page_reference": r.page_reference or r.source_page_number
+                })
+                
+        system_prompt = (
+            "You are an expert maritime PMS data matching specialist.\n"
+            "Your task is to match each record (job or spare part) to the correct machinery component from the components list.\n\n"
+            "Match based on:\n"
+            "1. Maker & Model matching: Look closely at the maker and model name of the component, and check if the record references it.\n"
+            "2. Semantic connection: Look at the name of the component (e.g. 'Discharge Pump', 'Aeration Blower') and check if the record is associated with it.\n"
+            "3. Page proximity: Records are usually described on page numbers close to the component's page number.\n\n"
+            "Return ONLY a JSON object mapping each record's id (as key) to the correct component's id (as value), or null if the record cannot be mapped to any listed component. Example:\n"
+            "{\n"
+            "  \"record_id_1\": \"component_id_A\",\n"
+            "  \"record_id_2\": null\n"
+            "}\n"
+            "Return ONLY this JSON object. No explanation, no prose."
+        )
+        user_message = (
+            f"Document: {filename}\n\n"
+            f"Components:\n{json.dumps(comp_list, indent=2)}\n\n"
+            f"Records to match:\n{json.dumps(record_list, indent=2)}"
+        )
+        
+        batch_mapping = await _call_llm_json(system_prompt, user_message)
+        if batch_mapping and isinstance(batch_mapping, dict):
+            for k, v in batch_mapping.items():
+                mapping[k] = v
+                
+    return mapping
+
+
+async def _link_records_to_components(
+    *,
+    db: Any,
+    manual: Any,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> tuple[int, int]:
+    from sqlalchemy import select
+    from app.models.component import Component, QCStatus
+    from app.models.job import Job
+    from app.models.spare import Spare, ExtractionMethod as _EM
+
+    comp_result = await db.execute(
+        select(Component).where(
+            Component.vessel_id == vessel_id,
+            Component.tenant_id == tenant_id,
+            Component.is_deleted == False,
+            Component.qc_status != QCStatus.rejected,
+        )
+    )
+    all_components = comp_result.scalars().all()
+    same_manual_components = [comp for comp in all_components if _component_has_manual_reference(comp, manual)]
+    fallback_components = same_manual_components or all_components
+
+    def pick_component(search_text: str, page_reference: int | None, relation: str):
+        if not fallback_components:
+            return None
+        if len(same_manual_components) == 1:
+            return same_manual_components[0]
+        ranked = sorted(
+            (
+                (
+                    _link_score(
+                        search_text=search_text,
+                        component=component,
+                        page_reference=page_reference,
+                        relation=relation,
+                        manual=manual,
+                    ),
+                    component,
+                )
+                for component in fallback_components
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        best_score, best_component = ranked[0]
+        return best_component if best_score >= 0.28 else None
+
+    # Fetch jobs
+    jobs_result = await db.execute(
+        select(Job).where(
+            Job.vessel_id == vessel_id,
+            Job.tenant_id == tenant_id,
+            Job.is_deleted == False,
+            Job.source_manual_id == manual.id,
+        )
+    )
+    jobs = jobs_result.scalars().all()
+
+    # Determine mapping path for jobs
+    job_mapping = {}
+    if len(fallback_components) == 1:
+        single_comp_id = str(fallback_components[0].id)
+        job_mapping = {str(job.id): single_comp_id for job in jobs}
+    elif len(fallback_components) > 1 and jobs:
+        job_mapping = await _ai_link_records_to_components(
+            records=jobs,
+            components=fallback_components,
+            relation="job",
+            filename=manual.original_filename
+        )
+
+    # Apply jobs mapping
+    jobs_linked = 0
+    comp_dict = {str(c.id): c for c in fallback_components}
+    for job in jobs:
+        comp_id = job_mapping.get(str(job.id))
+        match = comp_dict.get(comp_id) if comp_id else None
+        
+        # Fallback to Jaccard mapping
+        if not match:
+            match = pick_component(
+                " ".join(filter(None, [job.job_name, job.job_code, job.job_description])),
+                job.page_reference,
+                "job",
+            )
+            
+        if match:
+            changed = False
+            if job.component_id != match.id:
+                job.component_id = match.id
+                changed = True
+            if job.is_unmapped:
+                job.is_unmapped = False
+                changed = True
+            if job.pdf_reference != manual.original_filename:
+                job.pdf_reference = manual.original_filename
+                changed = True
+            source_ref = (
+                f"{manual.original_filename} (p.{job.page_reference})"
+                if job.page_reference
+                else manual.original_filename
+            )
+            if job.source_reference != source_ref:
+                job.source_reference = source_ref
+                changed = True
+            canonical_name = await build_canonical_job_name(
+                db,
+                component_name=getattr(match, "component_name", None),
+                job_names=[job.job_name],
+                job_descriptions=[job.job_description],
+                tenant_id=job.tenant_id,
+                frequency=job.frequency,
+                frequency_type=job.frequency_type,
+                job_id=job.id,
+                component_id=match.id,
+            )
+            if canonical_name and job.job_name != canonical_name:
+                from sqlalchemy import text
+                await db.execute(text("""
+                    INSERT INTO job_name_backup (job_id, original_job_name)
+                    VALUES (:job_id, :original_job_name)
+                    ON CONFLICT (job_id) DO NOTHING;
+                """), {"job_id": job.id, "original_job_name": job.job_name})
+                job.job_name = canonical_name
+                changed = True
+            description_with_refs = append_source_references_to_description(job.job_description, [source_ref])
+            if job.job_description != description_with_refs:
+                job.job_description = description_with_refs
+                changed = True
+            if changed:
+                db.add(job)
+                jobs_linked += 1
+
+    # Fetch spares
+    spares_result = await db.execute(
+        select(Spare).where(
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == tenant_id,
+            Spare.is_deleted == False,
+            Spare.source_manual_id == manual.id,
+        )
+    )
+    spares = spares_result.scalars().all()
+
+    # Apply spares mapping (reverted to original text-overlap logic to preserve accuracy)
+    spares_linked = 0
+    for spare in spares:
+        match = pick_component(
+            " ".join(
+                filter(
+                    None,
+                    [
+                        spare.part_name,
+                        spare.part_number,
+                        spare.spare_model,
+                        spare.specification,
+                        spare.drawing_number,
+                    ],
+                )
+            ),
+            spare.page_reference,
+            "spare",
+        )
+            
+        if match:
+            changed = False
+            if spare.component_id != match.id:
+                spare.component_id = match.id
+                changed = True
+            if spare.machinery_maker != match.maker:
+                spare.machinery_maker = match.maker
+                changed = True
+            if spare.machinery_model != match.model:
+                spare.machinery_model = match.model
+                changed = True
+            if changed:
+                db.add(spare)
+                spares_linked += 1
+
+    return jobs_linked, spares_linked
+
+
+# ---------------------------------------------------------------------------
+# Full-manual auto-extraction (background task)
+# ---------------------------------------------------------------------------
+
+
+async def _process_and_save_page_records(
+    db,
+    page_records: list[dict],
+    etype: str,
+    manual,
+    all_manual_ids: list[uuid.UUID],
+    filename: str,
+    vessel_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    vessel_shipyard: Optional[str],
+    page_no: Optional[int],
+    extracted_component_context: list[dict],
+    existing_manual_component_context: list[dict],
+) -> None:
+    if not page_records:
+        return
+
+    from app.models.component import Component, QCStatus
+    from app.models.job import FrequencyType, Job
+    from app.models.spare import Spare, ExtractionMethod as _EM
+    from sqlalchemy import update
+
+    # Deduplicate new records for this page/chunk context
+    records = _dedupe_records(page_records, etype)
+    if not records:
+        return
+
+    # Determine page references to clear
+    pages_to_clear = set()
+    if page_no is not None:
+        pages_to_clear.add(page_no)
+    else:
+        for record in records:
+            source_page = record.get("source_page_number")
+            if source_page is not None:
+                try:
+                    pages_to_clear.add(int(source_page))
+                except (TypeError, ValueError):
+                    pass
+
+    # Clean replace existing auto-extracted items specifically on these pages
+    if pages_to_clear:
+        if etype == "component":
+            comp_delete_query = (
+                update(Component)
+                .where(
+                    Component.source_manual_id.in_(all_manual_ids),
+                    Component.is_deleted == False,
+                    Component.qc_status != QCStatus.accepted,
+                    Component.page_reference.in_(pages_to_clear),
+                )
+                .values(is_deleted=True)
+            )
+            await db.execute(comp_delete_query)
+        elif etype == "job":
+            job_delete_query = (
+                update(Job)
+                .where(
+                    Job.source_manual_id.in_(all_manual_ids),
+                    Job.is_deleted == False,
+                    Job.qc_status != QCStatus.accepted,
+                    Job.page_reference.in_(pages_to_clear),
+                )
+                .values(is_deleted=True)
+            )
+            await db.execute(job_delete_query)
+        elif etype == "spare":
+            spare_delete_query = (
+                update(Spare)
+                .where(
+                    Spare.source_manual_id.in_(all_manual_ids),
+                    Spare.is_deleted == False,
+                    Spare.qc_status != QCStatus.accepted,
+                    Spare.page_reference.in_(pages_to_clear),
+                )
+                .values(is_deleted=True)
+            )
+            await db.execute(spare_delete_query)
+
+    # Build DB objects
+    to_add = []
+    for record in records:
+        confidence = int(record.get("confidence_score", 70))
+        raw_source_page = record.get("source_page_number")
+        if raw_source_page is None and page_no is not None:
+            raw_source_page = page_no
+        safe_page = _safe_int_page(raw_source_page)
+
+        if etype == "component":
+            _maker = str(record.get("maker")).strip()[:200] if record.get("maker") else None
+            _model = str(record.get("model")).strip()[:200] if record.get("model") else None
+            if not _maker and vessel_shipyard:
+                _maker = vessel_shipyard[:200]
+            if not _model and _maker:
+                _model = "N/A"
+            comp = Component(
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                source_manual_id=manual.id,
+                confidence_score=confidence,
+                qc_status=QCStatus.pending,
+                is_unmapped=True,
+                group1=str(record.get("group1") or "Uncategorised")[:100],
+                group2=str(record.get("group2") or "Uncategorised")[:100],
+                main_machinery=str(record.get("main_machinery") or "Unknown")[:200],
+                component_name=str(record.get("component_name") or "Unknown Component")[:500],
+                maker=_maker,
+                model=_model,
+                serial_number=str(record.get("serial_number"))[:100] if record.get("serial_number") else None,
+                specification=record.get("specification") or None,
+                location=str(record.get("location"))[:200] if record.get("location") else None,
+                machinery_particulars=str(record.get("machinery_particulars"))[:200] if record.get("machinery_particulars") else None,
+                is_critical=bool(record.get("is_critical", False)),
+                job_pages=record.get("job_pages") or getattr(manual, "pages_with_jobs", None) or None,
+                spare_pages=record.get("spare_pages") or getattr(manual, "pages_with_spares", None) or None,
+                page_reference=safe_page,
+                pdf_reference=filename,
+            )
+            to_add.append(comp)
+            extracted_component_context.append(
+                {
+                    "component_name": comp.component_name,
+                    "main_machinery": comp.main_machinery,
+                    "maker": comp.maker,
+                    "model": comp.model,
+                    "source_page_number": comp.page_reference,
+                }
+            )
+
+        elif etype == "job":
+            raw_freq_type = record.get("frequency_type")
+            raw_freq = record.get("frequency")
+            freq_val, freq_type_str = parse_job_frequency(raw_freq, raw_freq_type)
+            freq_type: Optional[FrequencyType] = None
+            if freq_type_str:
+                try:
+                    freq_type = FrequencyType(freq_type_str)
+                except ValueError:
+                    freq_type = None
+
+            job = Job(
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                source_manual_id=manual.id,
+                confidence_score=confidence,
+                qc_status=QCStatus.pending,
+                job_name=str(record.get("job_name") or "Unknown Job")[:500],
+                job_code=str(record.get("job_code"))[:100] if record.get("job_code") else None,
+                job_description=record.get("job_description") or None,
+                safety_precaution=record.get("safety_precaution") or None,
+                frequency=freq_val,
+                frequency_type=freq_type,
+                is_critical=bool(record.get("is_critical", False)),
+                page_reference=safe_page,
+                pdf_reference=filename,
+                source_reference=(
+                    f"{filename} (p.{safe_page})"
+                    if safe_page is not None
+                    else filename
+                ),
+            )
+            job.job_description = append_source_references_to_description(
+                job.job_description,
+                split_reference_entries(
+                    pdf_reference=job.pdf_reference,
+                    page_reference=job.page_reference,
+                    source_reference=job.source_reference,
+                ),
+            )
+            to_add.append(job)
+
+        elif etype == "spare":
+            _assembly = record.get("spare_assembly") or None
+            if not _assembly:
+                candidates = extracted_component_context or existing_manual_component_context
+                if candidates:
+                    _assembly = candidates[0].get("component_name")
+                else:
+                    base_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+                    _assembly = base_name.replace("-", " ").replace("_", " ").title()
+
+            _asm = to_proper_case(record.get("spare_assembly") or _assembly)
+            if _asm:
+                _asm = _asm[:300]
+            _asm_desc = to_proper_case(record.get("assembly_description") or _asm)
+            _maker = str(record.get("spare_maker")).strip().upper()[:200] if record.get("spare_maker") else None
+            _model = str(record.get("spare_model")).strip().upper()[:200] if record.get("spare_model") else None
+            if not _model and getattr(manual, "target_model", None):
+                _model = str(manual.target_model).strip().upper()[:200]
+            _dwg = str(record.get("drawing_number")).strip().upper()[:200] if record.get("drawing_number") else None
+            if is_leaked_filename_or_doc_ref(_dwg, filename):
+                _dwg = None
+            _raw_pnum = record.get("part_number")
+            if is_leaked_filename_or_doc_ref(_raw_pnum, filename):
+                _pnum = None
+            else:
+                _pnum = str(_raw_pnum).strip()[:200] if _raw_pnum else None
+            _raw_pname = record.get("part_name")
+            _raw_spec = record.get("specification")
+            _clean_pname, _clean_spec = separate_spare_name_and_spec(_raw_pname, _raw_spec)
+            _pname = to_proper_case(_clean_pname) or "Unknown Part"
+            if _pname:
+                _pname = _pname[:500]
+            _dwg_pos = str(record.get("drawing_position")).strip()[:100] if record.get("drawing_position") else None
+            if is_leaked_filename_or_doc_ref(_dwg_pos, filename):
+                _dwg_pos = None
+
+            _pnum, _dwg_pos, _clean_spec = normalize_spare_part_number_and_position(
+                _pnum, _dwg_pos, _dwg, _clean_spec
+            )
+
+            spare = Spare(
+                tenant_id=tenant_id,
+                vessel_id=vessel_id,
+                source_manual_id=manual.id,
+                confidence_score=confidence,
+                qc_status=QCStatus.pending,
+                part_name=_pname,
+                part_number=_pnum,
+                drawing_number=_dwg,
+                drawing_position=_dwg_pos,
+                specification=_format_specification_headers(_clean_spec) or (_clean_spec or None),
+                spare_assembly=_asm,
+                assembly_description=_asm_desc,
+                spare_maker=_maker,
+                spare_model=_model,
+                page_reference=safe_page,
+            )
+            to_add.append(spare)
+
+    for obj in to_add:
+        db.add(obj)
+    await db.commit()
+
+
+async def auto_extract_from_manual(
+    manual_id_str: str,
+    entity_types: Optional[list[str]] = None,
+    page_numbers: Optional[list[int]] = None,
+    target_model: Optional[str] = None,
+    debug_log: Optional[list[str]] = None,
+    locked_entity_pages: Optional[dict[str, list[int]]] = None,
+) -> None:
+    """
+    Background task: extract Components, Jobs, and Spares from a Manual.
+
+    Opens its own DB session so it can run as a FastAPI BackgroundTask or
+    directly from a Celery worker.
+    """
+    from app.core.database import AsyncSessionLocal
+    from app.models.component import Component, QCStatus
+    from app.models.ingestion import Manual, ManualStatus
+    from app.models.job import FrequencyType, Job
+    from app.models.spare import Spare, ExtractionMethod as _EM
+    from app.services.feedback_learning import build_learning_context
+    from sqlalchemy import select, update
+
+    manual_id = uuid.UUID(manual_id_str)
+    try:
+        from app.services.extraction_counter import record_manual_extraction_run
+        record_manual_extraction_run(manual_id_str)
+    except Exception as exc:
+        logger.warning("record_manual_extraction_run error: %s", exc)
+
+    async with AsyncSessionLocal() as db:
+        try:
+            # ------------------------------------------------------------------
+            # Load the manual (vessel_id and tenant_id come from the record itself)
+            # ------------------------------------------------------------------
+            from sqlalchemy.orm import undefer
+
+            result = await db.execute(
+                select(Manual)
+                .options(undefer(Manual.extracted_text))
+                .where(
+                    Manual.id == manual_id,
+                    Manual.is_deleted == False,
+                )
+            )
+            manual: Optional[Manual] = result.scalar_one_or_none()
+            reset_claude_billing_breakers()
+            if debug_log is not None:
+                debug_log.append(f"Loaded manual: {getattr(manual, 'original_filename', None)}, status={getattr(manual, 'status', None)}, spares_ref={getattr(manual, 'pages_with_spares', None)}")
+            if manual is None:
+                logger.warning("auto_extract_from_manual: manual %s not found", manual_id_str)
+                return
+
+            if target_model and manual.target_model != target_model.strip():
+                manual.target_model = target_model.strip()
+                await db.commit()
+
+            vessel_id = manual.vessel_id
+            tenant_id = manual.tenant_id
+            vessel_id_str = str(vessel_id)
+
+            # Load vessel for shipyard fallback
+            from app.models.vessel import VesselProject
+            vessel_result = await db.execute(
+                select(VesselProject).where(
+                    VesselProject.id == vessel_id,
+                    VesselProject.is_deleted == False,
+                )
+            )
+            vessel_obj = vessel_result.scalar_one_or_none()
+            vessel_shipyard = getattr(vessel_obj, "shipyard", None) or None
+
+            category: Optional[str] = manual.category
+            norm_cat = (category or "").strip().lower()
+            # Skip only if truly unknown AND no page signals from classifier
+            pages_with_any = (
+                getattr(manual, "pages_with_components", None)
+                or getattr(manual, "pages_with_jobs", None)
+                or getattr(manual, "pages_with_spares", None)
+            )
+            if norm_cat in ("", "unknown/unclassifiable", "unknown") and not pages_with_any:
+                logger.info(
+                    "auto_extract_from_manual: skipping manual %s — category=%r, no page signals",
+                    manual_id_str,
+                    category,
+                )
+                return
+            # If unknown but has page signals, treat as Instruction Manual for extraction
+            if norm_cat in ("", "unknown/unclassifiable", "unknown"):
+                category = "Instruction Manual"
+                logger.info(
+                    "auto_extract_from_manual: treating unknown manual %s as Instruction Manual (has page signals)",
+                    manual_id_str,
+                )
+
+            entity_pages = {}
+            for entity_type in ("component", "job", "spare"):
+                if locked_entity_pages and entity_type in locked_entity_pages and locked_entity_pages[entity_type]:
+                    pages = locked_entity_pages[entity_type]
+                else:
+                    pages = _selected_manual_pages(manual, entity_type)
+                if not pages and page_numbers and (entity_types is None or entity_type in entity_types):
+                    pages = page_numbers
+                if page_numbers is not None and pages:
+                    pages = [p for p in pages if p in page_numbers]
+                if not pages and page_numbers and (entity_types is None or entity_type in entity_types):
+                    pages = page_numbers
+                entity_pages[entity_type] = pages
+
+            if entity_types is not None:
+                entity_pages = {
+                    k: v for k, v in entity_pages.items() if k in entity_types
+                }
+            selected_extraction_types = [
+                entity_type for entity_type, pages in entity_pages.items() if pages
+            ]
+            remaining_extraction_types: list[str] | None = None
+
+            try:
+                from app.services.manual_match_reuse import (
+                    find_best_manual_match_for_source,
+                    reuse_records_from_matched_manual,
+                )
+
+                best_match = await find_best_manual_match_for_source(
+                    db,
+                    tenant_id=tenant_id,
+                    source_manual_id=manual.id,
+                )
+                if best_match and str(best_match.get("match_confidence") or "").lower() in {"exact", "high", "medium"}:
+                    matched_manual_result = await db.execute(
+                        select(Manual).where(
+                            Manual.id == uuid.UUID(str(best_match["matched_manual_id"])),
+                            Manual.is_deleted == False,
+                        )
+                    )
+                    matched_manual = matched_manual_result.scalar_one_or_none()
+                    if matched_manual is not None:
+                        payload = await reuse_records_from_matched_manual(
+                            db,
+                            tenant_id=tenant_id,
+                            vessel_id=vessel_id,
+                            source_manual=manual,
+                            matched_manual=matched_manual,
+                            match_confidence=str(best_match.get("match_confidence") or ""),
+                            match_score=best_match.get("match_score"),
+                            auto_merge_components=True,
+                        )
+                        copied_by_type = {
+                            "component": int(payload.get("copied_components", 0) or 0),
+                            "job": int(payload.get("copied_jobs", 0) or 0),
+                            "spare": int(payload.get("copied_spares", 0) or 0),
+                        }
+                        remaining_extraction_types = [
+                            entity_type
+                            for entity_type in selected_extraction_types
+                            if copied_by_type.get(entity_type, 0) <= 0
+                        ]
+                        if remaining_extraction_types:
+                            logger.warning(
+                                "auto_extract_from_manual: partial manual-match reuse for %s; copied components=%d jobs=%d spares=%d, extracting remaining=%s",
+                                manual_id_str,
+                                copied_by_type["component"],
+                                copied_by_type["job"],
+                                copied_by_type["spare"],
+                                ",".join(remaining_extraction_types),
+                            )
+                        else:
+                            await db.execute(
+                                update(Manual)
+                                .where(Manual.id == manual_id)
+                                .values(status=ManualStatus.classified)
+                            )
+                            await db.commit()
+                            logger.warning(
+                                "auto_extract_from_manual: reused matched manual for %s exact=%s components=%d jobs=%d spares=%d",
+                                manual_id_str,
+                                payload.get("exact_match"),
+                                payload.get("copied_components", 0),
+                                payload.get("copied_jobs", 0),
+                                payload.get("copied_spares", 0),
+                            )
+                            return
+            except Exception as manual_match_err:
+                logger.warning("auto_extract_from_manual: matched-manual reuse failed: %s", manual_match_err)
+
+            # ------------------------------------------------------------------
+            # Mark as scanning
+            # ------------------------------------------------------------------
+            await db.execute(
+                update(Manual)
+                .where(Manual.id == manual_id)
+                .values(status=ManualStatus.scanning)
+            )
+            await db.commit()
+
+            # ------------------------------------------------------------------
+            # Get text with [PAGE N] markers.
+            # Use stored DB text if it already has markers; otherwise re-extract
+            # from blob storage (handles both old records and blob-stored files).
+            # ------------------------------------------------------------------
+            filename = manual.original_filename
+            set_extraction_state(
+                vessel_id_str,
+                current_manual_name=filename,
+                current_manual_pages_total=100,
+                current_manual_pages_done=0,
+                detailed_status="Initializing manual extraction..."
+            )
+            file_path = manual.blob_storage_key
+            full_text = ""
+            file_bytes: Optional[bytes] = None
+            ext = (manual.file_extension or (manual.original_filename.rsplit(".", 1)[-1] if "." in (manual.original_filename or "") else "")).lower()
+
+            stored_text = getattr(manual, "extracted_text", None) or ""
+            if isinstance(stored_text, str):
+                stored_text = stored_text.replace("\r\n", "\n")
+            is_pdf = (ext == "pdf")
+            if is_pdf:
+                # Skip full text parsing for all PDF manuals as we extract/OCR target pages on-demand
+                full_text = stored_text or ""
+                logger.info("auto_extract_from_manual: skipping full-text scanning phase for PDF manual %s", filename)
+            elif stored_text and "[PAGE " in stored_text:
+                # Already has page markers — use as-is
+                full_text = stored_text
+                logger.info("auto_extract_from_manual: using stored extracted_text for %s", filename)
+            else:
+                # Need to (re-)extract: try blob storage first, then local disk
+                set_extraction_state(
+                    vessel_id_str,
+                    current_manual_name=filename,
+                    detailed_status="Downloading manual from storage..."
+                )
+                # Try blob storage (MinIO / Azure)
+                is_local_path = file_path and (
+                    file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
+                )
+                if file_path and not is_local_path:
+                    try:
+                        from app.services.blob_storage import BlobStorageService
+                        blob_svc = BlobStorageService()
+                        file_bytes = await blob_svc.download_bytes(file_path)
+                        logger.info(
+                            "auto_extract_from_manual: downloaded %d bytes from blob for %s",
+                            len(file_bytes), filename,
+                        )
+                    except Exception as blob_err:
+                        logger.warning(
+                            "auto_extract_from_manual: blob download failed for %s: %s", filename, blob_err
+                        )
+
+                # Fallback to local disk
+                if file_bytes is None and file_path and os.path.exists(file_path):
+                    with open(file_path, "rb") as fh:
+                        file_bytes = fh.read()
+
+                if file_bytes is not None:
+                    if ext == "pdf":
+                        try:
+                            import pdfplumber
+                            import io as _io
+
+                            def _read_pdf_bytes(data: bytes) -> str:
+                                parts: list[str] = []
+                                with pdfplumber.open(_io.BytesIO(data)) as pdf:
+                                    for page_num, page in enumerate(pdf.pages, start=1):
+                                        page_parts: list[str] = []
+                                        text = page.extract_text()
+                                        if text and text.strip():
+                                            page_parts.append(text)
+                                        if page_parts:
+                                            parts.append(f"[PAGE {page_num}]\n" + "\n".join(page_parts))
+                                        else:
+                                            parts.append(f"[PAGE {page_num}]\n")
+                                return "\n\n".join(parts)
+
+                            full_text = await asyncio.to_thread(_read_pdf_bytes, file_bytes)
+                            # Persist the freshly-extracted text so future calls are instant
+                            if full_text:
+                                await db.execute(
+                                    update(Manual)
+                                    .where(Manual.id == manual_id)
+                                    .values(extracted_text=full_text)
+                                )
+                                await db.commit()
+                        except Exception as pdf_err:
+                            logger.warning("pdfplumber failed for %s: %s", filename, pdf_err)
+                    elif ext == "docx":
+                        try:
+                            import docx
+                            import io as _io
+
+                            def _read_docx_bytes(data: bytes) -> str:
+                                doc = docx.Document(_io.BytesIO(data))
+                                return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+                            full_text = await asyncio.to_thread(_read_docx_bytes, file_bytes)
+                        except Exception as docx_err:
+                            logger.warning("docx extraction failed for %s: %s", filename, docx_err)
+                elif stored_text:
+                    # Last resort: use stored text even without page markers
+                    full_text = stored_text
+                    logger.warning(
+                        "auto_extract_from_manual: using stored text without [PAGE] markers for %s", filename
+                    )
+
+            if ext != "pdf" and not full_text.strip():
+                logger.warning("auto_extract_from_manual: no text extracted from %s, skipping", filename)
+                return
+
+            # ------------------------------------------------------------------
+            # Determine which entity types to extract strictly from screened page refs.
+            # This keeps extraction cost aligned to what reviewers selected.
+            # ------------------------------------------------------------------
+            extraction_types = [entity_type for entity_type, pages in entity_pages.items() if pages]
+            if remaining_extraction_types is not None:
+                extraction_types = [
+                    entity_type for entity_type in extraction_types if entity_type in remaining_extraction_types
+                ]
+
+            if debug_log is not None:
+                debug_log.append(f"entity_pages={entity_pages}, selected_extraction_types={selected_extraction_types}, extraction_types={extraction_types}")
+            if not extraction_types:
+                if debug_log is not None:
+                    debug_log.append(f"EXIT: no extraction_types for manual {filename}")
+                logger.warning(
+                    "auto_extract_from_manual: skipping manual %s because no screened extraction pages are set",
+                    filename,
+                )
+                await db.execute(
+                    update(Manual)
+                    .where(Manual.id == manual_id)
+                    .values(status=ManualStatus.classified)
+                )
+                await db.commit()
+                return
+
+            # Add preceding pages for context to the OCR/enrichment page list
+            selected_pages_all = sorted({page for pages in entity_pages.values() for page in pages})
+            if page_numbers is not None:
+                selected_pages_all = [p for p in selected_pages_all if p in page_numbers]
+            ocr_pages = set(selected_pages_all)
+            for p in selected_pages_all:
+                if p > 1:
+                    ocr_pages.add(p - 1)
+            selected_pages_all = sorted(list(ocr_pages))
+            if ext == "pdf" and selected_pages_all:
+                set_extraction_state(
+                    vessel_id_str,
+                    current_manual_name=filename,
+                    detailed_status="Pre-processing tables and page layouts..."
+                )
+                if file_bytes is None:
+                    is_local_path = file_path and (
+                        file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
+                    )
+                    if file_path and not is_local_path:
+                        try:
+                            from app.services.blob_storage import BlobStorageService
+
+                            blob_svc = BlobStorageService()
+                            file_bytes = await blob_svc.download_bytes(file_path)
+                        except Exception as blob_err:
+                            logger.warning(
+                                "auto_extract_from_manual: blob download failed during OCR enrich for %s: %s",
+                                filename,
+                                blob_err,
+                            )
+                    if file_bytes is None and file_path and os.path.exists(file_path):
+                        with open(file_path, "rb") as fh:
+                            file_bytes = fh.read()
+
+                # Only run heavy OCR/table pre-enrichment if components or jobs require text extraction.
+                # Spares extraction from PDF uses vision rendering directly and bypasses text chunks.
+                if file_bytes is not None and any(et in ("component", "job") for et in extraction_types):
+                    full_text = await _enrich_pdf_text_for_selected_pages(
+                        file_bytes=file_bytes,
+                        filename=filename,
+                        full_text=full_text,
+                        selected_pages=selected_pages_all,
+                        page_count=getattr(manual, "page_count", 0) or 0,
+                    )
+
+            type_to_text: dict[str, str] = {}
+            for entity_type in extraction_types:
+                selected_pages = entity_pages[entity_type]
+                if page_numbers is not None:
+                    selected_pages = [p for p in selected_pages if p in page_numbers]
+                filtered_text = _filter_text_to_pages(full_text, selected_pages, include_context=True)
+                type_to_text[entity_type] = filtered_text
+                logger.warning(
+                    "auto_extract_from_manual: %s using %s screened pages=%s chars=%d",
+                    filename,
+                    entity_type,
+                    selected_pages,
+                    len(filtered_text),
+                )
+
+            # ------------------------------------------------------------------
+            # Chunk the full text so every page is processed.
+            # Claude claude-sonnet-4-6 has a 200k token context window.
+            # 120,000 chars ≈ 30,000 tokens — leaves ample room for system
+            # prompt and a large JSON response.
+            # ------------------------------------------------------------------
+            CHUNK_SIZE = max(4_000, int(getattr(settings, "EXTRACTION_CHUNK_CHARS", 14_000) or 14_000))
+            OVERLAP = max(0, int(getattr(settings, "EXTRACTION_CHUNK_OVERLAP_CHARS", 500) or 500))
+
+            def _chunk_text(text: str) -> list[str]:
+                page_blocks = [
+                    f"[PAGE {page_no}]\n{page_body}".strip()
+                    for page_no, page_body in _split_marked_pages(text)
+                ]
+                if page_blocks:
+                    chunks: list[str] = []
+                    current_blocks: list[str] = []
+                    current_size = 0
+                    for block in page_blocks:
+                        block_size = len(block) + 2
+                        if current_blocks and current_size + block_size > CHUNK_SIZE:
+                            chunks.append("\n\n".join(current_blocks))
+                            overlap_blocks: list[str] = []
+                            overlap_size = 0
+                            for previous_block in reversed(current_blocks):
+                                previous_size = len(previous_block) + 2
+                                if overlap_blocks and overlap_size + previous_size > OVERLAP:
+                                    break
+                                overlap_blocks.insert(0, previous_block)
+                                overlap_size += previous_size
+                            current_blocks = overlap_blocks.copy()
+                            current_size = sum(len(item) + 2 for item in current_blocks)
+                        current_blocks.append(block)
+                        current_size += block_size
+                    if current_blocks:
+                        chunks.append("\n\n".join(current_blocks))
+                    return chunks
+                if len(text) <= CHUNK_SIZE:
+                    return [text]
+                chunks: list[str] = []
+                start = 0
+                while start < len(text):
+                    end = min(start + CHUNK_SIZE, len(text))
+                    chunks.append(text[start:end])
+                    if end >= len(text):
+                        break
+                    start = max(end - OVERLAP, start + 1)
+                return chunks
+
+            text_chunks = _chunk_text(full_text)
+            logger.info(
+                "auto_extract_from_manual: %s → %d chars, %d chunk(s)",
+                filename, len(full_text), len(text_chunks),
+            )
+
+            # Calculate total sub-steps for page-level progress tracking
+            total_sub_steps = 0
+            type_chunks_count: dict[str, int] = {}
+            for etype in extraction_types:
+                is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
+                source_text = type_to_text.get(etype)
+                if source_text is None:
+                    source_text = full_text
+
+                if not is_pdf_spare and source_text.strip():
+                    chunks = _chunk_text(source_text)
+                    type_chunks_count[etype] = len(chunks)
+                    total_sub_steps += len(chunks)
+                else:
+                    type_chunks_count[etype] = 0
+
+                if ext == "pdf" and file_bytes is not None and (etype in {"component", "spare"} or (etype == "job" and not source_text.strip())):
+                    selected_pages = entity_pages.get(etype) or []
+                    if etype == "spare":
+                        total_sub_steps += len(selected_pages) * 4
+                    else:
+                        total_sub_steps += len(selected_pages)
+
+            # Set initial progress state for this manual
+            set_extraction_state(
+                vessel_id_str,
+                current_manual_name=filename,
+                current_manual_pages_total=total_sub_steps,
+                current_manual_pages_done=0,
+                detailed_status="Initializing extraction loop..."
+            )
+            done_sub_steps = 0
+
+            # ------------------------------------------------------------------
+            # Run extractions across all chunks
+            # ------------------------------------------------------------------
+            components_to_add: list[Component] = []
+            jobs_to_add: list[Job] = []
+            spares_to_add: list[Spare] = []
+            extracted_component_context: list[dict[str, Any]] = []
+            existing_manual_component_context: list[dict[str, Any]] = []
+
+            # Get sibling/duplicate manual IDs for clean replacement and context lookup
+            same_filename_result = await db.execute(
+                select(Manual.id).where(
+                    Manual.vessel_id == vessel_id,
+                    Manual.original_filename == manual.original_filename,
+                    Manual.is_deleted == False,
+                    Manual.id != manual.id,
+                )
+            )
+            sibling_manual_ids = [row[0] for row in same_filename_result.all()]
+            all_manual_ids = [manual.id, *sibling_manual_ids]
+            components_extracted_any = False
+
+            if any(entity_type in {"job", "spare"} for entity_type in extraction_types):
+                existing_component_result = await db.execute(
+                    select(Component).where(
+                        Component.vessel_id == vessel_id,
+                        Component.tenant_id == tenant_id,
+                        Component.source_manual_id.in_(all_manual_ids),
+                        Component.is_deleted == False,
+                    )
+                )
+                existing_manual_component_context = [
+                    {
+                        "component_name": component.component_name,
+                        "main_machinery": component.main_machinery,
+                        "maker": component.maker,
+                        "model": component.model,
+                        "source_page_number": component.page_reference,
+                    }
+                    for component in existing_component_result.scalars().all()
+                ]
+
+                # Fallback: if no direct source_manual_id match, look for components linked via pdf_reference
+                if not existing_manual_component_context and manual.original_filename:
+                    pdf_ref_result = await db.execute(
+                        select(Component).where(
+                            Component.vessel_id == vessel_id,
+                            Component.tenant_id == tenant_id,
+                            Component.pdf_reference.ilike(f"%{manual.original_filename}%"),
+                            Component.is_deleted == False,
+                        )
+                    )
+                    existing_manual_component_context = [
+                        {
+                            "component_name": component.component_name,
+                            "main_machinery": component.main_machinery,
+                            "maker": component.maker,
+                            "model": component.model,
+                            "source_page_number": component.page_reference,
+                        }
+                        for component in pdf_ref_result.scalars().all()
+                    ]
+
+            learning_context_by_type: dict[str, str | None] = {}
+            for entity_type in extraction_types:
+                learning_context_by_type[entity_type] = await build_learning_context(
+                    db,
+                    tenant_id=tenant_id,
+                    entity_type=entity_type,
+                    source_manual_category=manual.category,
+                )
+
+            for etype in extraction_types:
+                # Pre-clear existing auto-extracted records for the target pages being re-extracted
+                target_pages_to_clear = entity_pages.get(etype) or []
+                if page_numbers is not None:
+                    target_pages_to_clear = [p for p in target_pages_to_clear if p in page_numbers] or page_numbers
+
+                if target_pages_to_clear:
+                    if etype == "component":
+                        await db.execute(
+                            update(Component)
+                            .where(
+                                Component.source_manual_id.in_(all_manual_ids),
+                                Component.is_deleted == False,
+                                Component.page_reference.in_(target_pages_to_clear),
+                            )
+                            .values(is_deleted=True)
+                        )
+                    elif etype == "job":
+                        await db.execute(
+                            update(Job)
+                            .where(
+                                Job.source_manual_id.in_(all_manual_ids),
+                                Job.is_deleted == False,
+                                Job.page_reference.in_(target_pages_to_clear),
+                            )
+                            .values(is_deleted=True)
+                        )
+                    elif etype == "spare":
+                        await db.execute(
+                            update(Spare)
+                            .where(
+                                Spare.source_manual_id.in_(all_manual_ids),
+                                Spare.is_deleted == False,
+                                Spare.extraction_method != _EM.manual,
+                                Spare.page_reference.in_(target_pages_to_clear),
+                            )
+                            .values(is_deleted=True)
+                        )
+                    await db.commit()
+
+                all_records: list[dict] = []
+                is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
+                source_text = type_to_text.get(etype)
+                if source_text is None:
+                    source_text = full_text
+
+                if not is_pdf_spare and source_text.strip():
+                    text_chunks = _chunk_text(source_text)
+                    logger.info(
+                        "auto_extract_from_manual: %s -> %s chars=%d chunks=%d",
+                        filename,
+                        etype,
+                        len(source_text),
+                        len(text_chunks),
+                    )
+                    for chunk_idx, chunk in enumerate(text_chunks):
+                        import re as _re
+                        found_pages = _re.findall(r'\[PAGE (\d+)\]', chunk)
+                        if found_pages:
+                            for _fp in found_pages:
+                                record_page_extraction_run(manual_id_str, int(_fp))
+                        if page_numbers is not None and found_pages:
+                            chunk_pages = [int(p) for p in found_pages]
+                            if not any(p in page_numbers for p in chunk_pages):
+                                continue
+                        done_sub_steps += 1
+                        if found_pages:
+                            page_desc = f"pages {', '.join(found_pages)}"
+                        else:
+                            page_desc = f"chunk {chunk_idx + 1}/{len(text_chunks)}"
+                        set_extraction_state(
+                            vessel_id_str,
+                            current_manual_name=filename,
+                            current_manual_pages_done=done_sub_steps,
+                            detailed_status=f"Extracting {etype}s from text ({page_desc})..."
+                        )
+                        chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
+                        context_note = learning_context_by_type.get(etype)
+                        if etype in {"job", "spare"}:
+                            context_components = extracted_component_context or existing_manual_component_context
+                            comp_context_str = _build_component_context_text(context_components, manual)
+                            if comp_context_str:
+                                context_note = _merge_context_notes(
+                                    comp_context_str,
+                                    learning_context_by_type.get(etype),
+                                )
+                    
+                        # Fetch preceding page titles context
+                        chunk_context = context_note
+                        if found_pages:
+                            try:
+                                first_pno = min(int(p) for p in found_pages)
+                                titles_history = _build_preceding_titles_history(full_text, first_pno, max_lookback=10)
+                                if titles_history:
+                                    history_note = f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
+                                    chunk_context = _merge_context_notes(chunk_context, history_note)
+                            except Exception:
+                                pass
+
+                        try:
+                            records = await asyncio.wait_for(
+                                extract_entities(chunk, etype, chunk_label, context_note=chunk_context),
+                                timeout=240.0
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                "auto_extract_from_manual: text extraction chunk %s for %s/%s timed out after 4 minutes. Skipping.",
+                                chunk_label, filename, etype
+                            )
+                            records = []
+
+                        if records:
+                            if etype == "component":
+                                components_extracted_any = True
+                            await _process_and_save_page_records(
+                                db=db,
+                                page_records=records,
+                                etype=etype,
+                                manual=manual,
+                                all_manual_ids=all_manual_ids,
+                                filename=filename,
+                                vessel_id=vessel_id,
+                                tenant_id=tenant_id,
+                                vessel_shipyard=vessel_shipyard,
+                                page_no=(int(found_pages[0]) if found_pages else None),
+                                extracted_component_context=extracted_component_context,
+                                existing_manual_component_context=existing_manual_component_context,
+                             )
+                        all_records.extend(records)
+                else:
+                    if is_pdf_spare:
+                        logger.info("auto_extract_from_manual: skipping text extraction for spares (will use PDF vision extraction)")
+                    elif not source_text.strip():
+                        logger.info("auto_extract_from_manual: source text for %s is empty, skipping text extraction", etype)
+
+                if ext == "pdf" and file_bytes is not None and (etype in {"component", "spare"} or (etype == "job" and (not all_records or not source_text.strip()))):
+                    selected_pages = entity_pages.get(etype) or []
+                    if page_numbers is not None:
+                        selected_pages = [p for p in selected_pages if p in page_numbers]
+                    
+                    context_note = learning_context_by_type.get(etype)
+                    if etype in {"job", "spare"}:
+                        context_components = extracted_component_context or existing_manual_component_context
+                        comp_context_str = _build_component_context_text(context_components, manual)
+                        if comp_context_str:
+                            context_note = _merge_context_notes(
+                                comp_context_str,
+                                learning_context_by_type.get(etype),
+                            )
+                    for page_no in selected_pages:
+                        if debug_log is not None:
+                            debug_log.append(f"Processing {etype} page {page_no}, file_bytes={len(file_bytes) if file_bytes else 0}")
+                        # Render single page image on-demand to keep memory footprint low
+                        image_bytes = await asyncio.to_thread(_render_single_pdf_page_image, file_bytes, page_no, 200)
+                        if debug_log is not None:
+                            debug_log.append(f"Rendered image for page {page_no}: {len(image_bytes) if image_bytes else 'FAILED/NONE'}")
+                        if not image_bytes:
+                            continue
+
+                        # Fetch preceding page text context if available to help identify assembly/header
+                        page_context = ""
+                        prev_page = page_no - 1
+                        if prev_page > 0 and full_text:
+                            prev_page_text = _filter_text_to_pages(full_text, [prev_page], include_context=False)
+                            if prev_page_text.strip():
+                                page_context = f"\nPreceding Page {prev_page} Text (For Header/Assembly/Title Context):\n{prev_page_text}\n"
+
+                        # Add preceding page headers/titles history for deep lookbacks (up to 10 pages earlier)
+                        if full_text:
+                            titles_history = _build_preceding_titles_history(full_text, page_no, max_lookback=10)
+                            if titles_history:
+                                page_context += f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
+
+                        current_context_note = context_note
+                        record_page_extraction_run(manual_id_str, page_no)
+                        if page_context:
+                            current_context_note = _merge_context_notes(current_context_note, page_context)
+
+                        try:
+                            if etype == "spare":
+                                def on_strip_start(strip_idx, total_strips):
+                                    nonlocal done_sub_steps
+                                    if strip_idx > 0:
+                                        done_sub_steps += 1
+                                    set_extraction_state(
+                                        vessel_id_str,
+                                        current_manual_name=filename,
+                                        current_manual_pages_done=done_sub_steps,
+                                        detailed_status=f"Extracting spares from image page {page_no} (strip {strip_idx + 1}/{total_strips})..."
+                                    )
+
+                                done_sub_steps += 1
+                                set_extraction_state(
+                                    vessel_id_str,
+                                    current_manual_name=filename,
+                                    current_manual_pages_done=done_sub_steps,
+                                    detailed_status=f"Extracting spares from image page {page_no} (starting)..."
+                                )
+                                try:
+                                    if debug_log is not None:
+                                        debug_log.append(f"Calling vision for page {page_no}, anthropic_key={bool(settings.ANTHROPIC_API_KEY)}, openai_key={bool(settings.OPENAI_API_KEY)}")
+                                    vision_records = await asyncio.wait_for(
+                                        _extract_spare_parts_from_image_split(
+                                            image_bytes=image_bytes,
+                                            filename=filename,
+                                            page_no=page_no,
+                                            context_note=current_context_note,
+                                            on_strip_start=on_strip_start,
+                                        ),
+                                        timeout=240.0
+                                    )
+                                    if debug_log is not None:
+                                        debug_log.append(f"Vision returned {len(vision_records)} records")
+                                except Exception as v_err:
+                                    if debug_log is not None:
+                                        debug_log.append(f"Vision error on page {page_no}: {type(v_err).__name__}: {v_err}")
+                                    logger.error(
+                                        "auto_extract_from_manual: vision spares page %d for %s error: %s",
+                                        page_no, filename, v_err
+                                    )
+                                    vision_records = []
+                            else:
+                                done_sub_steps += 1
+                                set_extraction_state(
+                                    vessel_id_str,
+                                    current_manual_name=filename,
+                                    current_manual_pages_done=done_sub_steps,
+                                    detailed_status=f"Extracting {etype}s from image page {page_no} of {manual.page_count or 'N/A'}..."
+                                )
+                                try:
+                                    vision_records = await asyncio.wait_for(
+                                        _extract_entities_from_page_image(
+                                            image_bytes=image_bytes,
+                                            filename=filename,
+                                            page_no=page_no,
+                                            extraction_type=etype,
+                                            context_note=current_context_note,
+                                        ),
+                                        timeout=240.0
+                                    )
+                                except asyncio.TimeoutError:
+                                    logger.error(
+                                        "auto_extract_from_manual: vision %s page %d for %s timed out after 4 minutes. Skipping.",
+                                        etype, page_no, filename
+                                    )
+                                    vision_records = []
+                            if debug_log is not None:
+                                debug_log.append(f"Vision returned {len(vision_records)} records for page {page_no}")
+                            if vision_records:
+                                if etype == "component":
+                                    components_extracted_any = True
+                                await _process_and_save_page_records(
+                                    db=db,
+                                    page_records=vision_records,
+                                    etype=etype,
+                                    manual=manual,
+                                    all_manual_ids=all_manual_ids,
+                                    filename=filename,
+                                    vessel_id=vessel_id,
+                                    tenant_id=tenant_id,
+                                    vessel_shipyard=vessel_shipyard,
+                                    page_no=page_no,
+                                    extracted_component_context=extracted_component_context,
+                                    existing_manual_component_context=existing_manual_component_context,
+                                )
+                            all_records.extend(vision_records)
+
+                            # Keep database connection active during long LLM calls
+                            try:
+                                from sqlalchemy import text
+                                await db.execute(text("SELECT 1"))
+                            except Exception:
+                                pass
+                        except Exception as page_exc:
+                            # Mapping and saving are now handled page-by-page.
+                            logger.error(
+                                "auto_extract_from_manual: failed page %d for %s/%s: %s",
+                                page_no, filename, etype, page_exc
+                            )
+
+            # Restore manual status to classified
+            await db.execute(
+                update(Manual)
+                .where(Manual.id == manual_id)
+                .values(status=ManualStatus.classified)
+            )
+            await db.commit()
+
+            logger.warning("auto_extract_from_manual: completed extraction iterations for %s", filename)
+
+            try:
+                if components_extracted_any:
+                    from app.services.component_matcher import auto_merge_extracted_components
+
+                    merged, unmatched = await auto_merge_extracted_components(
+                        db=db,
+                        vessel_id=vessel_id,
+                        tenant_id=tenant_id,
+                    )
+                    await db.commit()
+                    logger.warning(
+                        "auto_extract_from_manual: component match vessel=%s merged=%d unmatched=%d",
+                        vessel_id_str,
+                        merged,
+                        unmatched,
+                    )
+
+                component_ref_updates = await _overwrite_component_manual_refs(
+                    db=db,
+                    manual=manual,
+                    vessel_id=vessel_id,
+                    tenant_id=tenant_id,
+                )
+                jobs_linked, spares_linked = await _link_records_to_components(
+                    db=db,
+                    manual=manual,
+                    vessel_id=vessel_id,
+                    tenant_id=tenant_id,
+                )
+                merged_jobs = await _consolidate_jobs_for_manual(
+                    db=db,
+                    manual=manual,
+                    vessel_id=vessel_id,
+                    tenant_id=tenant_id,
+                )
+                merged_spares = await _consolidate_spares_for_manual(
+                    db=db,
+                    manual=manual,
+                    vessel_id=vessel_id,
+                    tenant_id=tenant_id,
+                )
+                manual_job_ranks_updated = await backfill_manual_job_ranks(
+                    db=db,
+                    tenant_id=tenant_id,
+                    vessel_id=vessel_id,
+                    manual_id=manual.id,
+                )
+                await db.commit()
+                logger.warning(
+                    "auto_extract_from_manual: manual sync vessel=%s components=%d jobs=%d spares=%d merged_jobs=%d merged_spares=%d manual_job_ranks=%s",
+                    vessel_id_str,
+                    component_ref_updates,
+                    jobs_linked,
+                    spares_linked,
+                    merged_jobs,
+                    merged_spares,
+                    manual_job_ranks_updated,
+                )
+            except Exception as link_exc:
+                logger.warning("auto_extract_from_manual: manual sync failed: %s", link_exc)
+
+            # Clear running state and set status to completed ONLY if standalone manual run
+            try:
+                curr_state = get_extraction_state(vessel_id_str)
+                if curr_state.get("total", 0) <= 1:
+                    set_extraction_state(
+                        vessel_id_str,
+                        status="completed",
+                        detailed_status="Extraction completed successfully."
+                    )
+            except Exception as state_exc:
+                logger.error("Failed to update extraction state to completed: %s", state_exc)
+
+        except BaseException as task_exc:
+            logger.error("auto_extract_from_manual failed or cancelled: %s", task_exc, exc_info=True)
+            from app.models.ingestion import ManualStatus, Manual
+            from sqlalchemy import update
+            try:
+                err_msg = "Extraction stopped by user." if isinstance(task_exc, asyncio.CancelledError) else str(task_exc)[:500]
+                await db.execute(
+                    update(Manual)
+                    .where(Manual.id == manual_id)
+                    .values(
+                        status=ManualStatus.failed,
+                        error_message=err_msg
+                    )
+                )
+                await db.commit()
+            except Exception as db_exc:
+                logger.error("Failed to mark manual as failed/cancelled in DB: %s", db_exc)
+
+            # Reset extraction state to idle/failed
+            try:
+                set_extraction_state(
+                    vessel_id_str,
+                    status="failed" if not isinstance(task_exc, asyncio.CancelledError) else "idle",
+                    detailed_status="Extraction stopped by user." if isinstance(task_exc, asyncio.CancelledError) else f"Extraction failed: {task_exc}"
+                )
+            except Exception as state_exc:
+                logger.error("Failed to update extraction state on task error: %s", state_exc)
+
+            raise task_exc
