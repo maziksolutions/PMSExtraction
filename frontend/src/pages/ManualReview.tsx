@@ -29,6 +29,7 @@ import {
   Archive,
   ExternalLink,
   Lock,
+  Layers,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import { useAuthStore } from '@/store/authStore'
@@ -67,6 +68,7 @@ interface Manual {
   duplicate_of_id: string | null
   blob_storage_key?: string | null
   sharepoint_path?: string | null
+  batch_number?: number | null
 }
 
 interface Gap {
@@ -726,7 +728,7 @@ const ManualReview: React.FC = () => {
     setPage(1)
   }, [filterCategory, filterConfidence, filterFilename, filterUseful, filterBatch, sortBy, sortOrder, pageSize])
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, refetch } = useQuery({
     queryKey: ['manuals', vesselId, filterCategory, filterConfidence, filterFilename, filterUseful, filterBatch, page, pageSize, sortBy, sortOrder],
     queryFn: () => {
       const params: Record<string, string | number> = {

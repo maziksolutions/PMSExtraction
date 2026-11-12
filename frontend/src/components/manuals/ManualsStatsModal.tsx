@@ -67,6 +67,7 @@ interface StatsResponse {
   console_data?: {
     status: 'success' | 'not_configured' | 'unauthorized' | 'error'
     message?: string
+    saved_usage?: ConsoleUsageDay[]
     usage_report?: {
       usage?: ConsoleUsageDay[]
     }
@@ -295,15 +296,15 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
   }, [isConsoleLive, data?.console_data, simulatedConsoleData])
 
   const totalConsoleCost = useMemo(() => {
-    return consoleUsageList.reduce((sum, item) => sum + item.cost, 0)
+    return consoleUsageList.reduce((sum: number, item: ConsoleUsageDay) => sum + item.cost, 0)
   }, [consoleUsageList])
 
   const totalConsoleInputTokens = useMemo(() => {
-    return consoleUsageList.reduce((sum, item) => sum + item.input_tokens, 0)
+    return consoleUsageList.reduce((sum: number, item: ConsoleUsageDay) => sum + item.input_tokens, 0)
   }, [consoleUsageList])
 
   const totalConsoleOutputTokens = useMemo(() => {
-    return consoleUsageList.reduce((sum, item) => sum + item.output_tokens, 0)
+    return consoleUsageList.reduce((sum: number, item: ConsoleUsageDay) => sum + item.output_tokens, 0)
   }, [consoleUsageList])
 
   // Sync calculator request input and actual cost field when calibration target date changes
@@ -318,7 +319,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
       }
       
       // Look up actual cost from console logs for this specific day
-      const consoleDay = consoleUsageList.find((c) => c.date === selectedDateForCalibrate)
+      const consoleDay = consoleUsageList.find((c: ConsoleUsageDay) => c.date === selectedDateForCalibrate)
       if (consoleDay) {
         setDailyCostInput(consoleDay.cost.toFixed(3))
       } else {
@@ -959,7 +960,7 @@ export function ManualsStatsModal({ vesselId, onClose }: ManualsStatsModalProps)
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800/40 text-slate-300">
-                          {consoleUsageList.map((item, index) => (
+                          {consoleUsageList.map((item: ConsoleUsageDay, index: number) => (
                             <tr key={`${item.date}-${index}`} className="hover:bg-slate-800/20 transition-colors">
                               <td className="py-3 px-4 font-semibold text-slate-200">{item.date}</td>
                               <td className="py-3 px-4">{item.input_tokens.toLocaleString()}</td>

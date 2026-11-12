@@ -140,7 +140,7 @@ export function ExtractionConfirmationModal({
                           (edit?.pages_with_spares as string | undefined) ??
                           m?.pages_with_spares_physical ??
                           m?.pages_with_spares
-      if (spareRefStr !== undefined && spareRefStr.trim() !== '') {
+      if (spareRefStr !== undefined && spareRefStr !== null && spareRefStr.trim() !== '') {
         const targetPages = parsePageTokens(spareRefStr)
         const extracted = new Set(summary?.extracted_spares_pages || [])
         return targetPages.filter((p) => !extracted.has(p))
@@ -152,7 +152,7 @@ export function ExtractionConfirmationModal({
                         (edit?.pages_with_jobs as string | undefined) ??
                         m?.pages_with_jobs_physical ??
                         m?.pages_with_jobs
-      if (jobRefStr !== undefined && jobRefStr.trim() !== '') {
+      if (jobRefStr !== undefined && jobRefStr !== null && jobRefStr.trim() !== '') {
         const targetPages = parsePageTokens(jobRefStr)
         const extracted = new Set(summary?.extracted_jobs_pages || [])
         return targetPages.filter((p) => !extracted.has(p))
@@ -173,13 +173,13 @@ export function ExtractionConfirmationModal({
                         m?.pages_with_spares_physical ??
                         m?.pages_with_spares
 
-    const compPending = (compRefStr !== undefined && compRefStr.trim() !== '')
+    const compPending = (compRefStr !== undefined && compRefStr !== null && compRefStr.trim() !== '')
       ? parsePageTokens(compRefStr).filter((p) => !(new Set(summary?.extracted_components_pages || [])).has(p))
       : (summary?.missing_components_pages || [])
-    const jobPending = (jobRefStr !== undefined && jobRefStr.trim() !== '')
+    const jobPending = (jobRefStr !== undefined && jobRefStr !== null && jobRefStr.trim() !== '')
       ? parsePageTokens(jobRefStr).filter((p) => !(new Set(summary?.extracted_jobs_pages || [])).has(p))
       : (summary?.missing_jobs_pages || [])
-    const sparePending = (spareRefStr !== undefined && spareRefStr.trim() !== '')
+    const sparePending = (spareRefStr !== undefined && spareRefStr !== null && spareRefStr.trim() !== '')
       ? parsePageTokens(spareRefStr).filter((p) => !(new Set(summary?.extracted_spares_pages || [])).has(p))
       : (summary?.missing_spares_pages || [])
 
