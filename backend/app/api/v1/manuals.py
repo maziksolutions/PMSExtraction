@@ -692,42 +692,45 @@ async def list_manuals(
 
     order_expr = _manual_order_expr(sort_by, sort_order)
 
-    # Subquery for sequential manual upload number
-    seq_subquery = (
-        select(
-            Manual.id.label("manual_id"),
-            func.row_number().over(
-                partition_by=Manual.vessel_id,
-                order_by=[Manual.created_at.asc(), Manual.id.asc()],
-            ).label("seq_no"),
-        )
-        .where(
-            Manual.vessel_id == vessel_id,
-            Manual.tenant_id == current_user.tenant_id,
-            Manual.is_deleted == False,
-        )
-        .subquery()
-    )
-
     query = (
-        select(Manual, seq_subquery.c.seq_no)
-        .outerjoin(seq_subquery, Manual.id == seq_subquery.c.manual_id)
+        select(Manual)
         .where(*base_filter)
         .order_by(order_expr)
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
     result = await db.execute(query)
+    manuals = list(result.scalars().all())
+
+    # Compute sequential upload number for manuals in this vessel
+    seq_map: dict[uuid.UUID, int] = {}
+    if manuals:
+        try:
+            seq_res = await db.execute(
+                select(
+                    Manual.id,
+                    func.row_number().over(
+                        partition_by=Manual.vessel_id,
+                        order_by=[Manual.created_at.asc(), Manual.id.asc()],
+                    ),
+                ).where(
+                    Manual.vessel_id == vessel_id,
+                    Manual.tenant_id == current_user.tenant_id,
+                    Manual.is_deleted == False,
+                )
+            )
+            for row in seq_res.all():
+                try:
+                    seq_map[row[0]] = int(row[1])
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("Could not compute sequence numbers in list_manuals: %s", exc)
+
     items = []
-    for idx, row in enumerate(result.all(), 1):
-        if isinstance(row, (tuple, list)) or hasattr(row, "_mapping"):
-            m_obj = row[0]
-            seq_val = row[1] if len(row) > 1 and row[1] is not None else idx
-        else:
-            m_obj = row
-            seq_val = getattr(row, "sequence_number", None) or idx
-        out = ManualOut.model_validate(m_obj)
-        out.sequence_number = int(seq_val)
+    for idx, m in enumerate(manuals, 1):
+        out = ManualOut.model_validate(m)
+        out.sequence_number = seq_map.get(m.id, idx)
         items.append(out)
 
     return {
@@ -1779,32 +1782,41 @@ async def get_untouched_manuals(
     try:
         await _get_vessel_or_404(vessel_id, db)
 
-        # 1. Fetch non-deleted manuals for this vessel along with sequence number
+        # 1. Fetch non-deleted manuals for this vessel
         res = await db.execute(
-            select(
-                Manual,
-                func.row_number().over(
-                    partition_by=Manual.vessel_id,
-                    order_by=[Manual.created_at.asc(), Manual.id.asc()],
-                ).label("seq_no"),
-            ).where(
+            select(Manual).where(
                 Manual.vessel_id == vessel_id,
                 Manual.tenant_id == current_user.tenant_id,
                 Manual.is_deleted == False,
             ).order_by(Manual.created_at.desc(), Manual.id.desc())
         )
-        manual_rows = res.all()
-        manuals = []
-        seq_map = {}
-        for idx, row in enumerate(manual_rows, 1):
-            if isinstance(row, (tuple, list)) or hasattr(row, "_mapping"):
-                m_obj = row[0]
-                seq_val = int(row[1]) if len(row) > 1 and row[1] is not None else idx
-            else:
-                m_obj = row
-                seq_val = getattr(row, "sequence_number", None) or idx
-            manuals.append(m_obj)
-            seq_map[m_obj.id] = seq_val
+        manuals = list(res.scalars().all())
+        if not manuals:
+            return {"total_untouched": 0, "manuals": []}
+
+        # Compute sequence numbers
+        seq_map: dict[uuid.UUID, int] = {}
+        try:
+            seq_res = await db.execute(
+                select(
+                    Manual.id,
+                    func.row_number().over(
+                        partition_by=Manual.vessel_id,
+                        order_by=[Manual.created_at.asc(), Manual.id.asc()],
+                    ),
+                ).where(
+                    Manual.vessel_id == vessel_id,
+                    Manual.tenant_id == current_user.tenant_id,
+                    Manual.is_deleted == False,
+                )
+            )
+            for row in seq_res.all():
+                try:
+                    seq_map[row[0]] = int(row[1])
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("Could not compute sequence numbers in get_untouched_manuals: %s", exc)
         if not manuals:
             return {"total_untouched": 0, "manuals": []}
 
