@@ -16,6 +16,7 @@ import anthropic
 from app.core.config import settings
 from app.services.extraction_counter import record_manual_extraction_run, record_page_extraction_run
 from app.services.job_ranks import backfill_manual_job_ranks
+from app.services.deduplication import extract_spare_model_heading
 from app.services.job_naming import (
     append_source_references_to_description,
     build_canonical_job_name,
@@ -427,6 +428,9 @@ DEFAULT_PROMPTS: dict[str, dict] = {
             "       • Multi-model tables often list parts with specific model codes in the 'Remarks' or 'Description' column (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)').\n"
             "       • When a target equipment model is specified in context (e.g. 'LT-55'): extract ONLY rows applicable to this model — including rows designated for this model (e.g. 'LT55', 'LT-55', 'LT55, -75/50Hz', 'LT-55(RH)') and common rows with no model restriction in Remarks. Ignore rows strictly designated for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS (e.g. 'LT-55').\n"
             "       • When NO target model is specified in context: extract each row, storing the specific model tag in spare_model (e.g. 'LT-55', 'LT22') and keeping the notes under 'Remarks:'.\n"
+            "    3. MODEL HEADINGS & MULTI-MODEL KITS RULE (CRITICAL):\n"
+            "       • When parts tables, kit lists, or sections appear under distinct model headings or kit titles (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'), ALWAYS extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS.\n"
+            "       • The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) frequently appears under different model headings. Each model heading represents distinct equipment parts; NEVER skip, omit, or merge rows with duplicate part numbers when they belong to different model headings! Extract every row under each model heading.\n"
             "- PARTS LISTS, EXPLODED DIAGRAMS AND COMPONENT TABLES:\n"
             "    1. If a page has an exploded-view diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser...'), extract EVERY item in that list as a spare part (e.g. part_number='No. 1', 'No. 2').\n"
             "    2. If a page has BOTH an exploded-view diagram AND a separate parts table for the same parts, extract from the parts table to avoid duplication.\n"
@@ -1578,13 +1582,15 @@ def _dedupe_records(records: list[dict], extraction_type: str) -> list[dict]:
                 ]
             )
         else:
-            # Include drawing_number + drawing_position so distinct parts that share a
-            # part_name but differ by position (e.g. two M3x6 bolts) are not collapsed.
+            # Include drawing_number + drawing_position + model heading so distinct parts that share a
+            # part_name or part_number under different model headings are not collapsed.
+            model_tag = extract_spare_model_heading(record).lower()
             key = "|".join([
                 (record.get("part_number") or "").strip().lower(),
                 (record.get("drawing_number") or "").strip().lower(),
                 (record.get("drawing_position") or "").strip().lower(),
                 (record.get("part_name") or "").strip().lower(),
+                model_tag,
                 str(record.get("source_page_number") or ""),
             ])
         if key.strip("|") and key in seen:
@@ -1961,6 +1967,7 @@ async def _extract_entities_from_page_image_with_openai(
                 "\n\nMULTI-MODEL & VARIANT TABLES RULE (CRITICAL):"
                 "\n• Variant quantity columns (e.g. '1, 2, 3, 4' under Ant./Qty with TYPEVARIANT legend like '1: L2.093/LPW2, 2: L3.139/LPW3, 3: L4.186/LPW4'): When a target model is specified in context (e.g. L3 139LB / LPW3 / Variant 2), extract ONLY rows with a quantity in that model's column; do NOT extract rows that are blank/dash for this model. Use that column's quantity in 'QTY: <count> <unit>' and set spare_model to the target model."
                 "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
+                "\n• Model headings & multi-model kits (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'): Always extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS. The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) often appears under different model headings. Each model heading represents distinct equipment parts; NEVER skip or omit rows with duplicate part numbers when they belong to different model headings!"
             )
         elif extraction_type == "job":
             text_instructions += (
@@ -2057,6 +2064,7 @@ async def _extract_entities_from_page_image_with_claude(
                 "\n\nMULTI-MODEL & VARIANT TABLES RULE (CRITICAL):"
                 "\n• Variant quantity columns (e.g. '1, 2, 3, 4' under Ant./Qty with TYPEVARIANT legend like '1: L2.093/LPW2, 2: L3.139/LPW3, 3: L4.186/LPW4'): When a target model is specified in context (e.g. L3 139LB / LPW3 / Variant 2), extract ONLY rows with a quantity in that model's column; do NOT extract rows that are blank/dash for this model. Use that column's quantity in 'QTY: <count> <unit>' and set spare_model to the target model."
                 "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
+                "\n• Model headings & multi-model kits (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'): Always extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS. The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) often appears under different model headings. Each model heading represents distinct equipment parts; NEVER skip or omit rows with duplicate part numbers when they belong to different model headings!"
             )
         elif extraction_type == "job":
             text_instructions += (
@@ -2806,6 +2814,13 @@ async def _consolidate_spares_for_manual(
             if pn_t and pn_c and pn_t != pn_c:
                 continue
 
+            # Model heading check: Spares should ONLY be treated as duplicates when they appear
+            # under the SAME model heading. Spares belonging to different model headings must be kept.
+            model_t = extract_spare_model_heading(target)
+            model_c = extract_spare_model_heading(candidate)
+            if model_t and model_c and model_t != model_c:
+                continue
+
             # Merge candidates metadata into target
             if not target.part_number and candidate.part_number:
                 target.part_number = candidate.part_number
@@ -2825,14 +2840,6 @@ async def _consolidate_spares_for_manual(
                 target.spare_maker = candidate.spare_maker
             if not target.spare_model and candidate.spare_model:
                 target.spare_model = candidate.spare_model
-            if not target.spare_assembly and candidate.spare_assembly:
-                target.spare_assembly = candidate.spare_assembly
-            if not target.assembly_description and candidate.assembly_description:
-                target.assembly_description = candidate.assembly_description
-            if not target.spare_maker and candidate.spare_maker:
-                target.spare_maker = candidate.spare_maker
-            if not target.spare_model and candidate.spare_model:
-                target.spare_model = candidate.spare_model
 
             target.is_critical = bool(target.is_critical or candidate.is_critical)
             
@@ -2842,11 +2849,76 @@ async def _consolidate_spares_for_manual(
             if score_c > score_t:
                 target.confidence_score = score_c
 
-            # Mark candidate duplicate as deleted
+            # Mark candidate duplicate as deleted under the same model heading
             candidate.is_deleted = True
+            candidate.is_duplicate = True
+            candidate.merged_into_id = target.id
             db.add(candidate)
             db.add(target)
             merged_count += 1
+
+    # Cross-manual duplicate check for the same vessel:
+    # If a spare has already been extracted from another manual for the SAME model heading,
+    # mark it as a duplicate and ignore it.
+    other_spares_res = await db.execute(
+        select(Spare).where(
+            Spare.vessel_id == vessel_id,
+            Spare.tenant_id == tenant_id,
+            Spare.source_manual_id != manual.id,
+            Spare.is_deleted == False,
+        )
+    )
+    other_spares = list(other_spares_res.scalars().all())
+
+    if other_spares:
+        for target in spares:
+            if getattr(target, "is_deleted", False):
+                continue
+
+            pn_t = (target.part_number or "").strip().upper()
+            pos_t = (target.drawing_position or "").strip().lower()
+            name_t = (target.part_name or "").strip().lower()
+            model_t = extract_spare_model_heading(target)
+
+            for existing in other_spares:
+                if getattr(existing, "is_deleted", False):
+                    continue
+
+                pn_e = (existing.part_number or "").strip().upper()
+                pos_e = (existing.drawing_position or "").strip().lower()
+                name_e = (existing.part_name or "").strip().lower()
+                model_e = extract_spare_model_heading(existing)
+
+                # Part number match
+                if pn_t and pn_e:
+                    if pn_t != pn_e:
+                        continue
+                else:
+                    if not (name_t and name_e and name_t == name_e and pos_t and pos_e and pos_t == pos_e):
+                        continue
+
+                # Model heading match: MUST be for the SAME model heading
+                if model_t and model_e:
+                    if model_t != model_e:
+                        continue  # Different model headings -> NOT a duplicate!
+                elif bool(model_t) != bool(model_e):
+                    continue  # One has a specific model heading, the other does not -> NOT a duplicate!
+
+                # Name similarity check
+                if name_t and name_e and fuzzy_similarity(name_t, name_e) < 0.88:
+                    continue
+
+                # Drawing position check
+                if pos_t and pos_e and pos_t != pos_e:
+                    continue
+
+                # Confirmed duplicate from another manual for the SAME model heading
+                target.is_deleted = True
+                target.is_duplicate = True
+                target.merged_into_id = existing.id
+                db.add(target)
+                merged_count += 1
+                break
 
     return merged_count
 

@@ -302,11 +302,51 @@ def is_duplicate_job(new: dict, existing: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def extract_spare_model_heading(spare_or_record: object) -> str:
+    """
+    Extracts the normalized model heading from a Spare object or extraction record dictionary.
+    Priority:
+    1. spare_model
+    2. machinery_model
+    3. Model identifier detected in spare_assembly / table heading (e.g. 'HVV-2.5', 'HVV-3')
+    """
+    if isinstance(spare_or_record, dict):
+        model = str(spare_or_record.get("spare_model") or "").strip()
+        if not model:
+            model = str(spare_or_record.get("machinery_model") or "").strip()
+        assembly = str(spare_or_record.get("spare_assembly") or "").strip()
+    else:
+        model = str(getattr(spare_or_record, "spare_model", "") or "").strip()
+        if not model:
+            model = str(getattr(spare_or_record, "machinery_model", "") or "").strip()
+        assembly = str(getattr(spare_or_record, "spare_assembly", "") or "").strip()
+
+    if model:
+        norm = model.upper()
+        for prefix in ("MODEL:", "TYPE:", "MODEL ", "TYPE "):
+            if norm.startswith(prefix):
+                norm = norm[len(prefix):].strip()
+        return norm
+
+    if assembly:
+        # Match 'KIT <MODEL>' e.g. 'KIT HVV-2.5', 'KIT HVV-3'
+        m_kit = re.search(r'\bKIT\s+([A-Z0-9]+(?:[-/.][A-Z0-9]+)*)', assembly, re.IGNORECASE)
+        if m_kit:
+            return m_kit.group(1).upper()
+        # Match standalone model patterns like 'HVV-2.5', '6EY18ALW', 'DK-20'
+        m_pattern = re.search(r'\b([A-Z]{2,}[-/][A-Z0-9.]+)\b', assembly)
+        if m_pattern:
+            return m_pattern.group(1).upper()
+
+    return ""
+
+
 def is_duplicate_spare(new: dict, existing: dict) -> bool:
     """
     F-07 criteria:
     - part_name fuzzy >= 0.88
     - part_number exact match (if both present; if both present and differ → NOT duplicate)
+    - model heading match: if both belong to different model headings → NOT duplicate!
     - Returns True based on criteria
     """
     # --- part name ---
@@ -326,5 +366,11 @@ def is_duplicate_spare(new: dict, existing: dict) -> bool:
         # If both have part numbers and they differ → definitely not a duplicate
         if new_pn != ex_pn:
             return False
+
+    # --- model heading check ---
+    m_new = extract_spare_model_heading(new)
+    m_ex = extract_spare_model_heading(existing)
+    if m_new and m_ex and m_new != m_ex:
+        return False
 
     return True
