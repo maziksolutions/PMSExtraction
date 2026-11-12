@@ -866,6 +866,8 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "       • The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) frequently appears under different model headings or different kit lists. Each model heading and each kit represents distinct equipment parts; NEVER skip, omit, or merge rows with duplicate part numbers when they belong to different model headings or different kits/assemblies! Extract every row under each model heading and kit.\n"
 
+            "       • MULTIPLE KITS ON THE SAME PAGE (CRITICAL): When multiple kits appear on the same page (e.g. Page 58 has both 'KIT HVV-2.5 VOC' and 'KIT HVV-2.5 O'; Page 59 has both 'KIT HVV-3 O' and 'KIT HVV-3 VOC'), extract EVERY part from EVERY kit! If the same part (e.g. 'Pos. H / Part No. 1380-53 O-ring') appears in both kits on that same page, you MUST output a separate JSON record for each kit (one with spare_assembly='KIT HVV-2.5 VOC' and one with spare_assembly='KIT HVV-2.5 O'). For Page 58, KIT HVV-2.5 VOC has 4 spares and KIT HVV-2.5 O has 9 spares — output ALL 13 spares without omitting, dropping, or deduplicating any parts across kits on the page!\n"
+
             "- PARTS LISTS, EXPLODED DIAGRAMS AND COMPONENT TABLES:\n"
 
             "    1. If a page has an exploded-view diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser...'), extract EVERY item in that list as a spare part (e.g. part_number='No. 1', 'No. 2').\n"
@@ -958,7 +960,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "sections titled 'Spare Parts', 'Parts List', 'Recommended Spares'. "
 
-            "Extract EVERY row from Pos./Description tables, including test apparatus and hydrostatic pressure test setups (e.g. section 13.2 Hydrostatic Pressure Test with Blind flanges, Pressure gauge, Air bleed screw, Pressurized water supply, Device to be tested).\n"
+            "Extract EVERY row from Pos./Description tables, including test apparatus and hydrostatic pressure test setups (e.g. section 13.2 Hydrostatic Pressure Test with Blind flanges, Pressure gauge, Air bleed screw, Pressurized water supply, Device to be tested). If multiple kits appear on the same page (e.g. KIT HVV-2.5 VOC and KIT HVV-2.5 O on Page 58), extract ALL parts from EVERY kit — for example on Page 58 extract all 13 spares including O-Ring in both kits with distinct spare_assembly. NEVER omit common parts across kits.\n"
 
             "IMPORTANT: All extracted data must be in English only. Translate any non-English text (Japanese, Chinese, etc.) to English.\n"
 
@@ -3200,11 +3202,13 @@ def _dedupe_records(records: list[dict], extraction_type: str) -> list[dict]:
 
         else:
 
-            # Include drawing_number + drawing_position + model heading so distinct parts that share a
+            # Include drawing_number + drawing_position + spare_assembly + model heading so distinct parts that share a
 
-            # part_name or part_number under different model headings are not collapsed.
+            # part_name or part_number under different assemblies/kits or model headings are not collapsed.
 
             model_tag = extract_spare_model_heading(record).lower()
+
+            assembly_tag = (record.get("spare_assembly") or "").strip().lower()
 
             key = "|".join([
 
@@ -3215,6 +3219,8 @@ def _dedupe_records(records: list[dict], extraction_type: str) -> list[dict]:
                 (record.get("drawing_position") or "").strip().lower(),
 
                 (record.get("part_name") or "").strip().lower(),
+
+                assembly_tag,
 
                 model_tag,
 
@@ -3973,6 +3979,8 @@ async def _extract_entities_from_page_image_with_openai(
                 "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
 
                 "\n• Model headings & multi-model kits (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'): Always extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS, and capture the full kit name (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O') into spare_assembly. The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) often appears under different model headings or different kit lists. Each model heading and each kit represents distinct equipment parts; NEVER skip or omit rows with duplicate part numbers when they belong to different model headings or different kits/assemblies! Extract every row under each model heading and kit.\n"
+
+                "\n• MULTIPLE KITS ON SAME PAGE (CRITICAL): If multiple kits appear on the same page (e.g. Page 58 has both 'KIT HVV-2.5 VOC' and 'KIT HVV-2.5 O'; Page 59 has both 'KIT HVV-3 O' and 'KIT HVV-3 VOC'), extract EVERY part from EVERY kit! If a part (such as 'Pos. H / Part No. 1380-53 O-ring') appears in both kits on that same page, output a separate JSON record for each kit (one with spare_assembly='KIT HVV-2.5 VOC' and one with spare_assembly='KIT HVV-2.5 O'). On Page 58, KIT HVV-2.5 VOC has 4 spares and KIT HVV-2.5 O has 9 spares — output ALL 13 spares without omitting or dropping duplicate parts across kits!\n"
             )
 
         elif extraction_type == "job":
@@ -4168,6 +4176,8 @@ async def _extract_entities_from_page_image_with_claude(
                 "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
 
                 "\n• Model headings & multi-model kits (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'): Always extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS, and capture the full kit name (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O') into spare_assembly. The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) often appears under different model headings or different kit lists. Each model heading and each kit represents distinct equipment parts; NEVER skip or omit rows with duplicate part numbers when they belong to different model headings or different kits/assemblies! Extract every row under each model heading and kit.\n"
+
+                "\n• MULTIPLE KITS ON SAME PAGE (CRITICAL): If multiple kits appear on the same page (e.g. Page 58 has both 'KIT HVV-2.5 VOC' and 'KIT HVV-2.5 O'; Page 59 has both 'KIT HVV-3 O' and 'KIT HVV-3 VOC'), extract EVERY part from EVERY kit! If a part (such as 'Pos. H / Part No. 1380-53 O-ring') appears in both kits on that same page, output a separate JSON record for each kit (one with spare_assembly='KIT HVV-2.5 VOC' and one with spare_assembly='KIT HVV-2.5 O'). On Page 58, KIT HVV-2.5 VOC has 4 spares and KIT HVV-2.5 O has 9 spares — output ALL 13 spares without omitting or dropping duplicate parts across kits!\n"
             )
 
         elif extraction_type == "job":

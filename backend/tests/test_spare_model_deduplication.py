@@ -113,6 +113,37 @@ def test_dedupe_records_retains_different_model_headings():
     assert "HVV-3" in models
 
 
+def test_dedupe_records_preserves_page_58_all_13_spares():
+    # Page 58 in PV valve manual has 2 kits: KIT HVV-2.5 VOC (4 spares) and KIT HVV-2.5 O (9 spares)
+    # Both kits contain Pos. H / Part No. 1380-53 O-ring. All 13 spares must be preserved!
+    p58_spares = [
+        # Kit HVV-2.5 VOC (4 spares)
+        {"part_name": "Secondary Valve Housing", "part_number": "2001-238-2,8", "drawing_position": "G", "spare_assembly": "KIT HVV-2.5 VOC", "spare_model": "HVV-2.5", "source_page_number": 58},
+        {"part_name": "O-Ring", "part_number": "1380-53", "drawing_position": "H", "spare_assembly": "KIT HVV-2.5 VOC", "spare_model": "HVV-2.5", "source_page_number": 58},
+        {"part_name": "Secondary Valve Seat", "part_number": "1401-23-2", "drawing_position": "F", "spare_assembly": "KIT HVV-2.5 VOC", "spare_model": "HVV-2.5", "source_page_number": 58},
+        {"part_name": "Secondary Valve Plunger Acc. To Order", "part_number": "1402-xxx", "drawing_position": "E", "spare_assembly": "KIT HVV-2.5 VOC", "spare_model": "HVV-2.5", "source_page_number": 58},
+        # Kit HVV-2.5 O (9 spares)
+        {"part_name": "O-Ring", "part_number": "1380-53", "drawing_position": "H", "spare_assembly": "KIT HVV-2.5 O", "spare_model": "HVV-2.5", "source_page_number": 58},
+        {"part_name": "O-Ring", "part_number": "1380-52", "drawing_position": "Q", "spare_assembly": "KIT HVV-2.5 O", "spare_model": "HVV-2.5", "source_page_number": 58},
+        {"part_name": "O-Ring", "part_number": "1380-54", "drawing_position": "AZ", "spare_assembly": "KIT HVV-2.5 O", "spare_model": "HVV-2.5", "source_page_number": 58},
+        {"part_name": "O-Ring", "part_number": "1380-57", "drawing_position": "AU", "spare_assembly": "KIT HVV-2.5 O", "spare_model": "HVV-2.5", "source_page_number": 58},
+        {"part_name": "Screw", "part_number": "105094", "drawing_position": "AC", "spare_assembly": "KIT HVV-2.5 O", "spare_model": "HVV-2.5", "source_page_number": 58},
+        {"part_name": "Lubrication Nipple", "part_number": "1307-2", "drawing_position": "AG", "spare_assembly": "KIT HVV-2.5 O", "spare_model": "HVV-2.5", "source_page_number": 58},
+        {"part_name": "Gasket", "part_number": "1381-3", "drawing_position": "AK", "spare_assembly": "KIT HVV-2.5 O", "spare_model": "HVV-2.5", "source_page_number": 58},
+        {"part_name": "Splitpin", "part_number": "106576", "drawing_position": "AE", "spare_assembly": "KIT HVV-2.5 O", "spare_model": "HVV-2.5", "source_page_number": 58},
+        {"part_name": "Resilient Seal", "part_number": "1380-149", "drawing_position": "AL", "spare_assembly": "KIT HVV-2.5 O", "spare_model": "HVV-2.5", "source_page_number": 58},
+    ]
+
+    deduped = _dedupe_records(p58_spares, "spare")
+    assert len(deduped) == 13
+
+    # Verify both O-Rings (1380-53) are present with their respective kits
+    o_rings = [s for s in deduped if s["part_number"] == "1380-53"]
+    assert len(o_rings) == 2
+    assemblies = {s["spare_assembly"] for s in o_rings}
+    assert assemblies == {"KIT HVV-2.5 VOC", "KIT HVV-2.5 O"}
+
+
 @pytest.mark.asyncio
 async def test_consolidate_spares_intra_manual_different_models():
     # Simulate DB Spare model objects
