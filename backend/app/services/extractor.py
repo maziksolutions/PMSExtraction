@@ -862,9 +862,9 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "    3. MODEL HEADINGS & MULTI-MODEL KITS RULE (CRITICAL):\n"
 
-            "       • When parts tables, kit lists, or sections appear under distinct model headings or kit titles (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'), ALWAYS extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS.\n"
+            "       • When parts tables, kit lists, or sections appear under distinct model headings or kit titles (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'), ALWAYS extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS, and capture the full kit name (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O') in spare_assembly.\n"
 
-            "       • The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) frequently appears under different model headings. Each model heading represents distinct equipment parts; NEVER skip, omit, or merge rows with duplicate part numbers when they belong to different model headings! Extract every row under each model heading.\n"
+            "       • The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) frequently appears under different model headings or different kit lists. Each model heading and each kit represents distinct equipment parts; NEVER skip, omit, or merge rows with duplicate part numbers when they belong to different model headings or different kits/assemblies! Extract every row under each model heading and kit.\n"
 
             "- PARTS LISTS, EXPLODED DIAGRAMS AND COMPONENT TABLES:\n"
 
@@ -874,7 +874,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "    3. If a page has an equipment component settings/calibration table (e.g. 'COMPONENT | SETTING | NOTES'), extract each listed component as a spare part, capturing their calibration/setting values into specification.\n"
 
-            "    4. If a page has a table with headers like 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', or numbered test apparatus / equipment setup lists: extract EVERY row as a spare part. Set part_name to Description in Title Case (e.g. 'Water Heater', 'Thermometer', 'Hydrometer', 'Pump'), drawing_position to the numeric position (e.g. '1', '2'), and if no catalog part number exists, capture part_number as 'Pos. <number>' (e.g. 'Pos. 1', 'Pos. 2') or 'No. <number>'.\n"
+            "    4. If a page has a table with headers like 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', or numbered test apparatus / equipment setup lists (such as section '13.2 Hydrostatic Pressure Test' or pressure test setups with items like '1 Blind flanges', '2 Pressure gauge', '3 Air bleed screw', '4 Pressurized water supply', '5 Device to be tested'): extract EVERY row as a spare part. Set part_name to Description in Title Case (e.g. 'Blind Flanges', 'Pressure Gauge', 'Air Bleed Screw', 'Pressurized Water Supply', 'Device To Be Tested'), drawing_position to the numeric position (e.g. '1', '2', '3', '4', '5'), and if no catalog part number exists, capture part_number as 'Pos. <number>' (e.g. 'Pos. 1', 'Pos. 2', 'Pos. 3', 'Pos. 4', 'Pos. 5'). NEVER skip or omit these components simply because they are listed under a test or inspection procedure heading!\n"
 
             "- Extract EVERY spare part row, callout list item, and component row — never skip items\n"
 
@@ -958,7 +958,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "sections titled 'Spare Parts', 'Parts List', 'Recommended Spares'. "
 
-            "Extract EVERY row from Pos./Description tables.\n"
+            "Extract EVERY row from Pos./Description tables, including test apparatus and hydrostatic pressure test setups (e.g. section 13.2 Hydrostatic Pressure Test with Blind flanges, Pressure gauge, Air bleed screw, Pressurized water supply, Device to be tested).\n"
 
             "IMPORTANT: All extracted data must be in English only. Translate any non-English text (Japanese, Chinese, etc.) to English.\n"
 
@@ -3936,7 +3936,7 @@ async def _extract_entities_from_page_image_with_openai(
 
                 "\n4. If the page contains an engineering drawing, assembly diagram, cross-sectional schematic, or piping diagram with a title block, bill of materials (BOM), parts table, or callout list (including in Chinese e.g. 序号, 名称, 材质, 数量, or Japanese NO., 品名, 材质, 数量): translate and extract EVERY part listed in the drawing's bill of materials (BOM), title block, or callout list."
 
-                "\n5. If the page contains a table with headers like 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', or numbered test apparatus / equipment setup lists: extract EVERY row as a spare part. Set part_name to Description (in Title Case), drawing_position to the position number (e.g. '1'), and if no catalog part number exists, capture part_number as 'Pos. <number>' (e.g. 'Pos. 1', 'Pos. 2') or 'No. <number>'.\n"
+                "\n5. If the page contains a table with headers like 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', or numbered test apparatus / equipment setup lists (such as section '13.2 Hydrostatic Pressure Test' or pressure test setups with items like '1 Blind flanges', '2 Pressure gauge', '3 Air bleed screw', '4 Pressurized water supply', '5 Device to be tested'): extract EVERY row as a spare part. Set part_name to Description (in Title Case e.g. 'Blind Flanges', 'Pressure Gauge', 'Air Bleed Screw', 'Pressurized Water Supply', 'Device To Be Tested'), drawing_position to the position number (e.g. '1', '2', '3', '4', '5'), and if no catalog part number exists, capture part_number as 'Pos. <number>' (e.g. 'Pos. 1', 'Pos. 2', 'Pos. 3', 'Pos. 4', 'Pos. 5'). NEVER skip or omit these components simply because they are listed under a test or inspection procedure heading!\n"
 
                 "\n6. Read all text in its natural orientation, including landscape or rotated drawings."
 
@@ -3972,8 +3972,7 @@ async def _extract_entities_from_page_image_with_openai(
 
                 "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
 
-                "\n• Model headings & multi-model kits (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'): Always extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS. The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) often appears under different model headings. Each model heading represents distinct equipment parts; NEVER skip or omit rows with duplicate part numbers when they belong to different model headings!"
-
+                "\n• Model headings & multi-model kits (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'): Always extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS, and capture the full kit name (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O') into spare_assembly. The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) often appears under different model headings or different kit lists. Each model heading and each kit represents distinct equipment parts; NEVER skip or omit rows with duplicate part numbers when they belong to different model headings or different kits/assemblies! Extract every row under each model heading and kit.\n"
             )
 
         elif extraction_type == "job":
@@ -4132,7 +4131,7 @@ async def _extract_entities_from_page_image_with_claude(
 
                 "\n4. If the page contains an engineering drawing, assembly diagram, cross-sectional schematic, or piping diagram with a title block, bill of materials (BOM), parts table, or callout list (including in Chinese e.g. 序号, 名称, 材质, 数量, or Japanese NO., 品名, 材质, 数量): translate and extract EVERY part listed in the drawing's bill of materials (BOM), title block, or callout list."
 
-                "\n5. If the page contains a table with headers like 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', or numbered test apparatus / equipment setup lists: extract EVERY row as a spare part. Set part_name to Description (in Title Case), drawing_position to the position number (e.g. '1'), and if no catalog part number exists, capture part_number as 'Pos. <number>' (e.g. 'Pos. 1', 'Pos. 2') or 'No. <number>'.\n"
+                "\n5. If the page contains a table with headers like 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', or numbered test apparatus / equipment setup lists (such as section '13.2 Hydrostatic Pressure Test' or pressure test setups with items like '1 Blind flanges', '2 Pressure gauge', '3 Air bleed screw', '4 Pressurized water supply', '5 Device to be tested'): extract EVERY row as a spare part. Set part_name to Description (in Title Case e.g. 'Blind Flanges', 'Pressure Gauge', 'Air Bleed Screw', 'Pressurized Water Supply', 'Device To Be Tested'), drawing_position to the position number (e.g. '1', '2', '3', '4', '5'), and if no catalog part number exists, capture part_number as 'Pos. <number>' (e.g. 'Pos. 1', 'Pos. 2', 'Pos. 3', 'Pos. 4', 'Pos. 5'). NEVER skip or omit these components simply because they are listed under a test or inspection procedure heading!\n"
 
                 "\n6. Read all text in its natural orientation, including landscape or rotated drawings."
 
@@ -4168,8 +4167,7 @@ async def _extract_entities_from_page_image_with_claude(
 
                 "\n• Multi-model remarks (e.g. 'LT22, -40' vs 'LT55, -75/50Hz' vs 'LT-55(RH)'): When a target model is specified in context (e.g. LT-55), extract ONLY rows applicable to this target model (plus common rows with no model restriction in Remarks). Ignore rows strictly for other models (e.g. 'LT22, -40'). Set spare_model to the target model in ALL CAPS."
 
-                "\n• Model headings & multi-model kits (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'): Always extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS. The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) often appears under different model headings. Each model heading represents distinct equipment parts; NEVER skip or omit rows with duplicate part numbers when they belong to different model headings!"
-
+                "\n• Model headings & multi-model kits (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O', 'KIT HVV-3 O', 'KIT HVV-3 VOC'): Always extract that model code (e.g. 'HVV-2.5', 'HVV-3') into spare_model in ALL CAPS, and capture the full kit name (e.g. 'KIT HVV-2.5 VOC', 'KIT HVV-2.5 O') into spare_assembly. The same Part Number (e.g. standard O-rings, screws, gaskets, splitpins) often appears under different model headings or different kit lists. Each model heading and each kit represents distinct equipment parts; NEVER skip or omit rows with duplicate part numbers when they belong to different model headings or different kits/assemblies! Extract every row under each model heading and kit.\n"
             )
 
         elif extraction_type == "job":
@@ -5546,6 +5544,78 @@ async def _consolidate_jobs_for_manual(
 
 
 
+
+
+def _parse_simple_pos_description_table(text: str, page_no: int) -> list[dict]:
+    """
+    Fallback parser for simple Pos. | Description or Item | Description tables
+    (e.g. Section 13.2 Hydrostatic Pressure Test apparatus/setup tables).
+    """
+    if not text:
+        return []
+    m = re.search(r'(?:Pos\.?|Position|Item)\s*\n\s*(?:Description|Part\s*Name|Name)\s*\n([\s\S]+)', text, re.IGNORECASE)
+    if not m:
+        return []
+    body = m.group(1)
+
+    section_m = re.search(r'(?:^|\n)((?:\d+(?:\.\d+)*\.?\s+)?[^\n]+)\s*\n\s*(?:Pos|Item)', text, re.IGNORECASE)
+    section_title = None
+    if section_m:
+        raw_title = section_m.group(1).strip()
+        title_lines = [l.strip() for l in raw_title.splitlines() if l.strip() and not re.match(r'^(?:#|page\s+\d+)', l, re.IGNORECASE)]
+        if title_lines:
+            section_title = title_lines[-1]
+    if not section_title:
+        section_title = "Hydrostatic Pressure Test" if "hydrostatic" in text.lower() else "Equipment Parts List"
+
+    items: list[dict] = []
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        pos_m = re.match(r'^(\d{1,4})$', line)
+        if pos_m:
+            pos_val = pos_m.group(1)
+            if idx + 1 < len(lines):
+                desc = lines[idx + 1]
+                if not re.match(r'^\d{1,4}$', desc) and not desc.lower().startswith(('page', 'pos.', 'item')):
+                    items.append({
+                        "part_name": desc.title(),
+                        "part_number": f"Pos. {pos_val}",
+                        "drawing_position": pos_val,
+                        "drawing_number": None,
+                        "specification": None,
+                        "spare_assembly": section_title,
+                        "assembly_description": None,
+                        "spare_maker": None,
+                        "spare_model": None,
+                        "source_page_number": page_no,
+                        "confidence_score": 95,
+                    })
+                    idx += 2
+                    continue
+        single_m = re.match(r'^(\d{1,4})\s+([A-Za-z][A-Za-z0-9\s\-_/().,]+)$', line)
+        if single_m:
+            pos_val = single_m.group(1)
+            desc = single_m.group(2).strip()
+            items.append({
+                "part_name": desc.title(),
+                "part_number": f"Pos. {pos_val}",
+                "drawing_position": pos_val,
+                "drawing_number": None,
+                "specification": None,
+                "spare_assembly": section_title,
+                "assembly_description": None,
+                "spare_maker": None,
+                "spare_model": None,
+                "source_page_number": page_no,
+                "confidence_score": 95,
+            })
+            idx += 1
+            continue
+        idx += 1
+    return items
+
 async def _consolidate_spares_for_manual(
 
     *,
@@ -5616,6 +5686,18 @@ async def _consolidate_spares_for_manual(
 
 
 
+
+            # RULE 1: Spares from different pages must NEVER be consolidated or deleted.
+            # Each page represents a distinct section, kit, or drawing callout.
+            if page_t is not None and page_c is not None and page_t != page_c:
+                continue
+
+            # RULE 2: Spares belonging to different assemblies or kits must NEVER be consolidated or deleted.
+            # E.g., KIT HVV-2.5 VOC vs KIT HVV-2.5 O represent distinct spare kits and both must be preserved.
+            assy_t = (target.spare_assembly or "").strip().lower()
+            assy_c = (candidate.spare_assembly or "").strip().lower()
+            if assy_t and assy_c and assy_t != assy_c:
+                continue
             pos_t = (target.drawing_position or "").strip().lower()
 
             pos_c = (candidate.drawing_position or "").strip().lower()
@@ -5677,6 +5759,10 @@ async def _consolidate_spares_for_manual(
             model_c = extract_spare_model_heading(candidate)
 
             if model_t and model_c and model_t != model_c:
+
+                continue
+
+            if bool(model_t) != bool(model_c):
 
                 continue
 
@@ -5752,131 +5838,11 @@ async def _consolidate_spares_for_manual(
 
             merged_count += 1
 
-
-
     # Cross-manual duplicate check for the same vessel:
-
-    # If a spare has already been extracted from another manual for the SAME model heading,
-
-    # mark it as a duplicate and ignore it.
-
-    other_spares_res = await db.execute(
-
-        select(Spare).where(
-
-            Spare.vessel_id == vessel_id,
-
-            Spare.tenant_id == tenant_id,
-
-            Spare.source_manual_id != manual.id,
-
-            Spare.is_deleted == False,
-
-        )
-
-    )
-
-    other_spares = list(other_spares_res.scalars().all())
-
-
-
-    if other_spares:
-
-        for target in spares:
-
-            if getattr(target, "is_deleted", False):
-
-                continue
-
-
-
-            pn_t = (target.part_number or "").strip().upper()
-
-            pos_t = (target.drawing_position or "").strip().lower()
-
-            name_t = (target.part_name or "").strip().lower()
-
-            model_t = extract_spare_model_heading(target)
-
-
-
-            for existing in other_spares:
-
-                if getattr(existing, "is_deleted", False):
-
-                    continue
-
-
-
-                pn_e = (existing.part_number or "").strip().upper()
-
-                pos_e = (existing.drawing_position or "").strip().lower()
-
-                name_e = (existing.part_name or "").strip().lower()
-
-                model_e = extract_spare_model_heading(existing)
-
-
-
-                # Part number match
-
-                if pn_t and pn_e:
-
-                    if pn_t != pn_e:
-
-                        continue
-
-                else:
-
-                    if not (name_t and name_e and name_t == name_e and pos_t and pos_e and pos_t == pos_e):
-
-                        continue
-
-
-
-                # Model heading match: MUST be for the SAME model heading
-
-                if model_t and model_e:
-
-                    if model_t != model_e:
-
-                        continue  # Different model headings -> NOT a duplicate!
-
-                elif bool(model_t) != bool(model_e):
-
-                    continue  # One has a specific model heading, the other does not -> NOT a duplicate!
-
-
-
-                # Name similarity check
-
-                if name_t and name_e and fuzzy_similarity(name_t, name_e) < 0.88:
-
-                    continue
-
-
-
-                # Drawing position check
-
-                if pos_t and pos_e and pos_t != pos_e:
-
-                    continue
-
-
-
-                # Confirmed duplicate from another manual for the SAME model heading
-
-                target.is_deleted = True
-
-                target.is_duplicate = True
-
-                target.merged_into_id = existing.id
-
-                db.add(target)
-
-                merged_count += 1
-
-                break
+    # NOTE: In accordance with requirement that all spares from each manual must be extracted
+    # and nothing must be removed, spares belonging to this manual are NOT marked as deleted
+    # simply because another manual shares a common part number. Each manual retains its full BOM.
+    pass
 
 
 
@@ -8947,6 +8913,30 @@ async def auto_extract_from_manual(
                             if debug_log is not None:
 
                                 debug_log.append(f"Vision returned {len(vision_records)} records for page {page_no}")
+
+                            # Fallback if vision extraction returned 0 records for a spare page
+                            if not vision_records and etype == "spare":
+                                page_text_block = _filter_text_to_pages(full_text, [page_no], include_context=False) if full_text else ""
+                                if page_text_block.strip():
+                                    table_fallback = _parse_simple_pos_description_table(page_text_block, page_no)
+                                    if table_fallback:
+                                        vision_records = table_fallback
+                                        if debug_log is not None:
+                                            debug_log.append(f"Pos-description table fallback returned {len(vision_records)} records for page {page_no}")
+                                    else:
+                                        try:
+                                            llm_text_records = await extract_entities(
+                                                f"[PAGE {page_no}]\n{page_text_block}",
+                                                extraction_type="spare",
+                                                filename=filename,
+                                                context_note=current_context_note,
+                                            )
+                                            if llm_text_records:
+                                                vision_records = llm_text_records
+                                                if debug_log is not None:
+                                                    debug_log.append(f"Text extraction fallback returned {len(vision_records)} records for page {page_no}")
+                                        except Exception as fb_err:
+                                            logger.warning("Fallback text extraction failed for spare page %d: %s", page_no, fb_err)
 
                             if vision_records:
 

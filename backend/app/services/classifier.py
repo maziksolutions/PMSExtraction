@@ -111,6 +111,7 @@ CATEGORY_RULES: list[tuple[str, list[str], int]] = [
         "maintenance manual", "service manual", "user manual",
 
         "operator manual", "technical manual", "overhaul manual",
+        "pv valve", "pressure vacuum valve", "valve manual", "valve",
 
     ], 85),
 
@@ -172,7 +173,7 @@ CATEGORY_RULES: list[tuple[str, list[str], int]] = [
 
         "class certificate", "survey report", "classification",
 
-        "dnv", "lloyd's register", "bureau veritas", "abs",
+        "dnv", "lloyd's register", "bureau veritas", "abs certificate", "american bureau of shipping",
 
         "rina", "certificate of registry", "safety certificate",
 
@@ -1266,7 +1267,7 @@ def _scan_pages(
 
 
 
-        if category in ("Instruction Manual", "Yard/Finished Drawings") and _looks_like_spare_seed_page(text):
+        if _looks_like_spare_seed_page(text):
 
             spare_phys_pages.add(physical_num)
 

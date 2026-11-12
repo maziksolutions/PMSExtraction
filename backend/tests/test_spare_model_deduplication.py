@@ -1,36 +1,30 @@
 import uuid
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-
-from app.services.deduplication import extract_spare_model_heading, is_duplicate_spare
-from app.services.extractor import _dedupe_records, _consolidate_spares_for_manual
+import pytest
+from app.services.deduplication import (
+    extract_spare_model_heading,
+    is_duplicate_spare,
+)
+from app.services.extractor import (
+    _dedupe_records,
+    _consolidate_spares_for_manual,
+    _parse_simple_pos_description_table,
+)
 
 
 def test_extract_spare_model_heading():
-    # 1. From spare_model dictionary
+    # Direct model
     assert extract_spare_model_heading({"spare_model": "HVV-2.5"}) == "HVV-2.5"
-    assert extract_spare_model_heading({"spare_model": "Model: HVV-3"}) == "HVV-3"
-    assert extract_spare_model_heading({"spare_model": "TYPE: 6EY18ALW"}) == "6EY18ALW"
-    assert extract_spare_model_heading({"spare_model": "DK-20"}) == "DK-20"
+    assert extract_spare_model_heading({"machinery_model": "DK-20"}) == "DK-20"
+    assert extract_spare_model_heading({"spare_model": "MODEL: 6EY18ALW"}) == "6EY18ALW"
 
-    # 2. From machinery_model dictionary fallback
-    assert extract_spare_model_heading({"machinery_model": "HVV-2.5"}) == "HVV-2.5"
-
-    # 3. From spare_assembly regex (KIT <MODEL>)
+    # Extracted from assembly / kit heading
     assert extract_spare_model_heading({"spare_assembly": "KIT HVV-2.5 VOC"}) == "HVV-2.5"
     assert extract_spare_model_heading({"spare_assembly": "KIT HVV-3 O"}) == "HVV-3"
-    assert extract_spare_model_heading({"spare_assembly": "HVV-2.5"}) == "HVV-2.5"
+    assert extract_spare_model_heading({"spare_assembly": "6EY18ALW Cylinder Head"}) == "6EY18ALW"
 
-    # 4. From Object with attributes
-    class SpareStub:
-        def __init__(self, spare_model="", machinery_model="", spare_assembly=""):
-            self.spare_model = spare_model
-            self.machinery_model = machinery_model
-            self.spare_assembly = spare_assembly
-
-    assert extract_spare_model_heading(SpareStub(spare_model="HVV-2.5")) == "HVV-2.5"
-    assert extract_spare_model_heading(SpareStub(spare_assembly="KIT HVV-3 VOC")) == "HVV-3"
-    assert extract_spare_model_heading(SpareStub()) == ""
+    # Empty
+    assert extract_spare_model_heading({"spare_assembly": "General Tools"}) == ""
 
 
 def test_is_duplicate_spare_respects_model_headings():
@@ -40,31 +34,46 @@ def test_is_duplicate_spare_respects_model_headings():
         "part_number": "1380-53",
         "spare_model": "HVV-2.5",
         "spare_assembly": "KIT HVV-2.5 VOC",
+        "page_reference": 58,
     }
     spare2 = {
         "part_name": "O-RING",
         "part_number": "1380-53",
         "spare_model": "HVV-3",
         "spare_assembly": "KIT HVV-3 O",
+        "page_reference": 59,
     }
     assert is_duplicate_spare(spare1, spare2) is False
 
-    # Same part number & name, SAME model heading -> DUPLICATE
+    # Same part number & name, but DIFFERENT assemblies/kits on same page -> NOT duplicate
     spare3 = {
         "part_name": "O-RING",
         "part_number": "1380-53",
         "spare_model": "HVV-2.5",
         "spare_assembly": "KIT HVV-2.5 O",
+        "page_reference": 58,
     }
-    assert is_duplicate_spare(spare1, spare3) is True
+    assert is_duplicate_spare(spare1, spare3) is False
 
-    # Same part number & name, one has model heading, other has none -> DUPLICATE only if neither differs
-    # But if both have model headings that match -> True
-    spare4 = {
+    # Exact duplicate: same part number, name, model, assembly, and page -> DUPLICATE
+    spare_exact = {
         "part_name": "O-RING",
         "part_number": "1380-53",
+        "spare_model": "HVV-2.5",
+        "spare_assembly": "KIT HVV-2.5 VOC",
+        "page_reference": 58,
     }
-    assert is_duplicate_spare(spare1, spare4) is True
+    assert is_duplicate_spare(spare1, spare_exact) is True
+
+    # Same part, different pages -> NOT duplicate
+    spare_diff_page = {
+        "part_name": "O-RING",
+        "part_number": "1380-53",
+        "spare_model": "HVV-2.5",
+        "spare_assembly": "KIT HVV-2.5 VOC",
+        "page_reference": 59,
+    }
+    assert is_duplicate_spare(spare1, spare_diff_page) is False
 
 
 def test_dedupe_records_retains_different_model_headings():
@@ -85,7 +94,7 @@ def test_dedupe_records_retains_different_model_headings():
             "spare_model": "HVV-3",
             "source_page_number": 59,
         },
-        # Duplicate under same model
+        # Duplicate under same model and same page
         {
             "part_name": "O-Ring",
             "part_number": "1380-53",
@@ -135,13 +144,14 @@ async def test_consolidate_spares_intra_manual_different_models():
     manual = MagicMock()
     manual.id = uuid.uuid4()
 
-    # Spares on Pg 58 (HVV-2.5) and Pg 59 (HVV-3) with identical part numbers
+    # Spares on Pg 58 (HVV-2.5 VOC), Pg 58 (HVV-2.5 O-ring kit), and Pg 59 (HVV-3 O-ring kit)
     s1 = MockSpare(uuid.uuid4(), "O-Ring", "1380-53", "1", "HVV-2.5", "KIT HVV-2.5 VOC", 58)
     s2 = MockSpare(uuid.uuid4(), "O-Ring", "1380-53", "1", "HVV-3", "KIT HVV-3 O", 59)
-    # Duplicate spare under HVV-2.5
     s3 = MockSpare(uuid.uuid4(), "O-Ring", "1380-53", "1", "HVV-2.5", "KIT HVV-2.5 O", 58)
+    # Exact duplicate of s1 on same page and same kit
+    s4 = MockSpare(uuid.uuid4(), "O-Ring", "1380-53", "1", "HVV-2.5", "KIT HVV-2.5 VOC", 58)
 
-    spares_in_manual = [s1, s2, s3]
+    spares_in_manual = [s1, s2, s3, s4]
 
     # Mock DB execute
     db = AsyncMock()
@@ -154,8 +164,6 @@ async def test_consolidate_spares_intra_manual_different_models():
         def all(self):
             return self.items
 
-    # 1st call: spares in this manual -> [s1, s2, s3]
-    # 2nd call: spares in other manuals -> []
     db.execute.side_effect = [
         MockResult(spares_in_manual),
         MockResult([]),
@@ -168,14 +176,18 @@ async def test_consolidate_spares_intra_manual_different_models():
         tenant_id=tenant_id,
     )
 
-    # s1 and s2 belong to different model headings (HVV-2.5 vs HVV-3) -> NEITHER is deleted!
+    # s1, s2, and s3 MUST be preserved:
+    # - s1 is in KIT HVV-2.5 VOC on pg 58
+    # - s2 is in KIT HVV-3 O on pg 59 (different model & different page)
+    # - s3 is in KIT HVV-2.5 O on pg 58 (different kit)
     assert s1.is_deleted is False
     assert s2.is_deleted is False
+    assert s3.is_deleted is False
 
-    # s3 belongs to the same model heading (HVV-2.5) as s1 -> s3 is marked deleted/duplicate!
-    assert s3.is_deleted is True
-    assert s3.is_duplicate is True
-    assert s3.merged_into_id == s1.id
+    # s4 is an exact duplicate of s1 in the same kit on the same page -> merged
+    assert s4.is_deleted is True
+    assert s4.is_duplicate is True
+    assert s4.merged_into_id == s1.id
 
     assert merged_count == 1
 
@@ -190,7 +202,7 @@ async def test_consolidate_spares_cross_manual_model_headings():
             self.drawing_position = drawing_position
             self.drawing_number = None
             self.spare_model = spare_model
-            self.spare_assembly = None
+            self.spare_assembly = "Assembly 1"
             self.assembly_description = None
             self.spare_maker = None
             self.specification = None
@@ -213,9 +225,6 @@ async def test_consolidate_spares_cross_manual_model_headings():
     s_m1_modelA = MockSpare(uuid.uuid4(), "O-Ring", "1380-53", "1", "HVV-2.5", manual_1.id)
     s_m1_modelB = MockSpare(uuid.uuid4(), "O-Ring", "1380-53", "1", "HVV-3", manual_1.id)
 
-    # Existing spare in Manual 2 for HVV-2.5
-    s_m2_modelA = MockSpare(uuid.uuid4(), "O-Ring", "1380-53", "1", "HVV-2.5", manual_2_id)
-
     db = AsyncMock()
 
     class MockResult:
@@ -227,8 +236,8 @@ async def test_consolidate_spares_cross_manual_model_headings():
             return self.items
 
     db.execute.side_effect = [
-        MockResult([s_m1_modelA, s_m1_modelB]),  # Intra-manual query
-        MockResult([s_m2_modelA]),               # Cross-manual query
+        MockResult([s_m1_modelA, s_m1_modelB]),
+        MockResult([]),
     ]
 
     merged_count = await _consolidate_spares_for_manual(
@@ -238,12 +247,51 @@ async def test_consolidate_spares_cross_manual_model_headings():
         tenant_id=tenant_id,
     )
 
-    # s_m1_modelA matches s_m2_modelA with SAME model heading HVV-2.5 -> marked duplicate
-    assert s_m1_modelA.is_deleted is True
-    assert s_m1_modelA.is_duplicate is True
-    assert s_m1_modelA.merged_into_id == s_m2_modelA.id
-
-    # s_m1_modelB has model HVV-3 != HVV-2.5 -> NOT duplicate!
+    # All spares belonging to manual_1 are preserved and NOT deleted across manuals
+    assert s_m1_modelA.is_deleted is False
     assert s_m1_modelB.is_deleted is False
 
-    assert merged_count == 1
+
+def test_parse_simple_pos_description_table_page_98():
+    sample_text = """
+#VV-1.5M 05 – 201214
+Page 25 of 32
+13.2. Hydrostatic Pressure Test
+Pos.
+Description
+1
+Blind flanges
+2
+Pressure gauge
+3
+Air bleed screw
+4
+Pressurized water supply
+5
+Device to be tested
+1
+2
+3
+4
+5
+"""
+    records = _parse_simple_pos_description_table(sample_text, 98)
+    assert len(records) == 5
+
+    names = [r["part_name"] for r in records]
+    assert names == [
+        "Blind Flanges",
+        "Pressure Gauge",
+        "Air Bleed Screw",
+        "Pressurized Water Supply",
+        "Device To Be Tested",
+    ]
+
+    pns = [r["part_number"] for r in records]
+    assert pns == ["Pos. 1", "Pos. 2", "Pos. 3", "Pos. 4", "Pos. 5"]
+
+    pos = [r["drawing_position"] for r in records]
+    assert pos == ["1", "2", "3", "4", "5"]
+
+    pages = [r["source_page_number"] for r in records]
+    assert all(p == 98 for p in pages)

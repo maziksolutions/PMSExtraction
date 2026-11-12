@@ -334,7 +334,7 @@ def extract_spare_model_heading(spare_or_record: object) -> str:
         if m_kit:
             return m_kit.group(1).upper()
         # Match standalone model patterns like 'HVV-2.5', '6EY18ALW', 'DK-20'
-        m_pattern = re.search(r'\b([A-Z]{2,}[-/][A-Z0-9.]+)\b', assembly)
+        m_pattern = re.search(r'\b([0-9]*[A-Z]{2,}[0-9A-Z]*(?:[-/][A-Z0-9.]+)?)\b', assembly)
         if m_pattern:
             return m_pattern.group(1).upper()
 
@@ -347,8 +347,43 @@ def is_duplicate_spare(new: dict, existing: dict) -> bool:
     - part_name fuzzy >= 0.88
     - part_number exact match (if both present; if both present and differ → NOT duplicate)
     - model heading match: if both belong to different model headings → NOT duplicate!
+    - page match: spares from different pages are NOT duplicates!
+    - assembly/kit match: spares from different assemblies or kits are NOT duplicates!
+    - drawing position match: spares with different drawing positions are NOT duplicates!
+    - drawing number match: spares with different drawing numbers are NOT duplicates!
+    - manual match: spares from different manuals are NOT duplicates!
     - Returns True based on criteria
     """
+    # --- source manual check ---
+    m_new = new.get("source_manual_id") or new.get("manual_id")
+    m_ex = existing.get("source_manual_id") or existing.get("manual_id")
+    if m_new is not None and m_ex is not None and str(m_new).strip() != str(m_ex).strip():
+        return False
+
+    # --- page reference check: spares on different pages are NOT duplicates ---
+    page_new = new.get("page_reference") or new.get("source_page_number") or new.get("page_number")
+    page_ex = existing.get("page_reference") or existing.get("source_page_number") or existing.get("page_number")
+    if page_new is not None and page_ex is not None and str(page_new).strip() != str(page_ex).strip():
+        return False
+
+    # --- assembly / kit check: spares in different assemblies or kits are NOT duplicates ---
+    assy_new = (new.get("spare_assembly") or "").strip().lower()
+    assy_ex = (existing.get("spare_assembly") or "").strip().lower()
+    if assy_new and assy_ex and assy_new != assy_ex:
+        return False
+
+    # --- drawing position check: spares with differing drawing positions are NOT duplicates ---
+    pos_new = (new.get("drawing_position") or "").strip().lower()
+    pos_ex = (existing.get("drawing_position") or "").strip().lower()
+    if pos_new and pos_ex and pos_new != pos_ex:
+        return False
+
+    # --- drawing number check ---
+    dwg_new = (new.get("drawing_number") or "").strip().upper()
+    dwg_ex = (existing.get("drawing_number") or "").strip().upper()
+    if dwg_new and dwg_ex and dwg_new != dwg_ex:
+        return False
+
     # --- part name ---
     new_name = normalise(new.get("part_name", ""))
     ex_name = normalise(existing.get("part_name", ""))
@@ -371,6 +406,8 @@ def is_duplicate_spare(new: dict, existing: dict) -> bool:
     m_new = extract_spare_model_heading(new)
     m_ex = extract_spare_model_heading(existing)
     if m_new and m_ex and m_new != m_ex:
+        return False
+    if bool(m_new) != bool(m_ex):
         return False
 
     return True
