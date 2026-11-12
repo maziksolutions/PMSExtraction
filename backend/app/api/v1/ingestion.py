@@ -2321,6 +2321,18 @@ async def upload_manuals(
 
 
 
+    # Resolve upload batch / iteration number: auto-increment if not specified
+    from sqlalchemy import func as _sql_func
+    if batch_number is None or batch_number <= 0:
+        max_b_res = await db.execute(
+            select(_sql_func.max(Manual.batch_number)).where(
+                Manual.vessel_id == vessel_id,
+                Manual.tenant_id == current_user.tenant_id,
+            )
+        )
+        curr_max_b = max_b_res.scalar() or 0
+        batch_number = curr_max_b + 1
+
     # Phase 1: read all files, create DB records
 
 
@@ -5133,7 +5145,7 @@ async def get_manual_page_status(
 
     from app.services.extraction_counter import get_extraction_counts
 
-    manual_run_count, page_run_counts, page_reasons = await get_extraction_counts(manual_id)
+    manual_run_count, page_run_counts = await get_extraction_counts(manual_id)
 
     total_items = len(components) + len(jobs) + len(spares)
 
@@ -5185,11 +5197,6 @@ async def get_manual_page_status(
 
         page_run_count = page_run_counts.get(p, 1 if extracted_count > 0 else 0)
 
-        raw_reason = page_reasons.get(p)
-        if raw_reason and ("detected no structured records" in raw_reason or raw_reason.startswith("Pending")):
-            raw_reason = None
-        no_extraction_reason = raw_reason
-
         pages_data.append({
 
             "page_number": p,
@@ -5201,8 +5208,6 @@ async def get_manual_page_status(
             "extracted_count": extracted_count,
 
             "extraction_run_count": page_run_count,
-
-            "no_extraction_reason": no_extraction_reason,
 
             "targeted_types": {
 
@@ -5898,163 +5903,3 @@ async def delete_manual(
 
 
 
-
-
-
-@router.post(
-    "/{vessel_id}/manuals/{manual_id}/pages/{page_number}/explain-zero-extraction",
-    summary="Generate or fetch AI explanation for why 0 records were extracted on a specific page",
-)
-async def explain_page_zero_extraction(
-    vessel_id: uuid.UUID,
-    manual_id: uuid.UUID,
-    page_number: int,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict[str, Any]:
-    await _get_vessel_or_404(vessel_id, db)
-    result = await db.execute(
-        select(Manual).where(
-            Manual.id == manual_id,
-            Manual.vessel_id == vessel_id,
-            Manual.tenant_id == current_user.tenant_id,
-            Manual.is_deleted == False,
-        )
-    )
-    manual = result.scalar_one_or_none()
-    if manual is None:
-        raise HTTPException(status_code=404, detail="Manual not found")
-
-    from app.services.extraction_counter import get_extraction_counts, record_page_extraction_reason
-    _, _, page_reasons = await get_extraction_counts(manual_id)
-    existing_reason = page_reasons.get(page_number)
-    if existing_reason and not existing_reason.startswith("Pending") and not existing_reason.startswith("No items") and "detected no structured records" not in existing_reason:
-        return {
-            "page_number": page_number,
-            "reason": existing_reason,
-            "cached": True,
-        }
-
-    # Determine targeted entity type for this page
-    from app.services.extractor import _parse_page_tokens, _explain_zero_extraction, _render_single_pdf_page_image
-    comp_pages = set(_parse_page_tokens(manual.pages_with_components_physical or manual.pages_with_components))
-    job_pages = set(_parse_page_tokens(manual.pages_with_jobs_physical or manual.pages_with_jobs))
-    spare_pages = set(_parse_page_tokens(manual.pages_with_spares_physical or manual.pages_with_spares))
-
-    target_types = []
-    if page_number in spare_pages:
-        target_types.append("spare")
-    if page_number in job_pages:
-        target_types.append("job")
-    if page_number in comp_pages:
-        target_types.append("component")
-    primary_type = target_types[0] if target_types else "spare"
-
-    from app.services.blob_storage import get_file_bytes
-    file_bytes = await get_file_bytes(manual.file_path)
-    image_bytes = None
-    if file_bytes and manual.file_path.lower().endswith(".pdf"):
-        image_bytes = await asyncio.to_thread(_render_single_pdf_page_image, file_bytes, page_number, 200)
-
-    reason = await _explain_zero_extraction(
-        image_bytes=image_bytes,
-        text_content=(manual.extracted_text or "") if not image_bytes else None,
-        filename=manual.original_filename,
-        page_no=page_number,
-        extraction_type=primary_type,
-    )
-    full_reason = f"{primary_type.capitalize()}s: {reason}"
-    record_page_extraction_reason(str(manual_id), page_number, full_reason)
-
-    return {
-        "page_number": page_number,
-        "reason": full_reason,
-        "cached": False,
-    }
-
-
-
-@router.post(
-    "/{vessel_id}/manuals/{manual_id}/explain-all-zero-extractions",
-    summary="Generate AI explanations for all targeted pages with 0 extractions that lack an AI reason",
-)
-async def explain_all_zero_extractions(
-    vessel_id: uuid.UUID,
-    manual_id: uuid.UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict[str, Any]:
-    await _get_vessel_or_404(vessel_id, db)
-    result = await db.execute(
-        select(Manual).where(
-            Manual.id == manual_id,
-            Manual.vessel_id == vessel_id,
-            Manual.tenant_id == current_user.tenant_id,
-            Manual.is_deleted == False,
-        )
-    )
-    manual = result.scalar_one_or_none()
-    if manual is None:
-        raise HTTPException(status_code=404, detail="Manual not found")
-
-    from app.services.extraction_counter import get_extraction_counts, record_page_extraction_reason
-    from app.services.extractor import _parse_page_tokens, _explain_zero_extraction, _render_single_pdf_page_image
-    from app.services.blob_storage import get_file_bytes
-
-    _, page_runs, page_reasons = await get_extraction_counts(manual_id)
-
-    from app.models.component import Component
-    from app.models.job import Job
-    from app.models.spare import Spare
-
-    comp_res = await db.execute(select(Component.page_reference).where(Component.source_manual_id == manual_id, Component.is_deleted == False))
-    job_res = await db.execute(select(Job.page_reference).where(Job.source_manual_id == manual_id, Job.is_deleted == False))
-    spare_res = await db.execute(select(Spare.page_reference).where(Spare.source_manual_id == manual_id, Spare.is_deleted == False))
-
-    extracted_pages = set(comp_res.scalars().all()) | set(job_res.scalars().all()) | set(spare_res.scalars().all())
-
-    comp_targets = set(_parse_page_tokens(manual.pages_with_components_physical or manual.pages_with_components))
-    job_targets = set(_parse_page_tokens(manual.pages_with_jobs_physical or manual.pages_with_jobs))
-    spare_targets = set(_parse_page_tokens(manual.pages_with_spares_physical or manual.pages_with_spares))
-    all_targets = comp_targets | job_targets | spare_targets
-
-    empty_pages = [
-        p for p in sorted(all_targets)
-        if p not in extracted_pages and (
-            not page_reasons.get(p)
-            or "detected no structured records" in str(page_reasons.get(p))
-            or str(page_reasons.get(p)).startswith("Pending")
-        )
-    ]
-
-    if not empty_pages:
-        return {"processed": 0, "message": "All 0-item pages already have AI explanations."}
-
-    file_bytes = await get_file_bytes(manual.file_path)
-    is_pdf = bool(file_bytes and manual.file_path.lower().endswith(".pdf"))
-
-    updated_count = 0
-    results = {}
-    for p in empty_pages[:20]:
-        etype = "spare" if p in spare_targets else ("job" if p in job_targets else "component")
-        image_bytes = None
-        if is_pdf:
-            image_bytes = await asyncio.to_thread(_render_single_pdf_page_image, file_bytes, p, 200)
-
-        reason = await _explain_zero_extraction(
-            image_bytes=image_bytes,
-            text_content=(manual.extracted_text or "") if not image_bytes else None,
-            filename=manual.original_filename,
-            page_no=p,
-            extraction_type=etype,
-        )
-        full_reason = f"{etype.capitalize()}s: {reason}"
-        record_page_extraction_reason(str(manual_id), p, full_reason)
-        results[p] = full_reason
-        updated_count += 1
-
-    return {
-        "processed": updated_count,
-        "results": results,
-        "remaining": max(0, len(empty_pages) - updated_count),
-    }

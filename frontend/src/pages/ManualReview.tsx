@@ -38,6 +38,7 @@ import { ManualsStatsModal } from '@/components/manuals/ManualsStatsModal'
 import { DeletedManualsModal } from '@/components/manuals/DeletedManualsModal'
 import { NoExtractedRecordsModal, QueuedPageItem } from '@/components/manuals/NoExtractedRecordsModal'
 import { ExtractionConfirmationModal } from '@/components/manuals/ExtractionConfirmationModal'
+import { UntouchedManualsModal, UntouchedManualItem } from '@/components/manuals/UntouchedManualsModal'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -555,6 +556,34 @@ const ManualReview: React.FC = () => {
   const [selectedManualForHistory, setSelectedManualForHistory] = useState<Manual | null>(null)
   const [showStatsModal, setShowStatsModal] = useState(false)
   const [showDeletedManualsModal, setShowDeletedManualsModal] = useState(false)
+  const [showUntouchedModal, setShowUntouchedModal] = useState(false)
+  const [filterUntouchedOnly, setFilterUntouchedOnly] = useState(false)
+
+  const { data: untouchedData, refetch: refetchUntouched } = useQuery<{
+    total_untouched: number
+    manuals: UntouchedManualItem[]
+  }>({
+    queryKey: ['untouched-manuals', vesselId],
+    queryFn: () => apiClient.get(`/vessels/${vesselId}/manuals/untouched`).then((r) => r.data),
+    enabled: !!vesselId,
+    staleTime: 5000,
+  })
+
+  const handleExtractUntouched = async (manualIds: string[]) => {
+    if (!vesselId || manualIds.length === 0) return
+    try {
+      await apiClient.post(`/vessels/${vesselId}/manuals/extract-selected`, {
+        manual_ids: manualIds,
+        entity_types: ['component', 'job', 'spare'],
+      })
+      setDismissedExtractionBanner(false)
+      setExtractionPolling(true)
+      queryClient.invalidateQueries({ queryKey: ['extraction-status', vesselId] })
+      refetchUntouched()
+    } catch (err: any) {
+      alert(`Failed to start extraction: ${err?.response?.data?.detail ?? err.message}`)
+    }
+  }
 
   const { data: deletedManualsList = [] } = useQuery<any[]>({
     queryKey: ['deleted-manuals', vesselId],
@@ -1304,8 +1333,13 @@ const ManualReview: React.FC = () => {
   const extractionProgress = extractionData && extractionData.total > 0
     ? Math.min(100, Math.max(0, Math.round((extractionData.done / extractionData.total) * 100))) : 0
 
+  const untouchedIdSet = useMemo(() => new Set((untouchedData?.manuals ?? []).map((m) => m.id)), [untouchedData])
+
   const manuals: Manual[] = useMemo(() => {
-    const raw: Manual[] = data?.items ?? []
+    let raw: Manual[] = data?.items ?? []
+    if (filterUntouchedOnly) {
+      raw = raw.filter((m) => untouchedIdSet.has(m.id))
+    }
     if (sortBy !== 'extraction_status') return raw
     const list = [...raw]
     list.sort((a, b) => {
@@ -1328,7 +1362,7 @@ const ManualReview: React.FC = () => {
       return sortOrder === 'asc' ? scoreA - scoreB : scoreB - scoreA
     })
     return list
-  }, [data?.items, sortBy, sortOrder, noExtractedData, edits])
+  }, [data?.items, sortBy, sortOrder, noExtractedData, edits, filterUntouchedOnly, untouchedIdSet])
   const total: number = data?.total ?? 0
   const gaps: Gap[] = missingReport?.gaps ?? []
 
@@ -1769,13 +1803,27 @@ const ManualReview: React.FC = () => {
           onChange={(e) => setFilterBatch(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
           className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-200 focus:border-sky-500 focus:outline-none"
         >
-          <option value="all">All Batches</option>
+          <option value="all">All Iterations</option>
           {batchList.map((b) => (
             <option key={b} value={b}>
-              Batch {b}
+              Iteration #{b}
             </option>
           ))}
         </select>
+
+        <button
+          type="button"
+          onClick={() => setFilterUntouchedOnly(!filterUntouchedOnly)}
+          className={`flex items-center gap-1.5 rounded border px-2.5 py-1 text-xs font-semibold transition-colors ${
+            filterUntouchedOnly
+              ? 'border-amber-500 bg-amber-950/60 text-amber-300'
+              : 'border-slate-700 bg-slate-800 text-slate-400 hover:text-slate-200'
+          }`}
+          title="Toggle view to only show untouched manuals in this table"
+        >
+          <Layers className="h-3 w-3 text-amber-400" />
+          <span>Untouched Only ({untouchedData?.total_untouched ?? 0})</span>
+        </button>
         <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
           <span>Sort:</span>
           <select
@@ -1818,6 +1866,19 @@ const ManualReview: React.FC = () => {
             </span>
           )}
         </div>
+
+        <button
+          type="button"
+          onClick={() => setShowUntouchedModal(true)}
+          className="flex items-center gap-2 rounded-lg border border-amber-600/40 bg-amber-950/30 hover:bg-amber-900/40 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:text-amber-200 transition-colors shadow-sm"
+          title="View untouched manuals with no single extraction run or 0 extracted pages"
+        >
+          <Layers className="h-3.5 w-3.5 text-amber-400" />
+          <span>Untouched Manuals</span>
+          <span className="border text-[10px] font-extrabold px-1.5 py-0.2 rounded-full bg-amber-900/60 border-amber-500/50 text-amber-200">
+            {untouchedData?.total_untouched ?? 0}
+          </span>
+        </button>
 
         <button
           onClick={() => {
@@ -1865,6 +1926,7 @@ const ManualReview: React.FC = () => {
                   />
                 </th>
                 <th className="px-3 py-3">{renderSortHeader('Extraction', 'extraction_status')}</th>
+                <th className="px-3 py-3">{renderSortHeader('Iter', 'batch_number')}</th>
                 <th className="px-3 py-3">{renderSortHeader('File Name', 'filename')}</th>
                 <th className="px-3 py-3">{renderSortHeader('Size', 'file_size')}</th>
                 <th className="px-3 py-3">{renderSortHeader('Category', 'category')}</th>
@@ -1915,6 +1977,14 @@ const ManualReview: React.FC = () => {
                     </td>
                     <td className="px-3 py-3 whitespace-nowrap">
                       {renderExtractionStatusCell(m, edit)}
+                    </td>
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      <span
+                        className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-bold bg-indigo-950/60 text-indigo-300 border border-indigo-700/50"
+                        title={`Upload Iteration #${m.batch_number ?? 1}`}
+                      >
+                        Iter #{m.batch_number ?? 1}
+                      </span>
                     </td>
                     <td className="px-3 py-3 max-w-xs">
                       <button
@@ -2237,6 +2307,20 @@ const ManualReview: React.FC = () => {
           refetch()
         }}
       />
+      {showUntouchedModal && (
+        <UntouchedManualsModal
+          isOpen={showUntouchedModal}
+          onClose={() => setShowUntouchedModal(false)}
+          vesselId={vesselId ?? ''}
+          manuals={untouchedData?.manuals ?? []}
+          onExtractManuals={handleExtractUntouched}
+          onFilterMainTable={() => {
+            setFilterUntouchedOnly(true)
+          }}
+          isExtracting={isExtracting}
+          refetch={refetchUntouched}
+        />
+      )}
       {showNoExtractedModal && (
         <NoExtractedRecordsModal
           isOpen={showNoExtractedModal}
