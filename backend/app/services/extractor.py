@@ -7454,6 +7454,121 @@ async def _process_and_save_page_records(
 
 
 
+async def _get_manual_file_bytes(manual: Any) -> Optional[bytes]:
+    """Robustly retrieves manual binary bytes from local cache, disk, blob storage, or SharePoint."""
+    import tempfile
+    import httpx
+    from app.services.blob_storage import BlobStorageService
+
+    manual_id_str = str(manual.id)
+    cache_dir = os.path.join(tempfile.gettempdir(), "pms_manual_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{manual_id_str}.pdf")
+
+    # 1. Local container cache
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as fh:
+                cached = fh.read()
+                if len(cached) > 0:
+                    return cached
+        except Exception as e:
+            logger.warning("_get_manual_file_bytes: cache read failed for %s: %s", manual_id_str, e)
+
+    blob_key = getattr(manual, "blob_storage_key", None)
+    ext = (getattr(manual, "file_extension", "") or (manual.original_filename.rsplit(".", 1)[-1] if "." in (getattr(manual, "original_filename", "") or "") else "")).lower()
+    vessel_id_str = str(getattr(manual, "vessel_id", ""))
+    filename = getattr(manual, "original_filename", "") or ""
+
+    # 2. Local direct path if blob_storage_key is an existing file
+    if blob_key and os.path.exists(blob_key):
+        try:
+            with open(blob_key, "rb") as fh:
+                data = fh.read()
+                if len(data) > 0:
+                    with open(cache_path, "wb") as cf:
+                        cf.write(data)
+                    return data
+        except Exception:
+            pass
+
+    # 3. Known local candidate paths
+    for candidate_path in [
+        os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), vessel_id_str, f"{manual_id_str}.{ext}"),
+        os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), f"{manual_id_str}.{ext}"),
+        os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), vessel_id_str, filename),
+        os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), filename),
+        os.path.join("/tmp/pms_uploads", vessel_id_str, f"{manual_id_str}.{ext}"),
+        os.path.join("/tmp/pms_uploads", f"{manual_id_str}.{ext}"),
+        os.path.join("d:/Mazik", filename),
+        os.path.join(r"d:\Mazik", filename),
+    ]:
+        if candidate_path and os.path.exists(candidate_path):
+            try:
+                with open(candidate_path, "rb") as fh:
+                    data = fh.read()
+                    if len(data) > 0:
+                        logger.info("_get_manual_file_bytes: loaded %d bytes from local fallback %s", len(data), candidate_path)
+                        with open(cache_path, "wb") as cf:
+                            cf.write(data)
+                        return data
+            except Exception:
+                pass
+
+    # 4. Blob Storage (MinIO / S3 / Azure)
+    if blob_key:
+        is_local_path = blob_key.startswith("/") or (len(blob_key) > 1 and blob_key[1] == ":")
+        if not is_local_path:
+            try:
+                blob_svc = BlobStorageService()
+                data = await blob_svc.download_bytes(blob_key)
+                if data and len(data) > 0:
+                    logger.info("_get_manual_file_bytes: downloaded %d bytes from blob for %s", len(data), filename)
+                    try:
+                        with open(cache_path, "wb") as cf:
+                            cf.write(data)
+                    except Exception:
+                        pass
+                    return data
+            except Exception as blob_err:
+                logger.warning("_get_manual_file_bytes: blob download failed for %s key=%s: %s", filename, blob_key, blob_err)
+
+    # 5. SharePoint original download URL fallback
+    sharepoint_url = getattr(manual, "sharepoint_path", None)
+    if sharepoint_url and isinstance(sharepoint_url, str) and sharepoint_url.startswith("http"):
+        try:
+            logger.info("_get_manual_file_bytes: downloading from SharePoint URL for %s", filename)
+            async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+                resp = await client.get(sharepoint_url)
+                if resp.status_code == 200 and len(resp.content) > 0:
+                    data = resp.content
+                    logger.info("_get_manual_file_bytes: downloaded %d bytes from SharePoint for %s", len(data), filename)
+                    try:
+                        with open(cache_path, "wb") as cf:
+                            cf.write(data)
+                    except Exception:
+                        pass
+                    # If blob storage key exists or can be re-populated, upload to blob storage as well
+                    try:
+                        if blob_key:
+                            blob_svc = BlobStorageService()
+                            import io as _io
+                            content_type = resp.headers.get("content-type") or ("application/pdf" if ext == "pdf" else "application/octet-stream")
+                            await blob_svc.upload_stream(blob_key, _io.BytesIO(data), content_type)
+                    except Exception as up_err:
+                        logger.warning("_get_manual_file_bytes: background re-upload to blob failed: %s", up_err)
+                    return data
+                else:
+                    logger.warning("_get_manual_file_bytes: SharePoint returned HTTP %d for %s", resp.status_code, filename)
+        except Exception as sp_err:
+            logger.warning("_get_manual_file_bytes: SharePoint download failed for %s: %s", filename, sp_err)
+
+    return None
+
+
+
+
+
 async def auto_extract_from_manual(
 
     manual_id_str: str,
@@ -7882,6 +7997,11 @@ async def auto_extract_from_manual(
 
 
 
+            # ------------------------------------------------------------------
+            # Download file bytes robustly (cache, disk, blob, or SharePoint)
+            # ------------------------------------------------------------------
+            file_bytes = await _get_manual_file_bytes(manual)
+
             stored_text = getattr(manual, "extracted_text", None) or ""
 
             if isinstance(stored_text, str):
@@ -7896,7 +8016,7 @@ async def auto_extract_from_manual(
 
                 full_text = stored_text or ""
 
-                logger.info("auto_extract_from_manual: skipping full-text scanning phase for PDF manual %s", filename)
+                logger.info("auto_extract_from_manual: skipping full-text scanning phase for PDF manual %s (file_bytes=%s)", filename, len(file_bytes) if file_bytes else 0)
 
             elif stored_text and "[PAGE " in stored_text:
 
@@ -7908,7 +8028,9 @@ async def auto_extract_from_manual(
 
             else:
 
-                # Need to (re-)extract: try blob storage first, then local disk
+                # Need to (re-)extract: use file_bytes obtained above
+                if file_bytes is None:
+                    file_bytes = await _get_manual_file_bytes(manual)
 
                 set_extraction_state(
 
@@ -8159,60 +8281,7 @@ async def auto_extract_from_manual(
                 )
 
                 if file_bytes is None:
-
-                    is_local_path = file_path and (
-
-                        file_path.startswith("/") or (len(file_path) > 1 and file_path[1] == ":")
-
-                    )
-
-                    if file_path and not is_local_path:
-
-                        try:
-
-                            from app.services.blob_storage import BlobStorageService
-
-
-
-                            blob_svc = BlobStorageService()
-
-                            file_bytes = await blob_svc.download_bytes(file_path)
-
-                        except Exception as blob_err:
-
-                            logger.warning(
-
-                                "auto_extract_from_manual: blob download failed during OCR enrich for %s: %s",
-
-                                filename,
-
-                                blob_err,
-
-                            )
-
-                    if file_bytes is None and file_path and os.path.exists(file_path):
-
-                        with open(file_path, "rb") as fh:
-
-                            file_bytes = fh.read()
-
-                    if file_bytes is None:
-                        for candidate_path in [
-                            os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), vessel_id_str, f"{manual_id}.{ext}"),
-                            os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), f"{manual_id}.{ext}"),
-                            os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), vessel_id_str, filename),
-                            os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), filename),
-                            os.path.join("d:/Mazik", filename),
-                            os.path.join(r"d:\Mazik", filename),
-                        ]:
-                            if os.path.exists(candidate_path):
-                                try:
-                                    with open(candidate_path, "rb") as fh:
-                                        file_bytes = fh.read()
-                                    logger.info("auto_extract_from_manual: loaded file_bytes from local fallback %s", candidate_path)
-                                    break
-                                except Exception:
-                                    pass
+                    file_bytes = await _get_manual_file_bytes(manual)
 
 
 

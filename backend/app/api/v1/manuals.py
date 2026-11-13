@@ -400,35 +400,11 @@ def _manual_text_by_page(manual: Manual) -> dict[int, str]:
 
 
 async def _download_manual_bytes(manual: Manual) -> bytes:
-    from app.services.blob_storage import BlobStorageService
+    from app.services.extractor import _get_manual_file_bytes
 
-    blob_key = manual.blob_storage_key
-    if not blob_key:
+    file_bytes = await _get_manual_file_bytes(manual)
+    if not file_bytes:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manual file is not available.")
-
-    if os.path.exists(blob_key):
-        with open(blob_key, "rb") as fh:
-            return fh.read()
-
-    # Check local container cache
-    os.makedirs(MANUAL_CACHE_DIR, exist_ok=True)
-    cache_path = os.path.join(MANUAL_CACHE_DIR, f"{manual.id}.pdf")
-    if os.path.exists(cache_path):
-        try:
-            with open(cache_path, "rb") as fh:
-                cached_data = fh.read()
-                if len(cached_data) > 0:
-                    return cached_data
-        except Exception as err:
-            logger.warning(f"Could not read cached manual {manual.id}: {err}")
-
-    blob_service = BlobStorageService()
-    file_bytes = await blob_service.download_bytes(blob_key)
-    try:
-        with open(cache_path, "wb") as fh:
-            fh.write(file_bytes)
-    except Exception as err:
-        logger.warning(f"Could not write manual to cache {manual.id}: {err}")
     return file_bytes
 
 
