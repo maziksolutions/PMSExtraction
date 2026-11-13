@@ -244,3 +244,17 @@ async def test_process_and_save_page_records_default_qty_one():
     # Record 3: explicit QTY: 2 PCS provided -> preserves QTY: 2 PCS
     assert added_spares[2].part_name == 'Ball Bearing'
     assert 'QTY: 2 PCS' in added_spares[2].specification
+
+
+def test_pcs_header_and_pid_item_formatting():
+    from app.services.extractor import _format_specification_headers, parse_job_frequency
+
+    # Pcs / Pcs. header formatting to QTY
+    assert _format_specification_headers('Pcs.: 2; Material: STEEL') == 'QTY: 2 PCS; Material: STEEL'
+    assert _format_specification_headers('Pcs: 1; PID Item: BO 002') == 'PID Item: BO 002; QTY: 1 PCS'
+
+    # Operational job frequencies
+    assert parse_job_frequency(None, 'Annual survey') == (1, 'yearly')
+    assert parse_job_frequency(None, 'Before start-up') == (1, 'daily')
+    assert parse_job_frequency(None, 'Class survey (every 5 years)') == (5, 'yearly')
+    assert parse_job_frequency(None, 'Periodic check as required') == (None, None)

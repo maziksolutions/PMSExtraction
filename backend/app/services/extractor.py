@@ -606,25 +606,33 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "Extract ALL maintenance jobs, service intervals, and inspection tasks.\n"
 
-            "Maintenance schedules appear as:\n"
+            "Maintenance schedules and inspection tasks appear as:\n"
 
-            "  - Tables with columns: Interval | Description/Job (e.g. 'Every day', 'Weekly', 'Monthly')\n"
+            "  1. Tables with columns: Interval | Description/Job (e.g. 'Every day', 'Weekly', 'Monthly')\n"
 
-            "  - Numbered procedure lists under headings like '8. Maintenance', 'Service Schedule'\n"
+            "  2. Numbered procedure lists under headings like 'Maintenance', 'Service Schedule', 'Inspection', 'Periodic Checks', 'Overhaul'\n"
 
-            "  - Section headings like '8.3 Check V-Belt', '9.4 Maintenance of UV Sterilizer'\n\n"
+            "  3. Functional testing & operating check procedures (e.g. 'Testing safety valves by hand easing gear', 'Remote operation of safety valve and water level gauge', 'Checking stop valve gland packing tightness', 'Hydrostatic pressure test', 'Boiler blowdown procedure', 'Water sampling & chemical dosing', 'Cleaning water level gauge glass', 'Thermal expansion check', 'Burner inspection and electrode cleaning'). Extract EVERY distinct test, check, or procedure as a job!\n"
+
+            "  4. Section headings describing service tasks (e.g. '8.3 Check V-Belt', '9.4 Maintenance of UV Sterilizer')\n\n"
 
             "FREQUENCY TYPE MAPPING (use ONLY these 5 types — no others):\n"
 
-            "  Every day / Daily / 24h → frequency_type='daily', frequency=1\n"
+            "  Every day / Daily / 24h / Before start-up / Prior to lighting up → frequency_type='daily', frequency=1\n"
 
             "  Weekly / Every week / 7 days / Biweekly / Fortnightly / Every 2 weeks → frequency_type='weekly', frequency=<week count>\n"
 
             "  Monthly / Every month / 30 days / Quarterly / Every 3 months / Half yearly / Every 6 months → frequency_type='monthly', frequency=<month count>\n"
 
-            "  Yearly / Annually / Once a year / Every 2 years / Biannual → frequency_type='yearly', frequency=<year count>\n"
+            "  Yearly / Annually / Once a year / Annual survey / Every 1 year → frequency_type='yearly', frequency=1\n"
 
-            "  Running hours / Every Nh / Engine hours → frequency_type='hourly', frequency=<hour value>\n\n"
+            "  Every 2 years / Biannual → frequency_type='yearly', frequency=2\n"
+
+            "  Every 5 years / Class survey / Special survey → frequency_type='yearly', frequency=5\n"
+
+            "  Running hours / Every Nh / Engine hours → frequency_type='hourly', frequency=<hour value>\n"
+
+            "  Periodic / Routine check / As required / When leaking / At drydocking: If no fixed numeric interval is stated, extract the job with frequency=null, frequency_type=null. NEVER drop or omit a maintenance/inspection job simply because the interval is phrased as a routine check or survey!\n\n"
 
             "FREQUENCY RANGE RULE (CRITICAL):\n"
 
@@ -708,7 +716,9 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "Look for: maintenance schedule tables (Interval | Description), numbered procedure sections, "
 
-            "and section headings describing service tasks.\n"
+            "section headings describing service tasks, functional test procedures (e.g. testing safety valves, remote operation of safety valve and water level gauge, checking stop valve tightness, boiler blowdown, water sampling), and routine inspection instructions.\n"
+
+            "NOTE - OPERATIONAL SCHEDULES: For 'Before start-up/lighting up' use frequency=1, frequency_type='daily'. For 'Annual survey' use frequency=1, frequency_type='yearly'. For 'Class survey / 5 years' use frequency=5, frequency_type='yearly'. If no fixed time is stated (e.g. 'Periodic / Routine / As required'), extract the job with frequency=null, frequency_type=null (do NOT drop the job).\n"
 
             "NOTE: If frequency is given as a range (e.g. 4-6 months), ALWAYS extract the LOWEST value (e.g. 4).\n\n{text}"
 
@@ -734,11 +744,29 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "  2. Drawing parts lists: numbered items callout on a technical drawing\n"
 
-            "  3. Sections titled: 'Spare Parts', 'Parts List', 'Recommended Spares', 'Spare Part Catalogue'\n"
+            "  3. Sections titled: 'Spare Parts', 'Parts List', 'Recommended Spares', 'Spare Part Catalogue', 'DESCRIPTION OF SPARE PARTS', 'Data sheets / Manuals', 'Data sheets I Manuals', 'Mountings Arrangement', 'P&ID Items', 'Valves & Mountings', 'Bill of Materials'\n"
 
             "  4. Chapter 13 or similar appendix listing parts by sub-assembly\n"
 
-            "  5. Simple two-column or multi-column lists and tables: 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', 'Pos. | Component', 'Mark | Description'. Extract EVERY row from these tables — never skip them even if they lack QTY, Material, or catalog part number columns.\n\n"
+            "  5. Simple two-column or multi-column lists and tables: 'NO. | Name', 'NO. | Description', 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', 'Pos. | Component', 'Mark | Description', 'Item | Name'. Extract EVERY row from these tables — never skip them even if they lack QTY, Material, or catalog part number columns.\n"
+
+            "  6. P&ID and Boiler Mountings tables (PID Item | Description | Pcs. | [Part No] | Drawing Number): Tables titled 'Data sheets / Manuals', 'Mountings', 'Valves', etc. listing physical valves, mountings, fittings, and pipes. Extract EVERY row as a spare part.\n\n"
+
+            "P&ID MOUNTINGS & 'DATA SHEETS / MANUALS' TABLES (CRITICAL):\n"
+
+            "  Many machinery, boiler, and shipyard manuals contain tables titled 'Data sheets / Manuals', 'Data sheets I Manuals', 'Mountings arrangement', or 'P&ID Items' with columns:\n"
+
+            "    PID Item | Description | Pcs. | [Unlabelled Part No] | Drawing Number\n"
+
+            "  • DO NOT DISCARD AS A DOCUMENT INDEX: Even though the table heading contains the words 'Manuals' or 'Data sheets', this table lists physical valves, fittings, mountings, and components. You MUST extract EVERY row as a spare part / equipment component!\n"
+
+            "  • UNLABELLED PART NUMBER COLUMN: Between the Pcs./Qty column and the Drawing Number column, there is often an UNLABELLED column containing catalog part numbers / code numbers (e.g. '21.05.06.0031', '10642201', '00611250', '00621141', '11.08.03.0046', '00601655', '00617566', '00617736'). Extract this value cleanly into part_number! If this column is blank for a row, use the PID Item with its prefix as part_number (e.g. 'PID Item BO 001').\n"
+
+            "  • QUANTITY FROM 'PCS.': The 'Pcs.' or 'Pcs' column indicates Quantity. Output as 'QTY: <count> PCS' (e.g. 'QTY: 1 PCS', 'QTY: 2 PCS') in specification.\n"
+
+            "  • PART NAME & SPECIFICATION: Extract the pure spare name (e.g. 'Main Steam Stop Valve', 'Disc Check Valve', 'Main Steam By-Pass Stop/Check Valve', 'Full Lift Safety Valve', 'Expansion Joint', 'Check Valve', 'Feedwater Stop Valve', 'Defoaming Stop/Check Valve') in Title Case into part_name. Move technical ratings and dimensions (e.g. 'DN 250, PN 16, 22.007, LR', 'DN 65/100, PN 40/16, 25.912, 8 bar(g), LR') along with the PID Item tag (e.g. 'PID Item: BO 002') into specification.\n"
+
+            "  • DRAWING NUMBER: Extract the drawing reference from the Drawing Number column (e.g. 'SMS 3-0001-0363-2a', 'SMS 3-0001-0256-2b', 'BL148-0000_04') into drawing_number in ALL CAPS.\n\n"
 
             "Drawing-based parts tables look like:\n"
 
@@ -956,7 +984,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "Use [PAGE N] markers for source_page_number.\n"
 
-            "Look for: parts tables (NO./NAME/MATERIAL/QTY), two-column and multi-column tables (NO. | Name, Pos. | Description, Position | Part Name, Item | Description, Item No. | Name repeated across the page), drawing parts lists, and sections titled 'DESCRIPTION OF SPARE PARTS', 'Spare Parts', 'Parts List', 'Recommended Spares'. "
+            "Look for: parts tables (NO./NAME/MATERIAL/QTY), two-column and multi-column tables (NO. | Name, Pos. | Description, Position | Part Name, Item | Description, Item No. | Name repeated across the page), drawing parts lists, sections titled 'DESCRIPTION OF SPARE PARTS', 'Spare Parts', 'Parts List', 'Recommended Spares', and tables titled 'Data sheets / Manuals', 'Mountings arrangement', or 'P&ID Items' (PID Item | Description | Pcs. | [Part No] | Drawing Number). DO NOT discard 'Data sheets / Manuals' as a document index — extract all valves, mountings, and components."
 
             "CRITICAL - HEADERS & MULTI-COLUMN TABLES: Extract spare parts irrespective of whether columns are named 'Name', 'Description', 'Item', 'Designation', etc. When 2-4 column groups appear side-by-side (e.g. NO. | Name repeated across the page), scan all columns left-to-right across the entire page. For merged cells spanning multiple numbers (e.g. NO. 1-8: MOTOR), extract a record for each row/number. "
 
@@ -1197,6 +1225,30 @@ def parse_job_frequency(raw_freq: Any, raw_freq_type: Any = None) -> tuple[int |
         if raw_ft in {"daily", "weekly", "monthly", "yearly", "hourly"}:
 
             freq_type_str = raw_ft
+
+        elif any(k in raw_ft for k in ("start", "light", "prior")):
+
+            freq_type_str = "daily"
+
+            if freq_val is None:
+
+                freq_val = 1
+
+        elif any(k in raw_ft for k in ("class", "5 year", "special survey")):
+
+            freq_type_str = "yearly"
+
+            if freq_val is None:
+
+                freq_val = 5
+
+        elif any(k in raw_ft for k in ("annual", "survey", "year")):
+
+            freq_type_str = "yearly"
+
+            if freq_val is None:
+
+                freq_val = 1
 
 
 
@@ -1592,7 +1644,7 @@ def _format_specification_headers(spec: str | None) -> str | None:
 
         prefix_match = re.match(
 
-            r"^(QTY|Quantity|Material|Mat|Size|Dimensions?|Spec|Specification):\s*(.*)$",
+            r"^(QTY|Quantity|Pcs|Pcs\.|Material|Mat|Size|Dimensions?|Spec|Specification):\s*(.*)$",
 
             part,
 
@@ -1604,7 +1656,7 @@ def _format_specification_headers(spec: str | None) -> str | None:
 
             lbl = prefix_match.group(1).title()
 
-            if lbl.lower() in ("quantity", "qty"):
+            if lbl.lower() in ("quantity", "qty", "pcs", "pcs."):
 
                 lbl = "QTY"
 
@@ -3940,6 +3992,16 @@ async def _extract_entities_from_page_image_with_openai(
 
                 "\n0a. DEFAULT QUANTITY RULE (CRITICAL): If no quantity column is provided in the table/list or quantity is not specified for a part, ALWAYS consider the quantity to be 1 by default (output 'QTY: 1 PCS' in specification). Never leave quantity missing."
 
+                "\n0b. P&ID MOUNTINGS & 'DATA SHEETS / MANUALS' TABLES (CRITICAL): Many marine equipment, boiler, and shipyard manuals contain tables titled 'Data sheets / Manuals', 'Data sheets I Manuals', 'Mountings arrangement', or 'P&ID Items' with columns like PID Item | Description | Pcs. | [Unlabelled Part No] | Drawing Number. DO NOT DISCARD AS A DOCUMENT INDEX. Extract EVERY row as a spare part / equipment component!"
+
+                "\n  • Unlabelled Part Number Column: Between Pcs./Qty and Drawing Number, there is often an UNLABELLED column containing catalog part numbers / code numbers (e.g. '00621141', '21.05.06.0031', '10642201', '00611250', '11.08.03.0046', '00601655', '00617566', '00617736'). Extract this value into part_number! If this column is blank, capture the PID Item with its prefix as part_number (e.g. 'PID Item BO 001')."
+
+                "\n  • Quantity from 'Pcs.': The Pcs. or Pcs column indicates quantity. Extract as 'QTY: <count> PCS' in specification (e.g. 'QTY: 1 PCS', 'QTY: 2 PCS')."
+
+                "\n  • Part Name & Specification: Extract the pure spare/valve name into part_name (e.g. 'Main Steam Stop Valve', 'Full Lift Safety Valve', 'Disc Check Valve', 'Expansion Joint'). Move technical specs, pressure ratings (e.g. 'DN 250, PN 16, 22.007, LR'), and PID Item tag (e.g. 'PID Item: BO 002') into specification."
+
+                "\n  • Drawing Number: Extract drawing references (e.g. 'SMS 3-0001-0363-2a', 'SMS 3-0001-0256-2b', 'BL148-0000_04') into drawing_number."
+
                 "\n1. If the page has an exploded-view/assembly diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser' or 'Item No. 1: Fan Motor'): extract EVERY item from the list/legend as a spare part. Use 'No. 1', 'No. 2', etc. as part_number, the component name as part_name, and the diagram title or figure number as drawing_number/spare_assembly."
 
                 "\n2. If the page has BOTH an exploded-view diagram AND a separate full catalog parts table for the same parts on the SAME page, extract from the parts table to avoid duplication."
@@ -3993,7 +4055,27 @@ async def _extract_entities_from_page_image_with_openai(
 
             text_instructions += (
 
-                "\n\nFREQUENCY RANGE RULE (CRITICAL): If frequency or maintenance interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound."
+                "\n\nJOB & MAINTENANCE EXTRACTION RULES (CRITICAL):"
+
+                "\n1. Extract ALL maintenance tasks, functional testing, operating checks, and overhaul procedures from reference pages, even if they do not appear in a dedicated 'Interval | Description' table (e.g., testing safety valves by hand easing gear, remote operation of safety valve and water level gauge, checking stop valve gland packing tightness, hydrostatic pressure test, boiler blowdown procedure, water sampling & chemical dosing, cleaning water level gauge glass, thermal expansion check, burner maintenance)."
+
+                "\n2. FREQUENCY & OPERATIONAL SCHEDULE MAPPING:"
+
+                "\n  • Before start-up / Prior to lighting up / Daily routine → frequency=1, frequency_type='daily'"
+
+                "\n  • Weekly → frequency=1, frequency_type='weekly'"
+
+                "\n  • Monthly → frequency=1, frequency_type='monthly'"
+
+                "\n  • Annual survey / Annually / Yearly / Every 1 year → frequency=1, frequency_type='yearly'"
+
+                "\n  • Class survey / Special survey / Every 5 years → frequency=5, frequency_type='yearly'"
+
+                "\n  • Periodic / Routine check / As required / When leaking / At drydocking: If no fixed numeric interval is stated, extract the job with frequency=null, frequency_type=null. NEVER drop or omit an inspection/maintenance job because of non-numeric frequency!"
+
+                "\n3. FREQUENCY RANGE RULE (CRITICAL): If frequency or maintenance interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound."
+
+                "\n4. Format every non-empty line of job_description starting with /*-."
 
             )
 
@@ -4141,6 +4223,16 @@ async def _extract_entities_from_page_image_with_claude(
 
                 "\n0a. DEFAULT QUANTITY RULE (CRITICAL): If no quantity column is provided in the table/list or quantity is not specified for a part, ALWAYS consider the quantity to be 1 by default (output 'QTY: 1 PCS' in specification). Never leave quantity missing."
 
+                "\n0b. P&ID MOUNTINGS & 'DATA SHEETS / MANUALS' TABLES (CRITICAL): Many marine equipment, boiler, and shipyard manuals contain tables titled 'Data sheets / Manuals', 'Data sheets I Manuals', 'Mountings arrangement', or 'P&ID Items' with columns like PID Item | Description | Pcs. | [Unlabelled Part No] | Drawing Number. DO NOT DISCARD AS A DOCUMENT INDEX. Extract EVERY row as a spare part / equipment component!"
+
+                "\n  • Unlabelled Part Number Column: Between Pcs./Qty and Drawing Number, there is often an UNLABELLED column containing catalog part numbers / code numbers (e.g. '00621141', '21.05.06.0031', '10642201', '00611250', '11.08.03.0046', '00601655', '00617566', '00617736'). Extract this value into part_number! If this column is blank, capture the PID Item with its prefix as part_number (e.g. 'PID Item BO 001')."
+
+                "\n  • Quantity from 'Pcs.': The Pcs. or Pcs column indicates quantity. Extract as 'QTY: <count> PCS' in specification (e.g. 'QTY: 1 PCS', 'QTY: 2 PCS')."
+
+                "\n  • Part Name & Specification: Extract the pure spare/valve name into part_name (e.g. 'Main Steam Stop Valve', 'Full Lift Safety Valve', 'Disc Check Valve', 'Expansion Joint'). Move technical specs, pressure ratings (e.g. 'DN 250, PN 16, 22.007, LR'), and PID Item tag (e.g. 'PID Item: BO 002') into specification."
+
+                "\n  • Drawing Number: Extract drawing references (e.g. 'SMS 3-0001-0363-2a', 'SMS 3-0001-0256-2b', 'BL148-0000_04') into drawing_number."
+
                 "\n1. If the page has an exploded-view/assembly diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser' or 'Item No. 1: Fan Motor'): extract EVERY item from the list/legend as a spare part. Use 'No. 1', 'No. 2', etc. as part_number, the component name as part_name, and the diagram title or figure number as drawing_number/spare_assembly."
 
                 "\n2. If the page has BOTH an exploded-view diagram AND a separate full catalog parts table for the same parts on the SAME page, extract from the parts table to avoid duplication."
@@ -4194,7 +4286,27 @@ async def _extract_entities_from_page_image_with_claude(
 
             text_instructions += (
 
-                "\n\nFREQUENCY RANGE RULE (CRITICAL): If frequency or maintenance interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound."
+                "\n\nJOB & MAINTENANCE EXTRACTION RULES (CRITICAL):"
+
+                "\n1. Extract ALL maintenance tasks, functional testing, operating checks, and overhaul procedures from reference pages, even if they do not appear in a dedicated 'Interval | Description' table (e.g., testing safety valves by hand easing gear, remote operation of safety valve and water level gauge, checking stop valve gland packing tightness, hydrostatic pressure test, boiler blowdown procedure, water sampling & chemical dosing, cleaning water level gauge glass, thermal expansion check, burner maintenance)."
+
+                "\n2. FREQUENCY & OPERATIONAL SCHEDULE MAPPING:"
+
+                "\n  • Before start-up / Prior to lighting up / Daily routine → frequency=1, frequency_type='daily'"
+
+                "\n  • Weekly → frequency=1, frequency_type='weekly'"
+
+                "\n  • Monthly → frequency=1, frequency_type='monthly'"
+
+                "\n  • Annual survey / Annually / Yearly / Every 1 year → frequency=1, frequency_type='yearly'"
+
+                "\n  • Class survey / Special survey / Every 5 years → frequency=5, frequency_type='yearly'"
+
+                "\n  • Periodic / Routine check / As required / When leaking / At drydocking: If no fixed numeric interval is stated, extract the job with frequency=null, frequency_type=null. NEVER drop or omit an inspection/maintenance job because of non-numeric frequency!"
+
+                "\n3. FREQUENCY RANGE RULE (CRITICAL): If frequency or maintenance interval is mentioned as a range (e.g. '4-6 months', '2 to 3 weeks', '500-1000 hrs'), ALWAYS capture the LOWEST frequency value as an integer (e.g. for '4-6 months', frequency MUST be 4, NOT 5 or 6). Never average the range or use the upper bound."
+
+                "\n4. Format every non-empty line of job_description starting with /*-."
 
             )
 
