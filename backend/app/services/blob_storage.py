@@ -61,12 +61,18 @@ class BlobStorageService:
             s.MINIO_ACCESS_KEY[:4] + "..." if s.MINIO_ACCESS_KEY else "None"
         )
 
+        import urllib3
+        http_client = urllib3.PoolManager(
+            timeout=urllib3.Timeout(connect=2.0, read=30.0),
+            retries=urllib3.Retry(total=1, connect=1, read=1),
+        )
         self._client = Minio(
             endpoint,
             access_key=s.MINIO_ACCESS_KEY,
             secret_key=s.MINIO_SECRET_KEY,
             secure=secure,
             region=region,
+            http_client=http_client,
         )
         self._bucket = s.MINIO_BUCKET
         self._ensure_bucket()

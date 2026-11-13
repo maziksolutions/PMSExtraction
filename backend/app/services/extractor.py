@@ -3010,7 +3010,10 @@ async def _extract_with_claude(
 
         hard_cutoff = message.stop_reason == "max_tokens"
 
-        partial_array = len(rows) > 0 and not raw_text.rstrip().endswith("]")
+        clean = _strip_code_fences(raw_text.strip()).strip()
+
+
+        partial_array = len(rows) > 0 and clean.startswith("[") and not clean.endswith("]")
 
         if not hard_cutoff and not partial_array:
 
@@ -4374,7 +4377,10 @@ async def _extract_entities_from_page_image_with_claude(
 
             hard_cutoff = message.stop_reason == "max_tokens"
 
-            partial_array = len(records) > 0 and not raw_text.rstrip().endswith("]")
+            clean = _strip_code_fences(raw_text.strip()).strip()
+
+
+            partial_array = len(records) > 0 and clean.startswith("[") and not clean.endswith("]")
 
             if not hard_cutoff and not partial_array:
 
@@ -8190,6 +8196,24 @@ async def auto_extract_from_manual(
 
                             file_bytes = fh.read()
 
+                    if file_bytes is None:
+                        for candidate_path in [
+                            os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), vessel_id_str, f"{manual_id}.{ext}"),
+                            os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), f"{manual_id}.{ext}"),
+                            os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), vessel_id_str, filename),
+                            os.path.join(getattr(settings, "UPLOAD_DIR", "/tmp/pms_uploads"), filename),
+                            os.path.join("d:/Mazik", filename),
+                            os.path.join(r"d:\Mazik", filename),
+                        ]:
+                            if os.path.exists(candidate_path):
+                                try:
+                                    with open(candidate_path, "rb") as fh:
+                                        file_bytes = fh.read()
+                                    logger.info("auto_extract_from_manual: loaded file_bytes from local fallback %s", candidate_path)
+                                    break
+                                except Exception:
+                                    pass
+
 
 
                 # Only run heavy OCR/table pre-enrichment if components or jobs require text extraction.
@@ -8213,6 +8237,15 @@ async def auto_extract_from_manual(
                     )
 
 
+
+            if ext == "pdf" and file_bytes is None and not full_text.strip():
+                logger.error("auto_extract_from_manual: neither file_bytes nor full_text available for PDF %s — aborting extraction to protect data", filename)
+                set_extraction_state(
+                    vessel_id_str,
+                    current_manual_name=filename,
+                    detailed_status="Extraction skipped: manual file and text are unavailable in storage."
+                )
+                return
 
             type_to_text: dict[str, str] = {}
 
@@ -8566,13 +8599,13 @@ async def auto_extract_from_manual(
 
             for etype in extraction_types:
 
-                # Pre-clear existing auto-extracted records for the target pages being re-extracted
-
-                target_pages_to_clear = entity_pages.get(etype) or []
+                # Only pre-clear target pages upfront when specific pages are requested.
+                # For full extraction, _process_and_save_page_records replaces page-by-page atomically upon successful extraction.
+                target_pages_to_clear = []
 
                 if page_numbers is not None:
 
-                    target_pages_to_clear = [p for p in target_pages_to_clear if p in page_numbers] or page_numbers
+                    target_pages_to_clear = [p for p in (entity_pages.get(etype) or []) if p in page_numbers] or page_numbers
 
 
 
