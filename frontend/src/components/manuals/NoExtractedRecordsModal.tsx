@@ -32,6 +32,9 @@ export interface NoExtractedManual {
   missing_jobs_count: number
   missing_spares_count: number
   total_missing_pages_count: number
+  has_comp_target?: boolean
+  has_job_target?: boolean
+  has_spare_target?: boolean
 }
 
 export interface ExtractedManual {
@@ -45,6 +48,9 @@ export interface ExtractedManual {
   extracted_jobs_count: number
   extracted_spares_count: number
   total_extracted_pages_count: number
+  has_comp_target?: boolean
+  has_job_target?: boolean
+  has_spare_target?: boolean
 }
 
 export interface QueuedPageItem {
@@ -104,6 +110,31 @@ export function NoExtractedRecordsModal({
   const [localQueued, setLocalQueued] = useState<QueuedPageItem[]>([])
   const queuedItems = propQueuedPages !== undefined ? propQueuedPages : localQueued
   const setQueuedItems = propSetQueuedPages !== undefined ? propSetQueuedPages : setLocalQueued
+
+  // Prune queued items that have since been successfully extracted
+  useEffect(() => {
+    if (!data?.all_manuals_summary) return
+    setQueuedItems((prev) => {
+      const filtered = prev.filter((item) => {
+        const summary = data.all_manuals_summary[item.manualId]
+        if (!summary) return true
+        if (item.entityType === 'component') {
+          return !summary.extracted_components_pages?.includes(item.page)
+        }
+        if (item.entityType === 'job') {
+          return !summary.extracted_jobs_pages?.includes(item.page)
+        }
+        if (item.entityType === 'spare') {
+          return !summary.extracted_spares_pages?.includes(item.page)
+        }
+        return true
+      })
+      if (filtered.length !== prev.length) {
+        return filtered
+      }
+      return prev
+    })
+  }, [data?.all_manuals_summary, setQueuedItems])
 
   const [loadingPdfKey, setLoadingPdfKey] = useState<string | null>(null)
   const [isDragOver, setIsDragOver] = useState(false)
@@ -696,6 +727,11 @@ export function NoExtractedRecordsModal({
                           const extJob = summary?.extracted_jobs_pages || []
                           const extSpare = summary?.extracted_spares_pages || []
 
+                          const hasCompTarget = manual.has_comp_target ?? summary?.has_comp_target ?? (manual.missing_components_pages.length > 0 || extComp.length > 0)
+                          const hasJobTarget = manual.has_job_target ?? summary?.has_job_target ?? (manual.missing_jobs_pages.length > 0 || extJob.length > 0)
+                          const hasSpareTarget = manual.has_spare_target ?? summary?.has_spare_target ?? (manual.missing_spares_pages.length > 0 || extSpare.length > 0)
+                          const totalExtractedCount = (hasCompTarget ? extComp.length : 0) + (hasJobTarget ? extJob.length : 0) + (hasSpareTarget ? extSpare.length : 0)
+
                           return (
                             <tr key={manual.manual_id} className="hover:bg-slate-900/40 transition-colors">
                               {/* Filename & Info */}
@@ -710,13 +746,13 @@ export function NoExtractedRecordsModal({
                                     </span>
                                   )}
                                   {/* If manual has completed pages, show completed summary badge */}
-                                  {(extComp.length > 0 || extJob.length > 0 || extSpare.length > 0) && (
+                                  {totalExtractedCount > 0 && (
                                     <span
                                       style={{ backgroundColor: '#d1fae5', color: '#065f46', borderColor: '#a7f3d0' }}
                                       className="inline-flex items-center gap-1 self-start text-[10px] font-bold px-1.5 py-0.5 rounded border mt-0.5"
                                     >
                                       <CheckCircle2 className="h-2.5 w-2.5 text-emerald-600" />
-                                      {extComp.length + extJob.length + extSpare.length} Page(s) Extracted
+                                      {totalExtractedCount} Page(s) Extracted
                                     </span>
                                   )}
                                 </div>
@@ -725,8 +761,9 @@ export function NoExtractedRecordsModal({
                               {/* Components Column: Shows Pending + Completed Highlights */}
                               <td className="py-3 px-2">
                                 <div className="flex flex-col gap-1.5">
-                                  {/* Pending / Missing pages */}
-                                  {manual.missing_components_pages.length > 0 ? (
+                                  {!hasCompTarget ? (
+                                    <span className="text-slate-500 text-xs italic">—</span>
+                                  ) : manual.missing_components_pages.length > 0 ? (
                                     <div className="flex flex-wrap gap-1">
                                       {manual.missing_components_pages.map((p) => {
                                         const queued = isQueued(manual.manual_id, 'component', p)
@@ -790,11 +827,11 @@ export function NoExtractedRecordsModal({
                                       })}
                                     </div>
                                   ) : (
-                                    <span className="text-slate-500 text-xs italic">No pending</span>
+                                    <span className="text-emerald-500 text-xs font-semibold">All extracted</span>
                                   )}
 
                                   {/* Completed / Extracted pages highlight */}
-                                  {extComp.length > 0 && (
+                                  {hasCompTarget && extComp.length > 0 && (
                                     <div className="flex flex-wrap gap-1 pt-1 border-t border-slate-800/40">
                                       {extComp.map((p: number) => (
                                         <button
@@ -817,8 +854,9 @@ export function NoExtractedRecordsModal({
                               {/* Jobs Column: Shows Pending + Completed Highlights */}
                               <td className="py-3 px-2">
                                 <div className="flex flex-col gap-1.5">
-                                  {/* Pending / Missing pages */}
-                                  {manual.missing_jobs_pages.length > 0 ? (
+                                  {!hasJobTarget ? (
+                                    <span className="text-slate-500 text-xs italic">—</span>
+                                  ) : manual.missing_jobs_pages.length > 0 ? (
                                     <div className="flex flex-wrap gap-1">
                                       {manual.missing_jobs_pages.map((p) => {
                                         const queued = isQueued(manual.manual_id, 'job', p)
@@ -882,11 +920,11 @@ export function NoExtractedRecordsModal({
                                       })}
                                     </div>
                                   ) : (
-                                    <span className="text-slate-500 text-xs italic">No pending</span>
+                                    <span className="text-emerald-500 text-xs font-semibold">All extracted</span>
                                   )}
 
                                   {/* Completed / Extracted pages highlight */}
-                                  {extJob.length > 0 && (
+                                  {hasJobTarget && extJob.length > 0 && (
                                     <div className="flex flex-wrap gap-1 pt-1 border-t border-slate-800/40">
                                       {extJob.map((p: number) => (
                                         <button
@@ -909,8 +947,9 @@ export function NoExtractedRecordsModal({
                               {/* Spares Column: Shows Pending + Completed Highlights */}
                               <td className="py-3 px-2">
                                 <div className="flex flex-col gap-1.5">
-                                  {/* Pending / Missing pages */}
-                                  {manual.missing_spares_pages.length > 0 ? (
+                                  {!hasSpareTarget ? (
+                                    <span className="text-slate-500 text-xs italic">—</span>
+                                  ) : manual.missing_spares_pages.length > 0 ? (
                                     <div className="flex flex-wrap gap-1">
                                       {manual.missing_spares_pages.map((p) => {
                                         const queued = isQueued(manual.manual_id, 'spare', p)
@@ -974,11 +1013,11 @@ export function NoExtractedRecordsModal({
                                       })}
                                     </div>
                                   ) : (
-                                    <span className="text-slate-500 text-xs italic">No pending</span>
+                                    <span className="text-emerald-500 text-xs font-semibold">All extracted</span>
                                   )}
 
                                   {/* Completed / Extracted pages highlight */}
-                                  {extSpare.length > 0 && (
+                                  {hasSpareTarget && extSpare.length > 0 && (
                                     <div className="flex flex-wrap gap-1 pt-1 border-t border-slate-800/40">
                                       {extSpare.map((p: number) => (
                                         <button

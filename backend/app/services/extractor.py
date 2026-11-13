@@ -7763,25 +7763,21 @@ async def auto_extract_from_manual(
 
             for entity_type in ("component", "job", "spare"):
 
-                if locked_entity_pages and entity_type in locked_entity_pages and locked_entity_pages[entity_type]:
+                if locked_entity_pages and entity_type in locked_entity_pages:
 
-                    pages = locked_entity_pages[entity_type]
+                    pages = locked_entity_pages[entity_type] or []
 
                 else:
 
                     pages = _selected_manual_pages(manual, entity_type)
 
-                if not pages and page_numbers and (entity_types is None or entity_type in entity_types):
+                    if not pages and page_numbers and entity_types and len(entity_types) == 1 and entity_type in entity_types:
 
-                    pages = page_numbers
+                        pages = page_numbers
 
-                if page_numbers is not None and pages:
+                    elif page_numbers is not None and pages:
 
-                    pages = [p for p in pages if p in page_numbers]
-
-                if not pages and page_numbers and (entity_types is None or entity_type in entity_types):
-
-                    pages = page_numbers
+                        pages = [p for p in pages if p in page_numbers]
 
                 entity_pages[entity_type] = pages
 

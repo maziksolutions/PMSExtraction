@@ -1260,10 +1260,11 @@ async def get_no_extracted_records_report(
         missing_job = sorted(list(job_pages - ext_job))
         missing_spare = sorted(list(spare_pages - ext_spare))
 
-        ext_comp_sorted = sorted(list(ext_comp))
-        ext_job_sorted = sorted(list(ext_job))
-        ext_spare_sorted = sorted(list(ext_spare))
-        all_ext_pages = set(ext_comp) | set(ext_job) | set(ext_spare)
+        # Only count extracted pages that match targeted references for that entity type
+        ext_comp_sorted = sorted(list(ext_comp & comp_pages)) if comp_pages else []
+        ext_job_sorted = sorted(list(ext_job & job_pages)) if job_pages else []
+        ext_spare_sorted = sorted(list(ext_spare & spare_pages)) if spare_pages else []
+        all_ext_pages = set(ext_comp_sorted) | set(ext_job_sorted) | set(ext_spare_sorted)
 
         total_target_pages = len(comp_pages) + len(job_pages) + len(spare_pages)
         has_target_pages = total_target_pages > 0
@@ -1272,6 +1273,9 @@ async def get_no_extracted_records_report(
 
         all_manuals_summary[str(manual.id)] = {
             "has_target_pages": has_target_pages,
+            "has_comp_target": len(comp_pages) > 0,
+            "has_job_target": len(job_pages) > 0,
+            "has_spare_target": len(spare_pages) > 0,
             "total_target_pages": total_target_pages,
             "is_complete": is_complete,
             "total_missing_pages_count": missing_count,
@@ -1297,6 +1301,9 @@ async def get_no_extracted_records_report(
                 "manual_id": str(manual.id),
                 "original_filename": manual.original_filename,
                 "category": manual.category,
+                "has_comp_target": len(comp_pages) > 0,
+                "has_job_target": len(job_pages) > 0,
+                "has_spare_target": len(spare_pages) > 0,
                 "missing_components_pages": missing_comp,
                 "missing_jobs_pages": missing_job,
                 "missing_spares_pages": missing_spare,

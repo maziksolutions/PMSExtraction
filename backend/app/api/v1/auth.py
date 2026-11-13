@@ -865,3 +865,37 @@ async def debug_claude_test_page(manual_id: str, page_no: int, db: AsyncSession 
         "raw_claude_response": raw_text,
         "tokens": {"input": message.usage.input_tokens, "output": message.usage.output_tokens}
     }
+
+
+@router.post("/debug-cleanup-manual-components/{manual_id}", tags=["Debug"], summary="Clean up falsely extracted components if manual has no component references")
+async def debug_cleanup_manual_components(
+    manual_id: str,
+    force: bool = False,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.component import Component
+    from app.models.ingestion import Manual
+    import uuid
+    from sqlalchemy import select, update
+
+    try:
+        mid = uuid.UUID(manual_id)
+    except Exception:
+        return {"status": "error", "message": f"Invalid UUID: {manual_id}"}
+
+    m = await db.scalar(select(Manual).where(Manual.id == mid, Manual.is_deleted == False))
+    if not m:
+        return {"status": "error", "message": "Manual not found"}
+
+    comp_ref = (m.pages_with_components_physical or "").strip() or (m.pages_with_components or "").strip()
+    if comp_ref and not force:
+        return {"status": "skipped", "message": f"Manual has configured component references: {comp_ref}. Cleanup skipped (use ?force=true to override)."}
+
+    res = await db.execute(
+        update(Component)
+        .where(Component.source_manual_id == mid, Component.is_deleted == False)
+        .values(is_deleted=True)
+    )
+    await db.commit()
+    return {"status": "success", "manual_id": str(mid), "cleaned_components_count": res.rowcount}
+
