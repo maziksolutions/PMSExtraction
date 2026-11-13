@@ -190,3 +190,57 @@ def test_specification_remarks_complete_removal():
     assert pn == "00621141"
     assert spec == "QTY: 2 PCS"
     assert "Remarks" not in (spec or "")
+
+
+@pytest.mark.asyncio
+async def test_process_and_save_page_records_default_qty_one():
+    from app.services.extractor import _process_and_save_page_records
+    from unittest.mock import AsyncMock, MagicMock
+    import uuid
+
+    mock_db = AsyncMock()
+    mock_db.add = MagicMock()
+    mock_db.execute = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    mock_manual = MagicMock()
+    mock_manual.id = uuid.uuid4()
+    mock_manual.original_filename = 'test_manual.pdf'
+    mock_manual.pages_with_spares = '58-60'
+    mock_manual.target_model = None
+
+    records = [
+        {'part_name': 'ENCLOSER', 'part_number': 'No. 29', 'specification': None},
+        {'part_name': 'SCREW B', 'part_number': 'No. 57', 'specification': 'Material: STEEL'},
+        {'part_name': 'BALL BEARING 6202 X2', 'part_number': 'No. 62', 'specification': 'QTY: 2 PCS'},
+    ]
+
+    await _process_and_save_page_records(
+        db=mock_db,
+        page_records=records,
+        etype='spare',
+        manual=mock_manual,
+        all_manual_ids=[mock_manual.id],
+        filename='test_manual.pdf',
+        vessel_id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        vessel_shipyard=None,
+        page_no=78,
+        extracted_component_context=[],
+        existing_manual_component_context=[],
+    )
+
+    added_spares = [call[0][0] for call in mock_db.add.call_args_list]
+    assert len(added_spares) == 3
+
+    # Record 1: no qty provided -> defaults to QTY: 1 PCS
+    assert added_spares[0].part_name == 'Encloser'
+    assert added_spares[0].specification == 'QTY: 1 PCS'
+
+    # Record 2: only material provided -> defaults to QTY: 1 PCS; Material: STEEL
+    assert added_spares[1].part_name == 'Screw B'
+    assert added_spares[1].specification == 'QTY: 1 PCS; Material: STEEL'
+
+    # Record 3: explicit QTY: 2 PCS provided -> preserves QTY: 2 PCS
+    assert added_spares[2].part_name == 'Ball Bearing'
+    assert 'QTY: 2 PCS' in added_spares[2].specification

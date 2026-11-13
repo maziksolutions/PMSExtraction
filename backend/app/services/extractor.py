@@ -956,9 +956,11 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "Use [PAGE N] markers for source_page_number.\n"
 
-            "Look for: parts tables (NO./NAME/MATERIAL/QTY), two-column tables (Pos. | Description, Position | Part Name, Item | Description), drawing parts lists, "
+            "Look for: parts tables (NO./NAME/MATERIAL/QTY), two-column and multi-column tables (NO. | Name, Pos. | Description, Position | Part Name, Item | Description, Item No. | Name repeated across the page), drawing parts lists, and sections titled 'DESCRIPTION OF SPARE PARTS', 'Spare Parts', 'Parts List', 'Recommended Spares'. "
 
-            "sections titled 'Spare Parts', 'Parts List', 'Recommended Spares'. "
+            "CRITICAL - HEADERS & MULTI-COLUMN TABLES: Extract spare parts irrespective of whether columns are named 'Name', 'Description', 'Item', 'Designation', etc. When 2-4 column groups appear side-by-side (e.g. NO. | Name repeated across the page), scan all columns left-to-right across the entire page. For merged cells spanning multiple numbers (e.g. NO. 1-8: MOTOR), extract a record for each row/number. "
+
+            "CRITICAL - DEFAULT QUANTITY: If no quantity column is provided or quantity is missing, ALWAYS consider the quantity to be 1 by default (output 'QTY: 1 PCS' in specification). "
 
             "Extract EVERY row from Pos./Description tables, including test apparatus and hydrostatic pressure test setups (e.g. section 13.2 Hydrostatic Pressure Test with Blind flanges, Pressure gauge, Air bleed screw, Pressurized water supply, Device to be tested). If multiple kits appear on the same page (e.g. KIT HVV-2.5 VOC and KIT HVV-2.5 O on Page 58), extract ALL parts from EVERY kit — for example on Page 58 extract all 13 spares including O-Ring in both kits with distinct spare_assembly. NEVER omit common parts across kits.\n"
 
@@ -3934,6 +3936,10 @@ async def _extract_entities_from_page_image_with_openai(
 
                 "\n\nPARTS LISTS AND EXPLODED DIAGRAM RULES (CRITICAL):"
 
+                "\n0. SPARE PARTS LISTS IRRESPECTIVE OF HEADERS & MULTI-COLUMN TABLES (CRITICAL): Regardless of whether table columns are titled 'Name', 'Part Name', 'Description', 'Item', 'Item Name', 'Designation', or 'NO.', extract EVERY row as a spare part. When tables have 2-4 column pairs side-by-side across the page width (e.g. NO. | Name | NO. | Name | NO. | Name | NO. | Name), scan ALL columns left-to-right across the entire page. For merged cells spanning multiple numbers (e.g. NO. 1-8: MOTOR), extract a record for each number/row so no parts are omitted."
+
+                "\n0a. DEFAULT QUANTITY RULE (CRITICAL): If no quantity column is provided in the table/list or quantity is not specified for a part, ALWAYS consider the quantity to be 1 by default (output 'QTY: 1 PCS' in specification). Never leave quantity missing."
+
                 "\n1. If the page has an exploded-view/assembly diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser' or 'Item No. 1: Fan Motor'): extract EVERY item from the list/legend as a spare part. Use 'No. 1', 'No. 2', etc. as part_number, the component name as part_name, and the diagram title or figure number as drawing_number/spare_assembly."
 
                 "\n2. If the page has BOTH an exploded-view diagram AND a separate full catalog parts table for the same parts on the SAME page, extract from the parts table to avoid duplication."
@@ -4130,6 +4136,10 @@ async def _extract_entities_from_page_image_with_claude(
             text_instructions += (
 
                 "\n\nPARTS LISTS AND EXPLODED DIAGRAM RULES (CRITICAL):"
+
+                "\n0. SPARE PARTS LISTS IRRESPECTIVE OF HEADERS & MULTI-COLUMN TABLES (CRITICAL): Regardless of whether table columns are titled 'Name', 'Part Name', 'Description', 'Item', 'Item Name', 'Designation', or 'NO.', extract EVERY row as a spare part. When tables have 2-4 column pairs side-by-side across the page width (e.g. NO. | Name | NO. | Name | NO. | Name | NO. | Name), scan ALL columns left-to-right across the entire page. For merged cells spanning multiple numbers (e.g. NO. 1-8: MOTOR), extract a record for each number/row so no parts are omitted."
+
+                "\n0a. DEFAULT QUANTITY RULE (CRITICAL): If no quantity column is provided in the table/list or quantity is not specified for a part, ALWAYS consider the quantity to be 1 by default (output 'QTY: 1 PCS' in specification). Never leave quantity missing."
 
                 "\n1. If the page has an exploded-view/assembly diagram with a numbered parts list or callout legend (e.g. '1. compressor', '2. refrigerant condenser' or 'Item No. 1: Fan Motor'): extract EVERY item from the list/legend as a spare part. Use 'No. 1', 'No. 2', etc. as part_number, the component name as part_name, and the diagram title or figure number as drawing_number/spare_assembly."
 
@@ -7266,6 +7276,18 @@ async def _process_and_save_page_records(
 
 
 
+            _final_spec = _format_specification_headers(_clean_spec) or (_clean_spec or None)
+
+            if not _final_spec:
+
+                _final_spec = "QTY: 1 PCS"
+
+            elif not re.search(r"\bQTY:\s*\d+", _final_spec, re.I):
+
+                _final_spec = f"QTY: 1 PCS; {_final_spec}"
+
+
+
             spare = Spare(
 
                 tenant_id=tenant_id,
@@ -7286,7 +7308,7 @@ async def _process_and_save_page_records(
 
                 drawing_position=_dwg_pos,
 
-                specification=_format_specification_headers(_clean_spec) or (_clean_spec or None),
+                specification=_final_spec,
 
                 spare_assembly=_asm,
 
@@ -7372,9 +7394,11 @@ async def auto_extract_from_manual(
 
 
 
-    async with AsyncSessionLocal() as db:
+    try:
 
-        try:
+        # Phase 1: Load manual metadata & pre-clear within scoped DB session
+
+        async with AsyncSessionLocal() as db:
 
             # ------------------------------------------------------------------
 
@@ -8508,157 +8532,163 @@ async def auto_extract_from_manual(
 
 
 
-                all_records: list[dict] = []
+        # Phase 2: Processing loops (no DB connection held during LLM/vision API calls)
 
-                is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
+        for etype in extraction_types:
 
-                source_text = type_to_text.get(etype)
+            all_records: list[dict] = []
 
-                if source_text is None:
+            is_pdf_spare = (etype == "spare" and ext == "pdf" and file_bytes is not None)
 
-                    source_text = full_text
+            source_text = type_to_text.get(etype)
+
+            if source_text is None:
+
+                source_text = full_text
 
 
 
-                if not is_pdf_spare and source_text.strip():
+            if not is_pdf_spare and source_text.strip():
 
-                    text_chunks = _chunk_text(source_text)
+                text_chunks = _chunk_text(source_text)
 
-                    logger.info(
+                logger.info(
 
-                        "auto_extract_from_manual: %s -> %s chars=%d chunks=%d",
+                    "auto_extract_from_manual: %s -> %s chars=%d chunks=%d",
 
-                        filename,
+                    filename,
 
-                        etype,
+                    etype,
 
-                        len(source_text),
+                    len(source_text),
 
-                        len(text_chunks),
+                    len(text_chunks),
+
+                )
+
+                for chunk_idx, chunk in enumerate(text_chunks):
+
+                    import re as _re
+
+                    found_pages = _re.findall(r'\[PAGE (\d+)\]', chunk)
+
+                    if found_pages:
+
+                        for _fp in found_pages:
+
+                            record_page_extraction_run(manual_id_str, int(_fp))
+
+                    if page_numbers is not None and found_pages:
+
+                        chunk_pages = [int(p) for p in found_pages]
+
+                        if not any(p in page_numbers for p in chunk_pages):
+
+                            continue
+
+                    done_sub_steps += 1
+
+                    if found_pages:
+
+                        page_desc = f"pages {', '.join(found_pages)}"
+
+                    else:
+
+                        page_desc = f"chunk {chunk_idx + 1}/{len(text_chunks)}"
+
+                    set_extraction_state(
+
+                        vessel_id_str,
+
+                        current_manual_name=filename,
+
+                        current_manual_pages_done=done_sub_steps,
+
+                        detailed_status=f"Extracting {etype}s from text ({page_desc})..."
 
                     )
 
-                    for chunk_idx, chunk in enumerate(text_chunks):
+                    chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
 
-                        import re as _re
+                    context_note = learning_context_by_type.get(etype)
 
-                        found_pages = _re.findall(r'\[PAGE (\d+)\]', chunk)
+                    if etype in {"job", "spare"}:
 
-                        if found_pages:
+                        context_components = extracted_component_context or existing_manual_component_context
 
-                            for _fp in found_pages:
+                        comp_context_str = _build_component_context_text(context_components, manual)
 
-                                record_page_extraction_run(manual_id_str, int(_fp))
+                        if comp_context_str:
 
-                        if page_numbers is not None and found_pages:
+                            context_note = _merge_context_notes(
 
-                            chunk_pages = [int(p) for p in found_pages]
+                                comp_context_str,
 
-                            if not any(p in page_numbers for p in chunk_pages):
+                                learning_context_by_type.get(etype),
 
-                                continue
+                            )
 
-                        done_sub_steps += 1
+                
 
-                        if found_pages:
+                    # Fetch preceding page titles context
 
-                            page_desc = f"pages {', '.join(found_pages)}"
+                    chunk_context = context_note
 
-                        else:
-
-                            page_desc = f"chunk {chunk_idx + 1}/{len(text_chunks)}"
-
-                        set_extraction_state(
-
-                            vessel_id_str,
-
-                            current_manual_name=filename,
-
-                            current_manual_pages_done=done_sub_steps,
-
-                            detailed_status=f"Extracting {etype}s from text ({page_desc})..."
-
-                        )
-
-                        chunk_label = f"{filename} [chunk {chunk_idx + 1}/{len(text_chunks)}]"
-
-                        context_note = learning_context_by_type.get(etype)
-
-                        if etype in {"job", "spare"}:
-
-                            context_components = extracted_component_context or existing_manual_component_context
-
-                            comp_context_str = _build_component_context_text(context_components, manual)
-
-                            if comp_context_str:
-
-                                context_note = _merge_context_notes(
-
-                                    comp_context_str,
-
-                                    learning_context_by_type.get(etype),
-
-                                )
-
-                    
-
-                        # Fetch preceding page titles context
-
-                        chunk_context = context_note
-
-                        if found_pages:
-
-                            try:
-
-                                first_pno = min(int(p) for p in found_pages)
-
-                                titles_history = _build_preceding_titles_history(full_text, first_pno, max_lookback=10)
-
-                                if titles_history:
-
-                                    history_note = f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
-
-                                    chunk_context = _merge_context_notes(chunk_context, history_note)
-
-                            except Exception:
-
-                                pass
-
-
+                    if found_pages:
 
                         try:
 
-                            records = await asyncio.wait_for(
+                            first_pno = min(int(p) for p in found_pages)
 
-                                extract_entities(chunk, etype, chunk_label, context_note=chunk_context),
+                            titles_history = _build_preceding_titles_history(full_text, first_pno, max_lookback=10)
 
-                                timeout=240.0
+                            if titles_history:
 
-                            )
+                                history_note = f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
 
-                        except asyncio.TimeoutError:
+                                chunk_context = _merge_context_notes(chunk_context, history_note)
 
-                            logger.error(
+                        except Exception:
 
-                                "auto_extract_from_manual: text extraction chunk %s for %s/%s timed out after 4 minutes. Skipping.",
-
-                                chunk_label, filename, etype
-
-                            )
-
-                            records = []
+                            pass
 
 
 
-                        if records:
+                    try:
 
-                            if etype == "component":
+                        records = await asyncio.wait_for(
 
-                                components_extracted_any = True
+                            extract_entities(chunk, etype, chunk_label, context_note=chunk_context),
+
+                            timeout=240.0
+
+                        )
+
+                    except asyncio.TimeoutError:
+
+                        logger.error(
+
+                            "auto_extract_from_manual: text extraction chunk %s for %s/%s timed out after 4 minutes. Skipping.",
+
+                            chunk_label, filename, etype
+
+                        )
+
+                        records = []
+
+
+
+                    if records:
+
+                        if etype == "component":
+
+                            components_extracted_any = True
+
+                        async with AsyncSessionLocal() as save_db:
 
                             await _process_and_save_page_records(
 
-                                db=db,
+                                db=save_db,
 
                                 page_records=records,
 
@@ -8682,281 +8712,283 @@ async def auto_extract_from_manual(
 
                                 existing_manual_component_context=existing_manual_component_context,
 
-                             )
+                            )
 
-                        all_records.extend(records)
+                    all_records.extend(records)
 
-                else:
+            else:
 
-                    if is_pdf_spare:
+                if is_pdf_spare:
 
-                        logger.info("auto_extract_from_manual: skipping text extraction for spares (will use PDF vision extraction)")
+                    logger.info("auto_extract_from_manual: skipping text extraction for spares (will use PDF vision extraction)")
 
-                    elif not source_text.strip():
+                elif not source_text.strip():
 
-                        logger.info("auto_extract_from_manual: source text for %s is empty, skipping text extraction", etype)
+                    logger.info("auto_extract_from_manual: source text for %s is empty, skipping text extraction", etype)
 
 
 
-                if ext == "pdf" and file_bytes is not None and (etype in {"component", "spare"} or (etype == "job" and (not all_records or not source_text.strip()))):
+            if ext == "pdf" and file_bytes is not None and (etype in {"component", "spare"} or (etype == "job" and (not all_records or not source_text.strip()))):
 
-                    selected_pages = entity_pages.get(etype) or []
+                selected_pages = entity_pages.get(etype) or []
 
-                    if page_numbers is not None:
+                if page_numbers is not None:
 
-                        selected_pages = [p for p in selected_pages if p in page_numbers]
+                    selected_pages = [p for p in selected_pages if p in page_numbers]
 
-                    
+                
 
-                    context_note = learning_context_by_type.get(etype)
+                context_note = learning_context_by_type.get(etype)
 
-                    if etype in {"job", "spare"}:
+                if etype in {"job", "spare"}:
 
-                        context_components = extracted_component_context or existing_manual_component_context
+                    context_components = extracted_component_context or existing_manual_component_context
 
-                        comp_context_str = _build_component_context_text(context_components, manual)
+                    comp_context_str = _build_component_context_text(context_components, manual)
 
-                        if comp_context_str:
+                    if comp_context_str:
 
-                            context_note = _merge_context_notes(
+                        context_note = _merge_context_notes(
 
-                                comp_context_str,
+                            comp_context_str,
 
-                                learning_context_by_type.get(etype),
+                            learning_context_by_type.get(etype),
+
+                        )
+
+                for page_no in selected_pages:
+
+                    if debug_log is not None:
+
+                        debug_log.append(f"Processing {etype} page {page_no}, file_bytes={len(file_bytes) if file_bytes else 0}")
+
+                    # Render single page image on-demand to keep memory footprint low
+
+                    image_bytes = await asyncio.to_thread(_render_single_pdf_page_image, file_bytes, page_no, 200)
+
+                    if debug_log is not None:
+
+                        debug_log.append(f"Rendered image for page {page_no}: {len(image_bytes) if image_bytes else 'FAILED/NONE'}")
+
+                    if not image_bytes:
+
+                        continue
+
+
+
+                    # Fetch preceding page text context if available to help identify assembly/header
+
+                    page_context = ""
+
+                    prev_page = page_no - 1
+
+                    if prev_page > 0 and full_text:
+
+                        prev_page_text = _filter_text_to_pages(full_text, [prev_page], include_context=False)
+
+                        if prev_page_text.strip():
+
+                            page_context = f"\nPreceding Page {prev_page} Text (For Header/Assembly/Title Context):\n{prev_page_text}\n"
+
+
+
+                    # Add preceding page headers/titles history for deep lookbacks (up to 10 pages earlier)
+
+                    if full_text:
+
+                        titles_history = _build_preceding_titles_history(full_text, page_no, max_lookback=10)
+
+                        if titles_history:
+
+                            page_context += f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
+
+
+
+                    current_context_note = context_note
+
+                    record_page_extraction_run(manual_id_str, page_no)
+
+                    if page_context:
+
+                        current_context_note = _merge_context_notes(current_context_note, page_context)
+
+
+
+                    try:
+
+                        if etype == "spare":
+
+                            def on_strip_start(strip_idx, total_strips):
+
+                                nonlocal done_sub_steps
+
+                                if strip_idx > 0:
+
+                                    done_sub_steps += 1
+
+                                set_extraction_state(
+
+                                    vessel_id_str,
+
+                                    current_manual_name=filename,
+
+                                    current_manual_pages_done=done_sub_steps,
+
+                                    detailed_status=f"Extracting spares from image page {page_no} (strip {strip_idx + 1}/{total_strips})..."
+
+                                )
+
+
+
+                            done_sub_steps += 1
+
+                            set_extraction_state(
+
+                                vessel_id_str,
+
+                                current_manual_name=filename,
+
+                                current_manual_pages_done=done_sub_steps,
+
+                                detailed_status=f"Extracting spares from image page {page_no} (starting)..."
 
                             )
 
-                    for page_no in selected_pages:
+                            try:
 
-                        if debug_log is not None:
+                                if debug_log is not None:
 
-                            debug_log.append(f"Processing {etype} page {page_no}, file_bytes={len(file_bytes) if file_bytes else 0}")
+                                    debug_log.append(f"Calling vision for page {page_no}, anthropic_key={bool(settings.ANTHROPIC_API_KEY)}, openai_key={bool(settings.OPENAI_API_KEY)}")
 
-                        # Render single page image on-demand to keep memory footprint low
+                                vision_records = await asyncio.wait_for(
 
-                        image_bytes = await asyncio.to_thread(_render_single_pdf_page_image, file_bytes, page_no, 200)
+                                    _extract_spare_parts_from_image_split(
 
-                        if debug_log is not None:
+                                        image_bytes=image_bytes,
 
-                            debug_log.append(f"Rendered image for page {page_no}: {len(image_bytes) if image_bytes else 'FAILED/NONE'}")
+                                        filename=filename,
 
-                        if not image_bytes:
+                                        page_no=page_no,
 
-                            continue
+                                        context_note=current_context_note,
 
+                                        on_strip_start=on_strip_start,
 
+                                    ),
 
-                        # Fetch preceding page text context if available to help identify assembly/header
-
-                        page_context = ""
-
-                        prev_page = page_no - 1
-
-                        if prev_page > 0 and full_text:
-
-                            prev_page_text = _filter_text_to_pages(full_text, [prev_page], include_context=False)
-
-                            if prev_page_text.strip():
-
-                                page_context = f"\nPreceding Page {prev_page} Text (For Header/Assembly/Title Context):\n{prev_page_text}\n"
-
-
-
-                        # Add preceding page headers/titles history for deep lookbacks (up to 10 pages earlier)
-
-                        if full_text:
-
-                            titles_history = _build_preceding_titles_history(full_text, page_no, max_lookback=10)
-
-                            if titles_history:
-
-                                page_context += f"\nPreceding Page Headers / Titles (for assembly/section context):\n{titles_history}\n"
-
-
-
-                        current_context_note = context_note
-
-                        record_page_extraction_run(manual_id_str, page_no)
-
-                        if page_context:
-
-                            current_context_note = _merge_context_notes(current_context_note, page_context)
-
-
-
-                        try:
-
-                            if etype == "spare":
-
-                                def on_strip_start(strip_idx, total_strips):
-
-                                    nonlocal done_sub_steps
-
-                                    if strip_idx > 0:
-
-                                        done_sub_steps += 1
-
-                                    set_extraction_state(
-
-                                        vessel_id_str,
-
-                                        current_manual_name=filename,
-
-                                        current_manual_pages_done=done_sub_steps,
-
-                                        detailed_status=f"Extracting spares from image page {page_no} (strip {strip_idx + 1}/{total_strips})..."
-
-                                    )
-
-
-
-                                done_sub_steps += 1
-
-                                set_extraction_state(
-
-                                    vessel_id_str,
-
-                                    current_manual_name=filename,
-
-                                    current_manual_pages_done=done_sub_steps,
-
-                                    detailed_status=f"Extracting spares from image page {page_no} (starting)..."
+                                    timeout=240.0
 
                                 )
 
-                                try:
+                                if debug_log is not None:
 
-                                    if debug_log is not None:
+                                    debug_log.append(f"Vision returned {len(vision_records)} records")
 
-                                        debug_log.append(f"Calling vision for page {page_no}, anthropic_key={bool(settings.ANTHROPIC_API_KEY)}, openai_key={bool(settings.OPENAI_API_KEY)}")
+                            except Exception as v_err:
 
-                                    vision_records = await asyncio.wait_for(
+                                if debug_log is not None:
 
-                                        _extract_spare_parts_from_image_split(
+                                    debug_log.append(f"Vision error on page {page_no}: {type(v_err).__name__}: {v_err}")
 
-                                            image_bytes=image_bytes,
+                                logger.error(
 
-                                            filename=filename,
+                                    "auto_extract_from_manual: vision spares page %d for %s error: %s",
 
-                                            page_no=page_no,
-
-                                            context_note=current_context_note,
-
-                                            on_strip_start=on_strip_start,
-
-                                        ),
-
-                                        timeout=240.0
-
-                                    )
-
-                                    if debug_log is not None:
-
-                                        debug_log.append(f"Vision returned {len(vision_records)} records")
-
-                                except Exception as v_err:
-
-                                    if debug_log is not None:
-
-                                        debug_log.append(f"Vision error on page {page_no}: {type(v_err).__name__}: {v_err}")
-
-                                    logger.error(
-
-                                        "auto_extract_from_manual: vision spares page %d for %s error: %s",
-
-                                        page_no, filename, v_err
-
-                                    )
-
-                                    vision_records = []
-
-                            else:
-
-                                done_sub_steps += 1
-
-                                set_extraction_state(
-
-                                    vessel_id_str,
-
-                                    current_manual_name=filename,
-
-                                    current_manual_pages_done=done_sub_steps,
-
-                                    detailed_status=f"Extracting {etype}s from image page {page_no} of {manual.page_count or 'N/A'}..."
+                                    page_no, filename, v_err
 
                                 )
 
-                                try:
+                                vision_records = []
 
-                                    vision_records = await asyncio.wait_for(
+                        else:
 
-                                        _extract_entities_from_page_image(
+                            done_sub_steps += 1
 
-                                            image_bytes=image_bytes,
+                            set_extraction_state(
 
+                                vessel_id_str,
+
+                                current_manual_name=filename,
+
+                                current_manual_pages_done=done_sub_steps,
+
+                                detailed_status=f"Extracting {etype}s from image page {page_no} of {manual.page_count or 'N/A'}..."
+
+                            )
+
+                            try:
+
+                                vision_records = await asyncio.wait_for(
+
+                                    _extract_entities_from_page_image(
+
+                                        image_bytes=image_bytes,
+
+                                        filename=filename,
+
+                                        page_no=page_no,
+
+                                        extraction_type=etype,
+
+                                        context_note=current_context_note,
+
+                                    ),
+
+                                    timeout=240.0
+
+                                )
+
+                            except asyncio.TimeoutError:
+
+                                logger.error(
+
+                                    "auto_extract_from_manual: vision %s page %d for %s timed out after 4 minutes. Skipping.",
+
+                                    etype, page_no, filename
+
+                                )
+
+                                vision_records = []
+
+                        if debug_log is not None:
+
+                            debug_log.append(f"Vision returned {len(vision_records)} records for page {page_no}")
+
+                        # Fallback if vision extraction returned 0 records for a spare page
+                        if not vision_records and etype == "spare":
+                            page_text_block = _filter_text_to_pages(full_text, [page_no], include_context=False) if full_text else ""
+                            if page_text_block.strip():
+                                table_fallback = _parse_simple_pos_description_table(page_text_block, page_no)
+                                if table_fallback:
+                                    vision_records = table_fallback
+                                    if debug_log is not None:
+                                        debug_log.append(f"Pos-description table fallback returned {len(vision_records)} records for page {page_no}")
+                                else:
+                                    try:
+                                        llm_text_records = await extract_entities(
+                                            f"[PAGE {page_no}]\n{page_text_block}",
+                                            extraction_type="spare",
                                             filename=filename,
-
-                                            page_no=page_no,
-
-                                            extraction_type=etype,
-
                                             context_note=current_context_note,
+                                        )
+                                        if llm_text_records:
+                                            vision_records = llm_text_records
+                                            if debug_log is not None:
+                                                debug_log.append(f"Text extraction fallback returned {len(vision_records)} records for page {page_no}")
+                                    except Exception as fb_err:
+                                        logger.warning("Fallback text extraction failed for spare page %d: %s", page_no, fb_err)
 
-                                        ),
+                        if vision_records:
 
-                                        timeout=240.0
+                            if etype == "component":
 
-                                    )
+                                components_extracted_any = True
 
-                                except asyncio.TimeoutError:
-
-                                    logger.error(
-
-                                        "auto_extract_from_manual: vision %s page %d for %s timed out after 4 minutes. Skipping.",
-
-                                        etype, page_no, filename
-
-                                    )
-
-                                    vision_records = []
-
-                            if debug_log is not None:
-
-                                debug_log.append(f"Vision returned {len(vision_records)} records for page {page_no}")
-
-                            # Fallback if vision extraction returned 0 records for a spare page
-                            if not vision_records and etype == "spare":
-                                page_text_block = _filter_text_to_pages(full_text, [page_no], include_context=False) if full_text else ""
-                                if page_text_block.strip():
-                                    table_fallback = _parse_simple_pos_description_table(page_text_block, page_no)
-                                    if table_fallback:
-                                        vision_records = table_fallback
-                                        if debug_log is not None:
-                                            debug_log.append(f"Pos-description table fallback returned {len(vision_records)} records for page {page_no}")
-                                    else:
-                                        try:
-                                            llm_text_records = await extract_entities(
-                                                f"[PAGE {page_no}]\n{page_text_block}",
-                                                extraction_type="spare",
-                                                filename=filename,
-                                                context_note=current_context_note,
-                                            )
-                                            if llm_text_records:
-                                                vision_records = llm_text_records
-                                                if debug_log is not None:
-                                                    debug_log.append(f"Text extraction fallback returned {len(vision_records)} records for page {page_no}")
-                                        except Exception as fb_err:
-                                            logger.warning("Fallback text extraction failed for spare page %d: %s", page_no, fb_err)
-
-                            if vision_records:
-
-                                if etype == "component":
-
-                                    components_extracted_any = True
+                            async with AsyncSessionLocal() as save_db:
 
                                 await _process_and_save_page_records(
 
-                                    db=db,
+                                    db=save_db,
 
                                     page_records=vision_records,
 
@@ -8982,39 +9014,27 @@ async def auto_extract_from_manual(
 
                                 )
 
-                            all_records.extend(vision_records)
+                        all_records.extend(vision_records)
+
+                    except Exception as page_exc:
+
+                        # Mapping and saving are now handled page-by-page.
+
+                        logger.error(
+
+                            "auto_extract_from_manual: failed page %d for %s/%s: %s",
+
+                            page_no, filename, etype, page_exc
+
+                        )
 
 
 
-                            # Keep database connection active during long LLM calls
+        # Phase 3: Post-processing sync within scoped DB session
 
-                            try:
+        async with AsyncSessionLocal() as post_db:
 
-                                from sqlalchemy import text
-
-                                await db.execute(text("SELECT 1"))
-
-                            except Exception:
-
-                                pass
-
-                        except Exception as page_exc:
-
-                            # Mapping and saving are now handled page-by-page.
-
-                            logger.error(
-
-                                "auto_extract_from_manual: failed page %d for %s/%s: %s",
-
-                                page_no, filename, etype, page_exc
-
-                            )
-
-
-
-            # Restore manual status to classified
-
-            await db.execute(
+            await post_db.execute(
 
                 update(Manual)
 
@@ -9024,7 +9044,7 @@ async def auto_extract_from_manual(
 
             )
 
-            await db.commit()
+            await post_db.commit()
 
 
 
@@ -9042,7 +9062,7 @@ async def auto_extract_from_manual(
 
                     merged, unmatched = await auto_merge_extracted_components(
 
-                        db=db,
+                        db=post_db,
 
                         vessel_id=vessel_id,
 
@@ -9050,7 +9070,7 @@ async def auto_extract_from_manual(
 
                     )
 
-                    await db.commit()
+                    await post_db.commit()
 
                     logger.warning(
 
@@ -9068,7 +9088,7 @@ async def auto_extract_from_manual(
 
                 component_ref_updates = await _overwrite_component_manual_refs(
 
-                    db=db,
+                    db=post_db,
 
                     manual=manual,
 
@@ -9080,7 +9100,7 @@ async def auto_extract_from_manual(
 
                 jobs_linked, spares_linked = await _link_records_to_components(
 
-                    db=db,
+                    db=post_db,
 
                     manual=manual,
 
@@ -9092,7 +9112,7 @@ async def auto_extract_from_manual(
 
                 merged_jobs = await _consolidate_jobs_for_manual(
 
-                    db=db,
+                    db=post_db,
 
                     manual=manual,
 
@@ -9104,7 +9124,7 @@ async def auto_extract_from_manual(
 
                 merged_spares = await _consolidate_spares_for_manual(
 
-                    db=db,
+                    db=post_db,
 
                     manual=manual,
 
@@ -9116,7 +9136,7 @@ async def auto_extract_from_manual(
 
                 manual_job_ranks_updated = await backfill_manual_job_ranks(
 
-                    db=db,
+                    db=post_db,
 
                     tenant_id=tenant_id,
 
@@ -9126,7 +9146,7 @@ async def auto_extract_from_manual(
 
                 )
 
-                await db.commit()
+                await post_db.commit()
 
                 logger.warning(
 
@@ -9178,19 +9198,21 @@ async def auto_extract_from_manual(
 
 
 
-        except BaseException as task_exc:
+    except BaseException as task_exc:
 
-            logger.error("auto_extract_from_manual failed or cancelled: %s", task_exc, exc_info=True)
+        logger.error("auto_extract_from_manual failed or cancelled: %s", task_exc, exc_info=True)
 
-            from app.models.ingestion import ManualStatus, Manual
+        from app.models.ingestion import ManualStatus, Manual
 
-            from sqlalchemy import update
+        from sqlalchemy import update
 
-            try:
+        try:
 
-                err_msg = "Extraction stopped by user." if isinstance(task_exc, asyncio.CancelledError) else str(task_exc)[:500]
+            err_msg = "Extraction stopped by user." if isinstance(task_exc, asyncio.CancelledError) else str(task_exc)[:500]
 
-                await db.execute(
+            async with AsyncSessionLocal() as err_db:
+
+                await err_db.execute(
 
                     update(Manual)
 
@@ -9206,11 +9228,11 @@ async def auto_extract_from_manual(
 
                 )
 
-                await db.commit()
+                await err_db.commit()
 
-            except Exception as db_exc:
+        except Exception as db_exc:
 
-                logger.error("Failed to mark manual as failed/cancelled in DB: %s", db_exc)
+            logger.error("Failed to mark manual as failed/cancelled in DB: %s", db_exc)
 
 
 

@@ -13,6 +13,7 @@ from typing import Annotated, Any, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, update, text
+from sqlalchemy.orm import defer, undefer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -694,6 +695,7 @@ async def list_manuals(
 
     query = (
         select(Manual)
+        .options(defer(Manual.extracted_text))
         .where(*base_filter)
         .order_by(order_expr)
         .offset((page - 1) * page_size)
@@ -755,7 +757,9 @@ async def preview_manual_pages(
     await _get_vessel_or_404(vessel_id, db)
 
     result = await db.execute(
-        select(Manual).where(
+        select(Manual)
+        .options(undefer(Manual.extracted_text))
+        .where(
             Manual.id == manual_id,
             Manual.vessel_id == vessel_id,
             Manual.tenant_id == current_user.tenant_id,
@@ -905,6 +909,7 @@ async def export_manual_screening(
     )
     result = await db.execute(
         select(Manual)
+        .options(defer(Manual.extracted_text))
         .where(*base_filter)
         .order_by(_manual_order_expr(sort_by, sort_order))
     )
@@ -1586,6 +1591,7 @@ async def get_deleted_manuals(
 
     result = await db.execute(
         select(Manual)
+        .options(defer(Manual.extracted_text))
         .where(
             Manual.vessel_id == vessel_id,
             Manual.tenant_id == current_user.tenant_id,

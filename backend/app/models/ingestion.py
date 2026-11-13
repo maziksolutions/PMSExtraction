@@ -193,8 +193,8 @@ class Manual(TenantBase):
         nullable=True,
     )
 
-    # Extracted text — stored at upload time so it survives ephemeral filesystem redeploys
-    extracted_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Extracted text — stored at upload time so it survives ephemeral filesystem redeploys (deferred by default to prevent connection/memory bloat on bulk queries)
+    extracted_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True, deferred=True)
     page_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Supply type — OEM instruction manual vs yard-supply/final-drawing package

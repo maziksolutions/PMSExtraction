@@ -729,7 +729,7 @@ const ManualReview: React.FC = () => {
     setPage(1)
   }, [filterCategory, filterConfidence, filterFilename, filterUseful, filterBatch, sortBy, sortOrder, pageSize])
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['manuals', vesselId, filterCategory, filterConfidence, filterFilename, filterUseful, filterBatch, page, pageSize, sortBy, sortOrder],
     queryFn: () => {
       const params: Record<string, string | number> = {
@@ -748,6 +748,8 @@ const ManualReview: React.FC = () => {
         .then((r) => r.data)
     },
     enabled: !!vesselId,
+    retry: 1,
+    staleTime: 10000,
   })
 
   const manualsForConfirmModal = useMemo(() => {
@@ -810,7 +812,7 @@ const ManualReview: React.FC = () => {
     enabled: !!vesselId,
     refetchInterval: (query) => {
       const state = query?.state?.data as ExtractionStatus | undefined
-      return (extractionPolling || state?.status === 'running' || state?.status === 'paused') ? 2000 : false
+      return (extractionPolling || state?.status === 'running' || state?.status === 'paused') ? 3500 : false
     },
   })
 
@@ -1915,7 +1917,21 @@ const ManualReview: React.FC = () => {
       {/* Manuals table */}
       <div className="max-h-[65vh] overflow-auto rounded-xl border border-slate-800 bg-slate-900">
         {isLoading ? (
-          <div className="py-16 text-center text-slate-500">Loading manuals...</div>
+          <div className="py-16 text-center text-slate-500">
+            <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent mb-2"></div>
+            <div>Loading manuals...</div>
+          </div>
+        ) : isError ? (
+          <div className="py-16 text-center text-rose-400">
+            <p className="font-medium">Failed to load manuals</p>
+            <p className="text-xs text-slate-400 mt-1">The server may be busy processing background extraction tasks.</p>
+            <button
+              onClick={() => refetch()}
+              className="mt-3 px-3 py-1.5 text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white rounded-lg border border-slate-700 transition"
+            >
+              Retry
+            </button>
+          </div>
         ) : manuals.length === 0 ? (
           <div className="py-16 text-center text-slate-500">No manuals found. Upload files from the Ingestion page.</div>
         ) : (
