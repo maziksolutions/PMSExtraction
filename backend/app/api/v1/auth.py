@@ -316,6 +316,98 @@ async def debug_components(
         return {"status": "error", "message": str(e)}
 
 
+@router.get("/debug-jobs", tags=["Debug"], summary="Query jobs without auth")
+async def debug_jobs(
+    manual_id: str | None = None,
+    vessel_id: str | None = None,
+    limit: int = 500,
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    try:
+        sql = """
+            SELECT id, vessel_id, source_manual_id, job_name, page_reference, frequency, frequency_type
+            FROM jobs
+            WHERE is_deleted = false
+        """
+        params = {"lim": limit}
+        if manual_id:
+            sql += " AND source_manual_id = :mid"
+            params["mid"] = manual_id
+        if vessel_id:
+            sql += " AND vessel_id = :vid"
+            params["vid"] = vessel_id
+        sql += " ORDER BY page_reference ASC, id ASC LIMIT :lim"
+        res = await db.execute(text(sql), params)
+        rows = res.fetchall()
+        results = [
+            {"id": str(r[0]), "vessel_id": str(r[1]), "source_manual_id": str(r[2]), "job_name": r[3], "page_reference": r[4], "frequency": r[5], "frequency_type": r[6]}
+            for r in rows
+        ]
+        return {"status": "success", "count": len(results), "jobs": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/debug-manual-summary/{manual_id}", tags=["Debug"], summary="Get comprehensive extraction summary for manual")
+async def debug_manual_summary(manual_id: str, db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import text
+    from app.services.extractor import _parse_page_tokens
+    import uuid
+    try:
+        mid = uuid.UUID(manual_id)
+        res = await db.execute(text("""
+            SELECT id, original_filename, pages_with_components, pages_with_jobs, pages_with_spares,
+                   pages_with_components_physical, pages_with_jobs_physical, pages_with_spares_physical
+            FROM manuals WHERE id = :mid
+        """), {"mid": mid})
+        row = res.fetchone()
+        if not row:
+            return {"error": "manual not found"}
+            
+        c_ref = row[5] or row[2] or ""
+        j_ref = row[6] or row[3] or ""
+        s_ref = row[7] or row[4] or ""
+        
+        c_target = _parse_page_tokens(c_ref)
+        j_target = _parse_page_tokens(j_ref)
+        s_target = _parse_page_tokens(s_ref)
+        
+        c_res = await db.execute(text("SELECT DISTINCT page_reference FROM components WHERE source_manual_id = :mid AND is_deleted = false AND page_reference IS NOT NULL"), {"mid": mid})
+        j_res = await db.execute(text("SELECT DISTINCT page_reference FROM jobs WHERE source_manual_id = :mid AND is_deleted = false AND page_reference IS NOT NULL"), {"mid": mid})
+        s_res = await db.execute(text("SELECT DISTINCT page_reference FROM spares WHERE source_manual_id = :mid AND is_deleted = false AND page_reference IS NOT NULL"), {"mid": mid})
+        
+        c_ext = [r[0] for r in c_res.fetchall()]
+        j_ext = [r[0] for r in j_res.fetchall()]
+        s_ext = [r[0] for r in s_res.fetchall()]
+        
+        return {
+            "status": "success",
+            "manual_id": manual_id,
+            "filename": row[1],
+            "components": {
+                "target_count": len(c_target),
+                "target_pages": c_target,
+                "extracted_pages": sorted(c_ext),
+                "missing_pages": sorted(list(set(c_target) - set(c_ext))),
+            },
+            "jobs": {
+                "target_count": len(j_target),
+                "target_pages": j_target,
+                "extracted_pages": sorted(j_ext),
+                "missing_pages": sorted(list(set(j_target) - set(j_ext))),
+            },
+            "spares": {
+                "target_count": len(s_target),
+                "target_pages": s_target,
+                "extracted_pages": sorted(s_ext),
+                "missing_pages": sorted(list(set(s_target) - set(s_ext))),
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 @router.get("/debug-download-manual/{manual_id}", tags=["Debug"], summary="Download raw manual PDF without auth")
 async def debug_download_manual(manual_id: str, db: AsyncSession = Depends(get_db)):
     import os
