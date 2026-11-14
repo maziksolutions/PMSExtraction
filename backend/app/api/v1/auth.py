@@ -590,29 +590,28 @@ async def debug_extract_manual(
             db.add(m)
             await db.commit()
 
-        d_logs = []
-        await auto_extract_from_manual(
-            manual_id_str=manual_id,
-            entity_types=etypes,
-            page_numbers=page_list,
-            target_model=target_model,
-            debug_log=d_logs,
-        )
-        from sqlalchemy import text
-        spares_res = await db.execute(
-            text("SELECT COUNT(*) FROM spares WHERE source_manual_id = :mid AND is_deleted = false"),
-            {"mid": mid}
-        )
-        total_spares = spares_res.scalar() or 0
+        import asyncio
+        async def _run_extraction():
+            try:
+                await auto_extract_from_manual(
+                    manual_id_str=manual_id,
+                    entity_types=etypes,
+                    page_numbers=page_list,
+                    target_model=target_model,
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger("debug_extract").exception("debug-extract-manual failed: %s", e)
+
+        asyncio.create_task(_run_extraction())
         return {
-            "status": "success",
-            "message": f"Extraction completed for manual {manual_id}",
+            "status": "queued",
+            "message": f"Extraction triggered in background for manual {manual_id}",
             "filename": m_filename,
             "extension": m_ext,
             "target_model": target_model,
-            "pages": pages,
-            "spares_extracted": total_spares,
-            "debug_log": d_logs,
+            "pages": page_list,
+            "entity_types": etypes,
         }
     except Exception as e:
         import traceback
