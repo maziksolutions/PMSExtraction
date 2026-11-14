@@ -851,19 +851,28 @@ async def debug_claude_test_page(manual_id: str, page_no: int, db: AsyncSession 
         {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64_data}},
         {"type": "text", "text": "Extract all spare parts table rows from this page image into a raw JSON array. Start with [ and end with ]. Translate to English."},
     ]
-    message = await client.messages.create(
-        model=getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6",
-        max_tokens=4096,
-        system=prompt_cfg["system"],
-        messages=[{"role": "user", "content": user_content}],
-    )
-    raw_text = message.content[0].text
+    try:
+        message = await client.messages.create(
+            model=getattr(settings, "CLAUDE_MODEL_ID", None) or "claude-sonnet-4-6",
+            max_tokens=4096,
+            system=prompt_cfg["system"],
+            messages=[{"role": "user", "content": user_content}],
+        )
+        raw_text = message.content[0].text
+        tokens = {"input": message.usage.input_tokens, "output": message.usage.output_tokens}
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "img_len": len(img_bytes),
+        }
     return {
         "manual": row[1],
         "page_no": page_no,
         "img_len": len(img_bytes),
         "raw_claude_response": raw_text,
-        "tokens": {"input": message.usage.input_tokens, "output": message.usage.output_tokens}
+        "tokens": tokens,
     }
 
 

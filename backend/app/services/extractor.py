@@ -750,7 +750,9 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "  5. Simple two-column or multi-column lists and tables: 'NO. | Name', 'NO. | Description', 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', 'Pos. | Component', 'Mark | Description', 'Item | Name'. Extract EVERY row from these tables — never skip them even if they lack QTY, Material, or catalog part number columns.\n"
 
-            "  6. P&ID and Boiler Mountings tables (PID Item | Description | Pcs. | [Part No] | Drawing Number): Tables titled 'Data sheets / Manuals', 'Mountings', 'Valves', etc. listing physical valves, mountings, fittings, and pipes. Extract EVERY row as a spare part.\n\n"
+            "  6. P&ID and Boiler Mountings tables (PID Item | Description | Pcs. | [Part No] | Drawing Number): Tables titled 'Data sheets / Manuals', 'Mountings', 'Valves', etc. listing physical valves, mountings, fittings, and pipes. Extract EVERY row as a spare part.\n"
+
+            "  7. Dimensional drawings and outline diagrams with item/callout letters or numbers (e.g. diagrams titled 'Figure N: ... Flange / Manifold / Mounting / Housing / Transmitter' having callouts like 'A. FOUNDATION Fieldbus display cover', 'B. HART display cover', 'C. Transmitter circuitry', 'D. Terminal connections', 'Drain/vent valve', 'Conduit connection', 'Flange adapter', 'U-bolt', 'Mounting bracket'): extract EVERY callout letter/number as a spare part item.\n\n"
 
             "P&ID MOUNTINGS & 'DATA SHEETS / MANUALS' TABLES (CRITICAL):\n"
 
@@ -904,7 +906,9 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "    3. If a page has an equipment component settings/calibration table (e.g. 'COMPONENT | SETTING | NOTES'), extract each listed component as a spare part, capturing their calibration/setting values into specification.\n"
 
-            "    4. If a page has a table with headers like 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', or numbered test apparatus / equipment setup lists (such as section '13.2 Hydrostatic Pressure Test' or pressure test setups with items like '1 Blind flanges', '2 Pressure gauge', '3 Air bleed screw', '4 Pressurized water supply', '5 Device to be tested'): extract EVERY row as a spare part. Set part_name to Description in Title Case (e.g. 'Blind Flanges', 'Pressure Gauge', 'Air Bleed Screw', 'Pressurized Water Supply', 'Device To Be Tested'), drawing_position to the numeric position (e.g. '1', '2', '3', '4', '5'), and if no catalog part number exists, capture part_number as 'Pos. <number>' (e.g. 'Pos. 1', 'Pos. 2', 'Pos. 3', 'Pos. 4', 'Pos. 5'). NEVER skip or omit these components simply because they are listed under a test or inspection procedure heading!\n"
+            "    4. If a page has a table with headers like 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', 'Pos. | Component', 'Mark | Description', 'Item | Name'. or numbered test apparatus / equipment setup lists (such as section '13.2 Hydrostatic Pressure Test' or pressure test setups with items like '1 Blind flanges', '2 Pressure gauge', '3 Air bleed screw', '4 Pressurized water supply', '5 Device to be tested'): extract EVERY row as a spare part. Set part_name to Description in Title Case (e.g. 'Blind Flanges', 'Pressure Gauge', 'Air Bleed Screw', 'Pressurized Water Supply', 'Device To Be Tested'), drawing_position to the numeric position (e.g. '1', '2', '3', '4', '5'), and if no catalog part number exists, capture part_number as 'Pos. <number>' (e.g. 'Pos. 1', 'Pos. 2', 'Pos. 3', 'Pos. 4', 'Pos. 5'). NEVER skip or omit these components simply because they are listed under a test or inspection procedure heading!\n"
+
+            "    5. DIMENSIONAL DRAWINGS AND OUTLINE DIAGRAMS WITH CALLOUTS: If a page shows dimensional drawings, outline drawings, or mounting configurations with letter or number callouts (e.g. under headings like 'Dimensional drawings', 'Figure N: ... Flange / Manifold / Mounting / Housing / Transmitter' having callout pointers like 'A. FOUNDATION Fieldbus display cover', 'B. HART display cover', 'C. Transmitter circuitry', 'D. Terminal connections', 'Drain/vent valve', 'Conduit connection', 'Flange adapter', 'U-bolt', 'Mounting bracket'): extract EVERY callout letter or numbered item as a spare part record! Set part_name to the clean component name in Title Case (e.g. 'Foundation Fieldbus Display Cover', 'Hart Display Cover', 'Transmitter Circuitry', 'Terminal Connections', 'Drain/Vent Valve', 'Flange Adapter', 'U-Bolt'), part_number to 'Item <Letter/Number>' (e.g. 'Item A', 'Item B', 'Item 1'), drawing_number to the Figure title in ALL CAPS (e.g. 'FIGURE 2', 'FIGURE 4'), and capture dimensions or options in specification. NEVER return [] on these pages simply because they show outer dimensions alongside component callouts!\n"
 
             "- Extract EVERY spare part row, callout list item, and component row — never skip items\n"
 
@@ -4015,6 +4019,8 @@ async def _extract_entities_from_page_image_with_openai(
 
                 "\n5. If the page contains a table with headers like 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', or numbered test apparatus / equipment setup lists (such as section '13.2 Hydrostatic Pressure Test' or pressure test setups with items like '1 Blind flanges', '2 Pressure gauge', '3 Air bleed screw', '4 Pressurized water supply', '5 Device to be tested'): extract EVERY row as a spare part. Set part_name to Description (in Title Case e.g. 'Blind Flanges', 'Pressure Gauge', 'Air Bleed Screw', 'Pressurized Water Supply', 'Device To Be Tested'), drawing_position to the position number (e.g. '1', '2', '3', '4', '5'), and if no catalog part number exists, capture part_number as 'Pos. <number>' (e.g. 'Pos. 1', 'Pos. 2', 'Pos. 3', 'Pos. 4', 'Pos. 5'). NEVER skip or omit these components simply because they are listed under a test or inspection procedure heading!\n"
 
+                "\n5a. DIMENSIONAL DRAWINGS AND OUTLINE DIAGRAMS WITH CALLOUTS (CRITICAL): If the page shows dimensional drawings, outline drawings, or mounting configurations with letter or number callouts (e.g. under headings like 'Dimensional drawings', 'Figure N: ... Flange / Manifold / Mounting / Housing / Transmitter' having callout pointers like 'A. FOUNDATION Fieldbus display cover', 'B. HART display cover', 'C. Transmitter circuitry', 'D. Terminal connections', 'Drain/vent valve', 'Conduit connection', 'Flange adapter', 'U-bolt', 'Mounting bracket'): extract EVERY callout letter or numbered item as a spare part record! Set part_name to the clean component name in Title Case (e.g. 'Foundation Fieldbus Display Cover', 'Hart Display Cover', 'Transmitter Circuitry', 'Terminal Connections', 'Drain/Vent Valve', 'Flange Adapter', 'U-Bolt'), part_number to 'Item <Letter/Number>' (e.g. 'Item A', 'Item B', 'Item 1'), drawing_number to the Figure title in ALL CAPS (e.g. 'FIGURE 2', 'FIGURE 4'), and capture dimensions or options in specification. NEVER return [] on these pages simply because they show outer dimensions alongside component callouts.\n"
+
                 "\n6. Read all text in its natural orientation, including landscape or rotated drawings."
 
                 "\n\nREMARKS COLUMN: values like 'USH-20', 'USH-50', 'RMB-24' are model/sub-assembly tags — put in spare_model, NOT part_name or drawing_number."
@@ -4245,6 +4251,8 @@ async def _extract_entities_from_page_image_with_claude(
                 "\n4. If the page contains an engineering drawing, assembly diagram, cross-sectional schematic, or piping diagram with a title block, bill of materials (BOM), parts table, or callout list (including in Chinese e.g. 序号, 名称, 材质, 数量, or Japanese NO., 品名, 材质, 数量): translate and extract EVERY part listed in the drawing's bill of materials (BOM), title block, or callout list."
 
                 "\n5. If the page contains a table with headers like 'Pos. | Description', 'Position | Description', 'Pos | Part Name', 'Pos. | Designation', 'Item | Description', 'Item No. | Description', 'No. | Description', or numbered test apparatus / equipment setup lists (such as section '13.2 Hydrostatic Pressure Test' or pressure test setups with items like '1 Blind flanges', '2 Pressure gauge', '3 Air bleed screw', '4 Pressurized water supply', '5 Device to be tested'): extract EVERY row as a spare part. Set part_name to Description (in Title Case e.g. 'Blind Flanges', 'Pressure Gauge', 'Air Bleed Screw', 'Pressurized Water Supply', 'Device To Be Tested'), drawing_position to the position number (e.g. '1', '2', '3', '4', '5'), and if no catalog part number exists, capture part_number as 'Pos. <number>' (e.g. 'Pos. 1', 'Pos. 2', 'Pos. 3', 'Pos. 4', 'Pos. 5'). NEVER skip or omit these components simply because they are listed under a test or inspection procedure heading!\n"
+
+                "\n5a. DIMENSIONAL DRAWINGS AND OUTLINE DIAGRAMS WITH CALLOUTS (CRITICAL): If the page shows dimensional drawings, outline drawings, or mounting configurations with letter or number callouts (e.g. under headings like 'Dimensional drawings', 'Figure N: ... Flange / Manifold / Mounting / Housing / Transmitter' having callout pointers like 'A. FOUNDATION Fieldbus display cover', 'B. HART display cover', 'C. Transmitter circuitry', 'D. Terminal connections', 'Drain/vent valve', 'Conduit connection', 'Flange adapter', 'U-bolt', 'Mounting bracket'): extract EVERY callout letter or numbered item as a spare part record! Set part_name to the clean component name in Title Case (e.g. 'Foundation Fieldbus Display Cover', 'Hart Display Cover', 'Transmitter Circuitry', 'Terminal Connections', 'Drain/Vent Valve', 'Flange Adapter', 'U-Bolt'), part_number to 'Item <Letter/Number>' (e.g. 'Item A', 'Item B', 'Item 1'), drawing_number to the Figure title in ALL CAPS (e.g. 'FIGURE 2', 'FIGURE 4'), and capture dimensions or options in specification. NEVER return [] on these pages simply because they show outer dimensions alongside component callouts.\n"
 
                 "\n6. Read all text in its natural orientation, including landscape or rotated drawings."
 
@@ -4655,31 +4663,26 @@ async def _extract_entities_from_page_image(
 
 
 def _render_single_pdf_page_image(
-
     file_bytes: bytes,
-
     page_no: int,
-
     resolution: int = 200,
-
 ) -> Optional[bytes]:
-
     try:
-
         import fitz
-
         doc = fitz.open(stream=file_bytes, filetype="pdf")
-
         if 1 <= page_no <= len(doc):
-
             page = doc[page_no - 1]
-
-            pix = page.get_pixmap(dpi=resolution)
-
+            max_dim_pts = max(page.rect.width, page.rect.height)
+            # Cap DPI so image dimensions never exceed Anthropic's hard limit (8000 px).
+            # Target max 3600 px on the longest side to ensure high quality and prevent 400 errors on oversized blueprint pages (e.g. A0/A1 drawings).
+            target_max_px = 3600
+            current_expected_px = max_dim_pts * (resolution / 72.0)
+            effective_dpi = resolution
+            if current_expected_px > target_max_px:
+                effective_dpi = max(72, int((target_max_px / max_dim_pts) * 72.0))
+            pix = page.get_pixmap(dpi=effective_dpi)
             png_bytes = pix.tobytes("png")
-
             doc.close()
-
             return png_bytes
 
     except Exception as fitz_exc:
