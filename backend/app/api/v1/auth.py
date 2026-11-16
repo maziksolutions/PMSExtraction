@@ -326,7 +326,8 @@ async def debug_jobs(
     from sqlalchemy import text
     try:
         sql = """
-            SELECT id, vessel_id, source_manual_id, job_name, page_reference, frequency, frequency_type
+            SELECT id, vessel_id, source_manual_id, job_name, page_reference, frequency, frequency_type,
+                   created_at, updated_at
             FROM jobs
             WHERE is_deleted = false
         """
@@ -341,12 +342,110 @@ async def debug_jobs(
         res = await db.execute(text(sql), params)
         rows = res.fetchall()
         results = [
-            {"id": str(r[0]), "vessel_id": str(r[1]), "source_manual_id": str(r[2]), "job_name": r[3], "page_reference": r[4], "frequency": r[5], "frequency_type": r[6]}
+            {
+                "id": str(r[0]),
+                "vessel_id": str(r[1]),
+                "source_manual_id": str(r[2]),
+                "job_name": r[3],
+                "page_reference": r[4],
+                "frequency": r[5],
+                "frequency_type": r[6],
+                "created_at": r[7].isoformat() if r[7] else None,
+                "updated_at": r[8].isoformat() if r[8] else None,
+            }
             for r in rows
         ]
         return {"status": "success", "count": len(results), "jobs": results}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@router.get("/debug-manual-audit/{manual_id}", tags=["Debug"], summary="Audit history and runs for manual")
+async def debug_manual_audit(manual_id: str, db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import text
+    import uuid
+    try:
+        mid = uuid.UUID(manual_id)
+        m_row = (await db.execute(text("""
+            SELECT id, original_filename, status, pages_with_components, pages_with_jobs, pages_with_spares,
+                   pages_with_components_physical, pages_with_jobs_physical, pages_with_spares_physical,
+                   created_at, updated_at
+            FROM manuals WHERE id = :mid
+        """), {"mid": mid})).fetchone()
+        
+        hist_rows = (await db.execute(text("""
+            SELECT id, changed_by_name, change_source, pages_with_components, pages_with_jobs, pages_with_spares,
+                   previous_pages_with_components, previous_pages_with_jobs, previous_pages_with_spares, created_at
+            FROM manual_page_ref_history WHERE manual_id = :mid ORDER BY created_at ASC
+        """), {"mid": mid})).fetchall()
+        
+        runs_row = (await db.execute(text("""
+            SELECT run_count, last_run_at FROM manual_extraction_runs WHERE manual_id = :mid
+        """), {"mid": mid})).fetchone()
+        
+        pages_rows = (await db.execute(text("""
+            SELECT page_number, run_count, last_extracted_at FROM manual_page_extractions WHERE manual_id = :mid ORDER BY page_number ASC
+        """), {"mid": mid})).fetchall()
+
+        jobs_rows = (await db.execute(text("""
+            SELECT id, job_name, page_reference, frequency, frequency_type, created_at, updated_at
+            FROM jobs WHERE source_manual_id = :mid AND is_deleted = false ORDER BY page_reference ASC, created_at ASC
+        """), {"mid": mid})).fetchall()
+
+        return {
+            "status": "success",
+            "manual": {
+                "id": str(m_row[0]),
+                "original_filename": m_row[1],
+                "status": m_row[2],
+                "pages_with_components": m_row[3],
+                "pages_with_jobs": m_row[4],
+                "pages_with_spares": m_row[5],
+                "pages_with_components_physical": m_row[6],
+                "pages_with_jobs_physical": m_row[7],
+                "pages_with_spares_physical": m_row[8],
+                "created_at": m_row[9].isoformat() if m_row[9] else None,
+                "updated_at": m_row[10].isoformat() if m_row[10] else None,
+            } if m_row else None,
+            "extraction_runs": {
+                "run_count": runs_row[0],
+                "last_run_at": runs_row[1].isoformat() if runs_row[1] else None,
+            } if runs_row else None,
+            "page_extractions": [
+                {"page": r[0], "run_count": r[1], "last_extracted_at": r[2].isoformat() if r[2] else None}
+                for r in pages_rows
+            ],
+            "history": [
+                {
+                    "id": str(r[0]),
+                    "changed_by": r[1],
+                    "source": r[2],
+                    "pages_with_components": r[3],
+                    "pages_with_jobs": r[4],
+                    "pages_with_spares": r[5],
+                    "previous_pages_with_components": r[6],
+                    "previous_pages_with_jobs": r[7],
+                    "previous_pages_with_spares": r[8],
+                    "created_at": r[9].isoformat() if r[9] else None,
+                }
+                for r in hist_rows
+            ],
+            "jobs": [
+                {
+                    "id": str(r[0]),
+                    "job_name": r[1],
+                    "page_reference": r[2],
+                    "frequency": r[3],
+                    "frequency_type": r[4],
+                    "created_at": r[5].isoformat() if r[5] else None,
+                    "updated_at": r[6].isoformat() if r[6] else None,
+                }
+                for r in jobs_rows
+            ]
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
 
 
 @router.get("/debug-manual-summary/{manual_id}", tags=["Debug"], summary="Get comprehensive extraction summary for manual")
