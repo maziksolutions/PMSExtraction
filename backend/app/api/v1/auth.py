@@ -327,7 +327,7 @@ async def debug_jobs(
     try:
         sql = """
             SELECT id, vessel_id, source_manual_id, job_name, page_reference, frequency, frequency_type,
-                   created_at, updated_at
+                   created_at, updated_at, job_description
             FROM jobs
             WHERE is_deleted = false
         """
@@ -352,6 +352,7 @@ async def debug_jobs(
                 "frequency_type": r[6],
                 "created_at": r[7].isoformat() if r[7] else None,
                 "updated_at": r[8].isoformat() if r[8] else None,
+                "job_description": r[9],
             }
             for r in rows
         ]
@@ -388,7 +389,7 @@ async def debug_manual_audit(manual_id: str, db: AsyncSession = Depends(get_db))
         """), {"mid": mid})).fetchall()
 
         jobs_rows = (await db.execute(text("""
-            SELECT id, job_name, page_reference, frequency, frequency_type, created_at, updated_at
+            SELECT id, job_name, page_reference, frequency, frequency_type, created_at, updated_at, job_description
             FROM jobs WHERE source_manual_id = :mid AND is_deleted = false ORDER BY page_reference ASC, created_at ASC
         """), {"mid": mid})).fetchall()
 
@@ -439,6 +440,7 @@ async def debug_manual_audit(manual_id: str, db: AsyncSession = Depends(get_db))
                     "frequency_type": r[4],
                     "created_at": r[5].isoformat() if r[5] else None,
                     "updated_at": r[6].isoformat() if r[6] else None,
+                    "job_description": r[7],
                 }
                 for r in jobs_rows
             ]
