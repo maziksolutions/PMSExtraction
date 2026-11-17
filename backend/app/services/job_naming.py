@@ -137,7 +137,7 @@ _GENERIC_COMPONENT_LABELS = {
 }
 _REF_RE = re.compile(r"^\s*(.+?)\s*\((?:p(?:age)?\.?\s*)(\d+)\)\s*$", re.I)
 _FOOTER_SPLIT_RE = re.compile(
-    r"\n+(?:/\*-?\s*|[-#*]\s*)?Source\s+References?(?:\s*:)?",
+    r"\n+(?:/\*-?\s*|[-#*•]\s*)*Source\s+References?(?:\s*:)?",
     re.I,
 )
 

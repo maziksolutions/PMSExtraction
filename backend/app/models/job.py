@@ -121,7 +121,7 @@ class Job(TenantBase):
             return value
             
         import re
-        source_header_re = re.compile(r"^(?:/\*-?\s*|[-#*•]\s*)?Source\s+References?(?:\s*:)?", re.I)
+        source_header_re = re.compile(r"^(?:/\*-?\s*|[-#*•]\s*)*Source\s+References?(?:\s*:)?", re.I)
 
         # Matches space followed by list markers (e.g. " a. ", " 1) ", " a) ", " 1. ")
         item_pattern = re.compile(r'\s+([a-zA-Z0-9]{1,2}[\.\)])\s+')
