@@ -450,6 +450,124 @@ async def debug_manual_audit(manual_id: str, db: AsyncSession = Depends(get_db))
         return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
 
 
+@router.get("/debug-recent-extractions", tags=["Debug"], summary="Audit recent jobs extractions and manual runs")
+async def debug_recent_extractions(
+    since: str = "2026-11-15T00:00:00Z",
+    until: str = "2026-11-17T23:59:59Z",
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import text
+    try:
+        # 1. Jobs created in time window grouped by manual
+        sql_jobs = """
+            SELECT 
+                m.id AS manual_id,
+                m.original_filename,
+                m.vessel_id,
+                vp.name AS vessel_name,
+                COUNT(j.id) AS jobs_count,
+                MIN(j.created_at) AS first_created_at,
+                MAX(j.created_at) AS last_created_at,
+                ARRAY_AGG(DISTINCT j.page_reference) AS page_references
+            FROM jobs j
+            JOIN manuals m ON j.source_manual_id = m.id
+            LEFT JOIN vessel_projects vp ON m.vessel_id = vp.id
+            WHERE j.created_at >= :since AND j.created_at <= :until
+              AND j.is_deleted = false
+            GROUP BY m.id, m.original_filename, m.vessel_id, vp.name
+            ORDER BY first_created_at DESC;
+        """
+        res_jobs = await db.execute(text(sql_jobs), {"since": since, "until": until})
+        manuals_jobs = [
+            {
+                "manual_id": str(r[0]),
+                "original_filename": r[1],
+                "vessel_id": str(r[2]),
+                "vessel_name": r[3],
+                "jobs_count": r[4],
+                "first_created_at": r[5].isoformat() if r[5] else None,
+                "last_created_at": r[6].isoformat() if r[6] else None,
+                "pages": [p for p in (r[7] or []) if p is not None],
+            }
+            for r in res_jobs.fetchall()
+        ]
+
+        # 2. Manual extraction runs in time window
+        sql_runs = """
+            SELECT 
+                m.id AS manual_id,
+                m.original_filename,
+                m.vessel_id,
+                vp.name AS vessel_name,
+                mer.run_count,
+                mer.last_run_at
+            FROM manual_extraction_runs mer
+            JOIN manuals m ON mer.manual_id = m.id
+            LEFT JOIN vessel_projects vp ON m.vessel_id = vp.id
+            WHERE mer.last_run_at >= :since AND mer.last_run_at <= :until
+            ORDER BY mer.last_run_at DESC;
+        """
+        res_runs = await db.execute(text(sql_runs), {"since": since, "until": until})
+        manual_runs = [
+            {
+                "manual_id": str(r[0]),
+                "original_filename": r[1],
+                "vessel_id": str(r[2]),
+                "vessel_name": r[3],
+                "run_count": r[4],
+                "last_run_at": r[5].isoformat() if r[5] else None,
+            }
+            for r in res_runs.fetchall()
+        ]
+
+        # 3. Manual page extractions in time window
+        sql_page_runs = """
+            SELECT 
+                m.id AS manual_id,
+                m.original_filename,
+                COUNT(mpe.page_number) AS pages_extracted_count,
+                ARRAY_AGG(mpe.page_number ORDER BY mpe.page_number) AS extracted_pages,
+                MIN(mpe.last_extracted_at) AS first_run,
+                MAX(mpe.last_extracted_at) AS last_run
+            FROM manual_page_extractions mpe
+            JOIN manuals m ON mpe.manual_id = m.id
+            WHERE mpe.last_extracted_at >= :since AND mpe.last_extracted_at <= :until
+            GROUP BY m.id, m.original_filename
+            ORDER BY last_run DESC;
+        """
+        res_page_runs = await db.execute(text(sql_page_runs), {"since": since, "until": until})
+        page_runs = [
+            {
+                "manual_id": str(r[0]),
+                "original_filename": r[1],
+                "pages_extracted_count": r[2],
+                "extracted_pages": r[3],
+                "first_run": r[4].isoformat() if r[4] else None,
+                "last_run": r[5].isoformat() if r[5] else None,
+            }
+            for r in res_page_runs.fetchall()
+        ]
+
+        # 4. Jobs with NULL source_manual_id created in window (if any)
+        res_orphan = await db.execute(
+            text("SELECT COUNT(*), MIN(created_at), MAX(created_at) FROM jobs WHERE source_manual_id IS NULL AND created_at >= :since AND created_at <= :until AND is_deleted = false;"),
+            {"since": since, "until": until}
+        )
+        orphan_row = res_orphan.fetchone()
+
+        return {
+            "status": "success",
+            "time_window": {"since": since, "until": until},
+            "manuals_with_jobs_created": manuals_jobs,
+            "manual_extraction_runs": manual_runs,
+            "manual_page_extractions": page_runs,
+            "orphan_jobs_count": orphan_row[0] if orphan_row else 0,
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
+
+
 @router.get("/debug-manual-summary/{manual_id}", tags=["Debug"], summary="Get comprehensive extraction summary for manual")
 async def debug_manual_summary(manual_id: str, db: AsyncSession = Depends(get_db)):
     from sqlalchemy import text
