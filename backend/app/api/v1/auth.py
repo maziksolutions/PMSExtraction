@@ -457,7 +457,10 @@ async def debug_recent_extractions(
     db: AsyncSession = Depends(get_db),
 ):
     from sqlalchemy import text
+    from datetime import datetime
     try:
+        since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        until_dt = datetime.fromisoformat(until.replace("Z", "+00:00"))
         # Diagnostic: overall DB timestamp ranges
         db_stats_row = (await db.execute(text("""
             SELECT 
@@ -519,13 +522,13 @@ async def debug_recent_extractions(
             FROM jobs j
             JOIN manuals m ON j.source_manual_id = m.id
             LEFT JOIN vessel_projects vp ON m.vessel_id = vp.id
-            WHERE j.created_at >= CAST(:since AS TIMESTAMPTZ) 
-              AND j.created_at <= CAST(:until AS TIMESTAMPTZ)
+            WHERE j.created_at >= :since 
+              AND j.created_at <= :until
               AND j.is_deleted = false
             GROUP BY m.id, m.original_filename, m.vessel_id, vp.name
             ORDER BY first_created_at DESC;
         """
-        res_jobs = await db.execute(text(sql_jobs), {"since": since, "until": until})
+        res_jobs = await db.execute(text(sql_jobs), {"since": since_dt, "until": until_dt})
         manuals_jobs = [
             {
                 "manual_id": str(r[0]),
@@ -552,11 +555,11 @@ async def debug_recent_extractions(
             FROM manual_extraction_runs mer
             JOIN manuals m ON mer.manual_id = m.id
             LEFT JOIN vessel_projects vp ON m.vessel_id = vp.id
-            WHERE mer.last_run_at >= CAST(:since AS TIMESTAMPTZ) 
-              AND mer.last_run_at <= CAST(:until AS TIMESTAMPTZ)
+            WHERE mer.last_run_at >= :since 
+              AND mer.last_run_at <= :until
             ORDER BY mer.last_run_at DESC;
         """
-        res_runs = await db.execute(text(sql_runs), {"since": since, "until": until})
+        res_runs = await db.execute(text(sql_runs), {"since": since_dt, "until": until_dt})
         manual_runs = [
             {
                 "manual_id": str(r[0]),
@@ -580,12 +583,12 @@ async def debug_recent_extractions(
                 MAX(mpe.last_extracted_at) AS last_run
             FROM manual_page_extractions mpe
             JOIN manuals m ON mpe.manual_id = m.id
-            WHERE mpe.last_extracted_at >= CAST(:since AS TIMESTAMPTZ) 
-              AND mpe.last_extracted_at <= CAST(:until AS TIMESTAMPTZ)
+            WHERE mpe.last_extracted_at >= :since 
+              AND mpe.last_extracted_at <= :until
             GROUP BY m.id, m.original_filename
             ORDER BY last_run DESC;
         """
-        res_page_runs = await db.execute(text(sql_page_runs), {"since": since, "until": until})
+        res_page_runs = await db.execute(text(sql_page_runs), {"since": since_dt, "until": until_dt})
         page_runs = [
             {
                 "manual_id": str(r[0]),
