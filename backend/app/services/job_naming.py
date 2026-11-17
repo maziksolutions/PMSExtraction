@@ -397,7 +397,12 @@ def append_source_references_to_description(
     unique_entries = _unique_nonempty(entries)
     if not unique_entries:
         return body
-    footer = SOURCE_HEADER + "\n" + "\n".join(f"- {entry}" for entry in unique_entries)
+    footer_lines = [f"/* {SOURCE_HEADER}"]
+    for entry in unique_entries:
+        clean = re.sub(r"^(?:/\*-?\s*|[-*•]\s*)+", "", entry).strip()
+        if clean:
+            footer_lines.append(f"/* {clean}")
+    footer = "\n".join(footer_lines)
     return f"{body}\n\n{footer}" if body else footer
 
 

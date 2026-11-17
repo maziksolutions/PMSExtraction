@@ -121,22 +121,54 @@ class Job(TenantBase):
             return value
             
         import re
+        source_header_re = re.compile(r"^(?:/\*-?\s*|[-#*•]\s*)?Source\s+References?(?:\s*:)?", re.I)
+
         # Matches space followed by list markers (e.g. " a. ", " 1) ", " a) ", " 1. ")
         item_pattern = re.compile(r'\s+([a-zA-Z0-9]{1,2}[\.\)])\s+')
         formatted = item_pattern.sub(r'\n\1 ', value)
         
         lines = formatted.splitlines()
-        new_lines = []
+        body_lines = []
+        source_lines = []
+        in_source_section = False
+
         for line in lines:
             line_str = line.strip()
             if not line_str:
-                new_lines.append("")
+                if in_source_section:
+                    source_lines.append("")
+                else:
+                    body_lines.append("")
                 continue
-                
-            if line_str.startswith("/*-"):
-                line_str = line_str[3:].strip()
-                
-            if line_str:
-                new_lines.append(f"/*- {line_str}")
-                
-        return "\n".join(new_lines)
+
+            if source_header_re.match(line_str):
+                in_source_section = True
+                source_lines.append("/* Source References:")
+                continue
+
+            if in_source_section:
+                # In the source references section, prefix with '/* ' and omit leading dashes/bullets
+                clean = re.sub(r"^(?:/\*-?\s*|[-*•]\s*)+", "", line_str).strip()
+                if clean:
+                    source_lines.append(f"/* {clean}")
+            else:
+                # In the body section, prefix non-empty lines with '/*- '
+                if line_str.startswith("/*-"):
+                    line_str = line_str[3:].strip()
+                elif line_str.startswith("/*"):
+                    line_str = line_str[2:].strip()
+                if line_str:
+                    body_lines.append(f"/*- {line_str}")
+
+        # Clean trailing empty lines
+        while body_lines and not body_lines[-1]:
+            body_lines.pop()
+        while source_lines and not source_lines[-1]:
+            source_lines.pop()
+
+        if body_lines and source_lines:
+            return "\n".join(body_lines) + "\n\n" + "\n".join(source_lines)
+        elif source_lines:
+            return "\n".join(source_lines)
+        else:
+            return "\n".join(body_lines)
