@@ -458,6 +458,53 @@ async def debug_recent_extractions(
 ):
     from sqlalchemy import text
     try:
+        # Diagnostic: overall DB timestamp ranges
+        db_stats_row = (await db.execute(text("""
+            SELECT 
+                (SELECT MIN(created_at) FROM jobs) AS min_job_created,
+                (SELECT MAX(created_at) FROM jobs) AS max_job_created,
+                (SELECT COUNT(*) FROM jobs) AS total_jobs,
+                (SELECT MIN(last_run_at) FROM manual_extraction_runs) AS min_run_at,
+                (SELECT MAX(last_run_at) FROM manual_extraction_runs) AS max_run_at,
+                (SELECT COUNT(*) FROM manual_extraction_runs) AS total_runs,
+                (SELECT MIN(last_extracted_at) FROM manual_page_extractions) AS min_page_at,
+                (SELECT MAX(last_extracted_at) FROM manual_page_extractions) AS max_page_at,
+                (SELECT COUNT(*) FROM manual_page_extractions) AS total_page_runs
+        """))).fetchone()
+        
+        db_stats = {
+            "min_job_created": db_stats_row[0].isoformat() if db_stats_row[0] else None,
+            "max_job_created": db_stats_row[1].isoformat() if db_stats_row[1] else None,
+            "total_jobs": db_stats_row[2],
+            "min_run_at": db_stats_row[3].isoformat() if db_stats_row[3] else None,
+            "max_run_at": db_stats_row[4].isoformat() if db_stats_row[4] else None,
+            "total_runs": db_stats_row[5],
+            "min_page_at": db_stats_row[6].isoformat() if db_stats_row[6] else None,
+            "max_page_at": db_stats_row[7].isoformat() if db_stats_row[7] else None,
+            "total_page_runs": db_stats_row[8],
+        }
+
+        # 25 most recently created jobs
+        recent_jobs_res = await db.execute(text("""
+            SELECT j.id, j.job_name, j.page_reference, j.created_at, j.updated_at, m.id AS manual_id, m.original_filename
+            FROM jobs j
+            LEFT JOIN manuals m ON j.source_manual_id = m.id
+            ORDER BY j.created_at DESC
+            LIMIT 25;
+        """))
+        recent_jobs = [
+            {
+                "id": str(r[0]),
+                "job_name": r[1],
+                "page": r[2],
+                "created_at": r[3].isoformat() if r[3] else None,
+                "updated_at": r[4].isoformat() if r[4] else None,
+                "manual_id": str(r[5]) if r[5] else None,
+                "original_filename": r[6],
+            }
+            for r in recent_jobs_res.fetchall()
+        ]
+
         # 1. Jobs created in time window grouped by manual
         sql_jobs = """
             SELECT 
@@ -472,7 +519,8 @@ async def debug_recent_extractions(
             FROM jobs j
             JOIN manuals m ON j.source_manual_id = m.id
             LEFT JOIN vessel_projects vp ON m.vessel_id = vp.id
-            WHERE j.created_at >= :since AND j.created_at <= :until
+            WHERE j.created_at >= CAST(:since AS TIMESTAMPTZ) 
+              AND j.created_at <= CAST(:until AS TIMESTAMPTZ)
               AND j.is_deleted = false
             GROUP BY m.id, m.original_filename, m.vessel_id, vp.name
             ORDER BY first_created_at DESC;
@@ -504,7 +552,8 @@ async def debug_recent_extractions(
             FROM manual_extraction_runs mer
             JOIN manuals m ON mer.manual_id = m.id
             LEFT JOIN vessel_projects vp ON m.vessel_id = vp.id
-            WHERE mer.last_run_at >= :since AND mer.last_run_at <= :until
+            WHERE mer.last_run_at >= CAST(:since AS TIMESTAMPTZ) 
+              AND mer.last_run_at <= CAST(:until AS TIMESTAMPTZ)
             ORDER BY mer.last_run_at DESC;
         """
         res_runs = await db.execute(text(sql_runs), {"since": since, "until": until})
@@ -531,7 +580,8 @@ async def debug_recent_extractions(
                 MAX(mpe.last_extracted_at) AS last_run
             FROM manual_page_extractions mpe
             JOIN manuals m ON mpe.manual_id = m.id
-            WHERE mpe.last_extracted_at >= :since AND mpe.last_extracted_at <= :until
+            WHERE mpe.last_extracted_at >= CAST(:since AS TIMESTAMPTZ) 
+              AND mpe.last_extracted_at <= CAST(:until AS TIMESTAMPTZ)
             GROUP BY m.id, m.original_filename
             ORDER BY last_run DESC;
         """
@@ -548,20 +598,35 @@ async def debug_recent_extractions(
             for r in res_page_runs.fetchall()
         ]
 
-        # 4. Jobs with NULL source_manual_id created in window (if any)
-        res_orphan = await db.execute(
-            text("SELECT COUNT(*), MIN(created_at), MAX(created_at) FROM jobs WHERE source_manual_id IS NULL AND created_at >= :since AND created_at <= :until AND is_deleted = false;"),
-            {"since": since, "until": until}
-        )
-        orphan_row = res_orphan.fetchone()
+        # 4. 20 most recently updated manuals
+        recent_manuals_res = await db.execute(text("""
+            SELECT id, original_filename, status, updated_at, pages_with_jobs, pages_with_spares, pages_with_components
+            FROM manuals
+            ORDER BY updated_at DESC
+            LIMIT 20;
+        """))
+        recent_manuals = [
+            {
+                "id": str(r[0]),
+                "original_filename": r[1],
+                "status": r[2],
+                "updated_at": r[3].isoformat() if r[3] else None,
+                "pages_with_jobs": r[4],
+                "pages_with_spares": r[5],
+                "pages_with_components": r[6],
+            }
+            for r in recent_manuals_res.fetchall()
+        ]
 
         return {
             "status": "success",
             "time_window": {"since": since, "until": until},
-            "manuals_with_jobs_created": manuals_jobs,
-            "manual_extraction_runs": manual_runs,
-            "manual_page_extractions": page_runs,
-            "orphan_jobs_count": orphan_row[0] if orphan_row else 0,
+            "db_stats": db_stats,
+            "most_recent_jobs_in_db": recent_jobs,
+            "manuals_with_jobs_created_in_window": manuals_jobs,
+            "manual_extraction_runs_in_window": manual_runs,
+            "manual_page_extractions_in_window": page_runs,
+            "most_recent_updated_manuals": recent_manuals,
         }
     except Exception as e:
         import traceback
