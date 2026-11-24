@@ -38,6 +38,22 @@ _COMPONENT_MAINTENANCE_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
 _component_maintenance_last_run: dict[str, float] = {}
 
 
+def _format_manual_dates(
+    manual: Any,
+    page_ref_last_updated: dict[uuid.UUID, Any],
+) -> tuple[str, str]:
+    if not manual:
+        return "", ""
+    created_at = getattr(manual, "created_at", None)
+    c_date = created_at.strftime("%Y-%m-%d %H:%M:%S") if created_at else ""
+    manual_id = getattr(manual, "id", None)
+    m_dt = page_ref_last_updated.get(manual_id) if manual_id else None
+    if not m_dt:
+        m_dt = getattr(manual, "updated_at", None) or created_at
+    m_date = m_dt.strftime("%Y-%m-%d %H:%M:%S") if m_dt else ""
+    return c_date, m_date
+
+
 async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselProject:
     result = await db.execute(
         select(VesselProject).where(
@@ -1158,6 +1174,46 @@ async def export_components(
     )
     components = result.scalars().all()
 
+    manual_ids = {c.source_manual_id for c in components if c.source_manual_id}
+    manual_lookup: dict[uuid.UUID, Manual] = {}
+    filename_lookup: dict[str, Manual] = {}
+    if manual_ids:
+        mr = await db.execute(select(Manual).where(Manual.id.in_(manual_ids), Manual.is_deleted == False))
+        for m in mr.scalars().all():
+            manual_lookup[m.id] = m
+            if m.original_filename:
+                filename_lookup[m.original_filename] = m
+
+    unresolved_pdf = {
+        c.pdf_reference for c in components
+        if not c.source_manual_id and c.pdf_reference and c.pdf_reference not in filename_lookup
+    }
+    if unresolved_pdf:
+        extra_mr = await db.execute(
+            select(Manual).where(
+                Manual.vessel_id == vessel_id,
+                Manual.original_filename.in_(unresolved_pdf),
+                Manual.is_deleted == False,
+            )
+        )
+        for m in extra_mr.scalars().all():
+            manual_lookup[m.id] = m
+            if m.original_filename:
+                filename_lookup[m.original_filename] = m
+
+    page_ref_last_updated: dict[uuid.UUID, Any] = {}
+    if manual_lookup:
+        from app.models.ingestion import ManualPageRefHistory
+        pref_res = await db.execute(
+            select(
+                ManualPageRefHistory.manual_id,
+                func.max(ManualPageRefHistory.created_at),
+            )
+            .where(ManualPageRefHistory.manual_id.in_(list(manual_lookup.keys())))
+            .group_by(ManualPageRefHistory.manual_id)
+        )
+        page_ref_last_updated = {row[0]: row[1] for row in pref_res.all()}
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Components"
@@ -1167,6 +1223,7 @@ async def export_components(
         "Maker", "Model", "Serial Number", "Specification",
         "Location/Sets Installed", "Machinery Particulars",
         "Critical", "Job Pages", "Spare Pages", "PDF Reference",
+        "Created Date", "Modified Date",
     ]
 
     header_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
@@ -1179,6 +1236,8 @@ async def export_components(
         cell.alignment = Alignment(horizontal="center")
 
     for row_idx, comp in enumerate(components, start=2):
+        manual = manual_lookup.get(comp.source_manual_id) if comp.source_manual_id else filename_lookup.get(comp.pdf_reference)
+        c_date, m_date = _format_manual_dates(manual, page_ref_last_updated)
         ws.cell(row=row_idx, column=1, value=comp.group1)
         ws.cell(row=row_idx, column=2, value=comp.group2)
         ws.cell(row=row_idx, column=3, value=comp.main_machinery)
@@ -1192,7 +1251,9 @@ async def export_components(
         ws.cell(row=row_idx, column=11, value="Yes" if comp.is_critical else "No")
         ws.cell(row=row_idx, column=12, value=comp.job_pages or "")
         ws.cell(row=row_idx, column=13, value=comp.spare_pages or "")
-        ws.cell(row=row_idx, column=14, value=comp.pdf_reference or "")
+        ws.cell(row=row_idx, column=14, value=comp.pdf_reference or (manual.original_filename if manual else ""))
+        ws.cell(row=row_idx, column=15, value=c_date)
+        ws.cell(row=row_idx, column=16, value=m_date)
 
     for col in ws.columns:
         max_len = max((len(str(cell.value or "")) for cell in col), default=10)
@@ -1571,14 +1632,49 @@ async def export_components_qc(
     components = list(comps_result.scalars().all())
 
     manual_ids = {c.source_manual_id for c in components if c.source_manual_id}
-    manual_lookup: dict = {}
+    manual_lookup: dict[uuid.UUID, Manual] = {}
+    filename_lookup: dict[str, Manual] = {}
     if manual_ids:
         mr = await db.execute(select(Manual).where(Manual.id.in_(manual_ids), Manual.is_deleted == False))
-        manual_lookup = {m.id: m.original_filename for m in mr.scalars().all()}
+        for m in mr.scalars().all():
+            manual_lookup[m.id] = m
+            if m.original_filename:
+                filename_lookup[m.original_filename] = m
+
+    unresolved_pdf = {
+        c.pdf_reference for c in components
+        if not c.source_manual_id and c.pdf_reference and c.pdf_reference not in filename_lookup
+    }
+    if unresolved_pdf:
+        extra_mr = await db.execute(
+            select(Manual).where(
+                Manual.vessel_id == vessel_id,
+                Manual.original_filename.in_(unresolved_pdf),
+                Manual.is_deleted == False,
+            )
+        )
+        for m in extra_mr.scalars().all():
+            manual_lookup[m.id] = m
+            if m.original_filename:
+                filename_lookup[m.original_filename] = m
+
+    page_ref_last_updated: dict[uuid.UUID, Any] = {}
+    if manual_lookup:
+        from app.models.ingestion import ManualPageRefHistory
+        pref_res = await db.execute(
+            select(
+                ManualPageRefHistory.manual_id,
+                func.max(ManualPageRefHistory.created_at),
+            )
+            .where(ManualPageRefHistory.manual_id.in_(list(manual_lookup.keys())))
+            .group_by(ManualPageRefHistory.manual_id)
+        )
+        page_ref_last_updated = {row[0]: row[1] for row in pref_res.all()}
 
     HEADERS = [
         "ID", "PDF File", "Page", "Component Name", "Main Machinery",
         "Group 1", "Group 2", "Maker", "Model", "Location",
+        "Created Date", "Modified Date",
         "Current QC", "Reviewer QC", "Reviewer Notes",
     ]
     QC_COLORS = {"accepted": "C6EFCE", "rejected": "FFC7CE", "modified": "FFEB9C", "pending": "DDEBF7"}
@@ -1605,26 +1701,33 @@ async def export_components_qc(
     ws.row_dimensions[1].height = 30
     ws.freeze_panes = "A2"
 
-    rev_col = get_column_letter(12)
+    qc_col_idx = HEADERS.index("Current QC") + 1
+    rev_col_idx = HEADERS.index("Reviewer QC") + 1
+    notes_col_idx = HEADERS.index("Reviewer Notes") + 1
+    rev_col = get_column_letter(rev_col_idx)
+    notes_col = get_column_letter(notes_col_idx)
     _QC_FILLS = {k: PatternFill(start_color=v, end_color=v, fill_type="solid") for k, v in QC_COLORS.items()}
     num_comps = len(components)
 
     for r, comp in enumerate(components, 2):
-        manual_name = manual_lookup.get(comp.source_manual_id, "")
+        manual = manual_lookup.get(comp.source_manual_id) if comp.source_manual_id else filename_lookup.get(comp.pdf_reference)
+        c_date, m_date = _format_manual_dates(manual, page_ref_last_updated)
+        manual_name = manual.original_filename if manual else (comp.pdf_reference or "")
         qc_val = (comp.qc_status.value if hasattr(comp.qc_status, "value") else str(comp.qc_status)).lower()
         row_data = [
             str(comp.id), manual_name, comp.page_reference or "",
             comp.component_name or "", comp.main_machinery or "",
             comp.group1 or "", comp.group2 or "",
             comp.maker or "", comp.model or "", comp.location or "",
+            c_date, m_date,
             qc_val, "", "",
         ]
         ws.append(row_data)
         
-        qc_cell = ws.cell(row=r, column=11)
+        qc_cell = ws.cell(row=r, column=qc_col_idx)
         qc_cell.fill = _QC_FILLS.get(qc_val, _QC_FILLS["pending"])
-        ws.cell(row=r, column=12).fill = EDIT_FILL
-        ws.cell(row=r, column=13).fill = EDIT_FILL
+        ws.cell(row=r, column=rev_col_idx).fill = EDIT_FILL
+        ws.cell(row=r, column=notes_col_idx).fill = EDIT_FILL
 
     if num_comps > 0:
         dv.add(f"{rev_col}2:{rev_col}{num_comps + 1}")
@@ -1633,7 +1736,7 @@ async def export_components_qc(
         ws.column_dimensions[get_column_letter(c)].width = 22
     ws.column_dimensions[get_column_letter(1)].width = 38
     ws.column_dimensions[get_column_letter(2)].width = 45
-    ws.column_dimensions[get_column_letter(13)].width = 35
+    ws.column_dimensions[notes_col].width = 35
 
     safe_vessel_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
     if pdf_reference:

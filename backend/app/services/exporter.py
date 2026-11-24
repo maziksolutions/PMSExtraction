@@ -53,6 +53,8 @@ FIELD_MAPPINGS = {
     "extraction_method": "Extraction Method",
     "reason": "Reason",
     "record_type": "Record Type",
+    "created_date": "Created Date",
+    "modified_date": "Modified Date",
 }
 
 COMPONENT_MASTER_HEADERS = [
@@ -210,6 +212,22 @@ EXPORT_FORMATS = {
 }
 
 
+def _format_manual_dates(
+    manual: Any,
+    page_ref_last_updated: dict[uuid.UUID, Any],
+) -> tuple[str, str]:
+    if not manual:
+        return "", ""
+    created_at = getattr(manual, "created_at", None)
+    c_date = created_at.strftime("%Y-%m-%d %H:%M:%S") if created_at else ""
+    manual_id = getattr(manual, "id", None)
+    m_dt = page_ref_last_updated.get(manual_id) if manual_id else None
+    if not m_dt:
+        m_dt = getattr(manual, "updated_at", None) or created_at
+    m_date = m_dt.strftime("%Y-%m-%d %H:%M:%S") if m_dt else ""
+    return c_date, m_date
+
+
 class ExportService:
     def parse_template(self, file_bytes: bytes, filename: str) -> dict[str, Any]:
         try:
@@ -251,6 +269,7 @@ class ExportService:
         spares = await self._load_spares(db, vessel_uuid)
         manual_lookup = await self._load_manual_lookup(db, components, jobs, spares)
         code_lookup = await self._load_component_code_lookup(db, vessel)
+        page_ref_last_updated = await self._load_page_ref_last_updated(db, list(manual_lookup.keys()))
 
         generic = self._serialize_generic_sections(
             vessel=vessel,
@@ -258,6 +277,7 @@ class ExportService:
             jobs=jobs,
             spares=spares,
             manual_lookup=manual_lookup,
+            page_ref_last_updated=page_ref_last_updated,
         )
         derived = self._build_sample_exports(
             vessel=vessel,
@@ -347,6 +367,24 @@ class ExportService:
         result = await db.execute(select(Manual).where(Manual.id.in_(manual_ids)))
         return {manual.id: manual for manual in result.scalars().all()}
 
+    async def _load_page_ref_last_updated(
+        self,
+        db: Any,
+        manual_ids: list[uuid.UUID],
+    ) -> dict[uuid.UUID, Any]:
+        if not manual_ids:
+            return {}
+        from app.models.ingestion import ManualPageRefHistory
+        pref_res = await db.execute(
+            select(
+                ManualPageRefHistory.manual_id,
+                func.max(ManualPageRefHistory.created_at),
+            )
+            .where(ManualPageRefHistory.manual_id.in_(manual_ids))
+            .group_by(ManualPageRefHistory.manual_id)
+        )
+        return {row[0]: row[1] for row in pref_res.all()}
+
     async def _load_component_code_lookup(
         self,
         db: Any,
@@ -388,13 +426,19 @@ class ExportService:
         jobs: list[Job],
         spares: list[Spare],
         manual_lookup: dict[uuid.UUID, Manual],
+        page_ref_last_updated: dict[uuid.UUID, Any] | None = None,
     ) -> dict[str, Any]:
+        page_ref_last_updated = page_ref_last_updated or {}
         accepted_components: list[dict[str, Any]] = []
         accepted_jobs: list[dict[str, Any]] = []
         accepted_spares: list[dict[str, Any]] = []
         excluded: list[dict[str, Any]] = []
 
+        filename_lookup = {m.original_filename: m for m in manual_lookup.values() if m.original_filename}
+
         for component in components:
+            manual = manual_lookup.get(component.source_manual_id) if component.source_manual_id else filename_lookup.get(component.pdf_reference)
+            c_date, m_date = _format_manual_dates(manual, page_ref_last_updated)
             row = {
                 "group1": component.group1,
                 "group2": component.group2,
@@ -410,6 +454,8 @@ class ExportService:
                 "spare_pages": component.spare_pages or "",
                 "pdf_reference": component.pdf_reference or "",
                 "page_reference": component.page_reference or "",
+                "created_date": c_date,
+                "modified_date": m_date,
                 "is_critical": "Yes" if component.is_critical else "No",
                 "qc_status": component.qc_status.value,
             }
@@ -419,6 +465,8 @@ class ExportService:
                 excluded.append({**row, "record_type": "component", "reason": f"QC Status: {component.qc_status.value}"})
 
         for job in jobs:
+            manual = manual_lookup.get(job.source_manual_id) if job.source_manual_id else filename_lookup.get(job.pdf_reference)
+            c_date, m_date = _format_manual_dates(manual, page_ref_last_updated)
             row = {
                 "job_name": job.job_name,
                 "job_code": job.job_code or "",
@@ -433,6 +481,8 @@ class ExportService:
                 "pdf_reference": job.pdf_reference or "",
                 "page_reference": job.page_reference or "",
                 "source_reference": job.source_reference or "",
+                "created_date": c_date,
+                "modified_date": m_date,
                 "is_critical": "Yes" if job.is_critical else "No",
                 "qc_status": job.qc_status.value,
                 "component_linked": str(job.component_id) if job.component_id else "",
@@ -444,6 +494,7 @@ class ExportService:
 
         for spare in spares:
             manual = manual_lookup.get(spare.source_manual_id) if spare.source_manual_id else None
+            c_date, m_date = _format_manual_dates(manual, page_ref_last_updated)
             pdf_reference = manual.original_filename if manual else ""
             source_reference = self._source_reference(pdf_reference, spare.page_reference, None)
             # Bug-002 Item 3: Part number must be left blank if not found, never fallback to PDF filename
@@ -467,6 +518,8 @@ class ExportService:
                 "page_reference": spare.page_reference or "",
                 "source_reference": source_reference,
                 "extraction_method": spare.extraction_method.value,
+                "created_date": c_date,
+                "modified_date": m_date,
                 "is_critical": "Yes" if spare.is_critical else "No",
                 "qc_status": spare.qc_status.value,
                 "component_linked": str(spare.component_id) if spare.component_id else "",

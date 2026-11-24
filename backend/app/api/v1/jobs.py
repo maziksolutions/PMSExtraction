@@ -49,6 +49,22 @@ _JOB_MAINTENANCE_TTL_SECONDS = settings.HOT_PATH_MAINTENANCE_TTL_SECONDS
 _job_maintenance_last_run: dict[str, float] = {}
 
 
+def _format_manual_dates(
+    manual: Any,
+    page_ref_last_updated: dict[uuid.UUID, Any],
+) -> tuple[str, str]:
+    if not manual:
+        return "", ""
+    created_at = getattr(manual, "created_at", None)
+    c_date = created_at.strftime("%Y-%m-%d %H:%M:%S") if created_at else ""
+    manual_id = getattr(manual, "id", None)
+    m_dt = page_ref_last_updated.get(manual_id) if manual_id else None
+    if not m_dt:
+        m_dt = getattr(manual, "updated_at", None) or created_at
+    m_date = m_dt.strftime("%Y-%m-%d %H:%M:%S") if m_dt else ""
+    return c_date, m_date
+
+
 JOB_SOURCE_KIND_LABELS = {
     "instruction_manual": "Instruction Manual",
     "standard_library": "Standard Library",
@@ -770,13 +786,47 @@ async def export_jobs(
 
     component_lookup: dict[uuid.UUID, Component] = {}
     manual_lookup: dict[uuid.UUID, Manual] = {}
+    filename_lookup: dict[str, Manual] = {}
 
     if component_ids:
         component_result = await db.execute(select(Component).where(Component.id.in_(component_ids)))
         component_lookup = {component.id: component for component in component_result.scalars().all()}
     if manual_ids:
         manual_result = await db.execute(select(Manual).where(Manual.id.in_(manual_ids)))
-        manual_lookup = {manual.id: manual for manual in manual_result.scalars().all()}
+        for manual in manual_result.scalars().all():
+            manual_lookup[manual.id] = manual
+            if manual.original_filename:
+                filename_lookup[manual.original_filename] = manual
+
+    unresolved_pdf = {
+        job.pdf_reference for job in jobs
+        if not job.source_manual_id and job.pdf_reference and job.pdf_reference not in filename_lookup
+    }
+    if unresolved_pdf:
+        extra_manuals = (await db.execute(
+            select(Manual).where(
+                Manual.vessel_id == vessel_id,
+                Manual.original_filename.in_(unresolved_pdf),
+                Manual.is_deleted == False,
+            )
+        )).scalars().all()
+        for m in extra_manuals:
+            manual_lookup[m.id] = m
+            if m.original_filename:
+                filename_lookup[m.original_filename] = m
+
+    page_ref_last_updated: dict[uuid.UUID, Any] = {}
+    if manual_lookup:
+        from app.models.ingestion import ManualPageRefHistory
+        pref_res = await db.execute(
+            select(
+                ManualPageRefHistory.manual_id,
+                func.max(ManualPageRefHistory.created_at),
+            )
+            .where(ManualPageRefHistory.manual_id.in_(list(manual_lookup.keys())))
+            .group_by(ManualPageRefHistory.manual_id)
+        )
+        page_ref_last_updated = {row[0]: row[1] for row in pref_res.all()}
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -785,6 +835,7 @@ async def export_jobs(
     headers = [
         "ID", "PDF File", "Page", "Component", "Job Name", "Job Code",
         "Frequency", "Frequency Type", "Performing Rank", "Description",
+        "Created Date", "Modified Date",
         "Current QC", "Reviewer QC", "Reviewer Notes",
     ]
     header_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
@@ -798,7 +849,8 @@ async def export_jobs(
 
     for row_idx, job in enumerate(jobs, start=2):
         component = component_lookup.get(job.component_id) if job.component_id else None
-        manual = manual_lookup.get(job.source_manual_id) if job.source_manual_id else None
+        manual = manual_lookup.get(job.source_manual_id) if job.source_manual_id else filename_lookup.get(job.pdf_reference)
+        c_date, m_date = _format_manual_dates(manual, page_ref_last_updated)
         ws.cell(row=row_idx, column=1, value=str(job.id))
         ws.cell(row=row_idx, column=2, value=manual.original_filename if manual else (job.pdf_reference or ""))
         ws.cell(row=row_idx, column=3, value=job.page_reference or "")
@@ -809,9 +861,11 @@ async def export_jobs(
         ws.cell(row=row_idx, column=8, value=job.frequency_type.value if job.frequency_type else "")
         ws.cell(row=row_idx, column=9, value=job.performing_rank or "")
         ws.cell(row=row_idx, column=10, value=job.job_description or "")
-        ws.cell(row=row_idx, column=11, value=job.qc_status.value if hasattr(job.qc_status, "value") else str(job.qc_status))
-        ws.cell(row=row_idx, column=12, value="")
-        ws.cell(row=row_idx, column=13, value="")
+        ws.cell(row=row_idx, column=11, value=c_date)
+        ws.cell(row=row_idx, column=12, value=m_date)
+        ws.cell(row=row_idx, column=13, value=job.qc_status.value if hasattr(job.qc_status, "value") else str(job.qc_status))
+        ws.cell(row=row_idx, column=14, value="")
+        ws.cell(row=row_idx, column=15, value="")
 
     for col in ws.columns:
         max_len = max((len(str(cell.value or "")) for cell in col), default=10)
@@ -1540,14 +1594,57 @@ async def export_jobs_qc(
     jobs = list(jobs_result.scalars().all())
 
     component_ids = {j.component_id for j in jobs if j.component_id}
+    manual_ids = {j.source_manual_id for j in jobs if j.source_manual_id}
+
     component_lookup: dict = {}
+    manual_lookup: dict = {}
+    filename_lookup: dict = {}
+
     if component_ids:
         cr = await db.execute(select(Component).where(Component.id.in_(component_ids)))
         component_lookup = {c.id: c for c in cr.scalars().all()}
 
+    if manual_ids:
+        mr = await db.execute(select(_Manual).where(_Manual.id.in_(manual_ids), _Manual.is_deleted == False))
+        for m in mr.scalars().all():
+            manual_lookup[m.id] = m
+            if m.original_filename:
+                filename_lookup[m.original_filename] = m
+
+    unresolved_pdf = {
+        j.pdf_reference for j in jobs
+        if not j.source_manual_id and j.pdf_reference and j.pdf_reference not in filename_lookup
+    }
+    if unresolved_pdf:
+        extra_mr = await db.execute(
+            select(_Manual).where(
+                _Manual.vessel_id == vessel_id,
+                _Manual.original_filename.in_(unresolved_pdf),
+                _Manual.is_deleted == False,
+            )
+        )
+        for m in extra_mr.scalars().all():
+            manual_lookup[m.id] = m
+            if m.original_filename:
+                filename_lookup[m.original_filename] = m
+
+    page_ref_last_updated: dict[uuid.UUID, Any] = {}
+    if manual_lookup:
+        from app.models.ingestion import ManualPageRefHistory
+        pref_res = await db.execute(
+            select(
+                ManualPageRefHistory.manual_id,
+                func.max(ManualPageRefHistory.created_at),
+            )
+            .where(ManualPageRefHistory.manual_id.in_(list(manual_lookup.keys())))
+            .group_by(ManualPageRefHistory.manual_id)
+        )
+        page_ref_last_updated = {row[0]: row[1] for row in pref_res.all()}
+
     HEADERS = [
         "ID", "PDF File", "Page", "Component", "Job Name", "Job Code",
         "Frequency", "Frequency Type", "Performing Rank", "Description",
+        "Created Date", "Modified Date",
         "Current QC", "Reviewer QC", "Reviewer Notes",
     ]
     QC_COLORS = {"accepted": "C6EFCE", "rejected": "FFC7CE", "modified": "FFEB9C", "pending": "DDEBF7"}
@@ -1574,27 +1671,35 @@ async def export_jobs_qc(
     ws.row_dimensions[1].height = 30
     ws.freeze_panes = "A2"
 
-    rev_col = get_column_letter(12)
+    qc_col_idx = HEADERS.index("Current QC") + 1
+    rev_col_idx = HEADERS.index("Reviewer QC") + 1
+    notes_col_idx = HEADERS.index("Reviewer Notes") + 1
+    rev_col = get_column_letter(rev_col_idx)
+    notes_col = get_column_letter(notes_col_idx)
     _QC_FILLS = {k: PatternFill(start_color=v, end_color=v, fill_type="solid") for k, v in QC_COLORS.items()}
     num_jobs = len(jobs)
 
     for r, job in enumerate(jobs, 2):
         comp = component_lookup.get(job.component_id)
         comp_name = comp.component_name if comp else ""
+        manual = manual_lookup.get(job.source_manual_id) if job.source_manual_id else filename_lookup.get(job.pdf_reference)
+        c_date, m_date = _format_manual_dates(manual, page_ref_last_updated)
+        pdf_file = manual.original_filename if manual else (job.pdf_reference or "")
         qc_val = (job.qc_status.value if hasattr(job.qc_status, "value") else str(job.qc_status)).lower()
         row_data = [
-            str(job.id), job.pdf_reference or "", job.page_reference or "", comp_name,
+            str(job.id), pdf_file, job.page_reference or "", comp_name,
             job.job_name or "", job.job_code or "", job.frequency or "",
             job.frequency_type.value if job.frequency_type else "",
             job.performing_rank or "", job.job_description or "",
+            c_date, m_date,
             qc_val, "", "",
         ]
         ws.append(row_data)
         
-        qc_cell = ws.cell(row=r, column=11)
+        qc_cell = ws.cell(row=r, column=qc_col_idx)
         qc_cell.fill = _QC_FILLS.get(qc_val, _QC_FILLS["pending"])
-        ws.cell(row=r, column=12).fill = EDIT_FILL
-        ws.cell(row=r, column=13).fill = EDIT_FILL
+        ws.cell(row=r, column=rev_col_idx).fill = EDIT_FILL
+        ws.cell(row=r, column=notes_col_idx).fill = EDIT_FILL
 
     if num_jobs > 0:
         dv.add(f"{rev_col}2:{rev_col}{num_jobs + 1}")
@@ -1603,7 +1708,7 @@ async def export_jobs_qc(
         ws.column_dimensions[get_column_letter(c)].width = 22
     ws.column_dimensions[get_column_letter(1)].width = 38
     ws.column_dimensions[get_column_letter(2)].width = 45
-    ws.column_dimensions[get_column_letter(13)].width = 35
+    ws.column_dimensions[notes_col].width = 35
 
     safe_vessel_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
     if pdf_reference:

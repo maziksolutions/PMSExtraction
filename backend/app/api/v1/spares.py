@@ -201,6 +201,22 @@ async def _run_spare_side_effects(
             await db.rollback()
 
 
+def _format_manual_dates(
+    manual: Any,
+    page_ref_last_updated: dict[uuid.UUID, Any],
+) -> tuple[str, str]:
+    if not manual:
+        return "", ""
+    created_at = getattr(manual, "created_at", None)
+    c_date = created_at.strftime("%Y-%m-%d %H:%M:%S") if created_at else ""
+    manual_id = getattr(manual, "id", None)
+    m_dt = page_ref_last_updated.get(manual_id) if manual_id else None
+    if not m_dt:
+        m_dt = getattr(manual, "updated_at", None) or created_at
+    m_date = m_dt.strftime("%Y-%m-%d %H:%M:%S") if m_dt else ""
+    return c_date, m_date
+
+
 async def _get_vessel_or_404(vessel_id: uuid.UUID, db: AsyncSession) -> VesselProject:
     result = await db.execute(
         select(VesselProject).where(
@@ -533,6 +549,19 @@ async def export_spares(
         )
         manual_lookup = {manual.id: manual for manual in manual_result.scalars().all()}
 
+    page_ref_last_updated: dict[uuid.UUID, Any] = {}
+    if manual_lookup:
+        from app.models.ingestion import ManualPageRefHistory
+        pref_res = await db.execute(
+            select(
+                ManualPageRefHistory.manual_id,
+                func.max(ManualPageRefHistory.created_at),
+            )
+            .where(ManualPageRefHistory.manual_id.in_(list(manual_lookup.keys())))
+            .group_by(ManualPageRefHistory.manual_id)
+        )
+        page_ref_last_updated = {row[0]: row[1] for row in pref_res.all()}
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Spares"
@@ -540,7 +569,9 @@ async def export_spares(
     headers = [
         "ID", "PDF File", "Page", "Component", "Assembly", "Assembly Description",
         "Part Name", "Part Number", "Drawing #", "POS", "Specification",
-        "Maker", "Spare Model", "Critical", "Current QC", "Reviewer QC", "Reviewer Notes",
+        "Maker", "Spare Model", "Critical",
+        "Created Date", "Modified Date",
+        "Current QC", "Reviewer QC", "Reviewer Notes",
     ]
     header_fill = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
     header_font = Font(bold=True, color="FFFFFF")
@@ -554,6 +585,7 @@ async def export_spares(
     for row_idx, spare in enumerate(spares, start=2):
         component = component_lookup.get(spare.component_id) if spare.component_id else None
         manual = manual_lookup.get(spare.source_manual_id) if spare.source_manual_id else None
+        c_date, m_date = _format_manual_dates(manual, page_ref_last_updated)
         ws.cell(row=row_idx, column=1, value=str(spare.id))
         ws.cell(row=row_idx, column=2, value=manual.original_filename if manual else "")
         ws.cell(row=row_idx, column=3, value=spare.page_reference or "")
@@ -579,9 +611,11 @@ async def export_spares(
         ws.cell(row=row_idx, column=12, value=spare.spare_maker or "")
         ws.cell(row=row_idx, column=13, value=spare.spare_model or "")
         ws.cell(row=row_idx, column=14, value="Yes" if spare.is_critical else "No")
-        ws.cell(row=row_idx, column=15, value=spare.qc_status.value if hasattr(spare.qc_status, "value") else str(spare.qc_status))
-        ws.cell(row=row_idx, column=16, value="")
-        ws.cell(row=row_idx, column=17, value="")
+        ws.cell(row=row_idx, column=15, value=c_date)
+        ws.cell(row=row_idx, column=16, value=m_date)
+        ws.cell(row=row_idx, column=17, value=spare.qc_status.value if hasattr(spare.qc_status, "value") else str(spare.qc_status))
+        ws.cell(row=row_idx, column=18, value="")
+        ws.cell(row=row_idx, column=19, value="")
 
     for col in ws.columns:
         max_len = max((len(str(cell.value or "")) for cell in col), default=10)
@@ -1267,17 +1301,21 @@ _QC_VALUES = ["accepted", "rejected", "modified", "pending"]
 _COMP_HEADERS = [
     "ID", "PDF File", "Page", "Component Name", "Main Machinery",
     "Group 1", "Group 2", "Maker", "Model", "Location",
+    "Created Date", "Modified Date",
     "Current QC", "Reviewer QC", "Reviewer Notes",
 ]
 _JOB_HEADERS = [
     "ID", "PDF File", "Page", "Component", "Job Name", "Job Code",
     "Frequency", "Frequency Type", "Performing Rank", "Description",
+    "Created Date", "Modified Date",
     "Current QC", "Reviewer QC", "Reviewer Notes",
 ]
 _SPARE_HEADERS = [
     "ID", "PDF File", "Page", "Component", "Assembly", "Assembly Description",
     "Part Name", "Part Number", "Drawing #", "POS", "Specification",
-    "Maker", "Spare Model", "Critical", "Current QC", "Reviewer QC", "Reviewer Notes",
+    "Maker", "Spare Model", "Critical",
+    "Created Date", "Modified Date",
+    "Current QC", "Reviewer QC", "Reviewer Notes",
 ]
 
 _QC_COLORS = {
@@ -1295,7 +1333,9 @@ def _qc_review_workbook(
     spares: "list | None",
     component_lookup: dict,
     manual_lookup: dict,
+    page_ref_last_updated: dict | None = None,
 ) -> bytes:
+    page_ref_last_updated = page_ref_last_updated or {}
     import io
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -1350,9 +1390,11 @@ def _qc_review_workbook(
         ws.row_dimensions[1].height = 30
         ws.freeze_panes = "A2"
 
+        qc_col_idx = headers.index("Current QC") + 1
+        reviewer_col_idx = headers.index("Reviewer QC") + 1
+        notes_col_idx = headers.index("Reviewer Notes") + 1
         rev_col_letter = get_column_letter(reviewer_col_idx)
-        note_col_letter = get_column_letter(reviewer_col_idx + 1)
-        qc_col_idx = reviewer_col_idx - 1
+        note_col_letter = get_column_letter(notes_col_idx)
 
         num_rows = len(rows)
         _QC_FILLS = {k: PatternFill(start_color=v, end_color=v, fill_type="solid") for k, v in _QC_COLORS.items()}
@@ -1382,7 +1424,10 @@ def _qc_review_workbook(
         ws_comp = wb.create_sheet("Components")
         comp_rows = []
         for comp in components:
-            manual_name = manual_lookup.get(comp.source_manual_id, "")
+            manual = manual_lookup.get(comp.source_manual_id)
+            c_date, m_date = _format_manual_dates(manual, page_ref_last_updated)
+            manual_name = manual.original_filename if (manual and hasattr(manual, "original_filename")) else (manual if isinstance(manual, str) else "")
+            qc_val = comp.qc_status.value if hasattr(comp.qc_status, "value") else str(comp.qc_status)
             comp_rows.append([
                 str(comp.id),
                 manual_name,
@@ -1394,11 +1439,13 @@ def _qc_review_workbook(
                 comp.maker or "",
                 comp.model or "",
                 comp.location or "",
-                comp.qc_status.value if hasattr(comp.qc_status, "value") else str(comp.qc_status),
+                c_date,
+                m_date,
+                qc_val,
                 "",  # Reviewer QC
                 "",  # Reviewer Notes
             ])
-        _write_sheet(ws_comp, _COMP_HEADERS, comp_rows, reviewer_col_idx=12)
+        _write_sheet(ws_comp, _COMP_HEADERS, comp_rows, reviewer_col_idx=_COMP_HEADERS.index("Reviewer QC") + 1)
 
     # ── Jobs sheet ──────────────────────────────────────────────────────────
     if jobs is not None:
@@ -1442,9 +1489,12 @@ def _qc_review_workbook(
         for job in deduped_jobs:
             comp = component_lookup.get(job.component_id)
             comp_name = comp.component_name if comp else ""
+            manual = manual_lookup.get(job.source_manual_id)
+            c_date, m_date = _format_manual_dates(manual, page_ref_last_updated)
+            pdf_name = manual.original_filename if (manual and hasattr(manual, "original_filename")) else (job.pdf_reference or "")
             job_rows.append([
                 str(job.id),
-                job.pdf_reference or "",
+                pdf_name,
                 job.page_reference or "",
                 comp_name,
                 job.job_name or "",
@@ -1453,11 +1503,13 @@ def _qc_review_workbook(
                 job.frequency_type.value if job.frequency_type else "",
                 job.performing_rank or "",
                 (job.job_description or "")[:300],
+                c_date,
+                m_date,
                 job.qc_status.value if hasattr(job.qc_status, "value") else str(job.qc_status),
                 "",  # Reviewer QC
                 "",  # Reviewer Notes
             ])
-        _write_sheet(ws_jobs, _JOB_HEADERS, job_rows, reviewer_col_idx=12)
+        _write_sheet(ws_jobs, _JOB_HEADERS, job_rows, reviewer_col_idx=_JOB_HEADERS.index("Reviewer QC") + 1)
 
     # ── Spares sheet ────────────────────────────────────────────────────────
     if spares is not None:
@@ -1509,7 +1561,8 @@ def _qc_review_workbook(
         for spare in deduped_spares:
             comp = component_lookup.get(spare.component_id)
             comp_name = comp.component_name if comp else ""
-            manual_name = manual_lookup.get(spare.source_manual_id, "")
+            manual = manual_lookup.get(spare.source_manual_id)
+            manual_name = manual.original_filename if (manual and hasattr(manual, "original_filename")) else (manual if isinstance(manual, str) else "")
             formatted_spec = _format_specification_headers(spare.specification) or ""
             clean_pn = spare.part_number
             if is_leaked_filename_or_doc_ref(clean_pn, manual_name):
@@ -1521,6 +1574,7 @@ def _qc_review_workbook(
             if is_leaked_filename_or_doc_ref(clean_pos, manual_name):
                 clean_pos = None
 
+            c_date, m_date = _format_manual_dates(manual, page_ref_last_updated)
             spare_rows.append([
                 str(spare.id),
                 manual_name,
@@ -1536,11 +1590,13 @@ def _qc_review_workbook(
                 spare.spare_maker or "",
                 spare.spare_model or "",
                 "Yes" if spare.is_critical else "No",
+                c_date,
+                m_date,
                 spare.qc_status.value if hasattr(spare.qc_status, "value") else str(spare.qc_status),
                 "",  # Reviewer QC
                 "",  # Reviewer Notes
             ])
-        _write_sheet(ws_spares, _SPARE_HEADERS, spare_rows, reviewer_col_idx=16)
+        _write_sheet(ws_spares, _SPARE_HEADERS, spare_rows, reviewer_col_idx=_SPARE_HEADERS.index("Reviewer QC") + 1)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1622,7 +1678,20 @@ async def export_spares_qc(
     manual_lookup: dict = {}
     if manual_ids:
         mr = await db.execute(select(Manual).where(Manual.id.in_(manual_ids), Manual.is_deleted == False))
-        manual_lookup = {m.id: m.original_filename for m in mr.scalars().all()}
+        manual_lookup = {m.id: m for m in mr.scalars().all()}
+
+    page_ref_last_updated: dict[uuid.UUID, Any] = {}
+    if manual_lookup:
+        from app.models.ingestion import ManualPageRefHistory
+        pref_res = await db.execute(
+            select(
+                ManualPageRefHistory.manual_id,
+                func.max(ManualPageRefHistory.created_at),
+            )
+            .where(ManualPageRefHistory.manual_id.in_(list(manual_lookup.keys())))
+            .group_by(ManualPageRefHistory.manual_id)
+        )
+        page_ref_last_updated = {row[0]: row[1] for row in pref_res.all()}
 
     xlsx_bytes = _qc_review_workbook(
         vessel_name=vessel_name,
@@ -1631,6 +1700,7 @@ async def export_spares_qc(
         spares=spares,
         component_lookup=component_lookup,
         manual_lookup=manual_lookup,
+        page_ref_last_updated=page_ref_last_updated,
     )
 
     safe_vessel_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
@@ -1711,7 +1781,39 @@ async def export_qc_review(
         mr = await db.execute(
             select(Manual).where(Manual.id.in_(all_manual_ids), Manual.is_deleted == False)
         )
-        manual_lookup = {m.id: m.original_filename for m in mr.scalars().all()}
+        manual_lookup = {m.id: m for m in mr.scalars().all()}
+
+    # Also resolve jobs/components without source_manual_id if pdf_reference matches
+    filename_lookup = {m.original_filename: m for m in manual_lookup.values() if m.original_filename}
+    unresolved_pdf = {
+        item.pdf_reference for item in (components + jobs)
+        if not getattr(item, "source_manual_id", None) and getattr(item, "pdf_reference", None) and item.pdf_reference not in filename_lookup
+    }
+    if unresolved_pdf:
+        extra_mr = await db.execute(
+            select(Manual).where(
+                Manual.vessel_id == vessel_id,
+                Manual.original_filename.in_(unresolved_pdf),
+                Manual.is_deleted == False,
+            )
+        )
+        for m in extra_mr.scalars().all():
+            manual_lookup[m.id] = m
+            if m.original_filename:
+                filename_lookup[m.original_filename] = m
+
+    page_ref_last_updated: dict[uuid.UUID, Any] = {}
+    if manual_lookup:
+        from app.models.ingestion import ManualPageRefHistory
+        pref_res = await db.execute(
+            select(
+                ManualPageRefHistory.manual_id,
+                func.max(ManualPageRefHistory.created_at),
+            )
+            .where(ManualPageRefHistory.manual_id.in_(list(manual_lookup.keys())))
+            .group_by(ManualPageRefHistory.manual_id)
+        )
+        page_ref_last_updated = {row[0]: row[1] for row in pref_res.all()}
 
     xlsx_bytes = _qc_review_workbook(
         vessel_name=vessel_name,
@@ -1720,6 +1822,7 @@ async def export_qc_review(
         spares=spares,
         component_lookup=component_lookup,
         manual_lookup=manual_lookup,
+        page_ref_last_updated=page_ref_last_updated,
     )
 
     safe_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
