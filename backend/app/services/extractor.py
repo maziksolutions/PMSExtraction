@@ -812,9 +812,9 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             '  "specification": "material, size, standard, quantity note strictly as formatted in the manual with NO abbreviations or value modifications (e.g. \'QTY: 2 PCS; Material: SUS304; Size: DN50\') or null",\n'
 
-            '  "spare_assembly": "assembly name, parts table title, or diagram section in Proper Text / Title Case (e.g. \'Cargo Pumping System\', \'Shaft Seal Assembly\', \'Main Components Exploded View\', \'Machine Spare Parts List\') or null",\n'
+            '  "spare_assembly": "full descriptive assembly title or parts table section name in Proper Text / Title Case (e.g. \'Spare parts - Control System FMB-VS (CS)\', \'Cargo Pumping System\', \'Shaft Seal Assembly\', \'Main Components Exploded View\', \'Machine Spare Parts List\') or null",\n'
 
-            '  "assembly_description": "assembly description in Proper Text / Title Case or null",\n'
+            '  "assembly_description": "the EXACT SAME full descriptive assembly title as spare_assembly in Proper Text / Title Case (e.g. \'Spare parts - Control System FMB-VS (CS)\') or null",\n'
 
             '  "spare_maker": "manufacturer in ALL CAPS (e.g. \'WARTSILA\', \'YANMAR\', \'DAIHATSU\', \'SHINKO\', \'FRAMO\', \'TAIKO KIKAI\') or null",\n'
 
@@ -834,7 +834,7 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "    1. part_name MUST contain ONLY the spare part name/noun (e.g. 'O-Ring', 'Vlv Stem', 'Ball Bearing', 'Fltr Element', 'Hex Bolt', 'Gasket', 'Oil Seal') in Proper Text / Title Case. Do NOT include dimensions, sizes (e.g. 'M12x45', '6205', '15.5 x 2.4'), materials (e.g. 'SUS316', 'FKM'), or parenthetical notes in part_name; always separate them into specification.\n"
 
-            "    2. spare_assembly and assembly_description MUST be in Proper Text / Title Case (Each word capitalized followed by lower case).\n"
+            "    2. spare_assembly and assembly_description MUST both contain the EXACT SAME full descriptive assembly title in Proper Text / Title Case (Each word capitalized followed by lower case, e.g. 'Spare parts - Control System FMB-VS (CS)').\n"
 
             "    3. spare_maker, spare_model, and drawing_number MUST be in ALL CAPS (e.g. 'WARTSILA', 'YANMAR', 'DK-20', 'FIG.7', 'DWG-102').\n"
 
@@ -950,9 +950,13 @@ DEFAULT_PROMPTS: dict[str, dict] = {
 
             "- ASSEMBLY & ASSEMBLY DESCRIPTION UNIQUENESS & CONSISTENCY (CRITICAL):\n"
 
-            "    • Capture spare_assembly and assembly_description as unique, consistent data across all pages of the manual.\n"
+            "    • Capture the full descriptive assembly name (e.g. 'Spare parts - Control System FMB-VS (CS)', 'Cylinder Cover Assembly', 'Shaft Seal Assembly') from the section header or table title.\n"
 
-            "    • Maintain uniform formatting, casing, and wording across pages to avoid creating duplicate Assembly records.\n"
+            "    • Populate BOTH 'spare_assembly' and 'assembly_description' with the EXACT SAME proper assembly title. Never put an abbreviated item code like 'ITEM SP CS' in one and the title in the other, and never leave one blank while the other is filled.\n"
+
+            "    • If a header has an item/code prefix like 'ITEM SP CS - Spare parts - Control System FMB-VS (CS)', capture the full descriptive title 'Spare parts - Control System FMB-VS (CS)' for both fields.\n"
+
+            "    • Continuation pages (e.g. Page 795 continuing Page 794) MUST retain the exact same assembly title as the parent page without appending '(Cont.)', '(Continued)', or altering casing/wording, ensuring unique and consistent assembly records.\n"
 
             "- Part numbers: include exactly as printed (do not reformat)\n"
 
@@ -1203,6 +1207,70 @@ def to_proper_case(text: str | None) -> str | None:
     words = s.split()
 
     return " ".join(_capitalize_token(w) for w in words)
+
+
+def clean_assembly_continuation(s: str | None) -> str | None:
+    """Strip continuation markers like (Cont.), (Continued), Cont'd, - Cont. and trailing punctuation."""
+    if not s or not str(s).strip():
+        return None
+    cleaned = re.sub(r'[\(\[]\s*cont(?:\'d|inued|\.)?\s*[\)\]]', '', str(s), flags=re.I)
+    cleaned = re.sub(r'[\-–—\s]*\bcont(?:\'d|inued|\.)?\b\.?', '', cleaned, flags=re.I)
+    cleaned = cleaned.strip(' \t\r\n-–—:,;')
+    return cleaned if cleaned else None
+
+
+def is_short_code_or_item_ref(s: str) -> bool:
+    """Check if a string is merely a code / item prefix (e.g. 'ITEM SP CS', 'FIG 4', 'POS 10')."""
+    s_clean = s.strip()
+    if not s_clean:
+        return False
+    if re.match(r'^(?:ITEM|POS|POSITION|FIG|FIGURE|SECTION|SEC|REF|NO)\b[\s\d\.\-_A-Z]{0,15}$', s_clean, re.I):
+        return True
+    if len(s_clean) <= 14 and s_clean.isupper() and not any(w in s_clean.lower() for w in ('valve', 'pump', 'system', 'engine', 'boiler', 'spare', 'part', 'control', 'assembly')):
+        return True
+    return False
+
+
+def strip_code_prefix(s: str) -> str:
+    """Strip leading code prefix if followed by a dash/colon, e.g. 'ITEM SP CS - Spare parts - Control System FMB-VS (CS)'."""
+    m = re.match(r'^(?:ITEM|POS|POSITION|FIG|FIGURE|SECTION|SEC|REF|NO)[\s\d\.\-_A-Z]{1,15}\s*[-–—:]\s*(.+)$', s.strip(), re.I)
+    if m:
+        return m.group(1).strip()
+    return s.strip()
+
+
+def harmonize_assembly_fields(spare_assembly: str | None, assembly_description: str | None) -> tuple[str | None, str | None]:
+    """Harmonize spare_assembly and assembly_description so both fields consistently carry
+    the full, proper assembly title without continuation markers or abbreviated code fragments.
+    """
+    sa = clean_assembly_continuation(spare_assembly)
+    ad = clean_assembly_continuation(assembly_description)
+
+    if sa:
+        sa = strip_code_prefix(sa)
+    if ad:
+        ad = strip_code_prefix(ad)
+
+    chosen = None
+    if sa and ad:
+        sa_code = is_short_code_or_item_ref(sa)
+        ad_code = is_short_code_or_item_ref(ad)
+        if sa_code and not ad_code:
+            chosen = ad
+        elif ad_code and not sa_code:
+            chosen = sa
+        elif len(ad) > len(sa) and sa.lower() in ad.lower():
+            chosen = ad
+        elif len(sa) > len(ad) and ad.lower() in sa.lower():
+            chosen = sa
+        else:
+            chosen = ad or sa
+    elif sa:
+        chosen = sa
+    elif ad:
+        chosen = ad
+
+    return chosen, chosen
 
 
 
@@ -2706,13 +2774,15 @@ def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type
 
             record["drawing_position"] = str(record["drawing_position"]).strip()[:100]
 
-        if record.get("spare_assembly"):
-
-            record["spare_assembly"] = to_proper_case(record["spare_assembly"])[:300]
-
-        if record.get("assembly_description"):
-
-            record["assembly_description"] = to_proper_case(record["assembly_description"])
+        sa, ad = harmonize_assembly_fields(record.get("spare_assembly"), record.get("assembly_description"))
+        if sa:
+            norm_asm = to_proper_case(sa)[:300]
+            record["spare_assembly"] = norm_asm
+            record["assembly_description"] = norm_asm
+        elif ad:
+            norm_asm = to_proper_case(ad)[:300]
+            record["spare_assembly"] = norm_asm
+            record["assembly_description"] = norm_asm
 
         if record.get("spare_maker"):
 
@@ -2738,7 +2808,9 @@ def _sanitize_extracted_record(record: dict, filename: str = "", extraction_type
 
                 if not record.get("spare_assembly"):
 
-                    record["spare_assembly"] = to_proper_case(raw_model)[:300]
+                    asm_phrase = to_proper_case(raw_model)[:300]
+                    record["spare_assembly"] = asm_phrase
+                    record["assembly_description"] = asm_phrase
 
                 # Try extracting actual model code from it, e.g. "LT-55", "L3.139", "LPW3", "6EY18"
 
@@ -4045,7 +4117,9 @@ async def _extract_entities_from_page_image_with_openai(
 
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER output the keyword 'Remarks:' or include remarks notes in specification — remarks are not requested."
 
-                "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
+                "\n  • spare_assembly → the full descriptive header/title of the parts table, section name, or assembly in Proper Text / Title Case (e.g. 'Spare parts - Control System FMB-VS (CS)', 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
+
+                "\n  • assembly_description → the EXACT SAME full descriptive assembly title as spare_assembly in Proper Text / Title Case (e.g. 'Spare parts - Control System FMB-VS (CS)'). Always use the proper assembly name in both fields consistently across all pages without adding '(Cont.)' or '(Continued)' on subsequent pages."
 
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
 
@@ -4278,7 +4352,9 @@ async def _extract_entities_from_page_image_with_claude(
 
                 "\n  • specification → column headers separated by semicolons: 'QTY: <count> <unit>; Material: <material>; Size: <dimensions>'. CRITICAL: 'QTY:' MUST contain ONLY the quantity number and unit (e.g. 'QTY: 1 SET', 'QTY: 2 PCS'). NEVER output the keyword 'Remarks:' or include remarks notes in specification — remarks are not requested."
 
-                "\n  • spare_assembly → the header/title of the parts table, section name, or diagram title in Proper Text / Title Case (e.g. 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
+                "\n  • spare_assembly → the full descriptive header/title of the parts table, section name, or assembly in Proper Text / Title Case (e.g. 'Spare parts - Control System FMB-VS (CS)', 'Machine Spare Parts List', 'Main Components Exploded View', 'Cylinder Cover Assembly')"
+
+                "\n  • assembly_description → the EXACT SAME full descriptive assembly title as spare_assembly in Proper Text / Title Case (e.g. 'Spare parts - Control System FMB-VS (CS)'). Always use the proper assembly name in both fields consistently across all pages without adding '(Cont.)' or '(Continued)' on subsequent pages."
 
                 "\n  • spare_model → the equipment/machinery model number or type code ONLY in ALL CAPS (e.g. '6EY18ALW', 'DK-20', 'CB-125') — NEVER put generic assembly titles here; leave null if not found"
 
@@ -5727,7 +5803,7 @@ def _parse_simple_pos_description_table(text: str, page_no: int) -> list[dict]:
                         "drawing_number": None,
                         "specification": None,
                         "spare_assembly": section_title,
-                        "assembly_description": None,
+                        "assembly_description": section_title,
                         "spare_maker": None,
                         "spare_model": None,
                         "source_page_number": page_no,
@@ -5746,7 +5822,7 @@ def _parse_simple_pos_description_table(text: str, page_no: int) -> list[dict]:
                 "drawing_number": None,
                 "specification": None,
                 "spare_assembly": section_title,
-                "assembly_description": None,
+                "assembly_description": section_title,
                 "spare_maker": None,
                 "spare_model": None,
                 "source_page_number": page_no,
@@ -5938,6 +6014,11 @@ async def _consolidate_spares_for_manual(
             if not target.assembly_description and candidate.assembly_description:
 
                 target.assembly_description = candidate.assembly_description
+
+            sa, ad = harmonize_assembly_fields(target.spare_assembly, target.assembly_description)
+            if sa:
+                target.spare_assembly = sa
+                target.assembly_description = ad
 
             if not target.spare_maker and candidate.spare_maker:
 
@@ -7319,7 +7400,8 @@ async def _process_and_save_page_records(
 
         elif etype == "spare":
 
-            _assembly = record.get("spare_assembly") or None
+            sa, ad = harmonize_assembly_fields(record.get("spare_assembly"), record.get("assembly_description"))
+            _assembly = sa or ad
 
             if not _assembly:
 
@@ -7337,13 +7419,13 @@ async def _process_and_save_page_records(
 
 
 
-            _asm = to_proper_case(record.get("spare_assembly") or _assembly)
+            _asm = to_proper_case(_assembly)
 
             if _asm:
 
                 _asm = _asm[:300]
 
-            _asm_desc = to_proper_case(record.get("assembly_description") or _asm)
+            _asm_desc = _asm
 
             _maker = str(record.get("spare_maker")).strip().upper()[:200] if record.get("spare_maker") else None
 
