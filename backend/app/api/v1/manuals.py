@@ -330,6 +330,8 @@ def _manual_export_headers() -> list[str]:
         "Spare Printed Page Ref",
         "Spare Physical Page Ref",
         "Target Model",
+        "Created Date",
+        "Modified Date",
         "Reviewer Comments",
     ]
 
@@ -357,6 +359,9 @@ def _manual_import_aliases() -> dict[str, str]:
         "job physical page ref": "pages_with_jobs_physical",
         "spare printed page ref": "pages_with_spares_printed",
         "spare physical page ref": "pages_with_spares_physical",
+        "target model": "target_model",
+        "created date": "created_date",
+        "modified date": "modified_date",
         "reviewer comments": "reviewer_comments",
     }
 
@@ -490,7 +495,12 @@ def _encode_png_data_url(image: Any) -> str:
     return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode('ascii')}"
 
 
-def _build_manual_workbook(manuals: list[Manual], *, include_sample_rows: bool) -> StreamingResponse:
+def _build_manual_workbook(
+    manuals: list[Manual],
+    *,
+    include_sample_rows: bool,
+    page_ref_last_updated: Optional[dict[uuid.UUID, Any]] = None,
+) -> StreamingResponse:
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
 
@@ -527,6 +537,9 @@ def _build_manual_workbook(manuals: list[Manual], *, include_sample_rows: bool) 
                     "10-15",
                     "",
                     "",
+                    "",
+                    "",
+                    "",
                     "Sample: component starts on physical page 1 with no printed footer.",
                 ],
                 [
@@ -544,12 +557,19 @@ def _build_manual_workbook(manuals: list[Manual], *, include_sample_rows: bool) 
                     "",
                     "2-12",
                     "3-13",
+                    "",
+                    "",
+                    "",
                     "Sample: drawing package with printed pages offset by one physical page.",
                 ],
             ]
         )
     else:
         for manual in manuals:
+            created_at = getattr(manual, "created_at", None)
+            c_date = created_at.strftime("%Y-%m-%d %H:%M:%S") if created_at else ""
+            m_dt = (page_ref_last_updated or {}).get(manual.id) or getattr(manual, "updated_at", None) or created_at
+            m_date = m_dt.strftime("%Y-%m-%d %H:%M:%S") if m_dt else ""
             rows.append(
                 [
                     str(manual.id),
@@ -566,6 +586,9 @@ def _build_manual_workbook(manuals: list[Manual], *, include_sample_rows: bool) 
                     manual.pages_with_jobs_physical or "",
                     manual.pages_with_spares_printed or "",
                     manual.pages_with_spares_physical or "",
+                    getattr(manual, "target_model", "") or "",
+                    c_date,
+                    m_date,
                     manual.reviewer_comments or "",
                 ]
             )
@@ -891,7 +914,23 @@ async def export_manual_screening(
     )
     manuals = result.scalars().all()
 
-    response = _build_manual_workbook(manuals, include_sample_rows=False)
+    page_ref_last_updated: dict[uuid.UUID, Any] = {}
+    if manuals:
+        pref_res = await db.execute(
+            select(
+                ManualPageRefHistory.manual_id,
+                func.max(ManualPageRefHistory.created_at),
+            )
+            .where(ManualPageRefHistory.manual_id.in_([m.id for m in manuals]))
+            .group_by(ManualPageRefHistory.manual_id)
+        )
+        page_ref_last_updated = {row[0]: row[1] for row in pref_res.all()}
+
+    response = _build_manual_workbook(
+        manuals,
+        include_sample_rows=False,
+        page_ref_last_updated=page_ref_last_updated,
+    )
     response.headers["Content-Disposition"] = f'attachment; filename="manual_review_export_{vessel_id}.xlsx"'
     return response
 
@@ -982,6 +1021,7 @@ async def import_manual_screening(
         "pages_with_jobs_physical",
         "pages_with_spares_printed",
         "pages_with_spares_physical",
+        "target_model",
         "reviewer_comments",
     }
 

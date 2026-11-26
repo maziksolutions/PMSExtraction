@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -1552,7 +1552,7 @@ def _qc_review_workbook(
         # Restore original order (manual_id, page_reference, drawing_position/id)
         deduped_spares.sort(key=lambda s: (
             str(s.source_manual_id or ""),
-            s.page_reference or 0,
+            int(s.page_reference) if str(s.page_reference or "").isdigit() else (s.page_reference if isinstance(s.page_reference, int) else 0),
             int(s.drawing_position) if s.drawing_position and s.drawing_position.isdigit() else 999999,
             str(s.drawing_position or ""),
             str(s.id),
