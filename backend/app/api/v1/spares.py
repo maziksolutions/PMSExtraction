@@ -1452,15 +1452,51 @@ def _qc_review_workbook(
         ws_jobs = wb.create_sheet("Jobs")
         job_rows = []
 
-        sorted_jobs = list(jobs)
-        sorted_jobs.sort(key=lambda j: (
+        # Deduplicate jobs ONLY if job name and all job details are exact duplicates
+        seen_jobs_key = set()
+        deduped_jobs = []
+        sorted_jobs = sorted(
+            jobs,
+            key=lambda j: (
+                0 if getattr(j, "qc_status", None) == QCStatus.accepted else 1,
+                -(getattr(j, "created_at", None).timestamp() if getattr(j, "created_at", None) else 0),
+            )
+        )
+        for job in sorted_jobs:
+            mid = str(job.source_manual_id or "")
+            page_ref = str(job.page_reference or "")
+            name_key = (job.job_name or "").strip().lower()
+            code_key = (job.job_code or "").strip().lower()
+            freq_key = (job.frequency or "").strip().lower()
+            freq_type = str(job.frequency_type.value if job.frequency_type else "").strip().lower()
+            rank_key = (job.performing_rank or "").strip().lower()
+            desc_key = (job.job_description or "").strip().lower()
+            comp_id = str(job.component_id or "")
+
+            dedupe_key = (
+                mid,
+                page_ref,
+                comp_id,
+                name_key,
+                code_key,
+                freq_key,
+                freq_type,
+                rank_key,
+                desc_key,
+            )
+            if dedupe_key in seen_jobs_key:
+                continue
+            seen_jobs_key.add(dedupe_key)
+            deduped_jobs.append(job)
+
+        deduped_jobs.sort(key=lambda j: (
             str(j.source_manual_id or ""),
             int(j.page_reference) if str(j.page_reference or "").isdigit() else (j.page_reference if isinstance(j.page_reference, int) else 0),
             str(j.job_code or ""),
             str(j.id),
         ))
 
-        for job in sorted_jobs:
+        for job in deduped_jobs:
             comp = component_lookup.get(job.component_id)
             comp_name = comp.component_name if comp else ""
             manual = manual_lookup.get(job.source_manual_id)
@@ -1492,9 +1528,50 @@ def _qc_review_workbook(
         ws_spares = wb.create_sheet("Spares")
         spare_rows = []
         
-        # Keep all spares as shown in review table, preserving page and position order
-        sorted_spares = list(spares)
-        sorted_spares.sort(key=lambda s: (
+        # Deduplicate spares ONLY if part name and all spare details are exact duplicates
+        seen_spares_key = set()
+        deduped_spares = []
+        sorted_spares = sorted(
+            spares,
+            key=lambda s: (
+                0 if getattr(s, "qc_status", None) == QCStatus.accepted else 1,
+                -(getattr(s, "created_at", None).timestamp() if getattr(s, "created_at", None) else 0),
+            )
+        )
+        for spare in sorted_spares:
+            mid = str(spare.source_manual_id or "")
+            page_ref = str(spare.page_reference or "")
+            name_key = (spare.part_name or "").strip().lower()
+            pn_key = (spare.part_number or "").strip().lower()
+            dwg_key = (spare.drawing_number or "").strip().lower()
+            pos_key = (spare.drawing_position or "").strip().lower()
+            spec_key = (spare.specification or "").strip().lower()
+            maker_key = (spare.spare_maker or "").strip().lower()
+            model_key = (spare.spare_model or "").strip().lower()
+            assembly_key = (spare.spare_assembly or "").strip().lower()
+            comp_id = str(spare.component_id or "")
+
+            # Exact duplicate key requires spare name AND all spare details to match
+            dedupe_key = (
+                mid,
+                page_ref,
+                comp_id,
+                assembly_key,
+                name_key,
+                pn_key,
+                dwg_key,
+                pos_key,
+                spec_key,
+                maker_key,
+                model_key,
+            )
+            if dedupe_key in seen_spares_key:
+                continue
+            seen_spares_key.add(dedupe_key)
+            deduped_spares.append(spare)
+
+        # Restore original order (manual_id, page_reference, drawing_position/id)
+        deduped_spares.sort(key=lambda s: (
             str(s.source_manual_id or ""),
             int(s.page_reference) if str(s.page_reference or "").isdigit() else (s.page_reference if isinstance(s.page_reference, int) else 0),
             int(s.drawing_position) if s.drawing_position and s.drawing_position.isdigit() else 999999,
@@ -1502,7 +1579,7 @@ def _qc_review_workbook(
             str(s.id),
         ))
 
-        for spare in sorted_spares:
+        for spare in deduped_spares:
             comp = component_lookup.get(spare.component_id)
             comp_name = comp.component_name if comp else ""
             manual = manual_lookup.get(spare.source_manual_id)
