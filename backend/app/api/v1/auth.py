@@ -1039,6 +1039,79 @@ async def debug_spares(
         return {"status": "error", "message": str(e)}
 
 
+@router.get("/debug-export-spares-qc/{manual_id}", tags=["Debug"], summary="Export full QC Spares Excel without auth")
+async def debug_export_spares_qc(
+    manual_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    import io
+    import uuid
+    from fastapi.responses import StreamingResponse
+    from sqlalchemy import select, func
+    from app.models.spare import Spare
+    from app.models.component import Component
+    from app.models.ingestion import Manual, ManualPageRefHistory
+    from app.models.vessel import VesselProject
+    from app.api.v1.spares import _qc_review_workbook
+
+    try:
+        mid = uuid.UUID(manual_id)
+    except ValueError:
+        return {"error": "Invalid manual UUID"}
+
+    manual_res = await db.execute(select(Manual).where(Manual.id == mid, Manual.is_deleted == False))
+    manual = manual_res.scalar_one_or_none()
+    if not manual:
+        return {"error": "Manual not found"}
+
+    vessel_res = await db.execute(select(VesselProject).where(VesselProject.id == manual.vessel_id))
+    vessel = vessel_res.scalar_one_or_none()
+    vessel_name = getattr(vessel, "name", None) or getattr(vessel, "vessel_name", None) or "Vessel"
+
+    spares_res = await db.execute(
+        select(Spare)
+        .where(Spare.source_manual_id == mid, Spare.is_deleted == False)
+        .order_by(Spare.page_reference.asc().nulls_last(), Spare.id.asc())
+    )
+    spares = list(spares_res.scalars().all())
+
+    component_ids = {s.component_id for s in spares if s.component_id}
+    component_lookup = {}
+    if component_ids:
+        cr = await db.execute(select(Component).where(Component.id.in_(component_ids)))
+        component_lookup = {c.id: c for c in cr.scalars().all()}
+
+    manual_lookup = {manual.id: manual}
+
+    pref_res = await db.execute(
+        select(ManualPageRefHistory.manual_id, func.max(ManualPageRefHistory.created_at))
+        .where(ManualPageRefHistory.manual_id == mid)
+        .group_by(ManualPageRefHistory.manual_id)
+    )
+    page_ref_last_updated = {row[0]: row[1] for row in pref_res.all()}
+
+    xlsx_bytes = _qc_review_workbook(
+        vessel_name=vessel_name,
+        components=None,
+        jobs=None,
+        spares=spares,
+        component_lookup=component_lookup,
+        manual_lookup=manual_lookup,
+        page_ref_last_updated=page_ref_last_updated,
+    )
+
+    clean_manual_name = manual.original_filename.rsplit(".", 1)[0] if manual.original_filename.lower().endswith(".pdf") else manual.original_filename
+    safe_manual_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in clean_manual_name).strip()
+    safe_vessel_name = "".join(c if c.isalnum() or c in "-_ " else "_" for c in vessel_name).strip()
+    filename = f"Spares_QC_{safe_manual_name}_{safe_vessel_name}.xlsx"
+
+    return StreamingResponse(
+        io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 
 @router.post(
     "/login",
